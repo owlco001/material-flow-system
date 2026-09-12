@@ -1,0 +1,8 @@
+*.apk
+local.properties
+.gradle/
+build/
+__pycache__/
+*.db
+*.sqlite*
+.env
