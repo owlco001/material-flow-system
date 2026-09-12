@@ -6,3 +6,7 @@ __pycache__/
 *.db
 *.sqlite*
 .env
+
+# Kotlin / build tooling
+.kotlin/
+*.log

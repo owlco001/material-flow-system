@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -133,12 +134,25 @@ def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[
 
 @app.post("/api/v1/scan/resolve")
 def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    raw = body.rawValue.strip(); typ = "UNKNOWN"
-    if raw.startswith("MTR-"): typ = "MATERIAL_CODE"
-    elif raw.startswith("SO") or raw.startswith("PO"): typ = "ORDER_NO"
-    elif raw.startswith("WL") or raw.startswith("LOG"): typ = "LOGISTICS_NO"
-    elif raw.startswith("A-") or raw.startswith("B-"): typ = "LOCATION_CODE"
-    return {"type": typ, "normalizedValue": raw, "resourceId": raw}
+    """扫码类型识别。
+
+    依据《厂内流转业务模型更正》：
+      - 支持生产订单号 / 料号 / 库位码 / 流转单号；
+      - 「物流号（LOGISTICS_NO）」概念已作废，不再识别 WL / LOG 前缀；
+      - 首版采用前缀+正则配置，规则不硬编码到客户端，由服务端最终判定。
+    """
+    raw = body.rawValue.strip().upper()
+    typ = "UNKNOWN"
+    resource_id = raw
+    if re.match(r"^MTR-[A-Z0-9-]+$", raw):
+        typ = "MATERIAL_CODE"
+    elif re.match(r"^(SO|PO)\d+$", raw):
+        typ = "PRODUCTION_ORDER"
+    elif re.match(r"^[A-Z]-\d{2}-\d{2}$", raw):
+        typ = "LOCATION_CODE"
+    elif re.match(r"^FL\d+$", raw):
+        typ = "FLOW_RECORD"
+    return {"type": typ, "normalizedValue": raw, "resourceId": resource_id}
 
 
 @app.get("/api/v1/materials/{code}/inventory")
