@@ -1,5 +1,6 @@
 package com.company.logistics.data.remote
 
+import com.company.logistics.BuildConfig
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.ScanResult
@@ -281,14 +282,22 @@ typealias LoginResultDto = com.company.logistics.model.LoginResult
 /**
  * API 配置。
  * 契约要求：生产环境通过 HTTPS 配置，客户端不得硬编码 IP。
- * 此处提供构建期注入入口，默认指向测试环境。
+ * 地址一律经 BuildConfig 构建期注入，源码不落任何真实端点。
+ *
+ * 注入方式（任选其一，均由 app/build.gradle.kts 读取）：
+ *   1. 命令行：./gradlew assembleDebug -PapiBaseUrl=https://api.example.com
+ *   2. gradle.properties：apiBaseUrl=https://api.example.com
+ *   3. 环境变量：API_BASE_URL=https://api.example.com
+ *
+ * 未注入时回落到占位地址，运行时调用会失败并提示配置，避免误连生产。
  */
 object ApiConfig {
     /**
-     * 测试环境地址。正式环境应通过 BuildConfig 或远程配置下发 HTTPS 域名。
-     * TODO(部署): 替换为 HTTPS 正式域名，并移除明文流量许可（AndroidManifest）。
+     * 构建期注入的 API 根地址。占位值不含真实端点，
+     * 详见 docs/部署配置说明。
+     * TODO(部署): 由 CI 注入 HTTPS 正式域名，并移除明文流量许可（AndroidManifest）。
      */
-    var baseUrl: String = "http://107.173.70.115:8000"
+    var baseUrl: String = BuildConfig.API_BASE_URL
     var connectTimeoutMs: Int = 10_000
     var readTimeoutMs: Int = 15_000
 }

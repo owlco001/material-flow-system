@@ -5,6 +5,14 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+/**
+ * API 根地址，构建期注入，源码与仓库不落真实端点。
+ * 优先级：-PapiBaseUrl > gradle.properties(apiBaseUrl) > 环境变量 API_BASE_URL > 占位值
+ */
+val apiBaseUrl: String = (project.findProperty("apiBaseUrl") as String?)
+    ?: System.getenv("API_BASE_URL")
+    ?: "https://api.example.invalid"
+
 android {
     namespace = "com.company.logistics"
     compileSdk = 34
@@ -14,13 +22,18 @@ android {
         targetSdk = 34
         versionCode = 3
         versionName = "0.3.0"
+
+        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
