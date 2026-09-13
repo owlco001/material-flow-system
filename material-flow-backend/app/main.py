@@ -49,6 +49,9 @@ ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
 ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN")
 HANDOVER_STATES = ("PENDING", "CONFIRMED", "REJECTED", "CANCELLED")
+TRANSFER_STATES = frozenset({
+    "PENDING_APPROVAL", "APPROVED", "REJECTED", "EXECUTED",
+})
 
 # 工作台展示状态是从正式订单需求、流转申请和交接记录实时投影出来的，
 # 不在 material_work_items 中维护第二份数量或状态事实。
@@ -981,6 +984,19 @@ def _workspace_status_meta(status_code: str) -> tuple[str, str]:
     )
 
 
+def _workspace_status_domain(status_code: str) -> str:
+    """使用工作台相同的状态域映射，避免 transfer 响应另造一套状态语义。"""
+    if status_code in {"OUT_OF_STOCK", "ARRIVED", "IN_STOCK"}:
+        return "INVENTORY"
+    if status_code.startswith("OUTBOUND_"):
+        return "OUTBOUND"
+    if status_code in {"PENDING", "REJECTED", "CANCELLED"}:
+        return "HANDOVER"
+    if status_code in {"PICKED_UP", "AT_STATION"}:
+        return "WORKSPACE"
+    return "UNKNOWN"
+
+
 def _workspace_requirements(
     c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None,
 ) -> list[sqlite3.Row]:
@@ -1123,6 +1139,133 @@ def _workspace_requirements(
 
     query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
     return c.execute(query, args).fetchall()
+
+
+def _transfer_visibility(c: sqlite3.Connection, transfer: sqlite3.Row,
+                         user: sqlite3.Row) -> bool:
+    """判断 transfer 是否属于当前用户的正式业务范围。"""
+    # 列表和详情必须复用同一 SQL 谓词；否则客户端会看到状态但打不开
+    # 对应申请，或通过详情绕过列表的责任范围。
+    scope, scope_args = _transfer_visibility_sql(user, "t")
+    return c.execute(
+        f"SELECT 1 FROM transfer_requests t WHERE t.id=? AND {scope} LIMIT 1",
+        [transfer["id"], *scope_args],
+    ).fetchone() is not None
+
+
+def _transfer_visibility_sql(user: sqlite3.Row, alias: str = "t") -> tuple[str, list[Any]]:
+    """返回与 _transfer_visibility 相同语义的 SQL 谓词和参数。"""
+    if user["role"] in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        return "1=1", []
+    scope = f"""(
+        {alias}.created_by = ?
+        OR EXISTS (
+            SELECT 1 FROM material_handovers h
+             WHERE h.transfer_request_id = {alias}.id
+               AND (
+                   h.created_by = ? OR h.receiver_user_id = ? OR h.confirmed_by = ?
+                   OR EXISTS (
+                       SELECT 1 FROM material_work_items hw
+                        WHERE (hw.id = h.work_item_id OR hw.requirement_id = h.work_item_id)
+                          AND hw.assigned_user_id = ?
+                   )
+               )
+        )
+        OR EXISTS (
+            SELECT 1
+              FROM material_work_items w
+              JOIN order_material_requirements r
+                ON r.id = w.requirement_id OR r.id = w.id
+              JOIN production_orders o ON o.id = r.order_id
+             WHERE w.assigned_user_id = ?
+               AND {alias}.document_no = o.order_no
+               AND EXISTS (
+                   SELECT 1
+                     FROM json_each({alias}.payload_json, '$.items') item
+                    WHERE json_extract(item.value, '$.materialId') = r.material_id
+               )
+        )
+    )"""
+    return scope, [user["id"]] * 6
+
+
+def _transfer_workspace_status(c: sqlite3.Connection, transfer: sqlite3.Row) -> tuple[str, sqlite3.Row | None]:
+    """投影 transfer 的最新交接状态，口径与工作台/时间线一致。"""
+    handover = c.execute(
+        """SELECT h.*, r.device_id AS requirement_device_id,
+                         w.device_id AS work_device_id
+             FROM material_handovers h
+             LEFT JOIN material_work_items w ON w.id = h.work_item_id
+             LEFT JOIN order_material_requirements r
+               ON r.id = COALESCE(w.requirement_id, h.work_item_id)
+            WHERE h.transfer_request_id=?
+            ORDER BY h.created_at DESC, h.id DESC
+            LIMIT 1""",
+        (transfer["id"],),
+    ).fetchone()
+    if not handover:
+        return (
+            OUTBOUND_STATUS_TO_WORKSPACE.get(transfer["status"], transfer["status"]),
+            None,
+        )
+
+    workspace_status = handover["status"]
+    if handover["status"] == "CONFIRMED":
+        target_device = handover["requirement_device_id"] or handover["work_device_id"]
+        workspace_status = (
+            "AT_STATION"
+            if handover["device_id"] and target_device
+            and handover["device_id"] == target_device
+            else "PICKED_UP"
+        )
+    projection = c.execute(
+        """SELECT status_code
+             FROM material_work_item_projections
+            WHERE work_item_id=? AND last_handover_id=?""",
+        (handover["work_item_id"], handover["id"]),
+    ).fetchone()
+    if projection and projection["status_code"] in WORKSPACE_STATUS_CODES:
+        workspace_status = projection["status_code"]
+    return workspace_status, handover
+
+
+def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
+                     include_payload: bool = False) -> dict[str, Any]:
+    """构造 transfer 的公开读模型，统一列表、详情与工作台状态字段。"""
+    workspace_status, handover = _transfer_workspace_status(c, row)
+    status_label, color_token = _workspace_status_meta(workspace_status)
+    item = {
+        "id": row["id"],
+        "client_operation_id": row["client_operation_id"],
+        "type": row["type"],
+        "document_no": row["document_no"],
+        "status": row["status"],
+        "statusCode": row["status"],
+        "transferStatus": row["status"],
+        "workspaceStatus": workspace_status,
+        "statusLabel": status_label,
+        "colorToken": color_token,
+        "statusDomain": _workspace_status_domain(workspace_status),
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "approved_by": row["approved_by"],
+        "approved_at": row["approved_at"],
+        "executed_at": row["executed_at"],
+        "handoverStatus": handover["status"] if handover else None,
+        "lastHandoverId": handover["id"] if handover else None,
+        "lastHandoverAt": handover["created_at"] if handover else None,
+    }
+    if include_payload:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            payload = {"items": []}
+        item["payload"] = payload
+        item["items"] = payload.get("items", [])
+        item["remark"] = payload.get("remark")
+        item["evidenceIds"] = payload.get("evidenceIds", [])
+        item["payload_json"] = row["payload_json"]
+    return item
 
 
 def _workspace_handovers(
@@ -1996,38 +2139,28 @@ def approve(
 
 
 @app.get("/api/v1/transfer-requests")
-def list_transfers(status: str | None = None, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+def list_transfers(
+    status: str | None = Query(default=None, max_length=32),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
     c = db()
+    if status is not None:
+        status = status.strip().upper()
+        if status not in TRANSFER_STATES:
+            c.close()
+            raise HTTPException(400, "status 不是有效的流转申请状态")
     query = """SELECT t.id,t.client_operation_id,t.type,t.document_no,t.status,
-                      t.created_by,t.created_at,t.approved_by,t.approved_at,t.executed_at
+                      t.payload_json,t.created_by,t.created_at,t.approved_by,t.approved_at,t.executed_at
                  FROM transfer_requests t"""
-    args: list[Any] = []
-    has_scope = False
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
-        query += """
-            WHERE (
-                t.created_by = ?
-                OR EXISTS (
-                    SELECT 1 FROM material_handovers h
-                     WHERE h.transfer_request_id = t.id
-                       AND (
-                           h.created_by = ? OR h.receiver_user_id = ?
-                           OR h.confirmed_by = ?
-                           OR EXISTS (
-                               SELECT 1 FROM material_work_items w
-                                WHERE (w.id = h.work_item_id OR w.requirement_id = h.work_item_id)
-                                  AND w.assigned_user_id = ?
-                           )
-                       )
-                )
-            )"""
-        args.extend([user["id"]] * 5)
-        has_scope = True
+    scope, args = _transfer_visibility_sql(user, "t")
+    query += " WHERE " + scope
     if status:
-        query += " AND t.status=?" if has_scope else " WHERE t.status=?"
+        query += " AND t.status=?"
         args.append(status)
-    rows = c.execute(query + " ORDER BY created_at DESC LIMIT 100", args).fetchall(); c.close()
-    return {"items": [dict(r) for r in rows], "serverTime": now()}
+    rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT 100", args).fetchall()
+    items = [_public_transfer(c, row) for row in rows]
+    c.close()
+    return {"items": items, "serverTime": now()}
 
 
 def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,
@@ -2044,6 +2177,30 @@ def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,
          json.dumps(after, ensure_ascii=False), now(), actor["session_device_id"],
          request.client.host if request.client else None, result),
     )
+
+
+def _public_audit_event(row: sqlite3.Row) -> dict[str, Any]:
+    """审计/时间线白名单投影；source_ip 永远不进入客户端响应。"""
+    keys = set(row.keys())
+
+    def value(name: str) -> Any:
+        return row[name] if name in keys else None
+
+    return {
+        "id": value("id"),
+        "event_type": value("event_type"),
+        "entity_type": value("entity_type"),
+        "entity_id": value("entity_id"),
+        "actor_user_id": value("actor_user_id"),
+        "actor_role": value("actor_role"),
+        "request_id": value("request_id"),
+        "client_operation_id": value("client_operation_id"),
+        "before_json": value("before_json"),
+        "after_json": value("after_json"),
+        "server_time": value("server_time"),
+        "device_id": value("device_id"),
+        "result": value("result"),
+    }
 
 
 def _handover_headers(x_request_id: str | None, idempotency_key: str | None,
@@ -2590,7 +2747,7 @@ def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> di
         (handover["work_item_id"],),
     ).fetchone()
     c.close()
-    event_dicts = [dict(r) for r in rows]
+    event_dicts = [_public_audit_event(r) for r in rows]
     latest_event_types = {
         event["event_type"] for event in event_dicts
         if event["entity_id"] == handover["id"]
@@ -2617,27 +2774,12 @@ def get_transfer(rid: str, user: sqlite3.Row = Depends(current_user)) -> dict[st
     if not row:
         c.close()
         raise HTTPException(404, "申请不存在")
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"} and row["created_by"] != user["id"]:
-        visible = c.execute(
-            """SELECT 1
-                 FROM material_handovers h
-                WHERE h.transfer_request_id=?
-                  AND (
-                      h.created_by=? OR h.receiver_user_id=? OR h.confirmed_by=?
-                      OR EXISTS (
-                          SELECT 1 FROM material_work_items w
-                           WHERE (w.id=h.work_item_id OR w.requirement_id=h.work_item_id)
-                             AND w.assigned_user_id=?
-                      )
-                  )
-                LIMIT 1""",
-            (rid, user["id"], user["id"], user["id"], user["id"]),
-        ).fetchone()
-        if not visible:
-            c.close()
-            raise HTTPException(403, "无权查看该申请")
+    if not _transfer_visibility(c, row, user):
+        c.close()
+        raise HTTPException(403, "无权查看该申请")
+    result = _public_transfer(c, row, include_payload=True)
     c.close()
-    return dict(row)
+    return result
 
 
 @app.post("/api/v1/transfer-requests/{rid}/execute")
@@ -2670,9 +2812,127 @@ def list_users(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
 
 
 @app.get("/api/v1/audit-logs")
-def audit_logs(page: int = 1, pageSize: int = 50, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    if user["role"] != "ADMIN": raise HTTPException(403, "无审计权限")
-    page = max(1, page); pageSize = min(100, max(1, pageSize)); c = db(); rows = c.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?", (pageSize, (page - 1) * pageSize)).fetchall(); c.close(); return {"items": [dict(r) for r in rows], "page": page, "pageSize": pageSize}
+def audit_logs(
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=50, ge=1, le=100),
+    from_: str | None = Query(default=None, alias="from", max_length=64),
+    to_: str | None = Query(default=None, alias="to", max_length=64),
+    eventType: str | None = Query(default=None, max_length=128),
+    entityType: str | None = Query(default=None, max_length=128),
+    operatorId: str | None = Query(default=None, max_length=128),
+    action: str | None = Query(default=None, max_length=128),
+    resourceType: str | None = Query(default=None, max_length=128),
+    resourceId: str | None = Query(default=None, max_length=128),
+    entityId: str | None = Query(default=None, max_length=128),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """管理员全量审计查询；返回 audit_logs 与 audit_events 的脱敏统一视图。"""
+    if user["role"] != "ADMIN":
+        raise HTTPException(403, "无审计权限")
+
+    def clean(value: str | None) -> str | None:
+        value = value.strip() if value is not None else None
+        return value or None
+
+    def parse_time(value: str | None, label: str) -> str | None:
+        value = clean(value)
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(400, f"{label} 必须是合法 ISO-8601 时间") from None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+
+    start_time = parse_time(from_, "from")
+    end_time = parse_time(to_, "to")
+    if start_time and end_time and start_time > end_time:
+        raise HTTPException(400, "from 不能晚于 to")
+
+    event_filter = clean(eventType) or clean(action)
+    entity_filter = clean(entityType) or clean(resourceType)
+    operator_filter = clean(operatorId)
+    resource_filter = clean(entityId) or clean(resourceId)
+    feed = """
+        SELECT 'AUDIT_LOG' AS record_type,
+               id, action AS event_type, resource_type AS entity_type,
+               resource_id AS entity_id, operator_id AS actor_user_id,
+               role AS actor_role, request_id,
+               NULL AS client_operation_id, NULL AS before_json,
+               NULL AS after_json, occurred_at AS server_time,
+               NULL AS device_id, result
+          FROM audit_logs
+        UNION ALL
+        SELECT 'AUDIT_EVENT' AS record_type,
+               id, event_type, entity_type, entity_id, actor_user_id,
+               actor_role, request_id, client_operation_id, before_json,
+               after_json, server_time, device_id, result
+          FROM audit_events
+    """
+    where = ["1=1"]
+    args: list[Any] = []
+    if event_filter:
+        where.append("audit_feed.event_type=?")
+        args.append(event_filter)
+    if entity_filter:
+        where.append("audit_feed.entity_type=?")
+        args.append(entity_filter)
+    if operator_filter:
+        where.append("audit_feed.actor_user_id=?")
+        args.append(operator_filter)
+    if resource_filter:
+        where.append("audit_feed.entity_id=?")
+        args.append(resource_filter)
+    if start_time:
+        where.append("audit_feed.server_time>=?")
+        args.append(start_time)
+    if end_time:
+        where.append("audit_feed.server_time<=?")
+        args.append(end_time)
+    where_sql = " AND ".join(where)
+    c = db()
+    try:
+        total = c.execute(
+            f"SELECT COUNT(*) AS count FROM ({feed}) audit_feed WHERE {where_sql}",
+            args,
+        ).fetchone()["count"]
+        rows = c.execute(
+            f"""SELECT audit_feed.*
+                   FROM ({feed}) audit_feed
+                  WHERE {where_sql}
+                  ORDER BY audit_feed.server_time DESC,
+                           audit_feed.record_type DESC,
+                           audit_feed.id DESC
+                  LIMIT ? OFFSET ?""",
+            [*args, pageSize, (page - 1) * pageSize],
+        ).fetchall()
+    finally:
+        c.close()
+
+    items = []
+    for row in rows:
+        item = _public_audit_event(row)
+        # 保留旧 audit_logs 客户端使用的字段别名；仍然不暴露 source_ip。
+        item.update({
+            "record_type": row["record_type"],
+            "operator_id": row["actor_user_id"],
+            "role": row["actor_role"],
+            "action": row["event_type"],
+            "resource_type": row["entity_type"],
+            "resource_id": row["entity_id"],
+            "occurred_at": row["server_time"],
+        })
+        items.append(item)
+    return {
+        "items": items,
+        "page": page,
+        "pageSize": pageSize,
+        "total": total,
+        "totalPages": (total + pageSize - 1) // pageSize if total else 0,
+        "serverTime": now(),
+    }
 
 
 @app.post("/api/v1/location-bindings")
