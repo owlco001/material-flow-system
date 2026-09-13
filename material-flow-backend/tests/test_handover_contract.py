@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import uuid
+import importlib.util
 
 ROOT = "/tmp/mf_handover_contract"
 shutil.rmtree(ROOT, ignore_errors=True)
@@ -11,7 +12,19 @@ os.environ["INITIAL_ADMIN_PASSWORD"] = "TestAdmin@2026"
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "app"))
 
 from fastapi.testclient import TestClient  # noqa: E402
-import main  # noqa: E402
+
+# Load the application under a test-specific module name.  The workspace
+# contract test uses a different database and also imports ``main``; relying
+# on Python's shared module cache makes the first collected test leak its
+# environment and database into the other file.
+_spec = importlib.util.spec_from_file_location(
+    "handover_contract_backend", os.path.join(os.path.dirname(os.path.dirname(__file__)), "app", "main.py")
+)
+assert _spec is not None
+main = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+sys.modules[_spec.name] = main
+_spec.loader.exec_module(main)
 
 
 def headers(token, operation=None):

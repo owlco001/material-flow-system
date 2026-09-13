@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import uuid
+import importlib.util
 
 TEST_ROOT = tempfile.mkdtemp(prefix="mf_workspace_contract_")
 os.environ["MATERIAL_FLOW_DATA"] = f"{TEST_ROOT}/data"
@@ -12,7 +13,17 @@ os.environ["INITIAL_ADMIN_PASSWORD"] = "WorkspaceAdmin@2026"
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "app"))
 
 from fastapi.testclient import TestClient  # noqa: E402
-import main as backend  # noqa: E402
+
+# Do not reuse the ordinary ``main`` module name: another contract test loads
+# the same application with a separate temporary database at collection time.
+_spec = importlib.util.spec_from_file_location(
+    "workspace_contract_backend", os.path.join(os.path.dirname(os.path.dirname(__file__)), "app", "main.py")
+)
+assert _spec is not None
+backend = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+sys.modules[_spec.name] = backend
+_spec.loader.exec_module(backend)
 
 
 ADMIN_PASSWORD = "WorkspaceAdmin@2026"

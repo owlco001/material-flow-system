@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 DATA_DIR = Path(os.environ.get("MATERIAL_FLOW_DATA", "/srv/material-flow/data"))
 UPLOAD_DIR = Path(os.environ.get("MATERIAL_FLOW_UPLOADS", "/srv/material-flow/uploads"))
 DB_PATH = DATA_DIR / "material_flow.db"
+INITIAL_ADMIN_PASSWORD = os.environ.get("INITIAL_ADMIN_PASSWORD")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="物料流转系统 API", version="0.1.0")
@@ -281,7 +282,7 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS login_attempts(username TEXT PRIMARY KEY, failed_count INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL, locked_until INTEGER);
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
-        password = os.environ.get("INITIAL_ADMIN_PASSWORD")
+        password = INITIAL_ADMIN_PASSWORD
         if not password:
             raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
         c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
