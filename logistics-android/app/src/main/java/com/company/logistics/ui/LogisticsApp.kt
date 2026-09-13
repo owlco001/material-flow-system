@@ -36,6 +36,7 @@ import com.company.logistics.data.EndpointStore
 import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.OfflineBanner
 import com.company.logistics.ui.screens.ApprovalScreen
+import com.company.logistics.ui.screens.AuditScreen
 import com.company.logistics.ui.screens.EndpointConfigScreen
 import com.company.logistics.ui.screens.InventoryScreen
 import com.company.logistics.ui.screens.LoginScreen
@@ -44,6 +45,7 @@ import com.company.logistics.ui.screens.OrderDetailScreen
 import com.company.logistics.ui.screens.ProfileScreen
 import com.company.logistics.ui.screens.QueueScreen
 import com.company.logistics.ui.screens.ScannerScreen
+import com.company.logistics.ui.screens.WorkspaceScreen
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsTypography
@@ -68,9 +70,11 @@ fun LogisticsApp(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
-    // 统一消息出口：成功 / 错误都走 Snackbar
+    // 已认证页面的成功 / 错误统一走 Snackbar；登录页保留错误文案，避免
+    // LaunchedEffect 在展示后立刻清掉登录失败或 refresh 失效提示。
     LaunchedEffect(state.message, state.error) {
-        val text = state.error ?: state.message
+        val text = state.message
+            ?: state.error.takeIf { state.authState is AuthState.Authenticated }
         if (text != null) {
             snackbar.showSnackbar(text)
             viewModel.consumeMessage()
@@ -78,14 +82,23 @@ fun LogisticsApp(
     }
 
     LogisticsTheme {
-        if (!state.loggedIn) {
-            LoginScreen(
-                loading = state.loading,
-                errorMessage = state.error,
-                deviceId = remember { DeviceId.value },
-                onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
-            )
-            return@LogisticsTheme
+        when (state.authState) {
+            AuthState.Restoring -> {
+                RestoringSessionScreen()
+                return@LogisticsTheme
+            }
+
+            AuthState.Unauthenticated -> {
+                LoginScreen(
+                    loading = state.loading,
+                    errorMessage = state.error,
+                    deviceId = remember { DeviceId.value },
+                    onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
+                )
+                return@LogisticsTheme
+            }
+
+            is AuthState.Authenticated -> Unit
         }
 
         Scaffold(
@@ -139,6 +152,16 @@ fun LogisticsApp(
                 }
 
                 when (state.screen) {
+                    Screen.WORKSPACE -> WorkspaceScreen(
+                        role = state.role,
+                        summary = state.workspaceSummary,
+                        orderStatus = state.orderStatus,
+                        onOpenScanner = { viewModel.navigate(Screen.SCANNER) },
+                        onOpenOrder = { viewModel.navigate(Screen.ORDER_DETAIL) },
+                        onOpenApproval = { viewModel.navigate(Screen.APPROVAL) },
+                        onOpenAudit = { viewModel.navigate(Screen.AUDIT) },
+                    )
+
                     Screen.SCANNER -> ScannerScreen(
                         viewModel = scannerViewModel,
                         role = state.role,
@@ -177,6 +200,11 @@ fun LogisticsApp(
 
                     Screen.APPROVAL -> ApprovalScreen(role = state.role)
 
+                    Screen.AUDIT -> AuditScreen(
+                        role = state.role,
+                        onBack = { viewModel.navigate(Screen.WORKSPACE) },
+                    )
+
                     Screen.INVENTORY -> InventoryScreen(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
                     )
@@ -205,6 +233,31 @@ fun LogisticsApp(
                 }
             }
         }
+    }
+}
+
+/** 冷启动读取加密会话期间的稳定页面，不让用户误以为需要重新登录。 */
+@Composable
+private fun RestoringSessionScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(LogisticsTheme.colors.pageBackground),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "正在恢复会话…",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = LogisticsTheme.colors.textPrimary,
+        )
+        Spacer(Modifier.height(Spacing.sm))
+        Text(
+            text = "正在读取本机安全存储中的登录状态",
+            fontSize = 13.sp,
+            color = LogisticsTheme.colors.textTertiary,
+        )
     }
 }
 
@@ -314,7 +367,7 @@ private fun BottomNavBar(
 /**
  * 设备标识。
  * 契约 1 节审计字段包含 deviceId，登录与写操作均需上报。
- * 生产实现应持久化到本地存储，此处为进程内单例。
+ * 由 MainActivity 从加密会话存储注入，保证登录与审计使用同一稳定设备标识。
  */
 object DeviceId {
     var value: String = "android-" + UUID.randomUUID().toString().take(16)

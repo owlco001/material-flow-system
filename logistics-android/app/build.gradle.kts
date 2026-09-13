@@ -65,4 +65,6 @@ dependencies {
     // 会话加密存储：refresh token 长效（30 天），必须落盘且加密。
     // 使用 Android Keystore 托管密钥的 AES-256-GCM。
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    testImplementation("junit:junit:4.13.2")
 }

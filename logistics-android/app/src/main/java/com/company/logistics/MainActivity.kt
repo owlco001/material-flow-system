@@ -56,8 +56,8 @@ class MainActivity : ComponentActivity() {
         val endpointStore = EndpointStore.get(applicationContext)
         ApiConfig.baseUrl = endpointStore.effectiveUrl
 
-        // 冷启动恢复会话：有 refresh token 则静默续期，用户不必每天重登
-        repository.restoreSession()
+        // 会话恢复由 LogisticsViewModel 驱动，并在 UI 中显式展示 Restoring 状态。
+        // 这里先完成地址与设备标识装配，避免恢复过程早于运行时配置。
         val scannerRepository = CameraXScannerRepository(
             context = applicationContext,
             api = repository.apiHandle

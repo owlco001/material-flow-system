@@ -8,8 +8,11 @@ import com.company.logistics.data.SyncReport
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.RoleWorkspaceSummary
+import com.company.logistics.model.RoleWorkspaceSummaryFactory
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
+import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +25,7 @@ import kotlinx.coroutines.launch
  */
 enum class Screen(val title: String) {
     LOGIN("登录"),
+    WORKSPACE("工作台"),
     SCANNER("扫码作业"),
     MATERIAL_DETAIL("物料详情"),
     ORDER_DETAIL("订单物料状态"),
@@ -29,13 +33,27 @@ enum class Screen(val title: String) {
     SUBMIT("提交流转"),
     QUEUE("离线暂存"),
     APPROVAL("待审批"),
+    AUDIT("审计记录"),
     INVENTORY("库存查询"),
     PROFILE("我的"),
     ENDPOINT_CONFIG("服务端配置")
 }
 
+/**
+ * 会话状态机。
+ *
+ * Restoring 是冷启动期间的显式状态，避免在持久化会话尚未读取时短暂显示登录页。
+ * Authenticated 只携带服务端登录返回的用户摘要；Unauthenticated 是唯一登录入口。
+ */
+sealed interface AuthState {
+    data object Restoring : AuthState
+    data class Authenticated(val user: User, val mustChangePassword: Boolean = false) : AuthState
+    data object Unauthenticated : AuthState
+}
+
 /** 底部导航项 —— 图标用具名语义符号，避免引入图标库依赖 */
 enum class NavTab(val label: String, val symbol: String, val screen: Screen) {
+    WORKSPACE("工作台", "⌂", Screen.WORKSPACE),
     SCAN("扫码", "⊞", Screen.SCANNER),
     ORDER("订单", "☰", Screen.ORDER_DETAIL),
     INVENTORY("库存", "▤", Screen.INVENTORY),
@@ -48,10 +66,7 @@ enum class NavTab(val label: String, val symbol: String, val screen: Screen) {
  * 全局 UI 状态。
  */
 data class LogisticsUiState(
-    val loggedIn: Boolean = false,
-    val currentUser: String = "",
-    val role: UserRole = UserRole.OPERATOR,
-    val mustChangePassword: Boolean = false,
+    val authState: AuthState = AuthState.Restoring,
 
     val screen: Screen = Screen.LOGIN,
     val navTabs: List<NavTab> = emptyList(),
@@ -64,6 +79,7 @@ data class LogisticsUiState(
     val lastScan: ScanResult? = null,
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
+    val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
 
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
@@ -73,7 +89,15 @@ data class LogisticsUiState(
     // 提交表单
     val formQuantity: Int = 0,
     val formLocation: String? = null
-)
+) {
+    val loggedIn: Boolean get() = authState is AuthState.Authenticated
+    val currentUser: String
+        get() = (authState as? AuthState.Authenticated)?.user?.displayName.orEmpty()
+    val role: UserRole
+        get() = (authState as? AuthState.Authenticated)?.user?.role ?: UserRole.OPERATOR
+    val mustChangePassword: Boolean
+        get() = (authState as? AuthState.Authenticated)?.mustChangePassword ?: false
+}
 
 /**
  * 主 ViewModel —— 承载会话、路由、扫码流程与离线队列。
@@ -86,11 +110,30 @@ class LogisticsViewModel(
     val state: StateFlow<LogisticsUiState> = _state.asStateFlow()
 
     init {
-        repo.onSessionExpired = { _state.value = LogisticsUiState(error = "登录已失效，请重新登录") }
-        repo.persistedUser()?.let { user ->
-            _state.value = LogisticsUiState(loggedIn = true, currentUser = user.displayName,
-                role = user.role, mustChangePassword = user.mustChangePassword,
-                navTabs = tabsFor(user.role), screen = defaultScreenFor(user.role))
+        repo.onSessionExpired = {
+            _state.value = LogisticsUiState(
+                authState = AuthState.Unauthenticated,
+                error = "登录已失效，请重新登录"
+            )
+        }
+        // restoreSession 会读取加密摘要并把 token 对恢复到 API。放进协程后，UI 能明确经历
+        // Restoring，而不是在 ViewModel 构造的同一帧里错误地落到登录页。
+        viewModelScope.launch {
+            repo.restoreSession()
+            val persisted = repo.persistedUser()
+            _state.update {
+                if (persisted == null) {
+                    it.copy(authState = AuthState.Unauthenticated)
+                } else {
+                    val user = persisted.toUser()
+                    it.copy(
+                        authState = AuthState.Authenticated(user, persisted.mustChangePassword),
+                        navTabs = tabsFor(user.role),
+                        screen = defaultScreenFor(user.role),
+                        workspaceSummary = RoleWorkspaceSummaryFactory.from(user.role, null)
+                    )
+                }
+            }
         }
         // 队列变化实时反映到 UI
         viewModelScope.launch {
@@ -118,12 +161,10 @@ class LogisticsViewModel(
                 .onSuccess { result ->
                     _state.update {
                         it.copy(
-                            loggedIn = true,
-                            currentUser = result.user.displayName,
-                            role = result.user.role,
-                            mustChangePassword = result.mustChangePassword,
+                            authState = AuthState.Authenticated(result.user, result.mustChangePassword),
                             navTabs = tabsFor(result.user.role),
                             screen = defaultScreenFor(result.user.role),
+                            workspaceSummary = RoleWorkspaceSummaryFactory.from(result.user.role, null),
                             loading = false,
                             message = "登录成功"
                         )
@@ -137,12 +178,18 @@ class LogisticsViewModel(
 
     fun logout() {
         repo.logout()
-        _state.value = LogisticsUiState()
+        _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
     }
 
     // ==================== 路由 ====================
 
-    fun navigate(screen: Screen) = _state.update { it.copy(screen = screen, error = null) }
+    fun navigate(screen: Screen) = _state.update {
+        if (!canNavigate(it.role, screen)) {
+            it.copy(error = "当前角色无权访问该页面")
+        } else {
+            it.copy(screen = screen, error = null)
+        }
+    }
 
     fun consumeMessage() = _state.update { it.copy(message = null, error = null) }
 
@@ -219,6 +266,7 @@ class LogisticsViewModel(
                 _state.update {
                     it.copy(
                         orderStatus = status,
+                        workspaceSummary = RoleWorkspaceSummaryFactory.from(it.role, status),
                         screen = Screen.ORDER_DETAIL,
                         loading = false,
                         message = "订单状态已更新"
@@ -318,13 +366,28 @@ class LogisticsViewModel(
     companion object {
         /** 按角色生成底部导航 —— 无权限入口不渲染 */
         fun tabsFor(role: UserRole): List<NavTab> = when (role) {
-            UserRole.OPERATOR -> listOf(NavTab.SCAN, NavTab.ORDER, NavTab.QUEUE, NavTab.PROFILE)
-            UserRole.MATERIAL -> listOf(NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.QUEUE, NavTab.PROFILE)
-            UserRole.WAREHOUSE_ADMIN -> listOf(NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.QUEUE)
-            UserRole.ADMIN -> listOf(NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.PROFILE)
+            UserRole.OPERATOR -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.QUEUE, NavTab.PROFILE)
+            UserRole.MATERIAL -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.QUEUE, NavTab.PROFILE)
+            UserRole.WAREHOUSE_ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.QUEUE)
+            UserRole.ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.PROFILE)
         }
 
         /** 角色的默认落地页 */
-        fun defaultScreenFor(role: UserRole): Screen = Screen.SCANNER
+        fun defaultScreenFor(role: UserRole): Screen = Screen.WORKSPACE
+
+        /** UI 路由收敛；服务端仍是最终鉴权来源。 */
+        fun canNavigate(role: UserRole, screen: Screen): Boolean = when (screen) {
+            Screen.APPROVAL -> role.canApprove
+            Screen.AUDIT -> role.canAdmin
+            Screen.LOGIN -> false
+            else -> true
+        }
     }
 }
+
+private fun com.company.logistics.data.SessionStore.UserSummary.toUser(): User = User(
+    id = id,
+    username = username,
+    displayName = displayName,
+    role = role
+)

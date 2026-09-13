@@ -277,10 +277,41 @@ data class OrderMaterialItem(
     val statusCode: MaterialStatusCode,
     val label: String,
     /** 服务端下发的颜色 token，客户端不得只依赖颜色 */
-    val colorToken: String
+    val colorToken: String,
+    /** 原始服务端状态码。保留未知值，避免错误地把新状态显示成缺货或成功。 */
+    val serverStatusCode: String? = null,
+    /** 工作台状态域字段；旧版订单响应没有这些字段时保持 null。 */
+    val workflowStatusCode: String? = null,
+    val workflowStatusLabel: String? = null,
+    val pickedQuantity: Int? = null,
+    val issuedQuantity: Int? = null,
+    val approvalStatusCode: String? = null,
+    val handoverStatusCode: String? = null,
+    val lastHandoverId: String? = null,
+    val currentOwnerUserId: String? = null,
+    val currentOwnerName: String? = null,
+    val updatedAt: String? = null
 ) {
     /** 缺口数量 */
     val shortageQuantity: Int get() = (requiredQuantity - inStockQuantity).coerceAtLeast(0)
+
+    /** 服务端状态码；手工构造的旧模型继续使用既有枚举值。 */
+    val effectiveStatusCode: String
+        get() = workflowStatusCode?.takeIf { it.isNotBlank() }
+            ?: serverStatusCode?.takeIf { it.isNotBlank() }
+            ?: statusCode.code
+
+    /** 服务端状态标签；未知状态也必须保留服务端原文。 */
+    val effectiveStatusLabel: String
+        get() = label.ifBlank {
+            when (serverStatusCode?.uppercase(java.util.Locale.ROOT)) {
+                "OUT_OF_STOCK" -> MaterialStatusCode.OUT_OF_STOCK.label
+                "ARRIVED" -> MaterialStatusCode.ARRIVED.label
+                "IN_STOCK" -> MaterialStatusCode.IN_STOCK.label
+                null -> statusCode.label
+                else -> "未知状态"
+            }
+        }
 }
 
 /** 生产订单物料状态聚合 —— 契约 4.3 */
@@ -300,6 +331,113 @@ data class OrderMaterialStatus(
 
     /** 缺料物料数量 */
     val shortageCount: Int get() = items.count { it.statusCode == MaterialStatusCode.OUT_OF_STOCK }
+}
+
+/** 工作台上的可用性与计数。count 为 null 表示服务端当前没有提供该状态域数据。 */
+data class WorkspaceMetric(
+    val count: Int?,
+    val available: Boolean
+) {
+    companion object {
+        fun unavailable() = WorkspaceMetric(count = null, available = false)
+        fun of(count: Int) = WorkspaceMetric(count = count, available = true)
+    }
+}
+
+/** 工作台摘要入口对应的业务指标。 */
+enum class WorkspaceMetricKey(val label: String, val description: String) {
+    CLAIMED("已领取", "服务端确认的领取记录"),
+    AT_STATION("已到机台", "服务端确认目标机台的交接"),
+    OUTBOUND_PENDING("待出库", "服务端返回的待出库状态"),
+    OUTBOUND_CONFIRMED("已出库", "服务端返回的已出库状态"),
+    PENDING_APPROVAL("待审批", "服务端返回的审批状态"),
+    PENDING_HANDOVER("待交接", "服务端返回的交接状态"),
+    ALL("全量物料", "当前订单接口返回的全部物料项"),
+    EXCEPTION("异常", "服务端明确标记的异常项"),
+    AUDIT("审计记录", "服务端审计接口返回的记录")
+}
+
+/**
+ * 角色工作台摘要。
+ *
+ * 该模型不保存客户端推导出的业务状态。没有服务端字段时使用 unavailable，
+ * UI 会显示“—”，而不是把库存或订单条数冒充领取、审批或审计数据。
+ */
+data class RoleWorkspaceSummary(
+    val role: UserRole,
+    val sourceOrderNo: String?,
+    val serverTime: String?,
+    val metrics: Map<WorkspaceMetricKey, WorkspaceMetric>
+) {
+    fun metric(key: WorkspaceMetricKey): WorkspaceMetric =
+        metrics[key] ?: WorkspaceMetric.unavailable()
+
+    companion object {
+        fun empty(role: UserRole): RoleWorkspaceSummary = RoleWorkspaceSummary(
+            role = role,
+            sourceOrderNo = null,
+            serverTime = null,
+            metrics = emptyMap()
+        )
+    }
+}
+
+/** 从既有订单物料响应生成摘要；不调用新后端接口，也不推断缺失状态。 */
+object RoleWorkspaceSummaryFactory {
+    private val workflowStatusCodes = setOf(
+        "PICKED_UP", "AT_STATION", "OUTBOUND_PENDING", "OUTBOUND_APPROVED",
+        "OUTBOUND_CONFIRMED", "EXCEPTION"
+    )
+
+    fun from(role: UserRole, status: OrderMaterialStatus?): RoleWorkspaceSummary {
+        if (status == null) return RoleWorkspaceSummary.empty(role)
+
+        val items = status.items
+        // 订单的库存状态（OUT_OF_STOCK / ARRIVED / IN_STOCK）不能冒充工作流状态。
+        // 只有服务端明确返回独立 workflowStatusCode，才纳入工作台计数。
+        fun workspaceStatus(item: OrderMaterialItem): String? =
+            item.workflowStatusCode
+                ?.uppercase(java.util.Locale.ROOT)
+                ?.takeIf { it in workflowStatusCodes }
+
+        val workflowItems = items.filter { workspaceStatus(it) != null }
+        val workflowAvailable = workflowItems.isNotEmpty()
+        val approvalAvailable = items.any { !it.approvalStatusCode.isNullOrBlank() }
+        val handoverAvailable = items.any { !it.handoverStatusCode.isNullOrBlank() }
+
+        fun workflow(code: String): WorkspaceMetric =
+            if (workflowAvailable) WorkspaceMetric.of(
+                workflowItems.count { workspaceStatus(it).equals(code, ignoreCase = true) }
+            ) else WorkspaceMetric.unavailable()
+
+        fun approval(code: String): WorkspaceMetric =
+            if (approvalAvailable) WorkspaceMetric.of(
+                items.count { it.approvalStatusCode.equals(code, ignoreCase = true) }
+            ) else WorkspaceMetric.unavailable()
+
+        fun handover(code: String): WorkspaceMetric =
+            if (handoverAvailable) WorkspaceMetric.of(
+                items.count { it.handoverStatusCode.equals(code, ignoreCase = true) }
+            ) else WorkspaceMetric.unavailable()
+
+        return RoleWorkspaceSummary(
+            role = role,
+            sourceOrderNo = status.documentNo,
+            serverTime = status.serverTime,
+            metrics = mapOf(
+                WorkspaceMetricKey.CLAIMED to workflow("PICKED_UP"),
+                WorkspaceMetricKey.AT_STATION to workflow("AT_STATION"),
+                WorkspaceMetricKey.OUTBOUND_PENDING to workflow("OUTBOUND_PENDING"),
+                WorkspaceMetricKey.OUTBOUND_CONFIRMED to workflow("OUTBOUND_CONFIRMED"),
+                WorkspaceMetricKey.PENDING_APPROVAL to approval("PENDING_APPROVAL"),
+                WorkspaceMetricKey.PENDING_HANDOVER to handover("PENDING"),
+                WorkspaceMetricKey.ALL to WorkspaceMetric.of(items.size),
+                WorkspaceMetricKey.EXCEPTION to workflow("EXCEPTION"),
+                // 审计记录没有出现在订单物料响应中，必须保持不可用。
+                WorkspaceMetricKey.AUDIT to WorkspaceMetric.unavailable()
+            )
+        )
+    }
 }
 
 /** 扫码解析结果 —— 契约 4.2 */

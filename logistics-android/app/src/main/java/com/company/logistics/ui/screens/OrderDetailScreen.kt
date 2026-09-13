@@ -286,7 +286,7 @@ private fun OrderMaterialRow(item: OrderMaterialItem) {
             )
             Spacer(Modifier.weight(1f))
             StatusTag(
-                label = item.label,
+                label = item.effectiveStatusLabel,
                 color = statusColor,
                 containerColor = item.statusCode.containerColor,
                 symbol = item.statusCode.symbol

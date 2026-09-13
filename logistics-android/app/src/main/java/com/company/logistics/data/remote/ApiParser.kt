@@ -98,7 +98,19 @@ object ApiParser {
         val arr = root.optJSONArray("items") ?: JSONArray()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val label = o.optString("label")
+            val serverStatusCode = o.optString("statusCode")
+                .takeIf { it.isNotBlank() && it != "null" }
+            val label = o.optString("statusLabel")
+                .takeIf { it.isNotBlank() && it != "null" }
+                ?: o.optString("label")
+                    .takeIf { it.isNotBlank() && it != "null" }
+                ?: when (serverStatusCode?.uppercase(java.util.Locale.ROOT)) {
+                    "OUT_OF_STOCK" -> MaterialStatusCode.OUT_OF_STOCK.label
+                    "ARRIVED" -> MaterialStatusCode.ARRIVED.label
+                    "IN_STOCK" -> MaterialStatusCode.IN_STOCK.label
+                    null -> ""
+                    else -> "未知状态"
+                }
             items += OrderMaterialItem(
                 deviceId = o.optString("deviceId").takeIf { it.isNotBlank() },
                 deviceType = o.optString("deviceType").takeIf { it.isNotBlank() },
@@ -110,9 +122,22 @@ object ApiParser {
                 requiredQuantity = o.optInt("requiredQuantity"),
                 arrivedQuantity = o.optInt("arrivedQuantity"),
                 inStockQuantity = o.optInt("inStockQuantity"),
-                statusCode = MaterialStatusCode.from(o.optString("statusCode"), label),
+                statusCode = MaterialStatusCode.from(serverStatusCode, label),
                 label = label,
-                colorToken = o.optString("colorToken")
+                colorToken = o.optString("colorToken"),
+                serverStatusCode = serverStatusCode,
+                workflowStatusCode = nullableString(o, "workflowStatusCode")
+                    ?: nullableString(o, "workStatusCode"),
+                workflowStatusLabel = nullableString(o, "workflowStatusLabel")
+                    ?: nullableString(o, "workStatusLabel"),
+                pickedQuantity = nullableInt(o, "pickedQuantity"),
+                issuedQuantity = nullableInt(o, "issuedQuantity"),
+                approvalStatusCode = nullableString(o, "approvalStatus"),
+                handoverStatusCode = nullableString(o, "handoverStatus"),
+                lastHandoverId = nullableString(o, "lastHandoverId"),
+                currentOwnerUserId = nullableString(o, "currentOwnerUserId"),
+                currentOwnerName = nullableString(o, "currentOwnerName"),
+                updatedAt = nullableString(o, "updatedAt")
             )
         }
         return OrderMaterialStatus(
@@ -122,6 +147,12 @@ object ApiParser {
             serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
         )
     }
+
+    private fun nullableString(json: JSONObject, key: String): String? =
+        json.optString(key).takeIf { it.isNotBlank() && it != "null" }
+
+    private fun nullableInt(json: JSONObject, key: String): Int? =
+        if (json.has(key) && !json.isNull(key)) json.optInt(key) else null
 
     /** 契约 4.5 创建流转申请 —— 返回 requestId / status */
     fun parseTransferRequest(json: String): TransferRequestResult {
