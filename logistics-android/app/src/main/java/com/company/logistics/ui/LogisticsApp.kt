@@ -116,7 +116,8 @@ fun LogisticsApp(
                                 color = LogisticsTheme.colors.textPrimary
                             )
                             Text(
-                                "${state.currentUser} · ${state.role.label}",
+                                "${state.currentUser} · ${state.role.label}" +
+                                    if (state.preview) " · 测试预览，只读" else "",
                                 fontSize = 11.sp,
                                 color = LogisticsTheme.colors.textTertiary
                             )
@@ -154,7 +155,9 @@ fun LogisticsApp(
 
                 when (state.screen) {
                     Screen.WORKSPACE -> WorkspaceScreen(
-                        role = state.role,
+                        role = state.workspaceRole,
+                        authenticatedRole = state.role,
+                        previewRole = state.previewRole,
                         summary = state.workspaceSummary,
                         items = state.workspaceItems,
                         summaryState = state.workspaceSummaryState,
@@ -188,11 +191,14 @@ fun LogisticsApp(
                         onCreateHandover = { item, quantity, fromLocation, remark ->
                             viewModel.createHandover(item, quantity, fromLocation, remark)
                         },
+                        onEnterPreview = { viewModel.enterRolePreview(it) },
+                        onExitPreview = { viewModel.exitRolePreview() },
                     )
 
                     Screen.SCANNER -> ScannerScreen(
                         viewModel = scannerViewModel,
                         role = state.role,
+                        readOnly = state.preview,
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
                         onResolved = { viewModel.onScanned(it.normalizedValue) },
@@ -207,6 +213,7 @@ fun LogisticsApp(
                             MaterialDetailScreen(
                                 inventory = inv,
                                 loading = state.loading,
+                                readOnly = state.preview,
                                 onBack = { viewModel.navigate(Screen.SCANNER) },
                                 onInbound = { viewModel.submitInbound() },
                                 onBindLocation = { viewModel.navigate(Screen.LOCATION_BIND) }
@@ -222,12 +229,14 @@ fun LogisticsApp(
                     Screen.QUEUE -> QueueScreen(
                         queue = state.offlineQueue,
                         syncing = state.syncing,
+                        readOnly = state.preview,
                         onSync = { viewModel.syncNow() },
                         onClearSynced = { viewModel.clearSynced() }
                     )
 
                     Screen.APPROVAL -> ApprovalScreen(
                         role = state.role,
+                        readOnly = state.preview,
                         requests = state.transferRequests,
                         requestState = state.transferRequestState,
                         requestError = state.transferRequestError,

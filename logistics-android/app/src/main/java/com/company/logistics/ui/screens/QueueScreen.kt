@@ -53,6 +53,7 @@ import java.util.Locale
 fun QueueScreen(
     queue: List<OfflineOperation>,
     syncing: Boolean,
+    readOnly: Boolean = false,
     onSync: () -> Unit,
     onClearSynced: () -> Unit,
     modifier: Modifier = Modifier
@@ -113,14 +114,23 @@ fun QueueScreen(
                 text = if (syncing) "同步中…" else "立即同步",
                 onClick = onSync,
                 loading = syncing,
-                enabled = !syncing && (pending > 0 || conflicts > 0)
+                enabled = !readOnly && !syncing && (pending > 0 || conflicts > 0)
             )
             if (queue.any { it.status == SyncStatus.SYNCED }) {
                 VSpace(Spacing.sm)
                 SecondaryButton(
                     text = "清理已同步记录",
                     onClick = onClearSynced,
-                    enabled = !syncing
+                    enabled = !readOnly && !syncing
+                )
+            }
+            if (readOnly) {
+                VSpace(Spacing.sm)
+                Text(
+                    "测试预览只读，不能同步或清理离线写操作",
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.warning,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
         }

@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,7 @@ import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMetric
 import com.company.logistics.model.WorkspaceMetricKey
+import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
@@ -62,6 +64,8 @@ private data class WorkspaceEntry(
 @Composable
 fun WorkspaceScreen(
     role: UserRole,
+    authenticatedRole: UserRole,
+    previewRole: WorkspaceViewRole?,
     summary: RoleWorkspaceSummary,
     items: List<WorkspaceMaterialItem>,
     summaryState: WorkspaceLoadState,
@@ -91,11 +95,21 @@ fun WorkspaceScreen(
     onRetryTimeline: () -> Unit,
     onHandoverAction: (WorkspaceMaterialItem, HandoverAction, String?) -> Unit,
     onCreateHandover: (WorkspaceMaterialItem, Int, String, String?) -> Unit,
+    onEnterPreview: (WorkspaceViewRole) -> Unit,
+    onExitPreview: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val entries = entriesFor(role)
     var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
     var reasonRequest by remember { mutableStateOf<ReasonRequest?>(null) }
+    var selectorVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(previewRole) {
+        if (previewRole != null) {
+            createItem = null
+            reasonRequest = null
+        }
+    }
 
     Column(
         modifier = modifier
@@ -126,6 +140,34 @@ fun WorkspaceScreen(
                 containerColor = LogisticsTheme.colors.primaryContainer,
                 symbol = "●",
             )
+            if (AdminRolePreviewUiPolicy.canShowEntry(authenticatedRole)) {
+                VSpace(Spacing.sm)
+                if (previewRole == null) {
+                    SecondaryButton(
+                        text = "测试角色视图",
+                        onClick = { selectorVisible = true },
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            AdminRolePreviewUiPolicy.BANNER_TEXT,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 12.sp,
+                            color = LogisticsTheme.colors.warning,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.width(Spacing.sm))
+                        SecondaryButton(
+                            text = "恢复 ADMIN",
+                            onClick = onExitPreview,
+                            modifier = Modifier.width(112.dp),
+                        )
+                    }
+                }
+            }
         }
 
         VSpace(Spacing.md)
@@ -197,6 +239,7 @@ fun WorkspaceScreen(
                             timelineState = timelineState,
                             timelineError = timelineError,
                             handoverSubmittingId = handoverSubmittingId,
+                            readOnly = previewRole != null,
                             onOpenTimeline = onOpenTimeline,
                             onRetryTimeline = onRetryTimeline,
                             onHandoverAction = { action ->
@@ -218,6 +261,7 @@ fun WorkspaceScreen(
                         onPrevious = onPreviousPage,
                         onNext = onNextPage,
                         enabled = itemsState != WorkspaceLoadState.LOADING,
+                        readOnly = previewRole != null,
                         onPageSizeChange = onPageSizeChange,
                     )
                 }
@@ -249,6 +293,47 @@ fun WorkspaceScreen(
             },
         )
     }
+
+    if (selectorVisible) {
+        AdminRolePreviewDialog(
+            onDismiss = { selectorVisible = false },
+            onSelect = { selectedRole ->
+                selectorVisible = false
+                onEnterPreview(selectedRole)
+            },
+        )
+    }
+}
+
+@Composable
+private fun AdminRolePreviewDialog(
+    onDismiss: () -> Unit,
+    onSelect: (WorkspaceViewRole) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择测试角色视图") },
+        text = {
+            Column {
+                Text(
+                    AdminRolePreviewUiPolicy.BANNER_TEXT,
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.warning,
+                )
+                VSpace(Spacing.sm)
+                WorkspaceViewRole.entries.forEach { role ->
+                    TextButton(
+                        onClick = { onSelect(role) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(role.label, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -356,6 +441,7 @@ private fun WorkspaceItemCard(
     timelineState: WorkspaceLoadState,
     timelineError: String?,
     handoverSubmittingId: String?,
+    readOnly: Boolean,
     onOpenTimeline: (WorkspaceMaterialItem) -> Unit,
     onRetryTimeline: () -> Unit,
     onHandoverAction: (HandoverAction) -> Unit,
@@ -441,7 +527,7 @@ private fun WorkspaceItemCard(
                     PrimaryButton(
                         text = "发起交接",
                         onClick = onCreateHandover,
-                        enabled = handoverSubmittingId == null,
+                        enabled = AdminRolePreviewUiPolicy.actionsEnabled(readOnly) && handoverSubmittingId == null,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -449,7 +535,7 @@ private fun WorkspaceItemCard(
                     SecondaryButton(
                         text = action.label,
                         onClick = { onHandoverAction(action) },
-                        enabled = handoverSubmittingId == null,
+                        enabled = AdminRolePreviewUiPolicy.actionsEnabled(readOnly) && handoverSubmittingId == null,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -613,6 +699,7 @@ private fun WorkspacePager(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     enabled: Boolean,
+    readOnly: Boolean,
     onPageSizeChange: (Int) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -625,7 +712,7 @@ private fun WorkspacePager(
                     SecondaryButton(
                         text = "$size/页",
                         onClick = { onPageSizeChange(size) },
-                        enabled = enabled && pageSize != size,
+                        enabled = enabled && !readOnly && pageSize != size,
                         modifier = Modifier.width(64.dp),
                     )
                     if (size == 20) Spacer(Modifier.width(4.dp))

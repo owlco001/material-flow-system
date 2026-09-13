@@ -47,6 +47,7 @@ import com.company.logistics.ui.theme.Spacing
 fun MaterialDetailScreen(
     inventory: MaterialInventory,
     loading: Boolean,
+    readOnly: Boolean = false,
     onBack: () -> Unit,
     onInbound: () -> Unit,
     onBindLocation: () -> Unit,
@@ -233,14 +234,25 @@ fun MaterialDetailScreen(
             text = "提交入库申请",
             onClick = onInbound,
             loading = loading,
-            enabled = inv.availableQuantity > 0 || inv.totalQuantity >= 0
+            enabled = !readOnly && (inv.availableQuantity > 0 || inv.totalQuantity >= 0)
         )
         VSpace(Spacing.sm)
         SecondaryButton(
             text = "绑定库位",
             onClick = onBindLocation,
-            enabled = !loading
+            enabled = !readOnly && !loading
         )
+
+        if (readOnly) {
+            VSpace(Spacing.sm)
+            Text(
+                "测试预览只读，不能提交入库或绑定库位",
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = 12.sp,
+                color = LogisticsTheme.colors.warning,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
 
         VSpace(Spacing.sm)
         Text(

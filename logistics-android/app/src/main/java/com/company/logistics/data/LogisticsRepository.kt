@@ -18,6 +18,8 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.SyncStatus
 import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceSummary
+import com.company.logistics.model.WorkspaceViewRole
+import com.company.logistics.model.RoleWorkspaceRepository
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
 import kotlinx.coroutines.CancellationException
@@ -40,12 +42,15 @@ open class LogisticsRepository(
     private val api: MaterialFlowApi,
     private val dao: OfflineOperationDao,
     private val sessionStore: SessionStore? = null
-) {
+) : RoleWorkspaceRepository {
     var onSessionExpired: (() -> Unit)? = null
 
     // Only a remembered login may write rotated tokens to disk.
     @Volatile
     private var persistSession = false
+
+    @Volatile
+    private var authenticatedRole: com.company.logistics.model.UserRole? = null
 
     /**
      * 契约 API 句柄。
@@ -76,6 +81,7 @@ open class LogisticsRepository(
 
     open suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
+        authenticatedRole = result.user.role
         val canPersistSession = remember && sessionStore?.encrypted == true
         persistSession = canPersistSession
         if (canPersistSession) {
@@ -90,6 +96,7 @@ open class LogisticsRepository(
 
     fun logout() {
         persistSession = false
+        authenticatedRole = null
         api.updateToken(null)
         sessionStore?.clear()
     }
@@ -104,6 +111,7 @@ open class LogisticsRepository(
             // 本地会话仍需清除；网络失败不阻止退出。
         }
         persistSession = false
+        authenticatedRole = null
         sessionStore?.clear()
     }
 
@@ -128,6 +136,7 @@ open class LogisticsRepository(
             return false
         }
         persistSession = true
+        authenticatedRole = store.userSummary()?.role
         api.restoreSession(
             access = access,
             refresh = refresh,
@@ -167,6 +176,25 @@ open class LogisticsRepository(
         api.workspaceSummary()
     }
 
+    /** Reads a role projection without changing the authenticated session role. */
+    override open suspend fun loadRoleSummary(
+        viewRole: WorkspaceViewRole?,
+        requestId: String,
+    ): Result<WorkspaceSummary> {
+        if (viewRole != null && authenticatedRole != com.company.logistics.model.UserRole.ADMIN) {
+            return Result.failure(
+                ApiException(403, "ROLE_PREVIEW_ADMIN_ONLY", "只有 ADMIN 可以预览测试角色工作台")
+            )
+        }
+        return resultOf {
+            api.workspaceSummary(
+                viewRole = viewRole,
+                requestId = requestId,
+                clientOperationId = UUID.randomUUID().toString(),
+            )
+        }
+    }
+
     /**
      * 读取服务端角色工作项的一个分页。
      * pageSize 由 API 层限制为 20/50，仓储层不缓存或拼接全量列表。
@@ -178,6 +206,33 @@ open class LogisticsRepository(
         pageSize: Int = 20
     ): Result<WorkspaceMaterialItemsPage> = resultOf {
         api.workspaceMaterialItems(status, orderNo, page, pageSize)
+    }
+
+    /** Lists only the current page of a role projection; preview remains read-only. */
+    override suspend fun listWorkItems(
+        viewRole: WorkspaceViewRole?,
+        status: String?,
+        orderNo: String?,
+        page: Int,
+        pageSize: Int,
+        requestId: String,
+    ): Result<WorkspaceMaterialItemsPage> {
+        if (viewRole != null && authenticatedRole != com.company.logistics.model.UserRole.ADMIN) {
+            return Result.failure(
+                ApiException(403, "ROLE_PREVIEW_ADMIN_ONLY", "只有 ADMIN 可以预览测试角色工作台")
+            )
+        }
+        return resultOf {
+            api.workspaceMaterialItems(
+                status = status,
+                orderNo = orderNo,
+                page = page,
+                pageSize = pageSize,
+                viewRole = viewRole,
+                requestId = requestId,
+                clientOperationId = UUID.randomUUID().toString(),
+            )
+        }
     }
 
     /** 读取服务端流转申请列表；status 过滤交给服务端，避免客户端状态漂移。 */

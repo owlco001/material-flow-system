@@ -10,6 +10,7 @@ import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
+import com.company.logistics.model.WorkspaceViewRole
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,7 +33,7 @@ import java.util.UUID
  * 说明：V1 使用 HttpURLConnection + org.json，保持与既有工程一致的零额外依赖策略；
  *      如需替换为 Retrofit/OkHttp，只需保持本类的方法签名不变。
  */
-class MaterialFlowApi(
+open class MaterialFlowApi(
     private val config: ApiConfig = ApiConfig
 ) {
 
@@ -165,7 +166,7 @@ class MaterialFlowApi(
 
     // ==================== 4.1 登录 ====================
 
-    suspend fun login(
+    open suspend fun login(
         username: String,
         password: String,
         deviceId: String,
@@ -221,10 +222,21 @@ class MaterialFlowApi(
 
     // ==================== 4.3 工作台 ====================
 
-    /** 读取当前登录角色的服务端工作台摘要。 */
-    suspend fun workspaceSummary() = withContext(Dispatchers.IO) {
+    /** 读取当前登录角色或 ADMIN 预览角色的服务端工作台摘要。 */
+    open suspend fun workspaceSummary(
+        viewRole: WorkspaceViewRole? = null,
+        requestId: String? = null,
+        clientOperationId: String? = null,
+    ) = withContext(Dispatchers.IO) {
+        val query = viewRole?.let { "?viewRole=${encodeQuery(it.code)}" }.orEmpty()
         ApiParser.parseWorkspaceSummary(
-            request("GET", "/api/v1/workspace/summary", null)
+            request(
+                "GET",
+                "/api/v1/workspace/summary$query",
+                null,
+                requestId = requestId,
+                clientOperationId = clientOperationId,
+            )
         )
     }
 
@@ -233,22 +245,32 @@ class MaterialFlowApi(
      *
      * 只允许产品约束中的 20/50 页大小；调用方必须通过分页读取，不能请求全量数据。
      */
-    suspend fun workspaceMaterialItems(
+    open suspend fun workspaceMaterialItems(
         status: String? = null,
         orderNo: String? = null,
         page: Int = 1,
-        pageSize: Int = 20
+        pageSize: Int = 20,
+        viewRole: WorkspaceViewRole? = null,
+        requestId: String? = null,
+        clientOperationId: String? = null,
     ) = withContext(Dispatchers.IO) {
         require(page >= 1) { "page 必须从 1 开始" }
         require(pageSize == 20 || pageSize == 50) { "pageSize 只能是 20 或 50" }
         val query = buildList {
             status?.takeIf { it.isNotBlank() }?.let { add("status=${encodeQuery(it)}") }
             orderNo?.takeIf { it.isNotBlank() }?.let { add("orderNo=${encodeQuery(it)}") }
+            viewRole?.let { add("viewRole=${encodeQuery(it.code)}") }
             add("page=$page")
             add("pageSize=$pageSize")
         }.joinToString("&")
         ApiParser.parseWorkspaceMaterialItems(
-            request("GET", "/api/v1/workspace/material-items?$query", null)
+            request(
+                "GET",
+                "/api/v1/workspace/material-items?$query",
+                null,
+                requestId = requestId,
+                clientOperationId = clientOperationId,
+            )
         )
     }
 
@@ -521,7 +543,9 @@ class MaterialFlowApi(
         body: String?,
         auth: Boolean = true,
         idempotencyKey: String? = null,
-        allowRetry: Boolean = true
+        allowRetry: Boolean = true,
+        requestId: String? = null,
+        clientOperationId: String? = null,
     ): String = withContext(Dispatchers.IO) {
         val token = if (auth) requireToken() else null
         val conn = openConnection(path, method)
@@ -530,7 +554,8 @@ class MaterialFlowApi(
             conn.setRequestProperty("Authorization", "Bearer $token")
         }
         // 契约：所有请求携带 X-Request-Id；写操作额外携带幂等键。
-        conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
+        conn.setRequestProperty("X-Request-Id", requestId ?: UUID.randomUUID().toString())
+        clientOperationId?.let { conn.setRequestProperty("X-Client-Operation-Id", it) }
         if (method != "GET") {
             conn.setRequestProperty("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
         }
@@ -548,7 +573,16 @@ class MaterialFlowApi(
         if (code == 401 && auth && allowRetry) {
             when (refreshAccessToken()) {
                 RefreshOutcome.REFRESHED -> {
-                    return@withContext request(method, path, body, auth, idempotencyKey, allowRetry = false)
+                    return@withContext request(
+                        method = method,
+                        path = path,
+                        body = body,
+                        auth = auth,
+                        idempotencyKey = idempotencyKey,
+                        allowRetry = false,
+                        requestId = requestId,
+                        clientOperationId = clientOperationId,
+                    )
                 }
                 RefreshOutcome.RETRYABLE_FAILURE -> {
                     // Keep the old token pair. A later user retry can attempt refresh again.

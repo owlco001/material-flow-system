@@ -22,6 +22,10 @@ import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.ServerWorkspaceSummaryFactory
+import com.company.logistics.model.AdminRolePreviewController
+import com.company.logistics.model.InMemoryAdminRolePreviewController
+import com.company.logistics.model.WorkspaceQueryContext
+import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestAction
 import com.company.logistics.model.TransferRequestActionPolicy
@@ -32,6 +36,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -104,6 +109,7 @@ data class LogisticsUiState(
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
+    val previewRole: WorkspaceViewRole? = null,
     val workspaceSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val workspaceSummaryError: String? = null,
     val workspaceSummaryUnavailable: Boolean = false,
@@ -162,6 +168,10 @@ data class LogisticsUiState(
         get() = (authState as? AuthState.Authenticated)?.user?.id
     val role: UserRole
         get() = (authState as? AuthState.Authenticated)?.user?.role ?: UserRole.OPERATOR
+    val workspaceRole: UserRole
+        get() = previewRole?.toUserRole() ?: role
+    val preview: Boolean
+        get() = previewRole != null
     val mustChangePassword: Boolean
         get() = (authState as? AuthState.Authenticated)?.mustChangePassword ?: false
 
@@ -186,7 +196,9 @@ data class LogisticsUiState(
  */
 class LogisticsViewModel(
     private val repo: LogisticsRepository,
-    private val injectedScope: CoroutineScope? = null
+    private val injectedScope: CoroutineScope? = null,
+    private val previewControllerFactory: (UserRole) -> AdminRolePreviewController =
+        ::InMemoryAdminRolePreviewController,
 ) : ViewModel() {
 
     private val operationScope: CoroutineScope
@@ -199,6 +211,9 @@ class LogisticsViewModel(
     private var transferRequestLoadGeneration = 0L
     private var transferRequestDetailGeneration = 0L
     private var auditLoadGeneration = 0L
+    private var workspaceLoadGeneration = 0L
+    private var workspaceLoadJob: Job? = null
+    private var previewController: AdminRolePreviewController? = null
     @Volatile
     private var sessionGeneration = 0L
 
@@ -215,14 +230,17 @@ class LogisticsViewModel(
             if (restoreGeneration != sessionGeneration) return@launch
             _state.update {
                 if (persisted == null) {
+                    previewController = null
                     it.copy(authState = AuthState.Unauthenticated)
                 } else {
                     val user = persisted.toUser()
+                    previewController = previewControllerFactory(user.role)
                     it.copy(
                         authState = AuthState.Authenticated(user, persisted.mustChangePassword),
                         navTabs = tabsFor(user.role),
                         screen = defaultScreenFor(user.role),
                         workspaceSummary = RoleWorkspaceSummaryFactory.from(user.role, null),
+                        previewRole = null,
                         workspaceSummaryState = WorkspaceLoadState.IDLE,
                         workspaceItemsState = WorkspaceLoadState.IDLE
                     )
@@ -258,12 +276,14 @@ class LogisticsViewModel(
             resultOf { repo.login(username, password, deviceId, remember) }
                 .onSuccess { result ->
                     if (loginGeneration != sessionGeneration) return@onSuccess
+                    previewController = previewControllerFactory(result.user.role)
                     _state.update {
                         it.copy(
                             authState = AuthState.Authenticated(result.user, result.mustChangePassword),
                             navTabs = tabsFor(result.user.role),
                             screen = defaultScreenFor(result.user.role),
                             workspaceSummary = RoleWorkspaceSummaryFactory.from(result.user.role, null),
+                            previewRole = null,
                             loading = false,
                             message = "登录成功"
                         )
@@ -287,6 +307,8 @@ class LogisticsViewModel(
 
     fun logout() {
         sessionGeneration++
+        cancelWorkspaceLoad()
+        previewController = null
         repo.logout()
         _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
     }
@@ -298,6 +320,8 @@ class LogisticsViewModel(
     private fun expireSession() {
         if (!_state.value.loggedIn) return
         sessionGeneration++
+        cancelWorkspaceLoad()
+        previewController = null
         repo.logout()
         _state.value = LogisticsUiState(
             authState = AuthState.Unauthenticated,
@@ -325,6 +349,85 @@ class LogisticsViewModel(
 
     // ==================== 工作台 ====================
 
+    /** Enters a read-only workspace projection while keeping AuthState.role as ADMIN. */
+    fun enterRolePreview(role: WorkspaceViewRole): Result<Unit> {
+        val current = _state.value
+        if (!current.loggedIn || current.role != UserRole.ADMIN) {
+            val failure = Result.failure<Unit>(IllegalStateException("只有 ADMIN 可以进入测试角色视图"))
+            _state.update { it.copy(error = failure.exceptionOrNull()?.message) }
+            return failure
+        }
+        val controller = previewController ?: previewControllerFactory(current.role).also {
+            previewController = it
+        }
+        val result = controller.enterPreview(role)
+        result.onSuccess {
+            cancelWorkspaceLoad()
+            _state.update {
+                it.copy(
+                    previewRole = role,
+                    workspaceSummary = RoleWorkspaceSummary.empty(role.toUserRole()),
+                    workspaceSummaryState = WorkspaceLoadState.IDLE,
+                    workspaceSummaryError = null,
+                    workspaceSummaryUnavailable = false,
+                    workspaceItems = emptyList(),
+                    workspaceItemsState = WorkspaceLoadState.IDLE,
+                    workspaceItemsError = null,
+                    workspaceItemsUnavailable = false,
+                    workspacePage = 1,
+                    workspaceTotal = 0,
+                    workspaceTotalPages = 0,
+                    workspaceServerTime = null,
+                    message = "已切换到${role.label}测试视图",
+                    error = null,
+                )
+            }
+            loadWorkspacePage(resetToFirstPage = true)
+        }.onFailure { error ->
+            _state.update { it.copy(error = error.message ?: "无法进入测试角色视图") }
+        }
+        return result.map { Unit }
+    }
+
+    /** Leaves preview and reloads the real ADMIN workspace without logging out. */
+    fun exitRolePreview(): Result<Unit> {
+        val current = _state.value
+        val result = previewController?.exitPreview()
+            ?: Result.success(
+                WorkspaceQueryContext(
+                    authenticatedRole = current.role,
+                    viewRole = WorkspaceViewRole.from(current.role),
+                    preview = false,
+                )
+            )
+        result.onSuccess {
+            cancelWorkspaceLoad()
+            _state.update {
+                it.copy(
+                    previewRole = null,
+                    workspaceSummary = RoleWorkspaceSummary.empty(it.role),
+                    workspaceSummaryState = WorkspaceLoadState.IDLE,
+                    workspaceSummaryError = null,
+                    workspaceSummaryUnavailable = false,
+                    workspaceItems = emptyList(),
+                    workspaceItemsState = WorkspaceLoadState.IDLE,
+                    workspaceItemsError = null,
+                    workspaceItemsUnavailable = false,
+                    workspacePage = 1,
+                    workspaceTotal = 0,
+                    workspaceTotalPages = 0,
+                    workspaceServerTime = null,
+                    message = "已恢复管理员工作台",
+                    error = null,
+                )
+            }
+            if (_state.value.loggedIn) loadWorkspacePage(resetToFirstPage = true)
+        }.onFailure { error ->
+            _state.update { it.copy(error = error.message ?: "无法退出测试角色视图") }
+        }
+        return result.map { Unit }
+    }
+
     /** 刷新服务端摘要与第一页工作项；服务端分页是唯一数据来源。 */
     fun refreshWorkspace() {
         loadWorkspacePage(resetToFirstPage = true)
@@ -332,6 +435,10 @@ class LogisticsViewModel(
 
     /** 切换服务端分页大小；仅支持内存约束规定的 20/50。 */
     fun setWorkspacePageSize(pageSize: Int) {
+        if (_state.value.preview && pageSize != LogisticsUiState.WORKSPACE_PAGE_SIZE) {
+            _state.update { it.copy(error = "测试角色预览每页固定 20 条") }
+            return
+        }
         if (pageSize !in WORKSPACE_PAGE_SIZES) {
             _state.update { it.copy(error = "工作台每页数量只能是 20 或 50") }
             return
@@ -372,12 +479,15 @@ class LogisticsViewModel(
     ) {
         if (!_state.value.loggedIn) return
         val currentSession = sessionGeneration
-        operationScope.launch {
-            if (!isSessionActive(currentSession)) return@launch
+        val loadContext = currentWorkspaceContext()
+        val generation = ++workspaceLoadGeneration
+        workspaceLoadJob?.cancel()
+        workspaceLoadJob = operationScope.launch {
+            if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@launch
             val requestedPage = if (resetToFirstPage) 1 else page
             _state.update {
                 it.copy(
-                    workspaceSummary = if (resetToFirstPage) RoleWorkspaceSummary.empty(it.role) else it.workspaceSummary,
+                    workspaceSummary = if (resetToFirstPage) RoleWorkspaceSummary.empty(loadContext.viewRole.toUserRole()) else it.workspaceSummary,
                     workspaceSummaryState = if (resetToFirstPage) WorkspaceLoadState.LOADING else it.workspaceSummaryState,
                     workspaceSummaryError = if (resetToFirstPage) null else it.workspaceSummaryError,
                     workspaceSummaryUnavailable = if (resetToFirstPage) false else it.workspaceSummaryUnavailable,
@@ -393,12 +503,32 @@ class LogisticsViewModel(
             }
 
             kotlinx.coroutines.coroutineScope {
-                val summary = if (resetToFirstPage) async { repo.workspaceSummary() } else null
+                val summary = if (resetToFirstPage) async {
+                    if (loadContext.preview) {
+                        repo.loadRoleSummary(
+                            viewRole = loadContext.viewRole,
+                            requestId = UUID.randomUUID().toString(),
+                        )
+                    } else {
+                        repo.workspaceSummary()
+                    }
+                } else null
                 val items = async {
-                    repo.workspaceMaterialItems(
-                        page = requestedPage,
-                        pageSize = pageSize
-                    )
+                    if (loadContext.preview) {
+                        repo.listWorkItems(
+                            viewRole = loadContext.viewRole,
+                            status = null,
+                            orderNo = null,
+                            page = requestedPage,
+                            pageSize = LogisticsUiState.WORKSPACE_PAGE_SIZE,
+                            requestId = UUID.randomUUID().toString(),
+                        )
+                    } else {
+                        repo.workspaceMaterialItems(
+                            page = requestedPage,
+                            pageSize = pageSize
+                        )
+                    }
                 }
 
                 val summaryResult = summary?.await()
@@ -407,7 +537,7 @@ class LogisticsViewModel(
                 if (summaryResult != null) {
                     summaryResult
                     .onSuccess { serverSummary ->
-                        if (!isSessionActive(currentSession)) return@onSuccess
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
                         _state.update {
                             it.copy(
                                 workspaceSummary = ServerWorkspaceSummaryFactory.from(serverSummary),
@@ -420,7 +550,7 @@ class LogisticsViewModel(
                         }
                     }
                     .onFailure { error ->
-                        if (!isSessionActive(currentSession)) return@onFailure
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onFailure
                         if (error is ApiException && error.isUnauthorized) {
                             expireSession()
                             return@onFailure
@@ -437,7 +567,7 @@ class LogisticsViewModel(
 
                 itemsResult
                     .onSuccess { pageResult ->
-                        if (!isSessionActive(currentSession)) return@onSuccess
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
                         _state.update {
                             val currentSummary = it.workspaceSummary
                             val summaryWithTotal = currentSummary.copy(
@@ -466,7 +596,7 @@ class LogisticsViewModel(
                         }
                     }
                     .onFailure { error ->
-                        if (!isSessionActive(currentSession)) return@onFailure
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onFailure
                         if (error is ApiException && error.isUnauthorized) {
                             expireSession()
                             return@onFailure
@@ -487,6 +617,31 @@ class LogisticsViewModel(
         isWorkspaceUnavailable(error) -> "服务端未提供工作台接口，当前工作台不可用"
         error is ApiException -> error.safeMessage("工作台加载失败，请稍后重试")
         else -> "网络不可用，请检查连接后重试"
+    }
+
+    private fun currentWorkspaceContext(): WorkspaceQueryContext {
+        val current = _state.value
+        return previewController?.currentContext()
+            ?: WorkspaceQueryContext(
+                authenticatedRole = current.role,
+                viewRole = WorkspaceViewRole.from(current.role),
+                preview = false,
+            )
+    }
+
+    private fun isWorkspaceLoadActive(
+        session: Long,
+        generation: Long,
+        context: WorkspaceQueryContext,
+    ): Boolean = isSessionActive(session) &&
+        generation == workspaceLoadGeneration &&
+        currentWorkspaceContext() == context &&
+        _state.value.preview == context.preview
+
+    private fun cancelWorkspaceLoad() {
+        workspaceLoadGeneration++
+        workspaceLoadJob?.cancel()
+        workspaceLoadJob = null
     }
 
     private fun isWorkspaceUnavailable(error: Throwable): Boolean {
@@ -606,6 +761,10 @@ class LogisticsViewModel(
     /** 按列表中服务端最新状态再次校验，避免通过旧详情或绕过按钮越权提交。 */
     fun approveTransferRequest(transferRequestId: String, approve: Boolean, comment: String = "") {
         val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能审批或执行") }
+            return
+        }
         val request = current.transferRequests.firstOrNull { it.id == transferRequestId }
             ?: current.transferRequestDetail?.takeIf { it.id == transferRequestId }
         val action = if (approve) TransferRequestAction.APPROVE else TransferRequestAction.REJECT
@@ -630,6 +789,10 @@ class LogisticsViewModel(
 
     fun executeTransferRequest(transferRequestId: String) {
         val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能审批或执行") }
+            return
+        }
         val request = current.transferRequests.firstOrNull { it.id == transferRequestId }
             ?: current.transferRequestDetail?.takeIf { it.id == transferRequestId }
         if (request == null || TransferRequestAction.EXECUTE !in TransferRequestActionPolicy.actionsFor(
@@ -889,6 +1052,10 @@ class LogisticsViewModel(
         remark: String? = null,
     ) {
         val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能发起交接") }
+            return
+        }
         if (!HandoverActionPolicy.canCreate(current.role, item)) {
             _state.update { it.copy(error = "当前角色或服务端状态不允许发起交接") }
             return
@@ -961,6 +1128,10 @@ class LogisticsViewModel(
     /** 按服务端状态和角色策略再次校验，防止绕过 UI 按钮直接调用。 */
     fun decideHandover(item: WorkspaceMaterialItem, action: HandoverAction, reason: String? = null) {
         val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能确认、驳回或取消交接") }
+            return
+        }
         if (action !in HandoverActionPolicy.actionsFor(current.role, current.currentUserId, item)) {
             _state.update { it.copy(error = "当前角色或服务端状态不允许该交接操作") }
             return
@@ -1181,6 +1352,10 @@ class LogisticsViewModel(
     // ==================== 提交 ====================
 
     fun submitInbound() {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能提交入库申请") }
+            return
+        }
         val inv = _state.value.materialInventory ?: return
         val qty = _state.value.formQuantity
         if (qty <= 0) {
@@ -1204,6 +1379,10 @@ class LogisticsViewModel(
     }
 
     fun submitLocationBinding() {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能绑定库位") }
+            return
+        }
         val inv = _state.value.materialInventory ?: return
         val loc = _state.value.formLocation
         if (loc.isNullOrBlank()) {
@@ -1229,6 +1408,10 @@ class LogisticsViewModel(
     // ==================== 离线同步 ====================
 
     fun syncNow() {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能同步离线写操作") }
+            return
+        }
         viewModelScope.launch {
             _state.update { it.copy(syncing = true) }
             val report: SyncReport = repo.syncPending()
@@ -1248,6 +1431,10 @@ class LogisticsViewModel(
     }
 
     fun clearSynced() {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能清理离线写操作") }
+            return
+        }
         viewModelScope.launch {
             repo.clearSynced()
             _state.update { it.copy(message = "已清理同步完成的记录") }

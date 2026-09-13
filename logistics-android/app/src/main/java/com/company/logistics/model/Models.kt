@@ -404,6 +404,8 @@ data class WorkspaceSummary(
     val serverTime: String? = null,
     val traceId: String? = null,
     val outboundConfirmedCount: Int? = null,
+    val preview: Boolean = false,
+    val authenticatedRole: UserRole? = null,
 )
 
 /** 工作台分页工作项响应。客户端只保留当前页，避免一次性加载全量数据。 */
@@ -414,7 +416,9 @@ data class WorkspaceMaterialItemsPage(
     val total: Int,
     val totalPages: Int,
     val serverTime: String?,
-    val traceId: String?
+    val traceId: String?,
+    val preview: Boolean = false,
+    val authenticatedRole: UserRole? = null,
 )
 
 /** 流转申请明细条目；详情接口中的 payload 只投影到可展示字段。 */

@@ -59,6 +59,7 @@ import com.company.logistics.ui.theme.Spacing
 @Composable
 fun ApprovalScreen(
     role: UserRole,
+    readOnly: Boolean = false,
     requests: List<TransferRequest>,
     requestState: WorkspaceLoadState,
     requestError: String?,
@@ -154,6 +155,15 @@ fun ApprovalScreen(
                 }
             }
         }
+        if (readOnly) {
+            VSpace(Spacing.sm)
+            Text(
+                "测试预览只读，不能批准、驳回或执行",
+                fontSize = 12.sp,
+                color = LogisticsTheme.colors.warning,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
 
         when (requestState) {
             WorkspaceLoadState.IDLE -> Unit
@@ -184,6 +194,7 @@ fun ApprovalScreen(
                     TransferRequestCard(
                         request = request,
                         role = role,
+                        readOnly = readOnly,
                         submitting = submittingRequestId == request.id,
                         selected = selectedRequestId == request.id,
                         onSelect = {
@@ -239,6 +250,7 @@ fun ApprovalScreen(
 private fun TransferRequestCard(
     request: TransferRequest,
     role: UserRole,
+    readOnly: Boolean,
     submitting: Boolean,
     selected: Boolean,
     onSelect: () -> Unit,
@@ -246,7 +258,7 @@ private fun TransferRequestCard(
     onReject: () -> Unit,
     onExecute: () -> Unit,
 ) {
-    val actions = TransferRequestActionPolicy.actionsFor(role, request)
+    val actions = if (readOnly) emptyList() else TransferRequestActionPolicy.actionsFor(role, request)
     AppCard(
         accentColor = requestStatusColor(request.status),
         borderColor = if (selected) MaterialTheme.colorScheme.primary else null,

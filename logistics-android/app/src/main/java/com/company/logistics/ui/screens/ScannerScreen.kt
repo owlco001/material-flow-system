@@ -91,6 +91,7 @@ import com.company.logistics.ui.theme.Spacing
 fun ScannerScreen(
     viewModel: ScannerViewModel,
     role: UserRole,
+    readOnly: Boolean = false,
     pendingCount: Int,
     syncing: Boolean,
     onResolved: (ScanResult) -> Unit,
@@ -357,10 +358,14 @@ fun ScannerScreen(
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                buildString {
-                    append("可提交入库/出库申请")
-                    if (role.canApprove) append(" · 可审批")
-                    if (role.canAdmin) append(" · 可管理用户与审计")
+                if (readOnly) {
+                    "测试预览只读，不可提交入库、出库或库位变更"
+                } else {
+                    buildString {
+                        append("可提交入库/出库申请")
+                        if (role.canApprove) append(" · 可审批")
+                        if (role.canAdmin) append(" · 可管理用户与审计")
+                    }
                 },
                 fontSize = 12.sp,
                 color = LogisticsTheme.colors.textSecondary,

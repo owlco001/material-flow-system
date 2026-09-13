@@ -178,7 +178,10 @@ object ApiParser {
             outOfStockCount = nullableInt(root, "outOfStockCount"),
             generatedAt = nullableString(root, "generatedAt"),
             serverTime = nullableString(root, "serverTime"),
-            traceId = nullableString(root, "traceId")
+            traceId = nullableString(root, "traceId"),
+            preview = root.optBoolean("preview", false),
+            authenticatedRole = UserRole.from(nullableString(root, "authenticatedRole"))
+                .takeIf { nullableString(root, "authenticatedRole") != null },
         )
     }
 
@@ -251,7 +254,10 @@ object ApiParser {
             total = root.optInt("total", 0),
             totalPages = root.optInt("totalPages", 0),
             serverTime = nullableString(root, "serverTime"),
-            traceId = nullableString(root, "traceId")
+            traceId = nullableString(root, "traceId"),
+            preview = root.optBoolean("preview", false),
+            authenticatedRole = UserRole.from(nullableString(root, "authenticatedRole"))
+                .takeIf { nullableString(root, "authenticatedRole") != null },
         )
     }
 
