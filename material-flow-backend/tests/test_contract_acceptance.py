@@ -47,6 +47,9 @@ token = r.json().get("accessToken", "")
 H = {"Authorization": f"Bearer {token}"}
 rid_h = {"X-Request-Id": str(uuid.uuid4())}
 
+# 演示订单号：由 backend.seed_demo_order() 幂等写入的固定测试订单
+DEMO_ORDER_NO = "26B-013"
+
 
 def write_headers(op_id: str) -> dict:
     return {**H, "X-Request-Id": str(uuid.uuid4()), "Idempotency-Key": op_id}
@@ -87,25 +90,35 @@ check("不存在 FLOW_RECORD 枚举",
       "FLOW_RECORD" not in open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "main.py"), encoding="utf-8").read())
 
 # ---------- 7.1 订单物料状态 ----------
+# 依据《订单物料状态-后端模型对齐规格》：
+#   - documentType 过渡期同时接受 PRODUCTION_ORDER 与 ORDER_NO；
+#   - 订单不存在返回 404 ORDER_NOT_FOUND（不再是 200 空清单）。
 print("\n[订单物料状态]")
 r = client.post("/api/v1/orders/material-status",
-                json={"documentType": "PRODUCTION_ORDER", "documentNo": "SO202609120001"},
+                json={"documentType": "PRODUCTION_ORDER", "documentNo": DEMO_ORDER_NO},
                 headers=H)
-ok = r.status_code == 200 and r.json()["documentType"] == "PRODUCTION_ORDER" and len(r.json()["items"]) >= 1
+ok = (r.status_code == 200
+      and r.json()["documentType"] == "PRODUCTION_ORDER"
+      and r.json()["documentNo"] == DEMO_ORDER_NO
+      and len(r.json()["items"]) == 75)
 check("PRODUCTION_ORDER 查询成功且按订单过滤", ok, r.text[:200])
 
+# 新规格文档的取值，过渡期必须同样放行
 r = client.post("/api/v1/orders/material-status",
-                json={"documentType": "ORDER_NO", "documentNo": "SO202609120001"},
+                json={"documentType": "ORDER_NO", "documentNo": DEMO_ORDER_NO},
                 headers=H)
-check("ORDER_NO 返回 400 INVALID_SCAN_TYPE",
-      r.status_code == 400 and r.json().get("error", {}).get("code") == "INVALID_SCAN_TYPE",
+check("ORDER_NO 过渡期兼容并返回同样结果",
+      r.status_code == 200
+      and r.json()["documentType"] == "ORDER_NO"
+      and len(r.json()["items"]) == 75,
       r.text[:200])
 
 r = client.post("/api/v1/orders/material-status",
                 json={"documentType": "PRODUCTION_ORDER", "documentNo": "SO_NOT_EXIST"},
                 headers=H)
-check("不存在的订单返回空清单而非全量物料",
-      r.status_code == 200 and r.json()["items"] == [], r.text[:200])
+check("不存在的订单返回 404 ORDER_NOT_FOUND（不再回退全量物料）",
+      r.status_code == 404 and r.json().get("error", {}).get("code") == "ORDER_NOT_FOUND",
+      r.text[:200])
 
 # ---------- 2. 请求头校验 ----------
 print("\n[请求头校验]")

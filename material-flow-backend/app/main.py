@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -37,6 +38,13 @@ SCAN_TYPES = ("PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "
 # 禁止使用的历史枚举，收到即拒绝
 FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 
+# 订单物料状态的 documentType 过渡期兼容取值。
+# 历史契约（V1 冻结补遗）用 PRODUCTION_ORDER；新模型规格文档用 ORDER_NO。
+# 两者语义相同，过渡期同时接受，避免任一调用方被硬拒。
+# 注意：ORDER_NO 同时出现在 FORBIDDEN_SCAN_TYPES 里，但那个常量仅用于
+# /orders/material-status 的作废判定，扫码解析端点用的是独立正则，互不影响。
+ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
+
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
 
 # 固定错误码
@@ -52,6 +60,7 @@ CODE_ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 CODE_INVALID_REFRESH_TOKEN = "INVALID_REFRESH_TOKEN"
 CODE_OLD_PASSWORD_MISMATCH = "OLD_PASSWORD_MISMATCH"
 CODE_PASSWORD_UNCHANGED = "PASSWORD_UNCHANGED"
+CODE_ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
 
 # 令牌时效（契约 A03）
 ACCESS_TOKEN_SECONDS = 3600           # 1 小时，缩短泄露暴露窗口
@@ -217,8 +226,12 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT);
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
-    CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, model_name TEXT, status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS order_material_requirements(id TEXT PRIMARY KEY, order_id TEXT NOT NULL, material_id TEXT NOT NULL, required_quantity INTEGER NOT NULL CHECK(required_quantity >= 0), arrived_quantity INTEGER NOT NULL DEFAULT 0 CHECK(arrived_quantity >= 0), UNIQUE(order_id, material_id));
+    CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL, updated_at TEXT);
+    -- 订单物料需求：订单 × 设备 × 物料主数据的关联。
+    -- material_id 必须指向 materials.id（真实主数据），不可用物料编码或设备编号冒充。
+    -- device_id 允许为空，兼容不按设备拆分的订单。
+    CREATE TABLE IF NOT EXISTS order_material_requirements(id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES production_orders(id) ON DELETE CASCADE, device_id TEXT REFERENCES order_devices(id) ON DELETE CASCADE, material_id TEXT NOT NULL REFERENCES materials(id), required_quantity INTEGER NOT NULL CHECK(required_quantity > 0), arrived_quantity INTEGER NOT NULL DEFAULT 0 CHECK(arrived_quantity >= 0), in_stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK(in_stock_quantity >= 0), status_code TEXT NOT NULL CHECK(status_code IN ('OUT_OF_STOCK','ARRIVED','IN_STOCK')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK(arrived_quantity <= required_quantity), CHECK(in_stock_quantity <= arrived_quantity), UNIQUE(order_id, device_id, material_id));
+    CREATE TABLE IF NOT EXISTS order_devices(id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES production_orders(id) ON DELETE CASCADE, device_type TEXT NOT NULL, device_no TEXT UNIQUE NOT NULL, sequence_no INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(order_id, device_type, sequence_no));
     CREATE TABLE IF NOT EXISTS login_attempts(username TEXT PRIMARY KEY, failed_count INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL, locked_until INTEGER);
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
@@ -230,12 +243,104 @@ def init_db() -> None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)", ("inv_001", "mat_001", "loc_001", 986))
-    if c.execute("SELECT 1 FROM production_orders").fetchone() is None:
-        c.execute("INSERT INTO production_orders VALUES(?,?,?,?,?)", ("ord_001", "SO202609120001", "MS-300", "IN_PROGRESS", now()))
-        c.execute("INSERT INTO order_material_requirements VALUES(?,?,?,?,?)", ("omr_001", "ord_001", "mat_001", 200, 200))
 
     _migrate_schema(c)
+    seed_demo_order(c)
     c.commit(); c.close()
+
+
+# ==================== 演示订单种子 ====================
+
+# 26B-013 的 BOM 用到三类物料。规格明确要求：
+# 不能伪造 material_id —— 每条需求的外键都必须能 JOIN 到 materials 真实主数据。
+# 故这里补齐三条脱敏测试物料（均为通用件，不含真实厂商信息）。
+DEMO_MATERIALS = (
+    ("mat_ctl_cabinet", "MTR-CTL-001", "控制柜", "GGD-800x600x2200", "台"),
+    ("mat_pos_sensor", "MTR-SEN-002", "位置传感器", "PNP-NO-M12", "只"),
+    ("mat_drive_unit", "MTR-DRV-003", "输送驱动组件", "3kW-380V", "套"),
+)
+
+DEMO_ORDER_NO = "26B-013"
+DEMO_ORDER_ID = "ord_demo_26b013"
+DEMO_PRODUCT = "自动化流水线设备"
+
+# 设备构成：横向 10 + 十字 10 + 缓存 3 + 合片 2 = 25 台
+DEMO_DEVICE_PLAN = (
+    ("横向输送机", "HZ", 10),
+    ("十字输送机", "SZ", 10),
+    ("缓存", "CC", 3),
+    ("合片机", "HP", 2),
+)
+
+# 固定 seed：规格要求"随机只允许使用固定 seed 的测试种子，确保重复执行可复现"。
+_DEMO_SEED = 20260913
+
+# 三种状态的量值规则（规格第 6 节验收标准）：
+#   OUT_OF_STOCK → 缺货，到货数为 0
+#   ARRIVED      → 已到货未入库，在库数为 0
+#   IN_STOCK     → 已入库，在库数 = 需求数
+_STATUS_PLAN = (
+    # (status_code, required, arrived, in_stock)
+    ("OUT_OF_STOCK", 20, 0, 0),
+    ("ARRIVED", 20, 20, 0),
+    ("IN_STOCK", 20, 20, 20),
+)
+
+
+def seed_demo_order(c: sqlite3.Connection) -> None:
+    """幂等写入 26B-013 演示订单。
+
+    幂等性：全部使用固定 id + INSERT OR IGNORE，重复执行不产生重复行。
+    这比"先查再插"更稳 —— 并发启动时也不会插重。
+    """
+    ts = now()
+
+    for mat_id, code, name, spec, unit in DEMO_MATERIALS:
+        c.execute(
+            "INSERT OR IGNORE INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (mat_id, code, name, spec, unit, None, None, 0, 0, 1),
+        )
+
+    # production_orders 的 product_name / updated_at 是新增列，用 upsert 补齐
+    c.execute(
+        """INSERT INTO production_orders(id, order_no, product_name, status, created_at, updated_at)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(order_no) DO UPDATE SET
+             product_name=excluded.product_name,
+             updated_at=excluded.updated_at""",
+        (DEMO_ORDER_ID, DEMO_ORDER_NO, DEMO_PRODUCT, "RELEASED", ts, ts),
+    )
+    order_id = c.execute(
+        "SELECT id FROM production_orders WHERE order_no=?", (DEMO_ORDER_NO,)
+    ).fetchone()["id"]
+
+    # 固定 seed 的随机源，保证可复现
+    rnd = random.Random(_DEMO_SEED)
+
+    seq = 0
+    for device_type, prefix, count in DEMO_DEVICE_PLAN:
+        for i in range(1, count + 1):
+            seq += 1
+            device_id = f"dev_demo_{prefix}{i:02d}"
+            device_no = f"{DEMO_ORDER_NO}-{prefix}{i:02d}"
+            c.execute(
+                "INSERT OR IGNORE INTO order_devices VALUES(?,?,?,?,?,?)",
+                (device_id, order_id, device_type, device_no, seq, ts),
+            )
+            for mat_id, _code, _name, _spec, _unit in DEMO_MATERIALS:
+                # 每台设备三类物料，状态在三种之间轮转 + 固定 seed 抖动，
+                # 保证 75 条里三种状态都出现（验收要求）
+                status, required, arrived, in_stock = _STATUS_PLAN[
+                    (seq + len(mat_id)) % len(_STATUS_PLAN)
+                ]
+                req_id = f"omr_demo_{device_id}_{mat_id}"
+                c.execute(
+                    """INSERT OR IGNORE INTO order_material_requirements
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (req_id, order_id, device_id, mat_id, required, arrived, in_stock, status, ts, ts),
+                )
+    # rnd 保留以便将来加入状态抖动；当前轮转方案已满足"三态全覆盖"且完全确定
+    _ = rnd.random()
 
 
 def _migrate_schema(c: sqlite3.Connection) -> None:
@@ -244,12 +349,28 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     历史库的 sessions 表只有 (token, user_id, expires_at) 三列，
     引入 refresh token 后需要补 token_type 与 device_id。
     SQLite 不支持 ADD COLUMN IF NOT EXISTS，故先查 PRAGMA 再补。
+
+    同样地，production_orders 早期只有 model_name，未区分"产品名"，
+    新模型要求 product_name + updated_at，此处按需补齐。
     """
     existing = {r["name"] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
     if "token_type" not in existing:
         c.execute("ALTER TABLE sessions ADD COLUMN token_type TEXT NOT NULL DEFAULT 'ACCESS'")
     if "device_id" not in existing:
         c.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
+
+    po_cols = {r["name"] for r in c.execute("PRAGMA table_info(production_orders)").fetchall()}
+    if "product_name" not in po_cols:
+        c.execute("ALTER TABLE production_orders ADD COLUMN product_name TEXT NOT NULL DEFAULT ''")
+        # 把历史 model_name 迁移过来，避免既有订单产品名为空
+        if "model_name" in po_cols:
+            c.execute(
+                "UPDATE production_orders SET product_name = COALESCE(model_name,'') "
+                "WHERE product_name = ''"
+            )
+    if "updated_at" not in po_cols:
+        c.execute("ALTER TABLE production_orders ADD COLUMN updated_at TEXT")
+        c.execute("UPDATE production_orders SET updated_at = created_at WHERE updated_at IS NULL")
 
 
 @app.on_event("startup")
@@ -595,6 +716,11 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
     if re.match(r"^MTR-[A-Z0-9-]+$", upper):
         typ = "MATERIAL_CODE"
     elif re.match(r"^(SO|PO)\d+$", upper):
+        # 早期订单号格式：SO202609120001
+        typ = "PRODUCTION_ORDER"
+    elif re.match(r"^\d{2}[A-Z]-\d{3}$", upper):
+        # 现行订单号格式：26B-013（年份+线别-序号）。
+        # 若不识别，现场扫订单码会落到 UNKNOWN，无法进入物料状态页。
         typ = "PRODUCTION_ORDER"
     elif re.match(r"^[A-Z]-\d{2}-\d{2}$", upper):
         typ = "LOCATION_CODE"
@@ -664,80 +790,101 @@ def material_status(
 ) -> dict[str, Any]:
     """生产订单物料状态。
 
-    契约补遗 3.2：documentType 只允许 PRODUCTION_ORDER，收到 ORDER_NO 返回 400。
-    物料清单按单据号关联的生产订单过滤，不再返回全量物料。
+    对齐《订单物料状态-后端模型对齐规格》：
+      - 按 production_orders.order_no 精确查订单；
+      - 经 order_id 查 order_material_requirements，再 JOIN materials / order_devices；
+      - requiredQuantity / arrivedQuantity / inStockQuantity / statusCode
+        **一律取自需求表**，不得用库存主表数量替代 —— 否则同一物料出现在
+        多个订单时会串数据；
+      - 订单不存在返回 404 ORDER_NOT_FOUND，不再回退成全量物料。
+
+    documentType 兼容说明（过渡期）：
+      历史契约要求 PRODUCTION_ORDER，新规格文档使用 ORDER_NO。
+      两者语义相同，过渡期同时接受；ORDER/LOGISTICS 等仍按契约拒绝。
     """
     trace_id = x_request_id or ""
     document_no = (body.get("documentNo") or "").strip()
     document_type = (body.get("documentType") or "").strip().upper()
 
-    if document_type in FORBIDDEN_SCAN_TYPES:
-        raise ApiError(
-            400, CODE_INVALID_SCAN_TYPE,
-            f"documentType={document_type} 已作废，请使用 PRODUCTION_ORDER",
-            trace_id=trace_id,
-        )
-    if document_type != "PRODUCTION_ORDER":
+    # 仅放行这两个等价取值；其余沿用契约的作废判定
+    if document_type not in ACCEPTED_ORDER_DOC_TYPES:
+        if document_type in FORBIDDEN_SCAN_TYPES:
+            raise ApiError(
+                400, CODE_INVALID_SCAN_TYPE,
+                f"documentType={document_type} 已作废，请使用 PRODUCTION_ORDER 或 ORDER_NO",
+                trace_id=trace_id,
+            )
         raise ApiError(
             400, CODE_VALIDATION_ERROR,
-            "documentType 必须为 PRODUCTION_ORDER", trace_id=trace_id,
+            "documentType 必须为 PRODUCTION_ORDER 或 ORDER_NO", trace_id=trace_id,
         )
     if not document_no:
         raise ApiError(400, CODE_VALIDATION_ERROR, "documentNo 不能为空", trace_id=trace_id)
 
     c = db()
     order = c.execute(
-        "SELECT id FROM production_orders WHERE order_no=?", (document_no,)
+        "SELECT id, order_no, product_name, status FROM production_orders WHERE order_no=?",
+        (document_no,),
     ).fetchone()
     if not order:
         c.close()
-        # 订单不存在时返回空清单，而非全量物料，避免前端误显示
-        return {
-            "documentNo": document_no,
-            "documentType": "PRODUCTION_ORDER",
-            "items": [],
-            "serverTime": now(),
-            "traceId": trace_id,
-        }
+        # 规格第 5 节：订单不存在返回 404，不再回退成全量物料
+        raise ApiError(
+            404, CODE_ORDER_NOT_FOUND,
+            f"订单 {document_no} 不存在", trace_id=trace_id,
+        )
 
     rows = c.execute(
         """
-        SELECT m.*, r.required_quantity, r.arrived_quantity
+        SELECT r.id            AS requirement_id,
+               r.device_id     AS device_id,
+               d.device_type   AS device_type,
+               d.device_no     AS device_no,
+               d.sequence_no   AS sequence_no,
+               r.material_id   AS material_id,
+               m.code          AS material_code,
+               m.name          AS material_name,
+               m.specification AS specification,
+               m.unit          AS unit,
+               r.required_quantity  AS required_quantity,
+               r.arrived_quantity   AS arrived_quantity,
+               r.in_stock_quantity  AS in_stock_quantity,
+               r.status_code        AS status_code
         FROM order_material_requirements r
         JOIN materials m ON m.id = r.material_id
+        LEFT JOIN order_devices d ON d.id = r.device_id
         WHERE r.order_id = ?
-        ORDER BY m.code
+        ORDER BY COALESCE(d.sequence_no, 0), m.code
         """,
         (order["id"],),
     ).fetchall()
     c.close()
 
-    items = []
-    for r in rows:
-        available = r["available_quantity"]
-        required = r["required_quantity"]
-        arrived = r["arrived_quantity"]
-        if available <= 0:
-            status_code, label, color_token = "OUT_OF_STOCK", "缺货", "status-red"
-        elif available < required:
-            status_code, label, color_token = "ARRIVED", "部分到货", "status-yellow"
-        else:
-            status_code, label, color_token = "IN_STOCK", "在库", "status-green"
-        items.append({
-            "materialId": r["id"],
-            "materialCode": r["code"],
-            "name": r["name"],
-            "requiredQuantity": required,
-            "arrivedQuantity": arrived,
-            "inStockQuantity": available,
-            "statusCode": status_code,
-            "label": label,
-            "colorToken": color_token,
-        })
+    items = [
+        {
+            "requirementId": r["requirement_id"],
+            "deviceId": r["device_id"],
+            "deviceType": r["device_type"],
+            "deviceNo": r["device_no"],
+            "materialId": r["material_id"],
+            "materialCode": r["material_code"],
+            "materialName": r["material_name"],
+            "specification": r["specification"],
+            "unit": r["unit"],
+            "requiredQuantity": r["required_quantity"],
+            "arrivedQuantity": r["arrived_quantity"],
+            "inStockQuantity": r["in_stock_quantity"],
+            "statusCode": r["status_code"],
+        }
+        for r in rows
+    ]
 
     return {
-        "documentNo": document_no,
-        "documentType": "PRODUCTION_ORDER",
+        "documentNo": order["order_no"],
+        "documentType": document_type,
+        "orderId": order["id"],
+        "productName": order["product_name"],
+        "orderStatus": order["status"],
         "items": items,
         "serverTime": now(),
         "traceId": trace_id,
