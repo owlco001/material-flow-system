@@ -267,6 +267,7 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, operator_id TEXT, role TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, request_id TEXT, occurred_at TEXT NOT NULL, result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS material_work_items(id TEXT PRIMARY KEY, requirement_id TEXT, material_id TEXT NOT NULL, device_id TEXT, assigned_user_id TEXT, quantity INTEGER NOT NULL CHECK(quantity > 0));
     -- 工作台状态投影只保存状态、责任和最后交接引用，不复制订单需求数量事实。
@@ -563,6 +564,16 @@ class HandoverDecision(BaseModel):
 class Decision(BaseModel):
     decision: str
     comment: str = ""
+
+
+class TransferApproval(BaseModel):
+    decision: str
+    comment: str = Field(default="", max_length=500)
+    clientOperationId: uuid.UUID
+
+
+class TransferAction(BaseModel):
+    clientOperationId: uuid.UUID
 
 
 @app.get("/healthz")
@@ -1636,42 +1647,59 @@ def create_transfer(
                        f"type 必须为 {'/'.join(TRANSFER_TYPES)}", trace_id=trace_id)
     if not body.items:
         raise ApiError(400, CODE_VALIDATION_ERROR, "items 不能为空", trace_id=trace_id)
+    if body.type in {"INBOUND", "OUTBOUND"} and user["role"] not in {
+        "OPERATOR", "MATERIAL", "ADMIN",
+    }:
+        raise ApiError(403, CODE_FORBIDDEN, "当前角色不能提交入库或出库申请", trace_id=trace_id)
 
     c = db()
-    # 幂等：相同 clientOperationId 返回首次业务结果
     op_id_str = str(body.clientOperationId)
-    old = c.execute(
-        "SELECT id,status,payload_json FROM transfer_requests WHERE client_operation_id=?",
-        (op_id_str,),
-    ).fetchone()
-    if old:
-        payload_digest = _payload_digest(body.model_dump_json())
-        stored_digest = _payload_digest(old["payload_json"])
+    try:
+        # The idempotency read and insert share the same write lock so a retry
+        # cannot create two transfer requests under concurrent delivery.
+        c.execute("BEGIN IMMEDIATE")
+        old = c.execute(
+            "SELECT id,status,payload_json FROM transfer_requests WHERE client_operation_id=?",
+            (op_id_str,),
+        ).fetchone()
+        if old:
+            payload_digest = _payload_digest(body.model_dump_json())
+            stored_digest = _payload_digest(old["payload_json"])
+            if payload_digest != stored_digest:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                               "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = {"requestId": old["id"], "status": old["status"],
+                      "idempotent": True, "serverTime": now(), "traceId": trace_id}
+            c.rollback()
+            c.close()
+            return result
+
+        # 数量与库存版本前置校验（整数校验见 _validate_item）
+        for item in body.items:
+            _validate_item(item, trace_id)
+
+        rid = "tr_" + uuid.uuid4().hex
+        c.execute(
+            "INSERT INTO transfer_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (rid, op_id_str, body.type, body.documentNo, "PENDING_APPROVAL",
+             body.model_dump_json(), user["id"], now(), None, None, None),
+        )
+        audit(c, user["id"], user["role"], "CREATE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
+        c.commit()
+    except ApiError:
+        c.rollback()
         c.close()
-        if payload_digest != stored_digest:
-            # 同幂等键但 body 不同
-            raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
-                           "相同幂等键的请求体不一致", trace_id=trace_id)
-        return {"requestId": old["id"], "status": old["status"],
-                "idempotent": True, "serverTime": now(), "traceId": trace_id}
-
-    # 数量与库存版本前置校验（整数校验见 _validate_item）
-    for item in body.items:
-        _validate_item(item, trace_id)
-
-    rid = "tr_" + uuid.uuid4().hex
-    c.execute(
-        "INSERT INTO transfer_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (rid, op_id_str, body.type, body.documentNo, "PENDING_APPROVAL",
-         body.model_dump_json(), user["id"], now(), None, None, None),
-    )
-    audit(c, user["id"], user["role"], "CREATE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
-    c.commit()
+        raise
+    except Exception:
+        c.rollback()
+        c.close()
+        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "流转申请创建失败",
+                       retryable=True, trace_id=trace_id) from None
     c.close()
     status = "PENDING_APPROVAL"
     if body.type == "TRANSFER":
         # 契约 4.3：TRANSFER 由创建接口完成事务执行，不进入审批
-        status = _execute_transfer_items(rid, user, trace_id)
+        status = _execute_transfer_items(rid, user, trace_id)["status"]
     return {"requestId": rid, "status": status, "serverTime": now(), "traceId": trace_id}
 
 
@@ -1697,7 +1725,14 @@ def _validate_item(item: Any, trace_id: str) -> None:
                        "expectedInventoryVersion 必须是正整数", trace_id=trace_id)
 
 
-def _execute_transfer_items(rid: str, user: sqlite3.Row, trace_id: str) -> str:
+def _execute_transfer_items(
+    rid: str,
+    user: sqlite3.Row,
+    trace_id: str,
+    operation_id: str | None = None,
+    operation_payload: str | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
     """在单个事务内执行库存变更。
 
     契约 4.3 / 6 节：
@@ -1707,28 +1742,44 @@ def _execute_transfer_items(rid: str, user: sqlite3.Row, trace_id: str) -> str:
       - 已执行过的单据再次执行返回原结果，不重复扣减
     """
     c = db()
-    row = c.execute("SELECT * FROM transfer_requests WHERE id=?", (rid,)).fetchone()
-    if not row:
-        c.close()
-        raise ApiError(404, CODE_VALIDATION_ERROR, "申请不存在", trace_id=trace_id)
-
-    if row["status"] == "EXECUTED":
-        c.close()
-        return "EXECUTED"  # 幂等：不重复变更库存
-
-    if row["status"] != "APPROVED" and row["type"] != "TRANSFER":
-        c.close()
-        raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "申请尚未审批通过", trace_id=trace_id)
-
-    # 审批人与执行人不能是同一用户（TRANSFER 无需审批，跳过）
-    if row["approved_by"] and row["approved_by"] == user["id"]:
-        c.close()
-        raise ApiError(409, CODE_APPROVAL_EXECUTOR_SAME_USER,
-                       "审批人与执行人不能是同一用户", trace_id=trace_id)
-
-    payload = json.loads(row["payload_json"])
     try:
         c.execute("BEGIN IMMEDIATE")
+        if operation_id is not None and operation_payload is not None:
+            prior = c.execute(
+                "SELECT * FROM transfer_operations WHERE client_operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            if prior:
+                if (
+                    prior["transfer_request_id"] != rid
+                    or prior["action"] != "EXECUTE"
+                    or _payload_digest(prior["payload_json"])
+                    != _payload_digest(operation_payload)
+                ):
+                    raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                                   "相同幂等键的请求体不一致", trace_id=trace_id)
+                result = json.loads(prior["result_json"])
+                c.rollback()
+                c.close()
+                result["idempotent"] = True
+                result["traceId"] = trace_id
+                return result
+
+        row = c.execute("SELECT * FROM transfer_requests WHERE id=?", (rid,)).fetchone()
+        if not row:
+            raise ApiError(404, CODE_VALIDATION_ERROR, "申请不存在", trace_id=trace_id)
+        if row["status"] == "EXECUTED":
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
+                           "申请已执行，不能重复执行", trace_id=trace_id)
+        if row["status"] != "APPROVED" and row["type"] != "TRANSFER":
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "申请尚未审批通过", trace_id=trace_id)
+
+        # 审批人与执行人不能是同一用户（TRANSFER 无需审批，跳过）
+        if row["approved_by"] and row["approved_by"] == user["id"]:
+            raise ApiError(409, CODE_APPROVAL_EXECUTOR_SAME_USER,
+                           "审批人与执行人不能是同一用户", trace_id=trace_id)
+
+        payload = json.loads(row["payload_json"])
         for item in payload.get("items", []):
             material_id = item.get("materialId")
             quantity = item.get("quantity")
@@ -1782,11 +1833,31 @@ def _execute_transfer_items(rid: str, user: sqlite3.Row, trace_id: str) -> str:
             if target_code and transfer_type in {"INBOUND", "TRANSFER"}:
                 _adjust_location_qty(c, material["id"], target_code, quantity, trace_id)
 
+        execution_time = now()
         c.execute(
             "UPDATE transfer_requests SET status='EXECUTED',executed_at=? WHERE id=?",
-            (now(), rid),
+            (execution_time, rid),
         )
         audit(c, user["id"], user["role"], "EXECUTE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
+        if row["type"] == "OUTBOUND" and request is not None and operation_id is not None:
+            _audit_event(
+                c, "OUTBOUND_CONFIRMED", rid, user, trace_id, operation_id,
+                {"status": "APPROVED"},
+                {"status": "EXECUTED", "executedAt": execution_time},
+                request, entity_type="TRANSFER_REQUEST",
+            )
+        result = {
+            "requestId": rid,
+            "status": "EXECUTED",
+            "serverTime": execution_time,
+            "traceId": trace_id,
+        }
+        if operation_id is not None and operation_payload is not None:
+            c.execute(
+                "INSERT INTO transfer_operations VALUES(?,?,?,?,?,?)",
+                (operation_id, rid, "EXECUTE", operation_payload,
+                 json.dumps(result, ensure_ascii=False), execution_time),
+            )
         c.commit()
     except ApiError:
         c.rollback()
@@ -1798,7 +1869,7 @@ def _execute_transfer_items(rid: str, user: sqlite3.Row, trace_id: str) -> str:
         raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "执行失败", retryable=True,
                        trace_id=trace_id) from None
     c.close()
-    return "EXECUTED"
+    return result
 
 
 def _adjust_location_qty(c: sqlite3.Connection, material_id: str, location_code: str,
@@ -1829,11 +1900,14 @@ def _adjust_location_qty(c: sqlite3.Connection, material_id: str, location_code:
 @app.post("/api/v1/transfer-requests/{rid}/approve")
 def approve(
     rid: str,
-    body: Decision,
+    body: TransferApproval,
+    request: Request,
     user: sqlite3.Row = Depends(current_user),
     x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
         raise ApiError(403, CODE_FORBIDDEN, "无审批权限", trace_id=trace_id)
     if body.decision not in {"APPROVE", "REJECT"}:
@@ -1846,26 +1920,112 @@ def approve(
                            "拒绝时必须填写原因（1-500 字）", trace_id=trace_id)
 
     status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"
+    operation_id = str(body.clientOperationId)
+    operation_payload = body.model_dump_json()
     c = db()
-    cur = c.execute(
-        "UPDATE transfer_requests SET status=?,approved_by=?,approved_at=? "
-        "WHERE id=? AND status='PENDING_APPROVAL'",
-        (status, user["id"], now(), rid),
-    )
-    if cur.rowcount != 1:
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM transfer_operations WHERE client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if (
+                prior["transfer_request_id"] != rid
+                or prior["action"] != "APPROVE"
+                or _payload_digest(prior["payload_json"])
+                != _payload_digest(operation_payload)
+            ):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                               "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            c.rollback()
+            c.close()
+            result["idempotent"] = True
+            result["traceId"] = trace_id
+            return result
+
+        transfer = c.execute(
+            "SELECT id,type,status,approved_by,approved_at FROM transfer_requests WHERE id=?",
+            (rid,),
+        ).fetchone()
+        if not transfer:
+            raise ApiError(404, CODE_VALIDATION_ERROR, "申请不存在", trace_id=trace_id)
+        cur = c.execute(
+            "UPDATE transfer_requests SET status=?,approved_by=?,approved_at=? "
+            "WHERE id=? AND status='PENDING_APPROVAL'",
+            (status, user["id"], now(), rid),
+        )
+        if cur.rowcount != 1:
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
+                           "申请状态不允许审批", trace_id=trace_id)
+        decision_time = c.execute(
+            "SELECT approved_at FROM transfer_requests WHERE id=?", (rid,)
+        ).fetchone()["approved_at"]
+        audit(c, user["id"], user["role"], "APPROVE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
+        if transfer["type"] == "OUTBOUND" and status == "APPROVED":
+            _audit_event(
+                c, "OUTBOUND_APPROVED", rid, user, trace_id, operation_id,
+                {"status": "PENDING_APPROVAL"},
+                {"status": "APPROVED", "approvedAt": decision_time},
+                request, entity_type="TRANSFER_REQUEST",
+            )
+        result = {
+            "requestId": rid,
+            "status": status,
+            "serverTime": decision_time,
+            "traceId": trace_id,
+        }
+        c.execute(
+            "INSERT INTO transfer_operations VALUES(?,?,?,?,?,?)",
+            (operation_id, rid, "APPROVE", operation_payload,
+             json.dumps(result, ensure_ascii=False), decision_time),
+        )
+        c.commit()
+    except ApiError:
+        c.rollback()
         c.close()
-        raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "申请状态不允许审批", trace_id=trace_id)
-    audit(c, user["id"], user["role"], "APPROVE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
-    c.commit()
+        raise
+    except Exception:
+        c.rollback()
+        c.close()
+        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "申请审批失败",
+                       retryable=True, trace_id=trace_id) from None
     c.close()
-    return {"requestId": rid, "status": status, "serverTime": now(), "traceId": trace_id}
+    return result
 
 
 @app.get("/api/v1/transfer-requests")
 def list_transfers(status: str | None = None, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    c = db(); query = "SELECT id,client_operation_id,type,document_no,status,created_by,created_at,approved_by,approved_at,executed_at FROM transfer_requests"; args: list[Any] = []
+    c = db()
+    query = """SELECT t.id,t.client_operation_id,t.type,t.document_no,t.status,
+                      t.created_by,t.created_at,t.approved_by,t.approved_at,t.executed_at
+                 FROM transfer_requests t"""
+    args: list[Any] = []
+    has_scope = False
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        query += """
+            WHERE (
+                t.created_by = ?
+                OR EXISTS (
+                    SELECT 1 FROM material_handovers h
+                     WHERE h.transfer_request_id = t.id
+                       AND (
+                           h.created_by = ? OR h.receiver_user_id = ?
+                           OR h.confirmed_by = ?
+                           OR EXISTS (
+                               SELECT 1 FROM material_work_items w
+                                WHERE (w.id = h.work_item_id OR w.requirement_id = h.work_item_id)
+                                  AND w.assigned_user_id = ?
+                           )
+                       )
+                )
+            )"""
+        args.extend([user["id"]] * 5)
+        has_scope = True
     if status:
-        query += " WHERE status=?"; args.append(status)
+        query += " AND t.status=?" if has_scope else " WHERE t.status=?"
+        args.append(status)
     rows = c.execute(query + " ORDER BY created_at DESC LIMIT 100", args).fetchall(); c.close()
     return {"items": [dict(r) for r in rows], "serverTime": now()}
 
@@ -1873,13 +2033,13 @@ def list_transfers(status: str | None = None, user: sqlite3.Row = Depends(curren
 def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,
                  actor: sqlite3.Row, request_id: str, operation_id: str,
                  before: dict[str, Any], after: dict[str, Any], request: Request,
-                 result: str = "SUCCESS") -> None:
+                 result: str = "SUCCESS", entity_type: str = "MATERIAL_HANDOVER") -> None:
     c.execute(
         """INSERT INTO audit_events
            (event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,
             client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (event_type, "MATERIAL_HANDOVER", entity_id, actor["id"], actor["role"],
+        (event_type, entity_type, entity_id, actor["id"], actor["role"],
          request_id, operation_id, json.dumps(before, ensure_ascii=False),
          json.dumps(after, ensure_ascii=False), now(), actor["session_device_id"],
          request.client.host if request.client else None, result),
@@ -1953,7 +2113,27 @@ def _validate_handover_relation(c: sqlite3.Connection, body: HandoverCreate,
         material_id = req["material_id"]
         target_device_id = req["device_id"]
         max_quantity = req["required_quantity"]
-    if body.deviceId and target_device_id and body.deviceId != target_device_id:
+    assigned_work = work
+    if assigned_work is None and req:
+        assigned_work = c.execute(
+            """SELECT * FROM material_work_items
+                WHERE requirement_id=?
+                ORDER BY id
+                LIMIT 1""",
+            (req["id"],),
+        ).fetchone()
+    if assigned_work and assigned_work["material_id"] != material_id:
+        raise ApiError(400, CODE_VALIDATION_ERROR,
+                       "工作项物料与订单需求不一致", trace_id=trace_id)
+    if (
+        assigned_work
+        and assigned_work["assigned_user_id"]
+        and body.receiverUserId
+        and body.receiverUserId != assigned_work["assigned_user_id"]
+    ):
+        raise ApiError(400, CODE_VALIDATION_ERROR,
+                       "receiverUserId 与工作项归属不一致", trace_id=trace_id)
+    if not target_device_id or body.deviceId != target_device_id:
         raise ApiError(400, CODE_VALIDATION_ERROR,
                        "deviceId 与订单目标机台不一致", trace_id=trace_id)
     if req:
@@ -2146,6 +2326,40 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             and user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}
         ):
             raise ApiError(403, CODE_FORBIDDEN, "只能由指定接收人确认", trace_id=trace_id)
+        if action == "CONFIRMED" and user["role"] == "OPERATOR":
+            assignment = c.execute(
+                """SELECT assigned_user_id FROM material_work_items
+                    WHERE id=? OR requirement_id=?
+                    ORDER BY (requirement_id IS NULL), id
+                    LIMIT 1""",
+                (row["work_item_id"], row["work_item_id"]),
+            ).fetchone()
+            if (
+                not row["receiver_user_id"]
+                and assignment
+                and assignment["assigned_user_id"]
+                and assignment["assigned_user_id"] != user["id"]
+            ):
+                raise ApiError(403, CODE_FORBIDDEN, "只能由工作项归属操作员确认", trace_id=trace_id)
+
+        prior = c.execute(
+            "SELECT * FROM handover_operations WHERE client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if (
+                prior["handover_id"] != hid
+                or prior["action"] != action
+                or _payload_digest(prior["payload_json"]) != _payload_digest(operation_payload)
+            ):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                               "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            c.rollback()
+            c.close()
+            result["idempotent"] = True
+            result["traceId"] = trace_id
+            return result
 
         transfer = c.execute(
             """SELECT id,status,type,document_no,payload_json,approved_by,approved_at
@@ -2199,6 +2413,12 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
         ):
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
                            "交接工作项目标机台与订单需求不一致", trace_id=trace_id)
+        if (
+            relation["requirement_device_id"]
+            and row["device_id"] != relation["requirement_device_id"]
+        ):
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
+                           "交接目标机台与订单需求不一致", trace_id=trace_id)
         order = c.execute(
             "SELECT order_no FROM production_orders WHERE id=?", (relation["order_id"],)
         ).fetchone()
@@ -2215,24 +2435,6 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
                            "交接数量超过已审批数量", trace_id=trace_id)
 
-        prior = c.execute(
-            "SELECT * FROM handover_operations WHERE client_operation_id=?",
-            (operation_id,),
-        ).fetchone()
-        if prior:
-            if (
-                prior["handover_id"] != hid
-                or prior["action"] != action
-                or _payload_digest(prior["payload_json"]) != _payload_digest(operation_payload)
-            ):
-                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
-                               "相同幂等键的请求体不一致", trace_id=trace_id)
-            result = json.loads(prior["result_json"])
-            c.rollback()
-            c.close()
-            result["idempotent"] = True
-            result["traceId"] = trace_id
-            return result
         if row["status"] != "PENDING":
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
                            "交接状态不允许重复处理", trace_id=trace_id)
@@ -2373,10 +2575,14 @@ def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> di
         c.close()
         raise HTTPException(404, "交接不存在")
     handover_ids = [row["id"] for row in handovers]
-    placeholders = ",".join("?" for _ in handover_ids)
+    transfer_ids = {
+        row["transfer_request_id"] for row in handovers if row["transfer_request_id"]
+    }
+    timeline_entity_ids = handover_ids + sorted(transfer_ids)
+    placeholders = ",".join("?" for _ in timeline_entity_ids)
     rows = c.execute(
         f"SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY server_time, id",
-        handover_ids,
+        timeline_entity_ids,
     ).fetchall()
     handover = handovers[-1]
     projection = c.execute(
@@ -2406,22 +2612,55 @@ def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> di
 
 @app.get("/api/v1/transfer-requests/{rid}")
 def get_transfer(rid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    c = db(); row = c.execute("SELECT * FROM transfer_requests WHERE id=?", (rid,)).fetchone(); c.close()
-    if not row: raise HTTPException(404, "申请不存在")
+    c = db()
+    row = c.execute("SELECT * FROM transfer_requests WHERE id=?", (rid,)).fetchone()
+    if not row:
+        c.close()
+        raise HTTPException(404, "申请不存在")
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"} and row["created_by"] != user["id"]:
+        visible = c.execute(
+            """SELECT 1
+                 FROM material_handovers h
+                WHERE h.transfer_request_id=?
+                  AND (
+                      h.created_by=? OR h.receiver_user_id=? OR h.confirmed_by=?
+                      OR EXISTS (
+                          SELECT 1 FROM material_work_items w
+                           WHERE (w.id=h.work_item_id OR w.requirement_id=h.work_item_id)
+                             AND w.assigned_user_id=?
+                      )
+                  )
+                LIMIT 1""",
+            (rid, user["id"], user["id"], user["id"], user["id"]),
+        ).fetchone()
+        if not visible:
+            c.close()
+            raise HTTPException(403, "无权查看该申请")
+    c.close()
     return dict(row)
 
 
 @app.post("/api/v1/transfer-requests/{rid}/execute")
 def execute_transfer(
     rid: str,
+    body: TransferAction,
+    request: Request,
     user: sqlite3.Row = Depends(current_user),
     x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
         raise ApiError(403, CODE_FORBIDDEN, "无执行权限", trace_id=trace_id)
-    status = _execute_transfer_items(rid, user, trace_id)
-    return {"requestId": rid, "status": status, "serverTime": now(), "traceId": trace_id}
+    return _execute_transfer_items(
+        rid,
+        user,
+        trace_id,
+        operation_id=str(body.clientOperationId),
+        operation_payload=body.model_dump_json(),
+        request=request,
+    )
 
 
 @app.get("/api/v1/users")

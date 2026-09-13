@@ -54,19 +54,20 @@ def _login(client, username, password):
     return response.json()["accessToken"]
 
 
-def _approved_transfer(client, token, document_no="26B-013", material_id="mat_ctl_cabinet", quantity=1):
+def _approved_transfer(client, submit_token, approve_token, document_no="26B-013", material_id="mat_ctl_cabinet", quantity=1):
     operation = str(uuid.uuid4())
     response = client.post("/api/v1/transfer-requests", json={
         "clientOperationId": operation, "type": "OUTBOUND", "documentNo": document_no,
         "items": [{"materialId": material_id, "quantity": quantity,
                    "expectedInventoryVersion": 1}],
-    }, headers=headers(token, operation))
+    }, headers=headers(submit_token, operation))
     assert response.status_code == 200, response.text
     request_id = response.json()["requestId"]
+    approval_operation = str(uuid.uuid4())
     response = client.post(
         f"/api/v1/transfer-requests/{request_id}/approve",
-        json={"decision": "APPROVE"},
-        headers={"Authorization": f"Bearer {token}", "X-Request-Id": str(uuid.uuid4())},
+        json={"decision": "APPROVE", "clientOperationId": approval_operation},
+        headers=headers(approve_token, approval_operation),
     )
     assert response.status_code == 200, response.text
     return request_id
@@ -99,7 +100,7 @@ def test_handover_confirm_projection_events_inventory_and_timeline():
         warehouse = _login(client, "handover_warehouse", "TestUser@2026")
 
         # 创建交接必须由物料员发起；操作员只有确认权。
-        transfer_id = _approved_transfer(client, warehouse)
+        transfer_id = _approved_transfer(client, material, warehouse)
         work_item = "omr_demo_dev_demo_CC01_mat_ctl_cabinet"
         before = main.db().execute(
             "SELECT available_quantity,version FROM materials WHERE id='mat_ctl_cabinet'"
@@ -168,7 +169,8 @@ def test_handover_confirm_projection_events_inventory_and_timeline():
                               headers={"Authorization": f"Bearer {operator}"})
         assert timeline.status_code == 200
         assert [event["event_type"] for event in timeline.json()["items"]] == [
-            "HANDOVER_CREATED", "HANDOVER_CONFIRMED", "MATERIAL_PICKED_UP", "MATERIAL_AT_STATION",
+            "OUTBOUND_APPROVED", "HANDOVER_CREATED", "HANDOVER_CONFIRMED",
+            "MATERIAL_PICKED_UP", "MATERIAL_AT_STATION",
         ]
         assert timeline.json()["status"] == "CONFIRMED"
         assert timeline.json()["workspaceStatus"] == "AT_STATION"
@@ -194,7 +196,7 @@ def test_handover_reject_cancel_roles_states_and_idempotency():
         material = _login(client, "handover_material2", "TestUser@2026")
         warehouse = _login(client, "handover_warehouse2", "TestUser@2026")
 
-        transfer_id = _approved_transfer(client, warehouse)
+        transfer_id = _approved_transfer(client, material, warehouse)
         work_item = "omr_demo_dev_demo_CC02_mat_ctl_cabinet"
         hid, _ = _create_handover(client, material, transfer_id, work_item,
                                    deviceId="dev_demo_CC02", receiverUserId=None)
@@ -231,7 +233,7 @@ def test_handover_reject_cancel_roles_states_and_idempotency():
                            json={"clientOperationId": terminal_confirm_op, "requestId": str(uuid.uuid4())},
                            headers=headers(warehouse, terminal_confirm_op)).status_code == 409
 
-        transfer_id = _approved_transfer(client, warehouse)
+        transfer_id = _approved_transfer(client, material, warehouse)
         cancel_item = "omr_demo_dev_demo_CC03_mat_ctl_cabinet"
         cancel_hid, _ = _create_handover(client, material, transfer_id, cancel_item,
                                          deviceId="dev_demo_CC03", receiverUserId=None)
@@ -311,9 +313,10 @@ def test_handover_requires_approved_related_transfer_and_target_device():
         }, headers=headers(token, op))
         assert transfer.status_code == 200
         rid = transfer.json()["requestId"]
+        approval_op = str(uuid.uuid4())
         approved = client.post(f"/api/v1/transfer-requests/{rid}/approve",
-                               json={"decision": "APPROVE"},
-                               headers={**headers(token), "X-Request-Id": str(uuid.uuid4())})
+                               json={"decision": "APPROVE", "clientOperationId": approval_op},
+                               headers=headers(token, approval_op))
         assert approved.status_code == 200
 
         work_item = "omr_demo_dev_demo_HZ04_mat_ctl_cabinet"

@@ -55,6 +55,14 @@ def write_headers(op_id: str) -> dict:
     return {**H, "X-Request-Id": str(uuid.uuid4()), "Idempotency-Key": op_id}
 
 
+def action_payload() -> tuple[dict, dict]:
+    operation = str(uuid.uuid4())
+    return (
+        {"clientOperationId": operation},
+        {**H, "X-Request-Id": str(uuid.uuid4()), "Idempotency-Key": operation},
+    )
+
+
 # ---------- 7.1 扫码枚举 ----------
 print("\n[扫码枚举]")
 r = client.post("/api/v1/scan/resolve",
@@ -198,9 +206,10 @@ payload = {"clientOperationId": op_id, "type": "OUTBOUND",
                       "sourceLocationCode": "A-01-03", "expectedInventoryVersion": 999}]}
 r = client.post("/api/v1/transfer-requests", json=payload, headers=write_headers(op_id))
 stale_tr = r.json().get("requestId", "")
+approve_payload, approve_headers = action_payload()
 r = client.post(f"/api/v1/transfer-requests/{stale_tr}/approve",
-                json={"decision": "APPROVE", "comment": "ok"},
-                headers={**H, "X-Request-Id": str(uuid.uuid4())})
+                json={"decision": "APPROVE", "comment": "ok", **approve_payload},
+                headers=approve_headers)
 # 需要另一个用户执行，否则先被同人隔离拦截
 c0 = backend.db()
 if not c0.execute("SELECT 1 FROM users WHERE username='wh1'").fetchone():
@@ -212,8 +221,10 @@ c0.close()
 _r = client.post("/api/v1/auth/login", json={"username": "wh1", "password": "Wh1@2026",
                                             "deviceId": "d1", "clientVersion": "0.3.0"})
 H1 = {"Authorization": f"Bearer {_r.json().get('accessToken','')}"}
+execute_payload, execute_headers = action_payload()
 r = client.post(f"/api/v1/transfer-requests/{stale_tr}/execute",
-                headers={**H1, "X-Request-Id": str(uuid.uuid4())})
+                json=execute_payload,
+                headers={**execute_headers, "Authorization": H1["Authorization"]})
 check("旧版本执行返回 409 INVENTORY_VERSION_CONFLICT",
       r.status_code == 409
       and r.json().get("error", {}).get("code") == "INVENTORY_VERSION_CONFLICT",
@@ -235,11 +246,14 @@ _pl = {"clientOperationId": _op, "type": "OUTBOUND",
                   "expectedInventoryVersion": before_ver}]}
 _r1 = client.post("/api/v1/transfer-requests", json=_pl, headers=write_headers(_op))
 _same_tr = _r1.json().get("requestId", "")
+approve_payload, approve_headers = action_payload()
 client.post(f"/api/v1/transfer-requests/{_same_tr}/approve",
-            json={"decision": "APPROVE", "comment": "ok"},
-            headers={**H, "X-Request-Id": str(uuid.uuid4())})
+            json={"decision": "APPROVE", "comment": "ok", **approve_payload},
+            headers=approve_headers)
+same_execute_payload, same_execute_headers = action_payload()
 _r2 = client.post(f"/api/v1/transfer-requests/{_same_tr}/execute",
-                  headers={**H, "X-Request-Id": str(uuid.uuid4())})
+                  json=same_execute_payload,
+                  headers=same_execute_headers)
 check("ADMIN 自审自执行被拒（409 APPROVAL_EXECUTOR_SAME_USER）",
       _r2.status_code == 409
       and _r2.json().get("error", {}).get("code") == "APPROVAL_EXECUTOR_SAME_USER",
@@ -253,9 +267,10 @@ payload = {"clientOperationId": op_id, "type": "OUTBOUND",
                       "sourceLocationCode": "A-01-03", "expectedInventoryVersion": before_ver}]}
 r = client.post("/api/v1/transfer-requests", json=payload, headers=write_headers(op_id))
 short_tr = r.json().get("requestId", "")
+short_approve_payload, short_approve_headers = action_payload()
 client.post(f"/api/v1/transfer-requests/{short_tr}/approve",
-            json={"decision": "APPROVE", "comment": "ok"},
-            headers={**H, "X-Request-Id": str(uuid.uuid4())})
+            json={"decision": "APPROVE", "comment": "ok", **short_approve_payload},
+            headers=short_approve_headers)
 # 换一个用户执行以绕开同人隔离
 c = backend.db()
 if not c.execute("SELECT 1 FROM users WHERE username='wh2'").fetchone():
@@ -267,8 +282,10 @@ c.close()
 r = client.post("/api/v1/auth/login", json={"username": "wh2", "password": "Wh2@2026",
                                             "deviceId": "d2", "clientVersion": "0.3.0"})
 H2 = {"Authorization": f"Bearer {r.json().get('accessToken','')}"}
+short_execute_payload, short_execute_headers = action_payload()
 r = client.post(f"/api/v1/transfer-requests/{short_tr}/execute",
-                headers={**H2, "X-Request-Id": str(uuid.uuid4())})
+                json=short_execute_payload,
+                headers={**short_execute_headers, "Authorization": H2["Authorization"]})
 check("库存不足返回 409 INSUFFICIENT_INVENTORY",
       r.status_code == 409
       and r.json().get("error", {}).get("code") == "INSUFFICIENT_INVENTORY",
