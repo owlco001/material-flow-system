@@ -119,6 +119,10 @@ data class LogisticsUiState(
     val handoverPendingOperationKey: String? = null,
     val handoverClientOperationId: String? = null,
     val handoverRequestId: String? = null,
+    val transferDecisionSubmittingId: String? = null,
+    val transferDecisionPendingOperationKey: String? = null,
+    val transferDecisionClientOperationId: String? = null,
+    val transferDecisionRequestId: String? = null,
 
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
@@ -411,6 +415,77 @@ class LogisticsViewModel(
     }
 
     // ==================== 交接 ====================
+
+    /** 审批/执行使用稳定操作键，失败重试时沿用同一幂等身份。 */
+    fun approveTransferRequest(transferRequestId: String, approve: Boolean, comment: String = "") {
+        submitTransferDecision(transferRequestId, "APPROVE:$approve:${comment.trim()}") { operationId, requestId ->
+            repo.approveTransferRequest(transferRequestId, approve, comment, operationId, requestId)
+        }
+    }
+
+    fun executeTransferRequest(transferRequestId: String) {
+        submitTransferDecision(transferRequestId, "EXECUTE") { operationId, requestId ->
+            repo.executeTransferRequest(transferRequestId, operationId, requestId)
+        }
+    }
+
+    private fun submitTransferDecision(
+        transferRequestId: String,
+        actionKey: String,
+        call: suspend (String, String) -> Result<*>,
+    ) {
+        if (!_state.value.loggedIn || _state.value.transferDecisionSubmittingId != null) return
+        val operationKey = "$actionKey:$transferRequestId"
+        val operationId = stableTransferOperationId(operationKey)
+        val requestId = stableTransferRequestId(operationKey)
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    transferDecisionSubmittingId = transferRequestId,
+                    transferDecisionPendingOperationKey = operationKey,
+                    transferDecisionClientOperationId = operationId,
+                    transferDecisionRequestId = requestId,
+                    error = null,
+                    message = null,
+                )
+            }
+            call(operationId, requestId).onSuccess {
+                _state.update {
+                    it.copy(
+                        transferDecisionSubmittingId = null,
+                        transferDecisionPendingOperationKey = null,
+                        transferDecisionClientOperationId = null,
+                        transferDecisionRequestId = null,
+                        message = "流转申请操作成功",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        transferDecisionSubmittingId = null,
+                        transferDecisionPendingOperationKey = operationKey,
+                        transferDecisionClientOperationId = operationId,
+                        transferDecisionRequestId = requestId,
+                        error = error.message ?: "流转申请操作失败",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stableTransferOperationId(operationKey: String): String {
+        val current = _state.value
+        return if (current.transferDecisionPendingOperationKey == operationKey) {
+            current.transferDecisionClientOperationId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+    }
+
+    private fun stableTransferRequestId(operationKey: String): String {
+        val current = _state.value
+        return if (current.transferDecisionPendingOperationKey == operationKey) {
+            current.transferDecisionRequestId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+    }
 
     /** 打开当前工作项的一页交接时间线；客户端只保留这一条时间线。 */
     fun openHandoverTimeline(item: WorkspaceMaterialItem) {

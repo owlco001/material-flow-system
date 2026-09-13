@@ -347,24 +347,41 @@ class MaterialFlowApi(
     suspend fun approveTransferRequest(
         requestId: String,
         approve: Boolean,
-        comment: String
+        comment: String,
+        clientOperationId: String,
+        requestIdHeader: String = UUID.randomUUID().toString()
     ): ApprovalDecisionResult = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
+            put("clientOperationId", clientOperationId)
+            put("requestId", requestIdHeader)
             put("decision", if (approve) "APPROVE" else "REJECT")
             put("comment", comment)
         }
         ApiParser.parseApprovalDecision(
-            request("POST", "/api/v1/transfer-requests/$requestId/approve", body.toString())
+            request(
+                "POST", "/api/v1/transfer-requests/$requestId/approve", body.toString(),
+                idempotencyKey = clientOperationId,
+            )
         )
     }
 
     /** 执行已批准的申请 —— 仅在审批通过后允许 */
-    suspend fun executeTransferRequest(requestId: String): ApprovalDecisionResult =
-        withContext(Dispatchers.IO) {
-            ApiParser.parseApprovalDecision(
-                request("POST", "/api/v1/transfer-requests/$requestId/execute", "{}")
-            )
+    suspend fun executeTransferRequest(
+        requestId: String,
+        clientOperationId: String,
+        requestIdHeader: String = UUID.randomUUID().toString()
+    ): ApprovalDecisionResult = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("clientOperationId", clientOperationId)
+            put("requestId", requestIdHeader)
         }
+        ApiParser.parseApprovalDecision(
+            request(
+                "POST", "/api/v1/transfer-requests/$requestId/execute", body.toString(),
+                idempotencyKey = clientOperationId,
+            )
+        )
+    }
 
     /** 查询流转申请列表 */
     suspend fun listTransferRequests(status: String? = null): String = withContext(Dispatchers.IO) {

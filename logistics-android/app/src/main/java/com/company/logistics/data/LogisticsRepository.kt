@@ -201,6 +201,35 @@ open class LogisticsRepository(
         }
     }
 
+    /** 审批与执行均复用调用方生成的幂等键，网络重试不得生成新业务操作。 */
+    open suspend fun approveTransferRequest(
+        transferRequestId: String,
+        approve: Boolean,
+        comment: String,
+        clientOperationId: String,
+        requestId: String,
+    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = runCatching {
+        api.approveTransferRequest(
+            requestId = transferRequestId,
+            approve = approve,
+            comment = comment,
+            clientOperationId = clientOperationId,
+            requestIdHeader = requestId,
+        )
+    }
+
+    open suspend fun executeTransferRequest(
+        transferRequestId: String,
+        clientOperationId: String,
+        requestId: String,
+    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = runCatching {
+        api.executeTransferRequest(
+            requestId = transferRequestId,
+            clientOperationId = clientOperationId,
+            requestIdHeader = requestId,
+        )
+    }
+
     /** 只返回当前工作项的一页时间线，仓储层不拼接历史页。 */
     open suspend fun handoverTimeline(
         workItemId: String,
