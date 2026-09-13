@@ -15,19 +15,28 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 DATA_DIR = Path(os.environ.get("MATERIAL_FLOW_DATA", "/srv/material-flow/data"))
 UPLOAD_DIR = Path(os.environ.get("MATERIAL_FLOW_UPLOADS", "/srv/material-flow/uploads"))
 DB_PATH = DATA_DIR / "material_flow.db"
 INITIAL_ADMIN_PASSWORD = os.environ.get("INITIAL_ADMIN_PASSWORD")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="物料流转系统 API", version="0.1.0")
 bearer = HTTPBearer(auto_error=False)
+
+HEALTH_TABLES = frozenset({
+    "users", "sessions", "consumed_refresh_tokens", "materials", "locations", "inventory",
+    "transfer_requests", "audit_logs", "audit_events", "transfer_operations",
+    "handover_operations", "material_work_items", "material_work_item_projections",
+    "material_handovers", "exceptions", "location_bindings", "stocktakes",
+    "production_orders", "order_devices", "order_material_requirements", "login_attempts",
+})
 
 # 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
 _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
@@ -134,18 +143,101 @@ class ApiError(HTTPException):
         super().__init__(status_code=status_code, detail=message)
 
 
+def _safe_trace_id(candidate: str | None) -> str | None:
+    """Only echo a syntactically valid request id; never reflect arbitrary input."""
+    try:
+        return str(uuid.UUID(candidate)) if candidate else None
+    except (ValueError, AttributeError):
+        return None
+
+
+def _request_trace_id(request: Request) -> str:
+    return _safe_trace_id(request.headers.get("X-Request-Id")) or str(uuid.uuid4())
+
+
+def _safe_http_message(status_code: int, detail: Any) -> str:
+    """Keep legacy ``detail`` responses useful without reflecting request data."""
+    if isinstance(detail, str) and detail in {"账号或密码错误", "未登录", "会话已失效"}:
+        return str(detail)
+    return {
+        400: "请求参数无效",
+        401: "未登录或会话已失效",
+        403: "无权执行此操作",
+        404: "资源不存在",
+        409: "资源状态冲突",
+        413: "请求内容过大",
+        422: "请求参数无效",
+        429: "请求过于频繁",
+    }.get(status_code, "服务器暂时不可用")
+
+
 @app.exception_handler(ApiError)
-async def api_error_handler(_request, exc: ApiError):
-    from fastapi.responses import JSONResponse
+async def api_error_handler(request: Request, exc: ApiError):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {
             "code": exc.code,
             "message": exc.detail,
             "retryable": exc.retryable,
-            "traceId": exc.trace_id,
+            "traceId": _safe_trace_id(exc.trace_id) or _request_trace_id(request),
             **({"details": exc.details} if exc.details else {}),
         }},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, _exc: RequestValidationError):
+    """Do not return Pydantic's input values; they may contain passwords or tokens."""
+    message = "请求参数无效"
+    trace_id = _request_trace_id(request)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": message,
+            "error": {
+                "code": CODE_VALIDATION_ERROR,
+                "message": message,
+                "retryable": False,
+                "traceId": trace_id,
+            },
+        },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_handler(request: Request, exc: StarletteHTTPException):
+    message = _safe_http_message(exc.status_code, exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": message,
+            "error": {
+                "code": {
+                    401: CODE_UNAUTHORIZED,
+                    403: CODE_FORBIDDEN,
+                    422: CODE_VALIDATION_ERROR,
+                }.get(exc.status_code, "HTTP_ERROR"),
+                "message": message,
+                "retryable": exc.status_code in {408, 429} or exc.status_code >= 500,
+                "traceId": _request_trace_id(request),
+            },
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, _exc: Exception):
+    """Turn unexpected failures into a stable response without stack/database details."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "服务器内部错误",
+                "retryable": True,
+                "traceId": _request_trace_id(request),
+            },
+        },
     )
 
 
@@ -181,10 +273,37 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ensure_storage_dirs() -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise RuntimeError("后端存储目录配置不可用") from None
+
+
+def _enable_wal(c: sqlite3.Connection) -> None:
+    """Enable WAL once, tolerating another process finishing startup first."""
+    deadline = time.monotonic() + 30.0
+    while True:
+        try:
+            mode = c.execute("PRAGMA journal_mode").fetchone()[0]
+            if str(mode).lower() == "wal":
+                return
+            c.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def db() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH)
+    _ensure_storage_dirs()
+    c = sqlite3.connect(DB_PATH, timeout=30.0)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
+    c.execute("PRAGMA busy_timeout=30000")
+    _enable_wal(c)
     return c
 
 
@@ -256,8 +375,21 @@ def audit(c: sqlite3.Connection, user_id: str | None, role: str | None, action: 
 
 
 def init_db() -> None:
+    """Initialize or migrate the local database as one serialized operation."""
+    _ensure_storage_dirs()
     c = db()
+    try:
+        _init_db(c)
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def _init_db(c: sqlite3.Connection) -> None:
     c.executescript("""
+    BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL, password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, token_type TEXT NOT NULL DEFAULT 'ACCESS', device_id TEXT);
     -- 已消费的刷新令牌墓碑表：用于检测令牌重放。
@@ -291,7 +423,7 @@ def init_db() -> None:
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
         password = INITIAL_ADMIN_PASSWORD
-        if not password:
+        if not password or not password.strip():
             raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
         c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
@@ -301,7 +433,7 @@ def init_db() -> None:
 
     _migrate_schema(c)
     seed_demo_order(c)
-    c.commit(); c.close()
+    c.commit()
 
 
 # ==================== 演示订单种子 ====================
@@ -407,6 +539,10 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
 
     同样地，production_orders 早期只有 model_name，未区分"产品名"，
     新模型要求 product_name + updated_at，此处按需补齐。
+
+    早期订单需求表没有 device、入库数量、状态和时间字段，不能直接
+    ADD COLUMN（旧表上的约束和唯一索引仍会保留）。迁移时重建为当前
+    结构，并把历史需求保留为未入库的按订单级需求。
     """
     c.execute("UPDATE users SET role='MATERIAL' WHERE role='MATERIAL_CLERK'")
     existing = {r["name"] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
@@ -427,6 +563,88 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     if "updated_at" not in po_cols:
         c.execute("ALTER TABLE production_orders ADD COLUMN updated_at TEXT")
         c.execute("UPDATE production_orders SET updated_at = created_at WHERE updated_at IS NULL")
+
+    _migrate_legacy_order_requirements(c)
+
+
+def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
+    columns = {
+        row["name"] for row in c.execute(
+            "PRAGMA table_info(order_material_requirements)"
+        ).fetchall()
+    }
+    required_columns = {
+        "id", "order_id", "device_id", "material_id", "required_quantity",
+        "arrived_quantity", "in_stock_quantity", "status_code", "created_at",
+        "updated_at",
+    }
+    if required_columns <= columns:
+        return
+
+    legacy_columns = {
+        "id", "order_id", "material_id", "required_quantity", "arrived_quantity",
+    }
+    if not legacy_columns <= columns:
+        raise RuntimeError("历史订单需求表结构无法安全迁移")
+
+    legacy_table = "order_material_requirements_legacy"
+    if c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (legacy_table,),
+    ).fetchone():
+        raise RuntimeError("检测到未完成的订单需求迁移")
+
+    c.execute(
+        "ALTER TABLE order_material_requirements RENAME TO " + legacy_table
+    )
+    c.execute(
+        """CREATE TABLE order_material_requirements(
+            id TEXT PRIMARY KEY,
+            order_id TEXT NOT NULL REFERENCES production_orders(id) ON DELETE CASCADE,
+            device_id TEXT REFERENCES order_devices(id) ON DELETE CASCADE,
+            material_id TEXT NOT NULL REFERENCES materials(id),
+            required_quantity INTEGER NOT NULL CHECK(required_quantity > 0),
+            arrived_quantity INTEGER NOT NULL DEFAULT 0 CHECK(arrived_quantity >= 0),
+            in_stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK(in_stock_quantity >= 0),
+            status_code TEXT NOT NULL CHECK(status_code IN ('OUT_OF_STOCK','ARRIVED','IN_STOCK')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(arrived_quantity <= required_quantity),
+            CHECK(in_stock_quantity <= arrived_quantity),
+            UNIQUE(order_id, device_id, material_id)
+        )"""
+    )
+
+    rows = c.execute(
+        "SELECT id,order_id,material_id,required_quantity,arrived_quantity "
+        f"FROM {legacy_table}"
+    ).fetchall()
+    for row in rows:
+        required = row["required_quantity"]
+        arrived = row["arrived_quantity"]
+        if (
+            isinstance(required, bool)
+            or not isinstance(required, int)
+            or required <= 0
+            or isinstance(arrived, bool)
+            or not isinstance(arrived, int)
+            or arrived < 0
+            or arrived > required
+        ):
+            raise RuntimeError("历史订单需求数据无法安全迁移")
+        created_at = now()
+        status = "ARRIVED" if arrived else "OUT_OF_STOCK"
+        c.execute(
+            """INSERT INTO order_material_requirements
+               (id,order_id,device_id,material_id,required_quantity,
+                arrived_quantity,in_stock_quantity,status_code,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["id"], row["order_id"], None, row["material_id"], required,
+                arrived, 0, status, created_at, created_at,
+            ),
+        )
+    c.execute("DROP TABLE " + legacy_table)
 
 
 @app.on_event("startup")
@@ -580,7 +798,33 @@ class TransferAction(BaseModel):
 
 
 @app.get("/healthz")
-def health() -> dict[str, str]: return {"status": "ok", "service": "material-flow", "serverTime": now()}
+def health() -> dict[str, str]:
+    c: sqlite3.Connection | None = None
+    try:
+        c = db()
+        tables = {
+            row["name"] for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if not HEALTH_TABLES <= tables:
+            raise sqlite3.DatabaseError("schema is incomplete")
+        if c.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok":
+            raise sqlite3.DatabaseError("database check failed")
+        return {
+            "status": "ok",
+            "service": "material-flow",
+            "database": "ok",
+            "serverTime": now(),
+        }
+    except (OSError, RuntimeError, sqlite3.Error):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "service": "material-flow"},
+        )
+    finally:
+        if c is not None:
+            c.close()
 
 
 @app.post("/api/v1/auth/login")
@@ -896,7 +1140,7 @@ def material_status(
         if document_type in FORBIDDEN_SCAN_TYPES:
             raise ApiError(
                 400, CODE_INVALID_SCAN_TYPE,
-                f"documentType={document_type} 已作废，请使用 PRODUCTION_ORDER 或 ORDER_NO",
+                "该 documentType 已作废，请使用 PRODUCTION_ORDER 或 ORDER_NO",
                 trace_id=trace_id,
             )
         raise ApiError(
@@ -916,7 +1160,7 @@ def material_status(
         # 规格第 5 节：订单不存在返回 404，不再回退成全量物料
         raise ApiError(
             404, CODE_ORDER_NOT_FOUND,
-            f"订单 {document_no} 不存在", trace_id=trace_id,
+            "订单不存在", trace_id=trace_id,
         )
 
     rows = c.execute(
@@ -1934,7 +2178,7 @@ def _execute_transfer_items(
                 "SELECT id,available_quantity,version FROM materials WHERE id=?", (material_id,)
             ).fetchone()
             if not material:
-                raise ApiError(400, CODE_VALIDATION_ERROR, f"物料不存在: {material_id}", trace_id=trace_id)
+                raise ApiError(400, CODE_VALIDATION_ERROR, "物料不存在", trace_id=trace_id)
 
             # 乐观锁：版本不匹配整单回滚
             if expected_version is not None and material["version"] != expected_version:
@@ -2021,7 +2265,7 @@ def _adjust_location_qty(c: sqlite3.Connection, material_id: str, location_code:
     loc = c.execute("SELECT id FROM locations WHERE code=?", (location_code,)).fetchone()
     if not loc:
         raise ApiError(400, CODE_VALIDATION_ERROR,
-                       f"库位不存在: {location_code}", trace_id=trace_id)
+                       "库位不存在", trace_id=trace_id)
     existing = c.execute(
         "SELECT id,quantity FROM inventory WHERE material_id=? AND location_id=?",
         (material_id, loc["id"]),
@@ -2029,14 +2273,14 @@ def _adjust_location_qty(c: sqlite3.Connection, material_id: str, location_code:
     if existing is None:
         if delta < 0:
             raise ApiError(409, CODE_INSUFFICIENT_INVENTORY,
-                           f"库位 {location_code} 无可用库存", trace_id=trace_id)
+                           "库位无可用库存", trace_id=trace_id)
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)",
                   ("inv_" + uuid.uuid4().hex, material_id, loc["id"], delta))
         return
     new_qty = existing["quantity"] + delta
     if new_qty < 0:
         raise ApiError(409, CODE_INSUFFICIENT_INVENTORY,
-                       f"库位 {location_code} 库存不足", trace_id=trace_id)
+                           "库位库存不足", trace_id=trace_id)
     c.execute("UPDATE inventory SET quantity=? WHERE id=?", (new_qty, existing["id"]))
 
 
