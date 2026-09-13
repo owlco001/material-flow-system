@@ -33,6 +33,10 @@ class LogisticsRepository(
 ) {
     var onSessionExpired: (() -> Unit)? = null
 
+    // Only a remembered login may write rotated tokens to disk.
+    @Volatile
+    private var persistSession = false
+
     /**
      * 契约 API 句柄。
      *
@@ -49,7 +53,7 @@ class LogisticsRepository(
             if (access == null && refresh == null) {
                 sessionStore?.clear()
                 onSessionExpired?.invoke()
-            } else {
+            } else if (persistSession) {
                 sessionStore?.updateTokens(access, refresh)
             }
         }
@@ -62,6 +66,7 @@ class LogisticsRepository(
 
     suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
+        persistSession = remember
         if (remember) {
             sessionStore?.save(result.accessToken, result.refreshToken, deviceId,
                 SessionStore.UserSummary(result.user.id, result.user.username, result.user.displayName,
@@ -73,6 +78,7 @@ class LogisticsRepository(
     }
 
     fun logout() {
+        persistSession = false
         api.updateToken(null)
         sessionStore?.clear()
     }
@@ -80,32 +86,42 @@ class LogisticsRepository(
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
         runCatching { api.logout() }
+        persistSession = false
         sessionStore?.clear()
     }
 
     /**
      * 冷启动时恢复会话。
      *
-     * 只恢复 refresh token 即可：access token 可能已过期，
+     * 只有完整摘要和 token 对才恢复 UI 登录态；access token 可能已过期，
      * 首个业务请求会触发 401 → 自动刷新，无需在此处预判时效。
      */
     fun restoreSession(): Boolean {
         val store = sessionStore ?: return false
-        val refresh = store.refreshToken() ?: return false
+        val access = store.accessToken()
+        val refresh = store.refreshToken()
+        if (access == null || refresh == null || store.userSummary() == null) {
+            store.clear()
+            api.updateToken(null)
+            return false
+        }
+        persistSession = true
         api.restoreSession(
-            access = store.accessToken(),
+            access = access,
             refresh = refresh,
             device = store.deviceId() ?: "unknown"
         )
         return true
     }
 
-    fun persistedUser(): SessionStore.UserSummary? = sessionStore?.userSummary()
+    fun persistedUser(): SessionStore.UserSummary? = sessionStore?.let { store ->
+        if (persistSession && api.accessToken != null && api.refreshToken != null) store.userSummary() else null
+    }
 
     /** 刷新成功后由网络层回调落盘，此处无需再手动调用 */
     @Deprecated("由 api.onTokensRotated 回调自动完成", ReplaceWith(""))
     fun persistTokens() {
-        sessionStore?.updateTokens(api.accessToken, api.refreshToken)
+        if (persistSession) sessionStore?.updateTokens(api.accessToken, api.refreshToken)
     }
 
     val isLoggedIn: Boolean get() = api.accessToken != null || api.refreshToken != null
