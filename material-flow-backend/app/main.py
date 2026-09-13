@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -48,6 +48,45 @@ ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
 ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN")
 HANDOVER_STATES = ("PENDING", "CONFIRMED", "REJECTED", "CANCELLED")
+
+# 工作台展示状态是从正式订单需求、流转申请和交接记录实时投影出来的，
+# 不在 material_work_items 中维护第二份数量或状态事实。
+WORKSPACE_STATUS_CODES = frozenset({
+    "OUT_OF_STOCK", "ARRIVED", "IN_STOCK",
+    "OUTBOUND_PENDING", "OUTBOUND_APPROVED", "OUTBOUND_CONFIRMED",
+    "PENDING", "PICKED_UP", "AT_STATION", "REJECTED", "CANCELLED",
+})
+WORKSPACE_STATUS_LABELS = {
+    "OUT_OF_STOCK": "缺货",
+    "ARRIVED": "到货",
+    "IN_STOCK": "在库",
+    "OUTBOUND_PENDING": "待出库",
+    "OUTBOUND_APPROVED": "已审批待出库",
+    "OUTBOUND_CONFIRMED": "已出库",
+    "PENDING": "待交接",
+    "PICKED_UP": "已领取",
+    "AT_STATION": "已到机台",
+    "REJECTED": "已驳回",
+    "CANCELLED": "已取消",
+}
+WORKSPACE_STATUS_COLORS = {
+    "OUT_OF_STOCK": "status-red",
+    "ARRIVED": "status-yellow",
+    "IN_STOCK": "status-green",
+    "OUTBOUND_PENDING": "status-yellow",
+    "OUTBOUND_APPROVED": "status-blue",
+    "OUTBOUND_CONFIRMED": "status-green",
+    "PENDING": "status-yellow",
+    "PICKED_UP": "status-green",
+    "AT_STATION": "status-green",
+    "REJECTED": "status-red",
+    "CANCELLED": "status-neutral",
+}
+OUTBOUND_STATUS_TO_WORKSPACE = {
+    "PENDING_APPROVAL": "OUTBOUND_PENDING",
+    "APPROVED": "OUTBOUND_APPROVED",
+    "EXECUTED": "OUTBOUND_CONFIRMED",
+}
 
 # 固定错误码
 CODE_INVALID_REQUEST_ID = "INVALID_REQUEST_ID"
@@ -913,6 +952,569 @@ def material_status(
         "productName": order["product_name"],
         "orderStatus": order["status"],
         "items": items,
+        "serverTime": now(),
+        "traceId": trace_id,
+    }
+
+
+def _workspace_status_meta(status_code: str) -> tuple[str, str]:
+    """返回服务端状态展示元数据，并对未知状态保持安全降级。"""
+    return (
+        WORKSPACE_STATUS_LABELS.get(status_code, "未知状态"),
+        WORKSPACE_STATUS_COLORS.get(status_code, "status-neutral"),
+    )
+
+
+def _workspace_requirements(
+    c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None,
+) -> list[sqlite3.Row]:
+    """读取工作台的正式订单需求行。
+
+    material_work_items 只作为责任人投影使用。工作台的数量始终从
+    order_material_requirements 与 material_handovers 实时派生，避免再维护
+    一套 issued/picked 数量事实。
+    """
+    if user["role"] not in ROLES:
+        raise ApiError(403, CODE_FORBIDDEN, "账号角色无效")
+
+    query = """
+        SELECT r.id AS requirement_id,
+               COALESCE(
+                   (SELECT w.id
+                      FROM material_work_items w
+                     WHERE w.requirement_id = r.id OR w.id = r.id
+                     ORDER BY (w.requirement_id IS NULL), w.id
+                     LIMIT 1),
+                   r.id
+               ) AS work_item_id,
+               (SELECT w.assigned_user_id
+                  FROM material_work_items w
+                 WHERE w.requirement_id = r.id OR w.id = r.id
+                 ORDER BY (w.requirement_id IS NULL), w.id
+                 LIMIT 1) AS assigned_user_id,
+               (SELECT u.display_name
+                  FROM users u
+                 WHERE u.id = (
+                     SELECT w.assigned_user_id
+                       FROM material_work_items w
+                      WHERE w.requirement_id = r.id OR w.id = r.id
+                      ORDER BY (w.requirement_id IS NULL), w.id
+                      LIMIT 1
+                 )) AS assigned_user_name,
+               o.order_no AS order_no,
+               o.product_name AS product_name,
+               o.status AS order_status,
+               r.device_id AS device_id,
+               d.device_type AS device_type,
+               d.device_no AS device_no,
+               d.sequence_no AS sequence_no,
+               r.material_id AS material_id,
+               m.code AS material_code,
+               m.name AS material_name,
+               m.specification AS specification,
+               m.unit AS unit,
+               r.required_quantity AS required_quantity,
+               r.arrived_quantity AS arrived_quantity,
+               r.in_stock_quantity AS in_stock_quantity,
+               r.status_code AS requirement_status_code,
+               r.updated_at AS requirement_updated_at,
+               r.created_at AS requirement_created_at
+          FROM order_material_requirements r
+          JOIN production_orders o ON o.id = r.order_id
+          JOIN materials m ON m.id = r.material_id
+          LEFT JOIN order_devices d ON d.id = r.device_id
+         WHERE 1=1
+    """
+    args: list[Any] = []
+    if order_no is not None:
+        query += " AND o.order_no = ?"
+        args.append(order_no)
+
+    # 操作员只能看到服务端登记的本人责任范围，不能靠客户端隐藏按钮实现。
+    # 责任范围同时兼容历史数据：既支持 material_work_items.assignment，
+    # 也支持本人作为交接创建人/接收人的正式交接记录。
+    if user["role"] == "OPERATOR":
+        query += """
+            AND (
+                EXISTS (
+                    SELECT 1
+                      FROM material_work_items w
+                     WHERE (w.requirement_id = r.id OR w.id = r.id)
+                       AND w.assigned_user_id = ?
+                )
+                OR EXISTS (
+                    SELECT 1
+                      FROM material_handovers h
+                     WHERE (
+                         h.work_item_id = r.id
+                         OR EXISTS (
+                             SELECT 1
+                               FROM material_work_items w2
+                              WHERE w2.id = h.work_item_id
+                                AND w2.requirement_id = r.id
+                         )
+                     )
+                       AND (
+                           h.receiver_user_id = ?
+                           OR h.created_by = ?
+                           OR h.confirmed_by = ?
+                       )
+                )
+            )
+        """
+        args.extend([user["id"]] * 4)
+    elif user["role"] == "MATERIAL":
+        # 物料员只看服务端能证明与本人作业相关的出库/交接行：
+        # 既兼容责任人投影，也兼容正式出库单/交接记录的创建人。
+        # 不把整个订单需求表暴露给普通物料员。
+        query += """
+            AND (
+                EXISTS (
+                    SELECT 1
+                      FROM material_work_items w
+                     WHERE (w.requirement_id = r.id OR w.id = r.id)
+                       AND w.assigned_user_id = ?
+                )
+                OR EXISTS (
+                    SELECT 1
+                      FROM transfer_requests t
+                     WHERE t.type = 'OUTBOUND'
+                       AND t.document_no = o.order_no
+                       AND t.created_by = ?
+                       AND EXISTS (
+                           SELECT 1
+                             FROM json_each(t.payload_json, '$.items') payload_item
+                            WHERE json_extract(payload_item.value, '$.materialId') = r.material_id
+                       )
+                )
+                OR EXISTS (
+                    SELECT 1
+                      FROM material_handovers h
+                     WHERE (
+                         h.work_item_id = r.id
+                         OR EXISTS (
+                             SELECT 1
+                               FROM material_work_items w2
+                              WHERE w2.id = h.work_item_id
+                                AND w2.requirement_id = r.id
+                         )
+                     )
+                       AND (h.created_by = ? OR h.confirmed_by = ?)
+                )
+            )
+        """
+        args.extend([user["id"]] * 4)
+
+    query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
+    return c.execute(query, args).fetchall()
+
+
+def _workspace_handovers(
+    c: sqlite3.Connection, work_item_ids: set[str],
+) -> dict[str, list[sqlite3.Row]]:
+    if not work_item_ids:
+        return {}
+    placeholders = ",".join("?" for _ in work_item_ids)
+    rows = c.execute(
+        f"""
+        SELECT h.*,
+               t.status AS transfer_status,
+               s.display_name AS sender_name,
+               receiver.display_name AS receiver_name,
+               confirmer.display_name AS confirmed_by_name
+          FROM material_handovers h
+          LEFT JOIN transfer_requests t ON t.id = h.transfer_request_id
+          LEFT JOIN users s ON s.id = h.created_by
+          LEFT JOIN users receiver ON receiver.id = h.receiver_user_id
+          LEFT JOIN users confirmer ON confirmer.id = h.confirmed_by
+         WHERE h.work_item_id IN ({placeholders})
+         ORDER BY h.created_at, h.id
+        """,
+        list(work_item_ids),
+    ).fetchall()
+    result: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        result.setdefault(row["work_item_id"], []).append(row)
+    return result
+
+
+def _workspace_transfer_records(
+    c: sqlite3.Connection, order_nos: set[str],
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """从正式 OUTBOUND 流转单 payload 投影出库状态，不复制数量到工作项表。"""
+    if not order_nos:
+        return {}
+    placeholders = ",".join("?" for _ in order_nos)
+    rows = c.execute(
+        f"""
+        SELECT t.id, t.status, t.document_no, t.payload_json, t.created_at,
+               t.approved_at, t.executed_at, t.created_by,
+               u.display_name AS created_by_name
+          FROM transfer_requests t
+          JOIN users u ON u.id = t.created_by
+         WHERE t.type = 'OUTBOUND' AND t.document_no IN ({placeholders})
+         ORDER BY t.created_at, t.id
+        """,
+        list(order_nos),
+    ).fetchall()
+    result: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        for item in payload.get("items", []):
+            material_id = item.get("materialId")
+            if not material_id:
+                continue
+            key = (row["document_no"], material_id)
+            result.setdefault(key, []).append({
+                "id": row["id"],
+                "status": row["status"],
+                "quantity": item.get("quantity", 0),
+                "createdAt": row["created_at"],
+                "approvedAt": row["approved_at"],
+                "executedAt": row["executed_at"],
+                "createdBy": row["created_by"],
+                "createdByName": row["created_by_name"],
+            })
+    return result
+
+
+def _workspace_last_handover(
+    row: sqlite3.Row, handovers: dict[str, list[sqlite3.Row]],
+) -> list[sqlite3.Row]:
+    """一个需求可能兼容两个工作项 ID，合并后按交接服务端时间排序。"""
+    candidates = {row["requirement_id"], row["work_item_id"]}
+    values: list[sqlite3.Row] = []
+    for work_item_id in candidates:
+        values.extend(handovers.get(work_item_id, []))
+    # 同一交接不会同时使用两个 ID；去重仍可防止脏历史数据放大数量。
+    unique: dict[str, sqlite3.Row] = {item["id"]: item for item in values}
+    return sorted(unique.values(), key=lambda item: (item["created_at"], item["id"]))
+
+
+def _workspace_item(
+    row: sqlite3.Row,
+    handovers: dict[str, list[sqlite3.Row]],
+    transfers: dict[tuple[str, str], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    item_handovers = _workspace_last_handover(row, handovers)
+    item_transfers = list(transfers.get((row["order_no"], row["material_id"]), []))
+
+    # 交接记录本身携带正式 transferRequestId。即使历史流转单没有 documentNo，
+    # 也能把它的服务端状态纳入该需求行的展示状态。
+    known_transfer_ids = {record["id"] for record in item_transfers}
+    for handover in item_handovers:
+        transfer_id = handover["transfer_request_id"]
+        if transfer_id and transfer_id not in known_transfer_ids:
+            item_transfers.append({
+                "id": transfer_id,
+                "status": handover["transfer_status"],
+                "quantity": 0,
+                "createdAt": handover["created_at"],
+                "approvedAt": None,
+                "executedAt": None,
+                "createdBy": handover["created_by"],
+                "createdByName": handover["sender_name"],
+            })
+            known_transfer_ids.add(transfer_id)
+    item_transfers.sort(key=lambda record: (record["createdAt"] or "", record["id"] or ""))
+    latest_transfer = item_transfers[-1] if item_transfers else None
+    latest_handover = item_handovers[-1] if item_handovers else None
+
+    if latest_handover and latest_handover["status"] == "PENDING":
+        status_code = "PENDING"
+    elif latest_handover and latest_handover["status"] == "CONFIRMED":
+        # AT_STATION 只能由确认事件 + 订单登记机台共同证明。
+        status_code = (
+            "AT_STATION"
+            if latest_handover["device_id"]
+            and row["device_id"]
+            and latest_handover["device_id"] == row["device_id"]
+            else "PICKED_UP"
+        )
+    elif latest_handover and latest_handover["status"] in {"REJECTED", "CANCELLED"}:
+        status_code = (
+            OUTBOUND_STATUS_TO_WORKSPACE.get(latest_transfer["status"])
+            if latest_transfer else None
+        ) or row["requirement_status_code"]
+    else:
+        status_code = (
+            OUTBOUND_STATUS_TO_WORKSPACE.get(latest_transfer["status"])
+            if latest_transfer else None
+        ) or row["requirement_status_code"]
+
+    status_label, color_token = _workspace_status_meta(status_code)
+    # 流转单 item 只有 order + material 维度，无法安全分摊到同一订单的多台机台。
+    # 因此工作项数量只从带 work_item_id 的正式交接记录派生，避免把一笔出库
+    # 复制到每台设备，也避免读取 work_items.quantity 形成第二套数量事实。
+    issued_quantity = sum(
+        handover["quantity"]
+        for handover in item_handovers
+        if handover["status"] not in {"REJECTED", "CANCELLED"}
+    )
+    picked_quantity = sum(
+        handover["quantity"]
+        for handover in item_handovers
+        if handover["status"] == "CONFIRMED"
+    )
+
+    owner_id = row["assigned_user_id"]
+    owner_name = row["assigned_user_name"]
+    if latest_handover and latest_handover["status"] in {"PENDING", "CONFIRMED"}:
+        owner_id = (
+            latest_handover["receiver_user_id"]
+            or latest_handover["confirmed_by"]
+            or latest_handover["created_by"]
+        )
+        owner_name = (
+            latest_handover["receiver_name"]
+            or latest_handover["confirmed_by_name"]
+            or latest_handover["sender_name"]
+        )
+    elif latest_transfer and latest_transfer["createdBy"]:
+        owner_id = latest_transfer["createdBy"]
+        owner_name = latest_transfer["createdByName"]
+
+    updated_values = [row["requirement_updated_at"], row["requirement_created_at"]]
+    updated_values.extend(handover["created_at"] for handover in item_handovers)
+    updated_values.extend(record["createdAt"] for record in item_transfers)
+    updated_at = max((value for value in updated_values if value), default=now())
+
+    last_handover = None
+    if latest_handover:
+        last_handover = {
+            "id": latest_handover["id"],
+            "status": latest_handover["status"],
+            "quantity": latest_handover["quantity"],
+            "fromLocation": latest_handover["from_location"],
+            "deviceId": latest_handover["device_id"],
+            "transferRequestId": latest_handover["transfer_request_id"],
+            "senderUserId": latest_handover["created_by"],
+            "senderName": latest_handover["sender_name"],
+            "receiverUserId": latest_handover["receiver_user_id"],
+            "receiverName": latest_handover["receiver_name"],
+            "initiatedAt": latest_handover["created_at"],
+            "confirmedBy": latest_handover["confirmed_by"],
+            "confirmedAt": latest_handover["confirmed_at"],
+            "remark": latest_handover["remark"],
+        }
+
+    return {
+        "id": row["work_item_id"],
+        "requirementId": row["requirement_id"],
+        "orderNo": row["order_no"],
+        "productName": row["product_name"],
+        "orderStatus": row["order_status"],
+        "deviceId": row["device_id"],
+        "deviceType": row["device_type"],
+        "deviceNo": row["device_no"],
+        "materialId": row["material_id"],
+        "materialCode": row["material_code"],
+        "materialName": row["material_name"],
+        "specification": row["specification"],
+        "unit": row["unit"],
+        "requiredQuantity": row["required_quantity"],
+        "arrivedQuantity": row["arrived_quantity"],
+        "inStockQuantity": row["in_stock_quantity"],
+        "issuedQuantity": issued_quantity,
+        "pickedQuantity": picked_quantity,
+        "statusCode": status_code,
+        "statusLabel": status_label,
+        "label": status_label,
+        "colorToken": color_token,
+        "statusDomain": (
+            "INVENTORY" if status_code in {"OUT_OF_STOCK", "ARRIVED", "IN_STOCK"}
+            else "OUTBOUND" if status_code.startswith("OUTBOUND_")
+            else "HANDOVER" if status_code in {"PENDING", "REJECTED", "CANCELLED"}
+            else "WORKSPACE" if status_code in {"PICKED_UP", "AT_STATION"}
+            else "UNKNOWN"
+        ),
+        "updatedAt": updated_at,
+        "assignedUserId": row["assigned_user_id"],
+        "assignedUserName": row["assigned_user_name"],
+        "currentOwnerUserId": owner_id,
+        "currentOwnerName": owner_name,
+        "responsibilitySummary": {
+            "assignedUserId": row["assigned_user_id"],
+            "assignedUserName": row["assigned_user_name"],
+            "currentOwnerUserId": owner_id,
+            "currentOwnerName": owner_name,
+        },
+        "lastHandoverId": latest_handover["id"] if latest_handover else None,
+        "lastHandoverStatus": latest_handover["status"] if latest_handover else None,
+        "lastHandover": last_handover,
+        "handoverSummary": {
+            "lastHandoverId": latest_handover["id"] if latest_handover else None,
+            "lastStatus": latest_handover["status"] if latest_handover else None,
+            "lastInitiatedAt": latest_handover["created_at"] if latest_handover else None,
+            "lastConfirmedAt": latest_handover["confirmed_at"] if latest_handover else None,
+            "count": len(item_handovers),
+        },
+        "transferRequestId": latest_transfer["id"] if latest_transfer else None,
+        "transferStatus": latest_transfer["status"] if latest_transfer else None,
+    }
+
+
+def _workspace_items(c: sqlite3.Connection, user: sqlite3.Row,
+                     order_no: str | None = None) -> list[dict[str, Any]]:
+    rows = _workspace_requirements(c, user, order_no)
+    work_item_ids = {
+        work_item_id
+        for row in rows
+        for work_item_id in (row["requirement_id"], row["work_item_id"])
+        if work_item_id
+    }
+    handovers = _workspace_handovers(c, work_item_ids)
+    transfers = _workspace_transfer_records(c, {row["order_no"] for row in rows})
+    return [_workspace_item(row, handovers, transfers) for row in rows]
+
+
+def _workspace_summary_flow_counts(
+    c: sqlite3.Connection, user: sqlite3.Row,
+) -> tuple[int, int, int]:
+    """读取正式流转/交接事实的汇总计数。
+
+    流转申请的 documentNo 可以为空，所以这三项不能仅通过订单需求
+    工作项反推；权限条件仍在 SQL 中按当前用户角色执行。
+    """
+    flow_args: list[Any] = []
+    flow_scope = "1=1"
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        flow_scope = "created_by = ?"
+        flow_args.append(user["id"])
+
+    pending_approval = c.execute(
+        f"""
+        SELECT COUNT(*) AS count
+          FROM transfer_requests
+         WHERE {flow_scope} AND status = 'PENDING_APPROVAL'
+        """,
+        flow_args,
+    ).fetchone()["count"]
+    pending_outbound_args = list(flow_args)
+    pending_outbound = c.execute(
+        f"""
+        SELECT COUNT(*) AS count
+          FROM transfer_requests
+         WHERE {flow_scope}
+           AND type = 'OUTBOUND'
+           AND status IN ('PENDING_APPROVAL', 'APPROVED')
+        """,
+        pending_outbound_args,
+    ).fetchone()["count"]
+
+    handover_args: list[Any] = []
+    if user["role"] in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        handover_scope = "1=1"
+    elif user["role"] == "OPERATOR":
+        handover_scope = """
+            (
+                receiver_user_id = ?
+                OR created_by = ?
+                OR confirmed_by = ?
+                OR EXISTS (
+                    SELECT 1
+                      FROM material_work_items w
+                     WHERE (w.id = material_handovers.work_item_id
+                            OR w.requirement_id = material_handovers.work_item_id)
+                       AND w.assigned_user_id = ?
+                )
+            )
+        """
+        handover_args.extend([user["id"]] * 4)
+    else:  # MATERIAL
+        handover_scope = "(created_by = ? OR confirmed_by = ?)"
+        handover_args.extend([user["id"], user["id"]])
+
+    pending_handover = c.execute(
+        f"""
+        SELECT COUNT(*) AS count
+          FROM material_handovers
+         WHERE {handover_scope} AND status = 'PENDING'
+        """,
+        handover_args,
+    ).fetchone()["count"]
+    return pending_approval, pending_outbound, pending_handover
+
+
+def _workspace_filter_status(items: list[dict[str, Any]], status: str | None,
+                             trace_id: str = "") -> list[dict[str, Any]]:
+    if not status:
+        return items
+    normalized = status.strip().upper()
+    if normalized not in WORKSPACE_STATUS_CODES:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "status 不是有效的工作台状态", trace_id=trace_id)
+    return [
+        item for item in items
+        if item["statusCode"] == normalized
+        or item["lastHandoverStatus"] == normalized
+    ]
+
+
+@app.get("/api/v1/workspace/summary")
+def workspace_summary(
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """返回当前服务端角色可见范围内的工作台汇总。"""
+    trace_id = x_request_id or ""
+    c = db()
+    try:
+        items = _workspace_items(c, user)
+    finally:
+        c.close()
+
+    c = db()
+    try:
+        pending_approval_count, pending_outbound_count, pending_handover_count = (
+            _workspace_summary_flow_counts(c, user)
+        )
+    finally:
+        c.close()
+    generated_at = now()
+    return {
+        "role": user["role"],
+        "pendingApprovalCount": pending_approval_count,
+        "pendingOutboundCount": pending_outbound_count,
+        "pendingHandoverCount": pending_handover_count,
+        "atStationCount": sum(item["statusCode"] == "AT_STATION" for item in items),
+        "pickedUpCount": sum(item["statusCode"] == "PICKED_UP" for item in items),
+        "outOfStockCount": sum(item["statusCode"] == "OUT_OF_STOCK" for item in items),
+        "generatedAt": generated_at,
+        "serverTime": generated_at,
+        "traceId": trace_id,
+    }
+
+
+@app.get("/api/v1/workspace/material-items")
+def workspace_material_items(
+    status: str | None = Query(default=None, max_length=64),
+    orderNo: str | None = Query(default=None, max_length=64),
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=50),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """按服务端角色范围返回订单需求工作项，并提供稳定分页元数据。"""
+    trace_id = x_request_id or ""
+    normalized_order_no = orderNo.strip() if orderNo is not None else None
+    c = db()
+    try:
+        all_items = _workspace_items(c, user, normalized_order_no)
+    finally:
+        c.close()
+    visible_items = _workspace_filter_status(all_items, status, trace_id)
+    total = len(visible_items)
+    start = (page - 1) * pageSize
+    items = visible_items[start:start + pageSize]
+    return {
+        "items": items,
+        "page": page,
+        "pageSize": pageSize,
+        "total": total,
+        "totalPages": (total + pageSize - 1) // pageSize if total else 0,
         "serverTime": now(),
         "traceId": trace_id,
     }
