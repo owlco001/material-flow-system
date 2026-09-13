@@ -11,6 +11,34 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+
+/**
+ * 相机启动状态机。
+ *
+ * 存在的理由：此前 UI 只有一个 `else` 分支，把「正在异步初始化」与
+ * 「启动失败」渲染成同一句话「正在启动摄像头…」，且失败后没有任何恢复路径
+ * —— 用户分不清是在转圈还是已经死了，只能退出重进。
+ *
+ * 拆成显式状态后，UI 可以对三种情况给出不同且可操作的反馈：
+ *
+ *   Idle ──startScanning()──► Starting ──成功──► Ready
+ *                                │
+ *                                └──超时/异常──► Failed(reason) ──retry()──► Starting
+ */
+sealed interface CameraStatus {
+    /** 尚未开始（权限未授予或页面未就绪） */
+    data object Idle : CameraStatus
+
+    /** 正在异步绑定相机；UI 应显示进度，超过 [CAMERA_START_TIMEOUT_MS] 转 Failed */
+    data object Starting : CameraStatus
+
+    /** 预览已出图，可扫码 */
+    data object Ready : CameraStatus
+
+    /** 启动失败；[reason] 是给现场人员看的具体原因，不是堆栈 */
+    data class Failed(val reason: String) : CameraStatus
+}
 
 /**
  * 扫码页 ViewModel。
@@ -25,8 +53,13 @@ class ScannerViewModel(
     private val _uiState = MutableStateFlow<ScannerUiState>(ScannerUiState.PermissionRequired)
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
-    private val _cameraBound = MutableStateFlow(false)
-    val cameraBound: StateFlow<Boolean> = _cameraBound.asStateFlow()
+    private val _cameraStatus = MutableStateFlow<CameraStatus>(CameraStatus.Idle)
+    val cameraStatus: StateFlow<CameraStatus> = _cameraStatus.asStateFlow()
+
+    /** 仍在绑定中（Starting）时为 true —— UI 据此显示进度指示 */
+    val cameraBound: StateFlow<Boolean> get() = _cameraBoundMirror
+
+    private val _cameraBoundMirror = MutableStateFlow(false)
 
     private val _torchOn = MutableStateFlow(false)
     val torchOn: StateFlow<Boolean> = _torchOn.asStateFlow()
@@ -45,38 +78,108 @@ class ScannerViewModel(
     /**
      * 绑定预览并开始识别。
      * 仅当权限已被授予时调用；权限流程由 UI 层负责请求。
+     *
+     * 重入保护说明：原实现用 `if (_cameraBound.value) return`，
+     * 而 `_cameraBound` 只在成功时置位 —— 失败后该判断恒为 false，
+     * 但 Compose 也不会再重跑 `AndroidView` 的 factory，于是永远不会重试。
+     * 改为按 [CameraStatus] 判断：仅 Ready / Starting 时拒绝重入，
+     * Failed 状态允许（也仅允许通过 [retryCamera]）再次尝试。
      */
     fun startScanning(owner: LifecycleOwner, preview: PreviewView) {
-        if (_cameraBound.value) return
+        when (_cameraStatus.value) {
+            is CameraStatus.Ready, is CameraStatus.Starting -> return
+            else -> Unit // Idle / Failed 允许继续
+        }
+        _cameraStatus.value = CameraStatus.Starting
+        _cameraError.value = null
+
         viewModelScope.launch {
-            scannerRepository.startCamera(owner, preview)
+            // 超时兜底：CameraX 在某些 ROM 上会静默卡住不回调，
+            // 没有超时用户就会无限期停在「正在启动摄像头…」。
+            runCatching {
+                withTimeout(CAMERA_START_TIMEOUT_MS) {
+                    scannerRepository.startCamera(owner, preview).getOrThrow()
+                }
+            }
                 .onSuccess {
-                    _cameraBound.value = true
+                    _cameraBoundMirror.value = true
                     _torchAvailable.value = scannerRepository.isTorchAvailable
                     _cameraError.value = null
+                    _cameraStatus.value = CameraStatus.Ready
                     _uiState.value = ScannerUiState.Ready
                 }
                 .onFailure { e ->
-                    _cameraBound.value = false
-                    _cameraError.value = e.message ?: "摄像头初始化失败"
+                    _cameraBoundMirror.value = false
+                    _torchAvailable.value = false
+                    _torchOn.value = false
+                    val reason = describeCameraFailure(e)
+                    _cameraError.value = reason
+                    _cameraStatus.value = CameraStatus.Failed(reason)
+                    // 相机不可用时直接展开手动输入，现场不至于完全没法作业
                     _manualInputVisible.value = true
                     _uiState.value = ScannerUiState.Ready
                 }
         }
-        // 订阅识别事件
-        viewModelScope.launch {
-            scannerRepository.observeScanEvents().collect { event ->
-                resolve(event.rawValue)
+        // 订阅识别事件（只订阅一次，避免重试后重复收集导致重复解析）
+        if (!scanEventsSubscribed) {
+            scanEventsSubscribed = true
+            viewModelScope.launch {
+                scannerRepository.observeScanEvents().collect { event ->
+                    resolve(event.rawValue)
+                }
             }
+        }
+    }
+
+    /**
+     * 重试前把状态推回可重入的 Idle 并清干净仓库侧残留绑定。
+     *
+     * 单独拆出（而不是在 retryCamera 里直接重建预览）的原因是：
+     * 预览视图只在 Ready 态渲染，失败态下它已被移除，
+     * 必须由 UI 先回到 Idle 触发重组、重建 AndroidView，
+     * 才能重新拿到 PreviewView 去绑定 —— 否则无视图可绑。
+     */
+    fun resetForRetry() {
+        viewModelScope.launch {
+            runCatching { scannerRepository.stopCamera() }
+            _cameraBoundMirror.value = false
+            _torchOn.value = false
+            _torchAvailable.value = false
+            _cameraError.value = null
+            _cameraStatus.value = CameraStatus.Idle
         }
     }
 
     fun stopScanning() {
         viewModelScope.launch {
             scannerRepository.stopCamera()
-            _cameraBound.value = false
+            _cameraBoundMirror.value = false
             _torchOn.value = false
+            _torchAvailable.value = false
+            // 必须一并清错误：否则上次失败的原因会残留，
+            // 下次进页面时 UI 会先闪一下上一次的错误
+            _cameraError.value = null
+            if (_cameraStatus.value is CameraStatus.Ready ||
+                _cameraStatus.value is CameraStatus.Starting
+            ) {
+                _cameraStatus.value = CameraStatus.Idle
+            }
         }
+    }
+
+    /** 把异常翻译成现场能看懂、且能据此行动的原因（不外泄堆栈） */
+    private fun describeCameraFailure(e: Throwable): String = when {
+        e is kotlinx.coroutines.TimeoutCancellationException ->
+            "摄像头启动超时（${CAMERA_START_TIMEOUT_MS / 1000} 秒无响应）"
+        // CameraStartException 已由仓库层翻译过，直接采用其文案
+        e is com.company.logistics.data.CameraStartException ->
+            e.message?.takeIf { it.isNotBlank() } ?: "摄像头初始化失败"
+        e.message?.contains("CAMERA", ignoreCase = true) == true ->
+            "缺少摄像头权限"
+        e is IllegalStateException && e.message?.contains("Lifecycle", ignoreCase = true) == true ->
+            "相机与页面生命周期绑定失败"
+        else ->
+            e.message?.takeIf { it.isNotBlank() } ?: "摄像头初始化失败"
     }
 
     fun onPermissionResult(granted: Boolean, permanentlyDenied: Boolean) {
@@ -84,6 +187,7 @@ class ScannerViewModel(
             ScannerUiState.Ready
         } else {
             _manualInputVisible.value = true
+            _cameraStatus.value = CameraStatus.Idle
             ScannerUiState.PermissionDenied(permanentlyDenied)
         }
     }
@@ -110,6 +214,14 @@ class ScannerViewModel(
         if (_uiState.value !is ScannerUiState.PermissionDenied) {
             _uiState.value = ScannerUiState.Ready
         }
+    }
+
+    private companion object {
+        /** 相机启动超时；超过则判定失败并给用户重试入口 */
+        const val CAMERA_START_TIMEOUT_MS = 3_000L
+
+        /** 识别事件流是否已订阅（防重试后重复收集） */
+        var scanEventsSubscribed = false
     }
 
     private fun resolve(rawValue: String) {

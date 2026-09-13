@@ -75,8 +75,10 @@ class CameraXScannerRepository(
         withContext(Dispatchers.Main.immediate) {
             runCatching {
                 if (!hasCameraPermission()) {
-                    error("缺少 CAMERA 权限")
+                    // 带 CAMERA 关键字，便于上层翻译成「缺少摄像头权限」这类人能读的原因
+                    throw IllegalStateException("CAMERA_PERMISSION_MISSING")
                 }
+                // 已绑定时直接成功返回（幂等），避免重复 bindToLifecycle 抛异常
                 if (cameraBound) return@runCatching
 
                 val provider = ProcessCameraProvider.getInstance(context).await()
@@ -102,6 +104,8 @@ class CameraXScannerRepository(
                     }
 
                 provider.unbindAll()
+                // 相机可能被其他应用独占，bindToLifecycle 会抛 CamcorderProfileProvider
+                // 或 IllegalArgumentException；原样上抛给 ViewModel 翻译成可读原因
                 val camera = provider.bindToLifecycle(
                     owner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
@@ -113,10 +117,24 @@ class CameraXScannerRepository(
                 torchEnabled = false
                 this@CameraXScannerRepository.camera = camera
                 cameraBound = true
-            }.onFailure {
+            }.onFailure { e ->
+                // 失败必须彻底释放，否则下次重试会带着半绑定状态再次失败
                 releaseCamera()
+                throw CameraStartException(describe(e), e)
             }
         }
+
+    /** 把底层异常转成简短可读的原因，避免把整段堆栈透给 UI */
+    private fun describe(e: Throwable): String = when {
+        e is CameraStartException -> e.message.orEmpty()
+        e.message?.contains("CAMERA_PERMISSION_MISSING") == true -> "缺少摄像头权限"
+        e is IllegalArgumentException && e.message?.contains("does not have a camera") == true ->
+            "设备没有可用摄像头"
+        e.message?.contains("in use", ignoreCase = true) == true ||
+            e.message?.contains("disconnected", ignoreCase = true) == true ->
+            "相机被其他应用占用"
+        else -> e.message?.takeIf { it.isNotBlank() } ?: "摄像头初始化失败"
+    }
 
     override suspend fun stopCamera(): Result<Unit> = withContext(Dispatchers.Main.immediate) {
         runCatching { releaseCamera() }
@@ -205,6 +223,16 @@ class CameraXScannerRepository(
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 }
+
+/**
+ * 相机启动失败。
+ *
+ * 单独定义（而非直接上抛底层异常）是为了让上层能区分
+ * 「相机没起来」与「条码解析失败」两类完全不同的错误，
+ * 前者需要重试入口，后者需要重新对准条码。
+ */
+class CameraStartException(message: String, cause: Throwable? = null) :
+    Exception(message, cause)
 
 /**
  * 单帧分析器。

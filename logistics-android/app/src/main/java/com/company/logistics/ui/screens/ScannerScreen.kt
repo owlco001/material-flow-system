@@ -60,6 +60,7 @@ import com.company.logistics.domain.ScannerUiState
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.UserRole
+import com.company.logistics.ui.CameraStatus
 import com.company.logistics.ui.ScannerViewModel
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.PrimaryButton
@@ -98,13 +99,19 @@ fun ScannerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val uiState by viewModel.uiState.collectAsState()
-    val cameraBound by viewModel.cameraBound.collectAsState()
+    val cameraStatus by viewModel.cameraStatus.collectAsState()
     val torchOn by viewModel.torchOn.collectAsState()
     val torchAvailable by viewModel.torchAvailable.collectAsState()
     val cameraError by viewModel.cameraError.collectAsState()
     val manualVisible by viewModel.manualInputVisible.collectAsState()
 
     var manualInput by remember { mutableStateOf("") }
+
+    // 重试触发计数。失败态下 CameraPreviewPanel 已被移除，AndroidView 也随之销毁，
+    // 因此重试必须让 UI 重新走一遍「Idle → 渲染 AndroidView → startScanning」。
+    // 用计数驱动 LaunchedEffect，而不是直接调用 ViewModel —— 保证顺序可控。
+    var cameraRetryTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -126,6 +133,14 @@ fun ScannerScreen(
             viewModel.onPermissionResult(granted = true, permanentlyDenied = false)
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    // 重试：先清干净仓库侧残留绑定并置 Idle，使取景区重回「启动中」，
+    // AndroidView 重建后会自动调 startScanning 完成真正的重启。
+    LaunchedEffect(cameraRetryTick) {
+        if (cameraRetryTick > 0) {
+            viewModel.resetForRetry()
         }
     }
 
@@ -162,7 +177,7 @@ fun ScannerScreen(
                 )
             }
 
-            hasPermission && cameraBound -> {
+            hasPermission && cameraStatus is CameraStatus.Ready -> {
                 CameraPreviewPanel(
                     lifecycleOwner = lifecycleOwner,
                     previewFactory = { previewView ->
@@ -177,12 +192,25 @@ fun ScannerScreen(
                 )
             }
 
-            else -> {
-                // 权限已授予但相机尚未就绪 / 相机不可用
-                ScannerViewfinder(
-                    scanTypeLabel = if (cameraError != null) cameraError!! else "正在启动摄像头…",
-                    onTap = { viewModel.toggleManualInput() },
+            hasPermission && cameraStatus is CameraStatus.Starting -> {
+                // 明确的「正在启动」态：转圈 + 可读文案，
+                // 与下面的失败态区分开，用户能判断系统在做什么
+                CameraStartingPanel()
+            }
+
+            hasPermission && cameraStatus is CameraStatus.Failed -> {
+                // 失败态必须给出「原因 + 出路」：
+                // 只有明确原因用户才能判断是权限、硬件还是被别的应用占用；
+                // 只有重试入口才不会卡死在这一屏
+                CameraFailedPanel(
+                    reason = (cameraStatus as CameraStatus.Failed).reason,
+                    onRetry = { cameraRetryTick++ },
                 )
+            }
+
+            else -> {
+                // 权限已授予但 AndroidView 尚未创建（首帧）
+                CameraStartingPanel()
             }
         }
 
@@ -424,6 +452,105 @@ private fun TorchButton(enabled: Boolean, on: Boolean, onClick: () -> Unit) {
             text = if (on) "🔦" else "💡",
             fontSize = 18.sp,
         )
+    }
+}
+
+// ==================== 相机启动中 / 失败 ====================
+
+/**
+ * 相机启动中。
+ *
+ * 与失败态严格区分：这里有明确的「进行中」视觉（旋转指示 + 骨架），
+ * 让用户知道系统在工作，而不是界面卡死。
+ */
+@Composable
+private fun CameraStartingPanel() {
+    val colors = LogisticsTheme.colors
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(Dimens.CardCorner))
+            .background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(36.dp),
+                color = colors.primary,
+                strokeWidth = 3.dp,
+            )
+            Spacer(Modifier.height(Spacing.md))
+            Text(
+                "正在启动摄像头…",
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "首次启动约需 1-2 秒",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+/**
+ * 相机启动失败。
+ *
+ * 设计要点：失败必须回答两个问题 ——
+ *   1. 为什么失败？（原因，供判断是权限/硬件/占用）
+ *   2. 现在能做什么？（重试 / 改用手动输入）
+ * 缺任何一个，用户就只能退出重进，这正是此前的缺陷。
+ */
+@Composable
+private fun CameraFailedPanel(reason: String, onRetry: () -> Unit) {
+    val colors = LogisticsTheme.colors
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(Dimens.CardCorner))
+            .background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Spacing.lg),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("⚠", fontSize = 32.sp)
+            Spacer(Modifier.height(Spacing.sm))
+            Text(
+                "摄像头未能启动",
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                reason,
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 18.sp,
+            )
+            Spacer(Modifier.height(Spacing.md))
+            PrimaryButton(
+                text = "重试",
+                onClick = onRetry,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "也可在下方使用手动输入继续作业",
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
