@@ -9,6 +9,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.company.logistics.data.CameraXScannerRepository
 import com.company.logistics.data.EndpointStore
 import com.company.logistics.data.LogisticsRepository
+import com.company.logistics.data.SessionStore
 import com.company.logistics.data.remote.ApiConfig
 import com.company.logistics.ui.LogisticsApp
 import com.company.logistics.ui.LogisticsViewModel
@@ -36,6 +37,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val repository = LogisticsRepository.get(applicationContext)
+        com.company.logistics.ui.DeviceId.value = SessionStore.get(applicationContext).deviceIdOrCreate()
 
         // 运行时地址覆盖：用户保存的地址优先于构建期注入值。
         // 必须在任何网络调用之前设置，否则首个请求会打到默认地址。

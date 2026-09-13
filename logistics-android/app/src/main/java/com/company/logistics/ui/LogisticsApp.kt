@@ -83,7 +83,7 @@ fun LogisticsApp(
                 loading = state.loading,
                 errorMessage = state.error,
                 deviceId = remember { DeviceId.value },
-                onLogin = { u, p, d -> viewModel.login(u, p, d) }
+                onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
             )
             return@LogisticsTheme
         }
@@ -317,7 +317,5 @@ private fun BottomNavBar(
  * 生产实现应持久化到本地存储，此处为进程内单例。
  */
 object DeviceId {
-    val value: String by lazy {
-        "android-" + UUID.randomUUID().toString().take(16)
-    }
+    var value: String = "android-" + UUID.randomUUID().toString().take(16)
 }

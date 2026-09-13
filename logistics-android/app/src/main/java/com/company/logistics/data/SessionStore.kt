@@ -4,85 +4,81 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.company.logistics.model.UserRole
+import java.util.UUID
 
-/**
- * 会话持久化。
- *
- * 为什要持久化：refresh token 有效期 30 天，若只存内存则 App 一重启就丢，
- * 用户每天开机都要重新登录 —— 长时效设计失去意义。
- *
- * 安全考量：
- *  - 使用 [EncryptedSharedPreferences]（AES-256-GCM），密钥由 Android Keystore
- *    托管，不落磁盘；root 设备上也无法直接读取明文。
- *  - 若设备不支持加密存储（极端老机型 / Keystore 异常），
- *    降级为普通 SharedPreferences 但记录降级标志，
- *    避免 App 直接崩溃导致现场无法作业。
- *  - 登出 / 刷新令牌失效时必须显式 [clear]，不留残影。
- */
+/** Encrypted persistence for the session summary, tokens, and stable device id. */
 class SessionStore private constructor(
     private val prefs: SharedPreferences,
-    /** 是否成功启用了加密存储；false 表示走了降级路径 */
     val encrypted: Boolean
 ) {
+    data class UserSummary(
+        val id: String,
+        val username: String,
+        val displayName: String,
+        val role: UserRole,
+        val mustChangePassword: Boolean
+    )
 
     fun save(accessToken: String?, refreshToken: String?, deviceId: String) {
-        prefs.edit()
-            .putString(KEY_ACCESS, accessToken)
-            .putString(KEY_REFRESH, refreshToken)
-            .putString(KEY_DEVICE, deviceId)
-            .apply()
+        prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken)
+            .putString(KEY_DEVICE, deviceId).apply()
     }
 
-    /** 仅更新 access token（刷新成功后调用，refresh token 一并轮转） */
+    fun save(accessToken: String?, refreshToken: String?, deviceId: String, user: UserSummary) {
+        prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken)
+            .putString(KEY_DEVICE, deviceId).putString(KEY_USER_ID, user.id)
+            .putString(KEY_USERNAME, user.username).putString(KEY_DISPLAY_NAME, user.displayName)
+            .putString(KEY_ROLE, user.role.name)
+            .putBoolean(KEY_MUST_CHANGE_PASSWORD, user.mustChangePassword).apply()
+    }
+
     fun updateTokens(accessToken: String?, refreshToken: String?) {
-        prefs.edit()
-            .putString(KEY_ACCESS, accessToken)
-            .putString(KEY_REFRESH, refreshToken)
-            .apply()
+        prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken).apply()
     }
 
     fun accessToken(): String? = prefs.getString(KEY_ACCESS, null)
-
     fun refreshToken(): String? = prefs.getString(KEY_REFRESH, null)
-
     fun deviceId(): String? = prefs.getString(KEY_DEVICE, null)
-
-    fun clear() {
-        prefs.edit().clear().apply()
+    fun deviceIdOrCreate(): String = deviceId() ?: ("android-" + UUID.randomUUID().toString().take(16)).also {
+        prefs.edit().putString(KEY_DEVICE, it).apply()
     }
+
+    fun userSummary(): UserSummary? {
+        val id = prefs.getString(KEY_USER_ID, null) ?: return null
+        val username = prefs.getString(KEY_USERNAME, null) ?: return null
+        val displayName = prefs.getString(KEY_DISPLAY_NAME, null) ?: username
+        val role = prefs.getString(KEY_ROLE, null)?.let { runCatching { UserRole.valueOf(it) }.getOrNull() }
+            ?: return null
+        return UserSummary(id, username, displayName, role, prefs.getBoolean(KEY_MUST_CHANGE_PASSWORD, false))
+    }
+
+    fun clear() { prefs.edit().clear().apply() }
 
     companion object {
         private const val FILE_NAME = "logistics_session"
         private const val KEY_ACCESS = "access_token"
         private const val KEY_REFRESH = "refresh_token"
         private const val KEY_DEVICE = "device_id"
-
-        @Volatile
-        private var instance: SessionStore? = null
+        private const val KEY_USER_ID = "user_id"
+        private const val KEY_USERNAME = "username"
+        private const val KEY_DISPLAY_NAME = "display_name"
+        private const val KEY_ROLE = "role"
+        private const val KEY_MUST_CHANGE_PASSWORD = "must_change_password"
+        @Volatile private var instance: SessionStore? = null
 
         fun get(context: Context): SessionStore = instance ?: synchronized(this) {
             instance ?: create(context.applicationContext).also { instance = it }
         }
 
         private fun create(context: Context): SessionStore = try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            val prefs = EncryptedSharedPreferences.create(
-                context,
-                FILE_NAME,
-                masterKey,
+            val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+            val prefs = EncryptedSharedPreferences.create(context, FILE_NAME, masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
             SessionStore(prefs, encrypted = true)
         } catch (_: Exception) {
-            // Keystore 不可用（部分定制 ROM / 越狱环境）→ 降级但保持可用。
-            // 此处不静默：由上层读取 encrypted 标志，可在 UI 上提示风险。
-            SessionStore(
-                context.getSharedPreferences("${FILE_NAME}_fallback", Context.MODE_PRIVATE),
-                encrypted = false
-            )
+            SessionStore(context.getSharedPreferences("${FILE_NAME}_fallback", Context.MODE_PRIVATE), encrypted = false)
         }
     }
 }

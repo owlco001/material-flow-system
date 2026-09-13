@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -54,11 +55,12 @@ fun LoginScreen(
     loading: Boolean,
     errorMessage: String?,
     deviceId: String,
-    onLogin: (username: String, password: String, deviceId: String) -> Unit,
+    onLogin: (username: String, password: String, deviceId: String, remember: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var rememberLogin by remember { mutableStateOf(true) }
 
     Column(
         modifier = modifier
@@ -142,6 +144,11 @@ fun LoginScreen(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
         )
 
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = rememberLogin, onCheckedChange = { rememberLogin = it }, enabled = !loading)
+            Text("保持登录", color = LogisticsTheme.colors.textSecondary, fontSize = 13.sp)
+        }
+
         if (errorMessage != null) {
             Spacer(Modifier.height(Spacing.md))
             Text(
@@ -156,7 +163,7 @@ fun LoginScreen(
         Spacer(Modifier.height(Spacing.xl))
         PrimaryButton(
             text = "登 录",
-            onClick = { onLogin(username, password, deviceId) },
+            onClick = { onLogin(username, password, deviceId, rememberLogin) },
             loading = loading,
             enabled = username.isNotBlank() && password.isNotBlank()
         )

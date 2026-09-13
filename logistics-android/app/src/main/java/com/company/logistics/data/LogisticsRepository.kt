@@ -31,6 +31,7 @@ class LogisticsRepository(
     private val dao: OfflineOperationDao,
     private val sessionStore: SessionStore? = null
 ) {
+    var onSessionExpired: (() -> Unit)? = null
 
     /**
      * 契约 API 句柄。
@@ -47,6 +48,7 @@ class LogisticsRepository(
         api.onTokensRotated = { access, refresh ->
             if (access == null && refresh == null) {
                 sessionStore?.clear()
+                onSessionExpired?.invoke()
             } else {
                 sessionStore?.updateTokens(access, refresh)
             }
@@ -58,10 +60,15 @@ class LogisticsRepository(
 
     // ==================== 会话 ====================
 
-    suspend fun login(username: String, password: String, deviceId: String): LoginResult {
+    suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
-        // 令牌落盘：App 重启后可静默续期，用户不必每天重登
-        sessionStore?.save(result.accessToken, result.refreshToken, deviceId)
+        if (remember) {
+            sessionStore?.save(result.accessToken, result.refreshToken, deviceId,
+                SessionStore.UserSummary(result.user.id, result.user.username, result.user.displayName,
+                    result.user.role, result.mustChangePassword))
+        } else {
+            sessionStore?.clear()
+        }
         return result
     }
 
@@ -92,6 +99,8 @@ class LogisticsRepository(
         )
         return true
     }
+
+    fun persistedUser(): SessionStore.UserSummary? = sessionStore?.userSummary()
 
     /** 刷新成功后由网络层回调落盘，此处无需再手动调用 */
     @Deprecated("由 api.onTokensRotated 回调自动完成", ReplaceWith(""))

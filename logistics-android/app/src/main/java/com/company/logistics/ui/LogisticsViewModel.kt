@@ -86,6 +86,12 @@ class LogisticsViewModel(
     val state: StateFlow<LogisticsUiState> = _state.asStateFlow()
 
     init {
+        repo.onSessionExpired = { _state.value = LogisticsUiState(error = "登录已失效，请重新登录") }
+        repo.persistedUser()?.let { user ->
+            _state.value = LogisticsUiState(loggedIn = true, currentUser = user.displayName,
+                role = user.role, mustChangePassword = user.mustChangePassword,
+                navTabs = tabsFor(user.role), screen = defaultScreenFor(user.role))
+        }
         // 队列变化实时反映到 UI
         viewModelScope.launch {
             repo.observeQueue().collect { queue ->
@@ -101,14 +107,14 @@ class LogisticsViewModel(
 
     // ==================== 登录 ====================
 
-    fun login(username: String, password: String, deviceId: String) {
+    fun login(username: String, password: String, deviceId: String, remember: Boolean = true) {
         if (username.isBlank() || password.isBlank()) {
             _state.update { it.copy(error = "请输入账号与密码") }
             return
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            runCatching { repo.login(username, password, deviceId) }
+            runCatching { repo.login(username, password, deviceId, remember) }
                 .onSuccess { result ->
                     _state.update {
                         it.copy(
