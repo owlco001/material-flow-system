@@ -1,8 +1,13 @@
 package com.company.logistics
 
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -13,6 +18,7 @@ import com.company.logistics.data.remote.ApiConfig
 import com.company.logistics.ui.LogisticsApp
 import com.company.logistics.ui.LogisticsViewModel
 import com.company.logistics.ui.ScannerViewModel
+import com.company.logistics.ui.screens.BootSplashScreen
 
 /**
  * 应用入口。
@@ -36,6 +42,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val repository = LogisticsRepository.get(applicationContext)
+        // 系统「减少动画」开关：为 0 表示用户关闭了动画，开机动画应直接呈现终态
+        val animatorScale = Settings.Global.getFloat(
+            contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        )
 
         // 运行时地址覆盖：用户保存的地址优先于构建期注入值。
         // 必须在任何网络调用之前设置，否则首个请求会打到默认地址。
@@ -64,7 +76,21 @@ class MainActivity : ComponentActivity() {
                         ScannerViewModel(scannerRepository) as T
                 }
             )
-            LogisticsApp(vm, scannerVm, endpointStore)
+
+            // 开机动画：只在整个进程首次创建时播放。
+            // rememberSaveable 保证屏幕旋转/Activity 重建后不会重播，
+            // 否则用户每次转屏都要再看一次 logo，非常烦人。
+            var showSplash by rememberSaveable { mutableStateOf(true) }
+            val reduceMotion = animatorScale == 0f
+
+            if (showSplash) {
+                BootSplashScreen(
+                    onFinished = { showSplash = false },
+                    reduceMotion = reduceMotion,
+                )
+            } else {
+                LogisticsApp(vm, scannerVm, endpointStore)
+            }
         }
     }
 }

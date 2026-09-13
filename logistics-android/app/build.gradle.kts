@@ -20,8 +20,8 @@ android {
         applicationId = "com.company.logistics"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.3.4"
+        versionCode = 6
+        versionName = "0.3.5"
 
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
