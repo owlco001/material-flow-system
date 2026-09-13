@@ -32,9 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.company.logistics.data.EndpointStore
 import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.OfflineBanner
 import com.company.logistics.ui.screens.ApprovalScreen
+import com.company.logistics.ui.screens.EndpointConfigScreen
 import com.company.logistics.ui.screens.InventoryScreen
 import com.company.logistics.ui.screens.LoginScreen
 import com.company.logistics.ui.screens.MaterialDetailScreen
@@ -60,7 +62,8 @@ import java.util.UUID
 @Composable
 fun LogisticsApp(
     viewModel: LogisticsViewModel,
-    scannerViewModel: ScannerViewModel
+    scannerViewModel: ScannerViewModel,
+    endpointStore: EndpointStore
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -182,8 +185,16 @@ fun LogisticsApp(
                         userName = state.currentUser,
                         role = state.role,
                         queue = state.offlineQueue,
+                        endpointUrl = endpointStore.effectiveUrl,
+                        endpointConfigured = !endpointStore.usingBuildDefault,
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
+                        onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
                         onLogout = { viewModel.logout() }
+                    )
+
+                    Screen.ENDPOINT_CONFIG -> EndpointConfigScreen(
+                        store = endpointStore,
+                        onBack = { viewModel.navigate(Screen.PROFILE) }
                     )
 
                     Screen.LOCATION_BIND, Screen.SUBMIT, Screen.LOGIN ->

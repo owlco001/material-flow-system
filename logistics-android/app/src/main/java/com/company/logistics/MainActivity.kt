@@ -7,7 +7,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.company.logistics.data.CameraXScannerRepository
+import com.company.logistics.data.EndpointStore
 import com.company.logistics.data.LogisticsRepository
+import com.company.logistics.data.remote.ApiConfig
 import com.company.logistics.ui.LogisticsApp
 import com.company.logistics.ui.LogisticsViewModel
 import com.company.logistics.ui.ScannerViewModel
@@ -34,6 +36,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val repository = LogisticsRepository.get(applicationContext)
+
+        // 运行时地址覆盖：用户保存的地址优先于构建期注入值。
+        // 必须在任何网络调用之前设置，否则首个请求会打到默认地址。
+        val endpointStore = EndpointStore.get(applicationContext)
+        ApiConfig.baseUrl = endpointStore.effectiveUrl
+
         // 冷启动恢复会话：有 refresh token 则静默续期，用户不必每天重登
         repository.restoreSession()
         val scannerRepository = CameraXScannerRepository(
@@ -56,7 +64,7 @@ class MainActivity : ComponentActivity() {
                         ScannerViewModel(scannerRepository) as T
                 }
             )
-            LogisticsApp(vm, scannerVm)
+            LogisticsApp(vm, scannerVm, endpointStore)
         }
     }
 }

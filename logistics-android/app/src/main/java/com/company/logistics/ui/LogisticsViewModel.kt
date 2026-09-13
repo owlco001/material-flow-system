@@ -30,7 +30,8 @@ enum class Screen(val title: String) {
     QUEUE("离线暂存"),
     APPROVAL("待审批"),
     INVENTORY("库存查询"),
-    PROFILE("我的")
+    PROFILE("我的"),
+    ENDPOINT_CONFIG("服务端配置")
 }
 
 /** 底部导航项 —— 图标用具名语义符号，避免引入图标库依赖 */

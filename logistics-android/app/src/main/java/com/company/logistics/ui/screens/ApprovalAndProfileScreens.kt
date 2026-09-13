@@ -162,13 +162,16 @@ fun InventoryScreen(
     }
 }
 
-/** 我的页 —— 展示角色、权限与离线队列摘要 */
+/** 我的页 —— 展示角色、权限、服务端配置与离线队列摘要 */
 @Composable
 fun ProfileScreen(
     userName: String,
     role: UserRole,
     queue: List<OfflineOperation>,
+    endpointUrl: String,
+    endpointConfigured: Boolean,
     onOpenQueue: () -> Unit,
+    onOpenEndpointConfig: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -224,6 +227,39 @@ fun ProfileScreen(
             PermissionRow("审批入库/出库", role.canApprove)
             PermissionRow("执行库存变更", role.canExecute)
             PermissionRow("用户与审计管理", role.canAdmin)
+        }
+
+        VSpace(Spacing.md)
+
+        // 服务端配置入口 —— 现场换环境时无需重新打包
+        AppCard(
+            accentColor = if (endpointConfigured)
+                LogisticsTheme.colors.success else LogisticsTheme.colors.warning
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "服务端地址",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LogisticsTheme.colors.textPrimary
+                    )
+                    VSpace(3.dp)
+                    Text(
+                        endpointUrl,
+                        fontSize = 11.sp,
+                        fontFamily = LogisticsType.MonoFamily,
+                        color = LogisticsTheme.colors.textTertiary,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+                SecondaryButton(
+                    text = "配置",
+                    onClick = onOpenEndpointConfig,
+                    modifier = Modifier.width(96.dp)
+                )
+            }
         }
 
         VSpace(Spacing.md)
