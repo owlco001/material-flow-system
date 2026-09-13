@@ -48,6 +48,14 @@ it is required only when the database has no initial administrator. The data
 and upload directories may be overridden with `MATERIAL_FLOW_DATA` and
 `MATERIAL_FLOW_UPLOADS` when the runtime filesystem layout requires it.
 
+`ENABLE_ADMIN_ROLE_PREVIEW` is an opt-in test-only switch for ADMIN role
+workbench previews. Missing, empty, or unrecognized values are treated as
+`false`; leave it unset in production. When explicitly set to `true`, the
+server still requires an authenticated ADMIN, emits redacted
+`ADMIN_ROLE_PREVIEW` audit events, and permits only the two read-only
+workbench queries; its enter/exit endpoints only append the corresponding
+redacted audit event and do not change the session role or permissions.
+
 ## Migration and startup
 
 The migration is safe to run repeatedly and is serialized for concurrent

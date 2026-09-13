@@ -28,6 +28,14 @@ UPLOAD_DIR = Path(os.environ.get("MATERIAL_FLOW_UPLOADS", "/srv/material-flow/up
 DB_PATH = DATA_DIR / "material_flow.db"
 INITIAL_ADMIN_PASSWORD = os.environ.get("INITIAL_ADMIN_PASSWORD")
 SERVICE_NAME = "material-flow"
+
+
+def _env_flag(value: str | None) -> bool:
+    """Parse an opt-in boolean; missing and unknown values stay disabled."""
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_ADMIN_ROLE_PREVIEW = _env_flag(os.environ.get("ENABLE_ADMIN_ROLE_PREVIEW"))
 VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
 try:
     APP_VERSION = VERSION_FILE.read_text(encoding="ascii").strip()
@@ -138,6 +146,11 @@ CODE_APPROVAL_EXECUTOR_SAME_USER = "APPROVAL_EXECUTOR_SAME_USER"
 CODE_VALIDATION_ERROR = "VALIDATION_ERROR"
 CODE_RETRYABLE_UPSTREAM_ERROR = "RETRYABLE_UPSTREAM_ERROR"
 CODE_INVALID_DOCUMENT_TYPE = "INVALID_DOCUMENT_TYPE"
+CODE_ROLE_PREVIEW_ADMIN_ONLY = "ROLE_PREVIEW_ADMIN_ONLY"
+CODE_ROLE_PREVIEW_DISABLED = "ROLE_PREVIEW_DISABLED"
+CODE_INVALID_VIEW_ROLE = "INVALID_VIEW_ROLE"
+CODE_ROLE_PREVIEW_READ_ONLY = "ROLE_PREVIEW_READ_ONLY"
+CODE_INVALID_CLIENT_OPERATION_ID = "INVALID_CLIENT_OPERATION_ID"
 
 
 class ApiError(HTTPException):
@@ -250,6 +263,92 @@ async def unhandled_error_handler(request: Request, _exc: Exception):
     )
 
 
+@app.middleware("http")
+async def reject_preview_writes(request: Request, call_next):
+    """A preview context may never be carried into a mutating endpoint."""
+    is_preview_action = request.url.path.startswith("/api/v1/workspace/role-preview/")
+    has_preview_context = (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and not is_preview_action
+        and bool(request.headers.get("Authorization"))
+        and (request.query_params.get("viewRole") is not None
+             or request.headers.get("X-Workspace-View-Role") is not None)
+    )
+    if has_preview_context:
+        credentials = request.headers.get("Authorization", "")
+        token = credentials[7:].strip() if credentials.lower().startswith("bearer ") else ""
+        authenticated_role = None
+        if token:
+            c = db()
+            try:
+                row = c.execute(
+                    "SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id "
+                    "WHERE s.token=? AND s.expires_at>? AND s.token_type='ACCESS' "
+                    "AND u.active=1",
+                    (token, int(time.time())),
+                ).fetchone()
+                authenticated_role = row["role"] if row else None
+            finally:
+                c.close()
+        if authenticated_role is None:
+            return await call_next(request)
+        preview_role = request.query_params.get("viewRole") or request.headers.get(
+            "X-Workspace-View-Role"
+        )
+        if preview_role not in ROLES:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "viewRole 不是有效的工作台角色",
+                    "error": {
+                        "code": CODE_INVALID_VIEW_ROLE,
+                        "message": "viewRole 不是有效的工作台角色",
+                        "retryable": False,
+                        "traceId": _request_trace_id(request),
+                    },
+                },
+            )
+        if authenticated_role != "ADMIN":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "仅 ADMIN 可使用角色预览",
+                    "error": {
+                        "code": CODE_ROLE_PREVIEW_ADMIN_ONLY,
+                        "message": "仅 ADMIN 可使用角色预览",
+                        "retryable": False,
+                        "traceId": _request_trace_id(request),
+                    },
+                },
+            )
+        if not ENABLE_ADMIN_ROLE_PREVIEW:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": "管理员角色预览未启用",
+                    "error": {
+                        "code": CODE_ROLE_PREVIEW_DISABLED,
+                        "message": "管理员角色预览未启用",
+                        "retryable": False,
+                        "traceId": _request_trace_id(request),
+                    },
+                },
+            )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "管理员角色预览仅支持只读工作台查询",
+                "error": {
+                    "code": CODE_ROLE_PREVIEW_READ_ONLY,
+                    "message": "管理员角色预览仅支持只读工作台查询",
+                    "retryable": False,
+                    "traceId": _request_trace_id(request),
+                },
+            },
+        )
+    return await call_next(request)
+
+
 def require_request_id(x_request_id: str | None) -> str:
     """契约 2 节：X-Request-Id 缺失或非 UUID 时返回 400 INVALID_REQUEST_ID。"""
     if not x_request_id:
@@ -259,6 +358,22 @@ def require_request_id(x_request_id: str | None) -> str:
     except (ValueError, AttributeError):
         raise ApiError(400, CODE_INVALID_REQUEST_ID, "X-Request-Id 必须是合法 UUID") from None
     return x_request_id
+
+
+def require_client_operation_id(candidate: str | None, trace_id: str) -> str:
+    """Preview requests use a UUID operation id for retry-safe audit writes."""
+    if not candidate:
+        raise ApiError(
+            400, CODE_INVALID_CLIENT_OPERATION_ID,
+            "缺少 X-Client-Operation-Id 请求头", trace_id=trace_id,
+        )
+    try:
+        return str(uuid.UUID(candidate))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(
+            400, CODE_INVALID_CLIENT_OPERATION_ID,
+            "X-Client-Operation-Id 必须是合法 UUID", trace_id=trace_id,
+        ) from None
 
 
 def require_idempotency_key(idempotency_key: str | None, client_operation_id: Any, trace_id: str) -> str:
@@ -410,7 +525,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS inventory(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), UNIQUE(material_id, location_id));
     CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, operator_id TEXT, role TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, request_id TEXT, occurred_at TEXT NOT NULL, result TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL, view_role TEXT, action TEXT);
     CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS material_work_items(id TEXT PRIMARY KEY, requirement_id TEXT, material_id TEXT NOT NULL, device_id TEXT, assigned_user_id TEXT, quantity INTEGER NOT NULL CHECK(quantity > 0));
@@ -560,6 +675,14 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     if "device_id" not in existing:
         c.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
 
+    audit_event_columns = {
+        r["name"] for r in c.execute("PRAGMA table_info(audit_events)").fetchall()
+    }
+    if "view_role" not in audit_event_columns:
+        c.execute("ALTER TABLE audit_events ADD COLUMN view_role TEXT")
+    if "action" not in audit_event_columns:
+        c.execute("ALTER TABLE audit_events ADD COLUMN action TEXT")
+
     po_cols = {r["name"] for r in c.execute("PRAGMA table_info(production_orders)").fetchall()}
     if "product_name" not in po_cols:
         c.execute("ALTER TABLE production_orders ADD COLUMN product_name TEXT NOT NULL DEFAULT ''")
@@ -679,6 +802,68 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
     if row["role"] not in ROLES:
         raise HTTPException(403, "账号角色无效")
     return row
+
+
+def _workspace_context(
+    user: sqlite3.Row,
+    view_role: str | None,
+    x_request_id: str | None,
+    client_operation_id: str | None,
+) -> tuple[str, bool, str, str | None]:
+    """Resolve a read-only role projection without changing authenticated identity."""
+    if view_role is None:
+        return user["role"], False, x_request_id or "", None
+    if view_role not in ROLES:
+        raise ApiError(400, CODE_INVALID_VIEW_ROLE, "viewRole 不是有效的工作台角色")
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_ROLE_PREVIEW_ADMIN_ONLY, "仅 ADMIN 可使用角色预览")
+    if not ENABLE_ADMIN_ROLE_PREVIEW:
+        raise ApiError(404, CODE_ROLE_PREVIEW_DISABLED, "管理员角色预览未启用")
+    trace_id = require_request_id(x_request_id)
+    operation_id = require_client_operation_id(client_operation_id, trace_id)
+    return view_role, True, trace_id, operation_id
+
+
+def _append_role_preview_audit(
+    c: sqlite3.Connection,
+    *,
+    actor: sqlite3.Row,
+    view_role: str,
+    action: str,
+    request_id: str,
+    client_operation_id: str,
+) -> None:
+    """Append one minimal, retry-idempotent ADMIN_ROLE_PREVIEW event."""
+    if action not in {"ENTER", "QUERY", "EXIT"}:
+        raise ValueError("invalid role preview audit action")
+    prior = c.execute(
+        "SELECT view_role,action FROM audit_events "
+        "WHERE event_type='ADMIN_ROLE_PREVIEW' AND client_operation_id=?",
+        (client_operation_id,),
+    ).fetchone()
+    if prior:
+        if prior["view_role"] != view_role or prior["action"] != action:
+            raise ApiError(
+                409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                "相同 X-Client-Operation-Id 的预览请求不一致", trace_id=request_id,
+            )
+        return
+    server_time = now()
+    metadata = json.dumps(
+        {"viewRole": view_role, "action": action}, ensure_ascii=False, sort_keys=True,
+    )
+    c.execute(
+        """INSERT INTO audit_events
+           (event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,
+            client_operation_id,before_json,after_json,server_time,device_id,source_ip,
+            result,view_role,action)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "ADMIN_ROLE_PREVIEW", "WORKSPACE", "ROLE_PREVIEW", actor["id"], "ADMIN",
+            request_id, client_operation_id, "{}", metadata, server_time, None, None,
+            "SUCCESS", view_role, action,
+        ),
+    )
 
 
 # ==================== 令牌签发与轮转 ====================
@@ -1253,6 +1438,7 @@ def _workspace_status_domain(status_code: str) -> str:
 
 def _workspace_requirements(
     c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None,
+    view_role: str | None = None,
 ) -> list[sqlite3.Row]:
     """读取工作台的正式订单需求行。
 
@@ -1260,7 +1446,8 @@ def _workspace_requirements(
     order_material_requirements 与 material_handovers 实时派生，避免再维护
     一套 issued/picked 数量事实。
     """
-    if user["role"] not in ROLES:
+    effective_role = view_role or user["role"]
+    if effective_role not in ROLES:
         raise ApiError(403, CODE_FORBIDDEN, "账号角色无效")
 
     query = """
@@ -1319,14 +1506,29 @@ def _workspace_requirements(
     # 操作员只能看到服务端登记的本人责任范围，不能靠客户端隐藏按钮实现。
     # 责任范围同时兼容历史数据：既支持 material_work_items.assignment，
     # 也支持本人作为交接创建人/接收人的正式交接记录。
-    if user["role"] == "OPERATOR":
+    if effective_role == "OPERATOR":
+        operator_id = user["id"] if view_role is None else None
+        operator_predicate = "w.assigned_user_id = ?" if operator_id else (
+            "EXISTS (SELECT 1 FROM users scoped_operator "
+            "WHERE scoped_operator.id = w.assigned_user_id "
+            "AND scoped_operator.role = 'OPERATOR' AND scoped_operator.active = 1)"
+        )
+        handover_predicate = (
+            "(h.receiver_user_id = ? OR h.created_by = ? OR h.confirmed_by = ?)"
+            if operator_id else
+            "EXISTS (SELECT 1 FROM users scoped_operator_handover "
+            "WHERE scoped_operator_handover.id IN "
+            "(h.receiver_user_id, h.created_by, h.confirmed_by) "
+            "AND scoped_operator_handover.role = 'OPERATOR' "
+            "AND scoped_operator_handover.active = 1)"
+        )
         query += """
             AND (
                 EXISTS (
                     SELECT 1
                       FROM material_work_items w
                      WHERE (w.requirement_id = r.id OR w.id = r.id)
-                       AND w.assigned_user_id = ?
+                       AND {operator_predicate}
                 )
                 OR EXISTS (
                     SELECT 1
@@ -1340,16 +1542,32 @@ def _workspace_requirements(
                                 AND w2.requirement_id = r.id
                          )
                      )
-                       AND (
-                           h.receiver_user_id = ?
-                           OR h.created_by = ?
-                           OR h.confirmed_by = ?
-                       )
+                       AND {handover_predicate}
                 )
             )
-        """
-        args.extend([user["id"]] * 4)
-    elif user["role"] == "MATERIAL":
+        """.format(operator_predicate=operator_predicate, handover_predicate=handover_predicate)
+        if operator_id:
+            args.extend([operator_id] * 4)
+    elif effective_role == "MATERIAL":
+        material_id = user["id"] if view_role is None else None
+        material_assignment = "w.assigned_user_id = ?" if material_id else (
+            "EXISTS (SELECT 1 FROM users scoped_material "
+            "WHERE scoped_material.id = w.assigned_user_id "
+            "AND scoped_material.role = 'MATERIAL' AND scoped_material.active = 1)"
+        )
+        material_creator = "t.created_by = ?" if material_id else (
+            "EXISTS (SELECT 1 FROM users scoped_material_transfer "
+            "WHERE scoped_material_transfer.id = t.created_by "
+            "AND scoped_material_transfer.role = 'MATERIAL' "
+            "AND scoped_material_transfer.active = 1)"
+        )
+        material_handover = (
+            "(h.created_by = ? OR h.confirmed_by = ?)" if material_id else
+            "EXISTS (SELECT 1 FROM users scoped_material_handover "
+            "WHERE scoped_material_handover.id IN (h.created_by, h.confirmed_by) "
+            "AND scoped_material_handover.role = 'MATERIAL' "
+            "AND scoped_material_handover.active = 1)"
+        )
         # 物料员只看服务端能证明与本人作业相关的出库/交接行：
         # 既兼容责任人投影，也兼容正式出库单/交接记录的创建人。
         # 不把整个订单需求表暴露给普通物料员。
@@ -1359,14 +1577,14 @@ def _workspace_requirements(
                     SELECT 1
                       FROM material_work_items w
                      WHERE (w.requirement_id = r.id OR w.id = r.id)
-                       AND w.assigned_user_id = ?
+                       AND {material_assignment}
                 )
                 OR EXISTS (
                     SELECT 1
                       FROM transfer_requests t
                      WHERE t.type = 'OUTBOUND'
                        AND t.document_no = o.order_no
-                       AND t.created_by = ?
+                       AND {material_creator}
                        AND EXISTS (
                            SELECT 1
                              FROM json_each(t.payload_json, '$.items') payload_item
@@ -1385,11 +1603,16 @@ def _workspace_requirements(
                                 AND w2.requirement_id = r.id
                          )
                      )
-                       AND (h.created_by = ? OR h.confirmed_by = ?)
+                       AND {material_handover}
                 )
             )
-        """
-        args.extend([user["id"]] * 4)
+        """.format(
+            material_assignment=material_assignment,
+            material_creator=material_creator,
+            material_handover=material_handover,
+        )
+        if material_id:
+            args.extend([material_id] * 4)
 
     query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
     return c.execute(query, args).fetchall()
@@ -1843,8 +2066,9 @@ def _upsert_workspace_projection(
 
 
 def _workspace_items(c: sqlite3.Connection, user: sqlite3.Row,
-                     order_no: str | None = None) -> list[dict[str, Any]]:
-    rows = _workspace_requirements(c, user, order_no)
+                     order_no: str | None = None,
+                     view_role: str | None = None) -> list[dict[str, Any]]:
+    rows = _workspace_requirements(c, user, order_no, view_role)
     work_item_ids = {
         work_item_id
         for row in rows
@@ -1858,18 +2082,28 @@ def _workspace_items(c: sqlite3.Connection, user: sqlite3.Row,
 
 
 def _workspace_summary_flow_counts(
-    c: sqlite3.Connection, user: sqlite3.Row,
+    c: sqlite3.Connection, user: sqlite3.Row, view_role: str | None = None,
 ) -> tuple[int, int, int]:
     """读取正式流转/交接事实的汇总计数。
 
     流转申请的 documentNo 可以为空，所以这三项不能仅通过订单需求
     工作项反推；权限条件仍在 SQL 中按当前用户角色执行。
     """
+    effective_role = view_role or user["role"]
+    preview_scope = view_role is not None
     flow_args: list[Any] = []
     flow_scope = "1=1"
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
-        flow_scope = "created_by = ?"
-        flow_args.append(user["id"])
+    if effective_role not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        if preview_scope:
+            flow_scope = (
+                "EXISTS (SELECT 1 FROM users scoped_flow_user "
+                "WHERE scoped_flow_user.id = transfer_requests.created_by "
+                "AND scoped_flow_user.role = ? AND scoped_flow_user.active = 1)"
+            )
+            flow_args.append(effective_role)
+        else:
+            flow_scope = "created_by = ?"
+            flow_args.append(user["id"])
 
     pending_approval = c.execute(
         f"""
@@ -1892,25 +2126,45 @@ def _workspace_summary_flow_counts(
     ).fetchone()["count"]
 
     handover_args: list[Any] = []
-    if user["role"] in {"ADMIN", "WAREHOUSE_ADMIN"}:
+    if effective_role in {"ADMIN", "WAREHOUSE_ADMIN"}:
         handover_scope = "1=1"
-    elif user["role"] == "OPERATOR":
-        handover_scope = """
-            (
-                receiver_user_id = ?
-                OR created_by = ?
-                OR confirmed_by = ?
-                OR EXISTS (
-                    SELECT 1
-                      FROM material_work_items w
-                     WHERE (w.id = material_handovers.work_item_id
-                            OR w.requirement_id = material_handovers.work_item_id)
-                       AND w.assigned_user_id = ?
+    elif effective_role == "OPERATOR":
+        if preview_scope:
+            handover_scope = """
+                EXISTS (
+                    SELECT 1 FROM users scoped_operator_handover
+                     WHERE scoped_operator_handover.id IN
+                           (receiver_user_id, created_by, confirmed_by)
+                       AND scoped_operator_handover.role = 'OPERATOR'
+                       AND scoped_operator_handover.active = 1
                 )
+            """
+        else:
+            handover_scope = """
+                (
+                    receiver_user_id = ?
+                    OR created_by = ?
+                    OR confirmed_by = ?
+                    OR EXISTS (
+                        SELECT 1
+                          FROM material_work_items w
+                         WHERE (w.id = material_handovers.work_item_id
+                                OR w.requirement_id = material_handovers.work_item_id)
+                           AND w.assigned_user_id = ?
+                    )
+                )
+            """
+            handover_args.extend([user["id"]] * 4)
+    elif preview_scope:
+        handover_scope = """
+            EXISTS (
+                SELECT 1 FROM users scoped_material_handover
+                 WHERE scoped_material_handover.id IN (created_by, confirmed_by)
+                   AND scoped_material_handover.role = 'MATERIAL'
+                   AND scoped_material_handover.active = 1
             )
         """
-        handover_args.extend([user["id"]] * 4)
-    else:  # MATERIAL
+    else:
         handover_scope = "(created_by = ? OR confirmed_by = ?)"
         handover_args.extend([user["id"], user["id"]])
 
@@ -1959,24 +2213,36 @@ def _workspace_filter_status(items: list[dict[str, Any]], status: str | None,
 
 @app.get("/api/v1/workspace/summary")
 def workspace_summary(
+    viewRole: str | None = Query(default=None, max_length=64),
     user: sqlite3.Row = Depends(current_user),
     x_request_id: str | None = Header(default=None),
+    x_client_operation_id: str | None = Header(default=None, alias="X-Client-Operation-Id"),
 ) -> dict[str, Any]:
     """返回当前服务端角色可见范围内的工作台汇总。"""
-    trace_id = x_request_id or ""
+    effective_role, preview, trace_id, operation_id = _workspace_context(
+        user, viewRole, x_request_id, x_client_operation_id,
+    )
     c = db()
     try:
-        items = _workspace_items(c, user)
+        items = _workspace_items(c, user, view_role=viewRole)
         pending_approval_count, pending_outbound_count, pending_handover_count = (
-            _workspace_summary_flow_counts(c, user)
+            _workspace_summary_flow_counts(c, user, viewRole)
         )
+        if preview:
+            _append_role_preview_audit(
+                c, actor=user, view_role=effective_role, action="QUERY",
+                request_id=trace_id, client_operation_id=operation_id,
+            )
+            c.commit()
     finally:
         c.close()
     generated_at = now()
     status_counts = _workspace_status_counts(items)
     handover_status_counts = _workspace_handover_status_counts(items)
     return {
-        "role": user["role"],
+        "role": effective_role,
+        "preview": preview,
+        "authenticatedRole": user["role"],
         "pendingApprovalCount": pending_approval_count,
         "pendingOutboundCount": pending_outbound_count,
         "pendingHandoverCount": pending_handover_count,
@@ -1999,19 +2265,29 @@ def workspace_summary(
 
 @app.get("/api/v1/workspace/material-items")
 def workspace_material_items(
+    viewRole: str | None = Query(default=None, max_length=64),
     status: str | None = Query(default=None, max_length=64),
     orderNo: str | None = Query(default=None, max_length=64),
     page: int = Query(default=1, ge=1),
     pageSize: int = Query(default=20, ge=1, le=50),
     user: sqlite3.Row = Depends(current_user),
     x_request_id: str | None = Header(default=None),
+    x_client_operation_id: str | None = Header(default=None, alias="X-Client-Operation-Id"),
 ) -> dict[str, Any]:
     """按服务端角色范围返回订单需求工作项，并提供稳定分页元数据。"""
-    trace_id = x_request_id or ""
+    effective_role, preview, trace_id, operation_id = _workspace_context(
+        user, viewRole, x_request_id, x_client_operation_id,
+    )
     normalized_order_no = orderNo.strip() if orderNo is not None else None
     c = db()
     try:
-        all_items = _workspace_items(c, user, normalized_order_no)
+        all_items = _workspace_items(c, user, normalized_order_no, viewRole)
+        if preview:
+            _append_role_preview_audit(
+                c, actor=user, view_role=effective_role, action="QUERY",
+                request_id=trace_id, client_operation_id=operation_id,
+            )
+            c.commit()
     finally:
         c.close()
     visible_items = _workspace_filter_status(all_items, status, trace_id)
@@ -2020,11 +2296,70 @@ def workspace_material_items(
     items = visible_items[start:start + pageSize]
     return {
         "items": items,
+        "role": effective_role,
+        "preview": preview,
+        "authenticatedRole": user["role"],
         "page": page,
         "pageSize": pageSize,
         "total": total,
         "totalPages": (total + pageSize - 1) // pageSize if total else 0,
         "serverTime": now(),
+        "traceId": trace_id,
+    }
+
+
+@app.post("/api/v1/workspace/role-preview/enter")
+def enter_role_preview(
+    viewRole: str = Query(..., max_length=64),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    x_client_operation_id: str | None = Header(default=None, alias="X-Client-Operation-Id"),
+) -> dict[str, Any]:
+    """Record a preview switch; it never changes the authenticated session."""
+    effective_role, preview, trace_id, operation_id = _workspace_context(
+        user, viewRole, x_request_id, x_client_operation_id,
+    )
+    c = db()
+    try:
+        _append_role_preview_audit(
+            c, actor=user, view_role=effective_role, action="ENTER",
+            request_id=trace_id, client_operation_id=operation_id,
+        )
+        c.commit()
+    finally:
+        c.close()
+    return {
+        "role": effective_role,
+        "preview": preview,
+        "authenticatedRole": user["role"],
+        "traceId": trace_id,
+    }
+
+
+@app.post("/api/v1/workspace/role-preview/exit")
+def exit_role_preview(
+    viewRole: str = Query(..., max_length=64),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    x_client_operation_id: str | None = Header(default=None, alias="X-Client-Operation-Id"),
+) -> dict[str, Any]:
+    """Record exit from a preview and return the real ADMIN context."""
+    _, _, trace_id, operation_id = _workspace_context(
+        user, viewRole, x_request_id, x_client_operation_id,
+    )
+    c = db()
+    try:
+        _append_role_preview_audit(
+            c, actor=user, view_role=viewRole, action="EXIT",
+            request_id=trace_id, client_operation_id=operation_id,
+        )
+        c.commit()
+    finally:
+        c.close()
+    return {
+        "role": user["role"],
+        "preview": False,
+        "authenticatedRole": user["role"],
         "traceId": trace_id,
     }
 
@@ -2453,6 +2788,8 @@ def _public_audit_event(row: sqlite3.Row) -> dict[str, Any]:
         "after_json": value("after_json"),
         "server_time": value("server_time"),
         "device_id": value("device_id"),
+        "view_role": value("view_role"),
+        "preview_action": value("action"),
         "result": value("result"),
     }
 
@@ -3116,13 +3453,13 @@ def audit_logs(
                role AS actor_role, request_id,
                NULL AS client_operation_id, NULL AS before_json,
                NULL AS after_json, occurred_at AS server_time,
-               NULL AS device_id, result
+               NULL AS device_id, NULL AS view_role, NULL AS preview_action, result
           FROM audit_logs
         UNION ALL
         SELECT 'AUDIT_EVENT' AS record_type,
                id, event_type, entity_type, entity_id, actor_user_id,
                actor_role, request_id, client_operation_id, before_json,
-               after_json, server_time, device_id, result
+               after_json, server_time, device_id, view_role, action AS preview_action, result
           FROM audit_events
     """
     where = ["1=1"]
@@ -3177,7 +3514,11 @@ def audit_logs(
             "resource_type": row["entity_type"],
             "resource_id": row["entity_id"],
             "occurred_at": row["server_time"],
+            "view_role": row["view_role"],
+            "preview_action": row["preview_action"],
         })
+        if row["preview_action"]:
+            item["action"] = row["preview_action"]
         items.append(item)
     return {
         "items": items,
