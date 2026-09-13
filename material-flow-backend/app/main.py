@@ -27,7 +27,16 @@ DATA_DIR = Path(os.environ.get("MATERIAL_FLOW_DATA", "/srv/material-flow/data"))
 UPLOAD_DIR = Path(os.environ.get("MATERIAL_FLOW_UPLOADS", "/srv/material-flow/uploads"))
 DB_PATH = DATA_DIR / "material_flow.db"
 INITIAL_ADMIN_PASSWORD = os.environ.get("INITIAL_ADMIN_PASSWORD")
-app = FastAPI(title="物料流转系统 API", version="0.1.0")
+SERVICE_NAME = "material-flow"
+VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
+try:
+    APP_VERSION = VERSION_FILE.read_text(encoding="ascii").strip()
+except OSError:
+    raise RuntimeError("VERSION file is required") from None
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", APP_VERSION):
+    raise RuntimeError("VERSION file has an invalid format")
+
+app = FastAPI(title="物料流转系统 API", version=APP_VERSION)
 bearer = HTTPBearer(auto_error=False)
 
 HEALTH_TABLES = frozenset({
@@ -813,14 +822,15 @@ def health() -> dict[str, str]:
             raise sqlite3.DatabaseError("database check failed")
         return {
             "status": "ok",
-            "service": "material-flow",
+            "service": SERVICE_NAME,
             "database": "ok",
+            "version": APP_VERSION,
             "serverTime": now(),
         }
     except (OSError, RuntimeError, sqlite3.Error):
         return JSONResponse(
             status_code=503,
-            content={"status": "unhealthy", "service": "material-flow"},
+            content={"status": "unhealthy", "service": SERVICE_NAME, "version": APP_VERSION},
         )
     finally:
         if c is not None:

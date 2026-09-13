@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -19,7 +20,10 @@ ROOT = Path(tempfile.mkdtemp(prefix="mf_deployment_readiness_"))
 os.environ["MATERIAL_FLOW_DATA"] = str(ROOT / "data")
 os.environ["MATERIAL_FLOW_UPLOADS"] = str(ROOT / "uploads")
 os.environ["INITIAL_ADMIN_PASSWORD"] = "ReadinessAdmin@2026"
-APP_PATH = Path(__file__).resolve().parents[1] / "app" / "main.py"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+APP_PATH = BACKEND_ROOT / "app" / "main.py"
+VERSION_PATH = BACKEND_ROOT / "VERSION"
+SERVICE_PATH = BACKEND_ROOT / "material-flow.service"
 spec = importlib.util.spec_from_file_location("deployment_readiness_backend", APP_PATH)
 assert spec is not None and spec.loader is not None
 backend = importlib.util.module_from_spec(spec)
@@ -210,6 +214,7 @@ def test_health_check_reports_database_and_never_exposes_storage_details():
         assert healthy.status_code == 200, healthy.text
         assert healthy.json()["status"] == "ok"
         assert healthy.json()["database"] == "ok"
+        assert healthy.json()["version"] == backend.APP_VERSION
         assert str(backend.DB_PATH) not in healthy.text
 
         original_db = backend.db
@@ -223,9 +228,78 @@ def test_health_check_reports_database_and_never_exposes_storage_details():
         finally:
             backend.db = original_db
         assert unhealthy.status_code == 503
-        assert unhealthy.json() == {"status": "unhealthy", "service": "material-flow"}
+        assert unhealthy.json() == {
+            "status": "unhealthy",
+            "service": "material-flow",
+            "version": backend.APP_VERSION,
+        }
         assert "private database path" not in unhealthy.text
         assert str(backend.DB_PATH) not in unhealthy.text
+
+
+def test_package_version_is_the_health_check_version_identifier():
+    package_version = VERSION_PATH.read_text(encoding="ascii").strip()
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", package_version)
+    assert backend.APP_VERSION == package_version
+    assert backend.app.version == package_version
+
+    with TestClient(backend.app) as client:
+        response = client.get("/healthz")
+    assert response.json()["version"] == package_version
+
+
+def test_explicit_migration_entrypoint_initializes_database():
+    data_dir = Path(tempfile.mkdtemp(prefix="mf_explicit_migration_")) / "data"
+    child_env = os.environ.copy()
+    child_env["MATERIAL_FLOW_DATA"] = str(data_dir)
+    child_env["MATERIAL_FLOW_UPLOADS"] = str(data_dir.parent / "uploads")
+    child_env["INITIAL_ADMIN_PASSWORD"] = "MigrationAdmin@2026"
+    result = subprocess.run(
+        [sys.executable, "-m", "app.migrate"],
+        cwd=BACKEND_ROOT,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    connection = sqlite3.connect(data_dir / "material_flow.db")
+    try:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='production_orders'"
+        ).fetchone()
+    finally:
+        connection.close()
+
+
+def test_deployment_inputs_are_pinned_and_service_uses_canonical_entries():
+    requirements = (BACKEND_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    test_requirements = (BACKEND_ROOT / "requirements-test.txt").read_text(encoding="utf-8")
+    runtime_lines = [
+        line for line in requirements.splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert all("==" in line for line in runtime_lines)
+    assert {"fastapi", "uvicorn", "python-multipart", "argon2-cffi"} <= {
+        line.split("==", 1)[0].split("[", 1)[0]
+        for line in runtime_lines
+    }
+    assert "-r requirements.txt" in test_requirements
+
+    service = SERVICE_PATH.read_text(encoding="ascii")
+    assert (
+        "ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate"
+        in service
+    )
+    assert (
+        "ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app "
+        "--host 127.0.0.1 --port 8000"
+    ) in service
+    assert "--host 0.0.0.0" not in service
 
 
 def test_missing_initial_admin_configuration_fails_without_partial_schema():
