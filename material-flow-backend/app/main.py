@@ -49,6 +49,13 @@ CODE_IDEMPOTENCY_PAYLOAD_MISMATCH = "IDEMPOTENCY_PAYLOAD_MISMATCH"
 CODE_INVENTORY_VERSION_CONFLICT = "INVENTORY_VERSION_CONFLICT"
 CODE_INSUFFICIENT_INVENTORY = "INSUFFICIENT_INVENTORY"
 CODE_ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+CODE_INVALID_REFRESH_TOKEN = "INVALID_REFRESH_TOKEN"
+CODE_OLD_PASSWORD_MISMATCH = "OLD_PASSWORD_MISMATCH"
+CODE_PASSWORD_UNCHANGED = "PASSWORD_UNCHANGED"
+
+# 令牌时效（契约 A03）
+ACCESS_TOKEN_SECONDS = 3600           # 1 小时，缩短泄露暴露窗口
+REFRESH_TOKEN_SECONDS = 30 * 86400    # 30 天，覆盖现场设备的长期离线场景
 
 # 登录失败锁定策略（契约 A03）
 LOGIN_MAX_FAILURES = 5          # 窗口内允许的最大失败次数
@@ -197,7 +204,11 @@ def init_db() -> None:
     c = db()
     c.executescript("""
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL, password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, token_type TEXT NOT NULL DEFAULT 'ACCESS', device_id TEXT);
+    -- 已消费的刷新令牌墓碑表：用于检测令牌重放。
+    -- 若直接删除旧令牌，"令牌不存在" 与 "令牌被重放" 无法区分，
+    -- 泄露检测就永远不会触发。故消费后写入墓碑，保留至自然过期。
+    CREATE TABLE IF NOT EXISTS consumed_refresh_tokens(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, consumed_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS materials(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, batch_no TEXT, expiry_date TEXT, total_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS locations(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS inventory(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), UNIQUE(material_id, location_id));
@@ -222,7 +233,23 @@ def init_db() -> None:
     if c.execute("SELECT 1 FROM production_orders").fetchone() is None:
         c.execute("INSERT INTO production_orders VALUES(?,?,?,?,?)", ("ord_001", "SO202609120001", "MS-300", "IN_PROGRESS", now()))
         c.execute("INSERT INTO order_material_requirements VALUES(?,?,?,?,?)", ("omr_001", "ord_001", "mat_001", 200, 200))
+
+    _migrate_schema(c)
     c.commit(); c.close()
+
+
+def _migrate_schema(c: sqlite3.Connection) -> None:
+    """幂等的增量迁移。
+
+    历史库的 sessions 表只有 (token, user_id, expires_at) 三列，
+    引入 refresh token 后需要补 token_type 与 device_id。
+    SQLite 不支持 ADD COLUMN IF NOT EXISTS，故先查 PRAGMA 再补。
+    """
+    existing = {r["name"] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "token_type" not in existing:
+        c.execute("ALTER TABLE sessions ADD COLUMN token_type TEXT NOT NULL DEFAULT 'ACCESS'")
+    if "device_id" not in existing:
+        c.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
 
 
 @app.on_event("startup")
@@ -233,9 +260,74 @@ def startup() -> None:
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> sqlite3.Row:
     if not credentials:
         raise HTTPException(401, "未登录")
-    c = db(); row = c.execute("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>? AND u.active=1", (credentials.credentials, int(time.time()))).fetchone(); c.close()
-    if not row: raise HTTPException(401, "会话已失效")
+    c = db()
+    row = c.execute(
+        "SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id "
+        "WHERE s.token=? AND s.expires_at>? AND u.active=1 "
+        # 必须限定 ACCESS：否则长效 refresh token 可当 access token 使用，
+        # 短时效设计形同虚设，泄露后危害窗口被放大到 30 天。
+        "AND s.token_type='ACCESS'",
+        (credentials.credentials, int(time.time())),
+    ).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(401, "会话已失效")
     return row
+
+
+# ==================== 令牌签发与轮转 ====================
+
+def issue_session(c: sqlite3.Connection, user_id: str, device_id: str) -> tuple[str, str, int]:
+    """签发一对 access token / refresh token。
+
+    设计（契约 A03）：
+      - access token 短时效（1 小时），泄露后暴露窗口小；
+      - refresh token 长时效（30 天），仅在刷新端点可用；
+      - 两者都落库，登出 / 改密可一次性全清。
+
+    返回 (access_token, refresh_token, access_expires_at)
+    """
+    access = secrets.token_urlsafe(32)
+    refresh = secrets.token_urlsafe(32)
+    now_ts = int(time.time())
+    access_exp = now_ts + ACCESS_TOKEN_SECONDS
+    refresh_exp = now_ts + REFRESH_TOKEN_SECONDS
+
+    c.execute("INSERT INTO sessions VALUES(?,?,?,?,?)",
+              (access, user_id, access_exp, "ACCESS", device_id))
+    c.execute("INSERT INTO sessions VALUES(?,?,?,?,?)",
+              (refresh, user_id, refresh_exp, "REFRESH", device_id))
+    return access, refresh, access_exp
+
+
+def revoke_all_sessions(c: sqlite3.Connection, user_id: str) -> int:
+    """吊销该用户全部会话（改密 / 登出 / 检测到令牌重用）。"""
+    cur = c.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    return cur.rowcount
+
+
+def _revoke_refresh_family(c: sqlite3.Connection, token: str) -> None:
+    """刷新令牌被重用时，连同该用户全部令牌一并吊销。
+
+    这是 OAuth2 的 refresh token rotation 标准做法：
+    合法客户端每次刷新都会换到新令牌，旧的立即作废。
+    若旧令牌再次出现，说明它被窃取并被重放 —— 此时无法区分
+    攻击者与合法用户，只能把整族令牌作废，强制重新登录。
+
+    为避免误伤：这里按 user_id 吊销全部会话，而不是按 device_id。
+    多设备场景下，若只吊销单设备，攻击者仍可在其他设备上活动。
+    """
+    row = c.execute("SELECT user_id FROM sessions WHERE token=?", (token,)).fetchone()
+    if row:
+        uid = row["user_id"]
+    else:
+        # 令牌已被消费（不在 sessions 中），从墓碑表取 user_id
+        row = c.execute(
+            "SELECT user_id FROM consumed_refresh_tokens WHERE token=?", (token,)
+        ).fetchone()
+        uid = row["user_id"] if row else None
+    if uid:
+        c.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
 
 
 class Login(BaseModel):
@@ -243,6 +335,11 @@ class Login(BaseModel):
     password: str
     deviceId: str = Field(min_length=1, max_length=128)
     clientVersion: str = "0.1.0"
+
+
+class ChangePassword(BaseModel):
+    oldPassword: str = Field(min_length=1, max_length=256)
+    newPassword: str = Field(min_length=8, max_length=256)
 
 
 class Scan(BaseModel):
@@ -340,14 +437,146 @@ def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[
         # 不回显账号是否存在，避免用户名枚举
         raise HTTPException(401, "账号或密码错误")
 
-    # 3) 登录成功 → 清空失败计数
+    # 3) 登录成功 → 清空失败计数，签发新令牌对
+    #
+    # 注意：这里不再吊销该用户的既有会话。
+    # 现场作业允许同一账号在多台设备（PDA / 手机）同时在线，
+    # 登录即踢下线会造成收料高峰期的相互顶号。
+    # 需要强制下线改用 POST /auth/logout-all。
     c.execute("DELETE FROM login_attempts WHERE username=?", (username,))
-    token = secrets.token_urlsafe(32)
-    expires = int(time.time()) + 86400
-    c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], expires))
+    access, refresh, access_exp = issue_session(c, user["id"], body.deviceId)
     audit(c, user["id"], user["role"], "LOGIN", "USER", user["id"], "SUCCESS", x_request_id or "")
     c.commit(); c.close()
-    return {"accessToken": token, "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat(), "mustChangePassword": bool(user["must_change_password"]), "user": {"id": user["id"], "username": user["username"], "displayName": user["display_name"], "role": user["role"]}}
+    return {
+        "accessToken": access,
+        "refreshToken": refresh,
+        "expiresAt": datetime.fromtimestamp(access_exp, timezone.utc).isoformat(),
+        "refreshExpiresAt": datetime.fromtimestamp(
+            int(time.time()) + REFRESH_TOKEN_SECONDS, timezone.utc
+        ).isoformat(),
+        "mustChangePassword": bool(user["must_change_password"]),
+        "user": {
+            "id": user["id"], "username": user["username"],
+            "displayName": user["display_name"], "role": user["role"],
+        },
+    }
+
+
+class RefreshRequest(BaseModel):
+    refreshToken: str = Field(min_length=16, max_length=256)
+    deviceId: str = Field(default="unknown", max_length=128)
+
+
+@app.post("/api/v1/auth/refresh")
+def refresh(body: RefreshRequest, x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
+    """用刷新令牌换取新的令牌对（refresh token rotation）。
+
+    安全要点：
+      - 只有 token_type='REFRESH' 的令牌能走此端点，
+        access token 拿来刷新会被拒（避免长短期令牌混用）；
+      - 每次刷新都签发新令牌并作废旧的（一次性使用）；
+      - 旧令牌被重复使用 = 疑似泄露，整族令牌一并吊销。
+    """
+    c = db()
+    now_ts = int(time.time())
+
+    # 1) 先查墓碑：该令牌是否已被消费过？
+    #    命中即说明有人在重放旧令牌 → 视为泄露，整族吊销。
+    gravestone = c.execute(
+        "SELECT * FROM consumed_refresh_tokens WHERE token=?", (body.refreshToken,)
+    ).fetchone()
+    if gravestone is not None:
+        _revoke_refresh_family(c, body.refreshToken)
+        audit(c, gravestone["user_id"], None, "REFRESH_REUSE_DETECTED", "SESSION",
+              None, "FAILED", x_request_id or "")
+        c.commit(); c.close()
+        raise ApiError(
+            401, CODE_INVALID_REFRESH_TOKEN,
+            "检测到刷新令牌重复使用，出于安全已注销全部会话，请重新登录",
+            retryable=False,
+        )
+
+    # 2) 查活跃令牌
+    row = c.execute("SELECT * FROM sessions WHERE token=?", (body.refreshToken,)).fetchone()
+
+    if row is None or row["token_type"] != "REFRESH" or row["expires_at"] <= now_ts:
+        c.close()
+        raise ApiError(401, CODE_INVALID_REFRESH_TOKEN, "刷新令牌无效或已过期")
+
+    user = c.execute(
+        "SELECT * FROM users WHERE id=? AND active=1", (row["user_id"],)
+    ).fetchone()
+    if not user:
+        c.close()
+        raise ApiError(401, CODE_INVALID_REFRESH_TOKEN, "账号不可用")
+
+    uid, device = row["user_id"], (row["device_id"] or body.deviceId)
+
+    # 3) 一次性消费：写墓碑 + 删活跃令牌 + 签发新对
+    c.execute(
+        "INSERT OR REPLACE INTO consumed_refresh_tokens VALUES(?,?,?)",
+        (body.refreshToken, uid, now_ts),
+    )
+    c.execute("DELETE FROM sessions WHERE token=?", (body.refreshToken,))
+
+    # 顺带清理已过期的墓碑，避免无限增长
+    c.execute(
+        "DELETE FROM consumed_refresh_tokens WHERE consumed_at < ?",
+        (now_ts - REFRESH_TOKEN_SECONDS,),
+    )
+
+    access, new_refresh, access_exp = issue_session(c, uid, device)
+    audit(c, uid, user["role"], "REFRESH", "SESSION", None, "SUCCESS", x_request_id or "")
+    c.commit(); c.close()
+    return {
+        "accessToken": access,
+        "refreshToken": new_refresh,
+        "expiresAt": datetime.fromtimestamp(access_exp, timezone.utc).isoformat(),
+        "refreshExpiresAt": datetime.fromtimestamp(
+            now_ts + REFRESH_TOKEN_SECONDS, timezone.utc
+        ).isoformat(),
+    }
+
+
+@app.post("/api/v1/auth/logout")
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, str]:
+    """登出当前设备：同时吊销该设备的 access 与 refresh 令牌。"""
+    if not credentials:
+        raise HTTPException(401, "未登录")
+    c = db()
+    row = c.execute("SELECT * FROM sessions WHERE token=?", (credentials.credentials,)).fetchone()
+    if not row:
+        c.close()
+        return {"result": "OK"}
+
+    device = row["device_id"]
+    if device:
+        c.execute(
+            "DELETE FROM sessions WHERE user_id=? AND device_id=?",
+            (row["user_id"], device),
+        )
+    else:
+        c.execute("DELETE FROM sessions WHERE token=?", (credentials.credentials,))
+    audit(c, row["user_id"], None, "LOGOUT", "SESSION", None, "SUCCESS", x_request_id or "")
+    c.commit(); c.close()
+    return {"result": "OK"}
+
+
+@app.post("/api/v1/auth/logout-all")
+def logout_all(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """吊销当前用户全部设备的会话（疑似账号泄露时的应急手段）。"""
+    c = db()
+    n = revoke_all_sessions(c, user["id"])
+    audit(c, user["id"], user["role"], "LOGOUT_ALL", "SESSION", None, "SUCCESS", x_request_id or "")
+    c.commit(); c.close()
+    return {"result": "OK", "revokedCount": n}
 
 
 @app.post("/api/v1/scan/resolve")
@@ -374,6 +603,49 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
     if typ != "UNKNOWN":
         resource_id = upper
     return {"type": typ, "normalizedValue": upper, "resourceId": resource_id}
+
+
+@app.post("/api/v1/auth/change-password")
+def change_password(
+    body: ChangePassword,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """修改本人密码。
+
+    安全约束：
+      - 必须校验旧密码，防止会话被劫持后直接改密锁死账号；
+      - 新密码不得与旧密码相同；
+      - 改密后吊销该用户**全部**会话（含其他设备），
+        因为旧密码可能已泄露，其他设备上的会话不再可信；
+      - 单据里 mustChangePassword 会一并清零。
+    """
+    c = db()
+    row = c.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+    if not row or not check_password(body.oldPassword, row["password_hash"]):
+        audit(c, user["id"], user["role"], "CHANGE_PASSWORD", "USER",
+              user["id"], "FAILED", x_request_id or "")
+        c.commit(); c.close()
+        raise ApiError(401, CODE_OLD_PASSWORD_MISMATCH, "原密码不正确", retryable=False)
+
+    if body.oldPassword == body.newPassword:
+        c.close()
+        raise ApiError(400, CODE_PASSWORD_UNCHANGED, "新密码不能与原密码相同", retryable=False)
+
+    c.execute(
+        "UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?",
+        (hash_password(body.newPassword), user["id"]),
+    )
+    revoked = revoke_all_sessions(c, user["id"])
+    audit(c, user["id"], user["role"], "CHANGE_PASSWORD", "USER",
+          user["id"], "SUCCESS", x_request_id or "")
+    c.commit(); c.close()
+    return {
+        "result": "OK",
+        "revokedSessions": revoked,
+        "message": "密码已更新，请重新登录",
+    }
 
 
 @app.get("/api/v1/materials/{code}/inventory")

@@ -33,8 +33,104 @@ class MaterialFlowApi(
     var accessToken: String? = null
         private set
 
+    /**
+     * 刷新令牌（长效，30 天）。
+     *
+     * 与 accessToken 分离存储：access 过期时用它在后台静默换新，
+     * 现场作业不会因为 token 到期被打断。
+     * 持久化由上层负责（[com.company.logistics.data.SessionStore]）。
+     */
+    @Volatile
+    var refreshToken: String? = null
+        private set
+
+    /** 当前设备标识，刷新时需要回传（审计归因到具体设备） */
+    @Volatile
+    var deviceId: String = "unknown"
+
+    /**
+     * 令牌轮转回调。
+     *
+     * 刷新发生在网络层内部，上层（SessionStore）无从感知。
+     * 若不回调，新令牌只留在内存 —— 下次冷启动会拿着已被消费的旧令牌
+     * 去刷新，被服务端判定为重放并吊销整族会话。
+     */
+    @Volatile
+    var onTokensRotated: ((access: String?, refresh: String?) -> Unit)? = null
+
     fun updateToken(token: String?) {
         accessToken = token
+        if (token == null) refreshToken = null
+    }
+
+    /** 从持久化存储恢复会话（冷启动时调用） */
+    fun restoreSession(access: String?, refresh: String?, device: String) {
+        accessToken = access
+        refreshToken = refresh
+        deviceId = device
+    }
+
+    /**
+     * 并发刷新去重锁。
+     *
+     * 多个请求同时收到 401 时会争相刷新，而刷新令牌是一次性的：
+     * 第二个请求拿着已被消费的旧令牌去刷新，会被服务端判定为
+     * 「令牌重放」并吊销整族会话 —— 用户被莫名踢下线。
+     * 因此刷新必须是串行的，且后来者直接复用第一次的结果。
+     */
+    private val refreshLock = Any()
+
+    @Volatile
+    private var lastRefreshAt = 0L
+
+    /**
+     * 用刷新令牌换取新的令牌对。
+     *
+     * 返回 true 表示拿到了新的 access token，调用方可重试原请求。
+     * 刷新失败（令牌过期 / 被吊销 / 网络异常）则清空会话，走重新登录。
+     */
+    private suspend fun refreshAccessToken(): Boolean = withContext(Dispatchers.IO) {
+        val token = refreshToken ?: return@withContext false
+
+        synchronized(refreshLock) {
+            // 双重检查：若刚才已有其他协程刷新成功，直接用新令牌
+            if (accessToken != null && lastRefreshAt > System.currentTimeMillis() - 1000) {
+                return@withContext true
+            }
+            val conn = openConnection("/api/v1/auth/refresh", "POST")
+            try {
+                val body = JSONObject().apply {
+                    put("refreshToken", token)
+                    put("deviceId", deviceId)
+                }
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
+                conn.doOutput = true
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+                val (code, text) = readResponse(conn)
+                if (code !in 200..299) {
+                    // 刷新令牌已失效（过期 / 被吊销 / 检测到重放）：
+                    // 清空会话并通知上层擦除磁盘副本，必须重新登录
+                    accessToken = null
+                    refreshToken = null
+                    onTokensRotated?.invoke(null, null)
+                    return@withContext false
+                }
+                val json = JSONObject(text ?: "")
+                accessToken = json.optString("accessToken").takeIf { it.isNotEmpty() }
+                json.optString("refreshToken")
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { refreshToken = it }
+                lastRefreshAt = System.currentTimeMillis()
+                // 通知上层落盘，否则新令牌只存在于内存
+                onTokensRotated?.invoke(accessToken, refreshToken)
+                accessToken != null
+            } catch (_: Exception) {
+                // 网络异常：保留令牌，下次请求再试
+                false
+            }
+        }
     }
 
     // ==================== 4.1 登录 ====================
@@ -55,7 +151,17 @@ class MaterialFlowApi(
         val json = request("POST", "/api/v1/auth/login", body.toString(), auth = false)
         val result = ApiParser.parseLogin(json)
         accessToken = result.accessToken
+        refreshToken = result.refreshToken
+        // 显式限定，否则参数 shadow 掉属性变成自赋值空操作
+        this@MaterialFlowApi.deviceId = deviceId
         result
+    }
+
+    /** 登出：吊销当前设备的 access 与 refresh 令牌 */
+    suspend fun logout(): Unit = withContext(Dispatchers.IO) {
+        runCatching { request("POST", "/api/v1/auth/logout", "{}") }
+        accessToken = null
+        refreshToken = null
     }
 
     // ==================== 4.2 扫码解析 ====================
@@ -239,7 +345,8 @@ class MaterialFlowApi(
         path: String,
         body: String?,
         auth: Boolean = true,
-        idempotencyKey: String? = null
+        idempotencyKey: String? = null,
+        allowRetry: Boolean = true
     ): String = withContext(Dispatchers.IO) {
         val conn = openConnection(path, method)
 
@@ -258,9 +365,23 @@ class MaterialFlowApi(
         }
 
         val (code, text) = readResponse(conn)
+
+        // access token 过期 → 静默刷新后重试一次。
+        // allowRetry 防死循环：刷新后的新令牌若仍 401（如账号被停用），
+        // 说明不是时效问题，直接按失败处理。
+        if (code == 401 && auth && allowRetry && refreshToken != null) {
+            if (refreshAccessToken()) {
+                return@withContext request(method, path, body, auth, idempotencyKey, allowRetry = false)
+            }
+        }
+
         if (code !in 200..299) {
-            // 401 时清空会话，触发重新登录
-            if (code == 401) accessToken = null
+            // 401 且无法刷新 → 清空会话并擦除磁盘副本
+            if (code == 401) {
+                accessToken = null
+                refreshToken = null
+                onTokensRotated?.invoke(null, null)
+            }
             throw ApiParser.parseError(code, text)
         }
         text ?: throw ApiException(code, "EMPTY_BODY", "服务端返回空响应", retryable = true)

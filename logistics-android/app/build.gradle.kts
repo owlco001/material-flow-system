@@ -61,4 +61,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
     // ML Kit 条码识别：本地离线识别，不依赖网络
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // 会话加密存储：refresh token 长效（30 天），必须落盘且加密。
+    // 使用 Android Keystore 托管密钥的 AES-256-GCM。
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

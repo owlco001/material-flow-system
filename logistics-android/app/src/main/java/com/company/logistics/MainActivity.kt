@@ -34,6 +34,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val repository = LogisticsRepository.get(applicationContext)
+        // 冷启动恢复会话：有 refresh token 则静默续期，用户不必每天重登
+        repository.restoreSession()
         val scannerRepository = CameraXScannerRepository(
             context = applicationContext,
             api = repository.apiHandle

@@ -28,7 +28,8 @@ import java.util.UUID
  */
 class LogisticsRepository(
     private val api: MaterialFlowApi,
-    private val dao: OfflineOperationDao
+    private val dao: OfflineOperationDao,
+    private val sessionStore: SessionStore? = null
 ) {
 
     /**
@@ -39,14 +40,66 @@ class LogisticsRepository(
      */
     val apiHandle: MaterialFlowApi get() = api
 
+    init {
+        // 网络层每次轮转令牌都同步落盘 / 擦除磁盘副本。
+        // 不接这个回调的话，刷新后的新令牌只留在内存：
+        // 下次冷启动会拿已被消费的旧令牌去刷新，被服务端判为重放并吊销整族会话。
+        api.onTokensRotated = { access, refresh ->
+            if (access == null && refresh == null) {
+                sessionStore?.clear()
+            } else {
+                sessionStore?.updateTokens(access, refresh)
+            }
+        }
+    }
+
+    /** 会话是否已启用加密存储（false 表示走了降级路径，UI 可提示风险） */
+    val sessionEncrypted: Boolean get() = sessionStore?.encrypted ?: false
+
     // ==================== 会话 ====================
 
-    suspend fun login(username: String, password: String, deviceId: String): LoginResult =
-        api.login(username, password, deviceId, CLIENT_VERSION)
+    suspend fun login(username: String, password: String, deviceId: String): LoginResult {
+        val result = api.login(username, password, deviceId, CLIENT_VERSION)
+        // 令牌落盘：App 重启后可静默续期，用户不必每天重登
+        sessionStore?.save(result.accessToken, result.refreshToken, deviceId)
+        return result
+    }
 
-    fun logout() = api.updateToken(null)
+    fun logout() {
+        api.updateToken(null)
+        sessionStore?.clear()
+    }
 
-    val isLoggedIn: Boolean get() = api.accessToken != null
+    /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
+    suspend fun logoutRemote() {
+        runCatching { api.logout() }
+        sessionStore?.clear()
+    }
+
+    /**
+     * 冷启动时恢复会话。
+     *
+     * 只恢复 refresh token 即可：access token 可能已过期，
+     * 首个业务请求会触发 401 → 自动刷新，无需在此处预判时效。
+     */
+    fun restoreSession(): Boolean {
+        val store = sessionStore ?: return false
+        val refresh = store.refreshToken() ?: return false
+        api.restoreSession(
+            access = store.accessToken(),
+            refresh = refresh,
+            device = store.deviceId() ?: "unknown"
+        )
+        return true
+    }
+
+    /** 刷新成功后由网络层回调落盘，此处无需再手动调用 */
+    @Deprecated("由 api.onTokensRotated 回调自动完成", ReplaceWith(""))
+    fun persistTokens() {
+        sessionStore?.updateTokens(api.accessToken, api.refreshToken)
+    }
+
+    val isLoggedIn: Boolean get() = api.accessToken != null || api.refreshToken != null
 
     // ==================== 扫码 ====================
 
@@ -275,7 +328,8 @@ class LogisticsRepository(
         fun get(context: Context): LogisticsRepository = instance ?: synchronized(this) {
             instance ?: LogisticsRepository(
                 api = MaterialFlowApi(),
-                dao = DatabaseProvider.get(context).offlineOperationDao()
+                dao = DatabaseProvider.get(context).offlineOperationDao(),
+                sessionStore = SessionStore.get(context)
             ).also { instance = it }
         }
     }
