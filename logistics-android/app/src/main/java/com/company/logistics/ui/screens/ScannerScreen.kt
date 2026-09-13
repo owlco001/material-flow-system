@@ -177,7 +177,10 @@ fun ScannerScreen(
                 )
             }
 
-            hasPermission && cameraStatus is CameraStatus.Ready -> {
+            hasPermission && cameraStatus !is CameraStatus.Failed -> {
+                // AndroidView 必须在 Idle/Starting/Ready 都存在：首次进入时由
+                // factory 触发 startScanning。若只在 Ready 渲染，会形成
+                // 「未 Ready 不创建 PreviewView、没有 PreviewView 就永远不能 Ready」的死循环。
                 CameraPreviewPanel(
                     lifecycleOwner = lifecycleOwner,
                     previewFactory = { previewView ->
