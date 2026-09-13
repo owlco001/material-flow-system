@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -46,6 +46,8 @@ FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
 
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
+ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN")
+HANDOVER_STATES = ("PENDING", "CONFIRMED", "REJECTED", "CANCELLED")
 
 # 固定错误码
 CODE_INVALID_REQUEST_ID = "INVALID_REQUEST_ID"
@@ -74,6 +76,7 @@ CODE_TRANSFER_STATE_CONFLICT = "TRANSFER_STATE_CONFLICT"
 CODE_APPROVAL_EXECUTOR_SAME_USER = "APPROVAL_EXECUTOR_SAME_USER"
 CODE_VALIDATION_ERROR = "VALIDATION_ERROR"
 CODE_RETRYABLE_UPSTREAM_ERROR = "RETRYABLE_UPSTREAM_ERROR"
+CODE_INVALID_DOCUMENT_TYPE = "INVALID_DOCUMENT_TYPE"
 
 
 class ApiError(HTTPException):
@@ -223,6 +226,8 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS inventory(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), UNIQUE(material_id, location_id));
     CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, operator_id TEXT, role TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, request_id TEXT, occurred_at TEXT NOT NULL, result TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS material_handovers(id TEXT PRIMARY KEY, work_item_id TEXT NOT NULL, transfer_request_id TEXT NOT NULL REFERENCES transfer_requests(id), quantity INTEGER NOT NULL CHECK(quantity > 0), from_location TEXT NOT NULL, device_id TEXT, receiver_user_id TEXT, remark TEXT, client_operation_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','CONFIRMED','REJECTED','CANCELLED')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT, decision_reason TEXT);
     CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT);
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
@@ -353,6 +358,7 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     同样地，production_orders 早期只有 model_name，未区分"产品名"，
     新模型要求 product_name + updated_at，此处按需补齐。
     """
+    c.execute("UPDATE users SET role='MATERIAL' WHERE role='MATERIAL_CLERK'")
     existing = {r["name"] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
     if "token_type" not in existing:
         c.execute("ALTER TABLE sessions ADD COLUMN token_type TEXT NOT NULL DEFAULT 'ACCESS'")
@@ -383,7 +389,7 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(401, "未登录")
     c = db()
     row = c.execute(
-        "SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id "
+        "SELECT u.*, s.device_id AS session_device_id FROM sessions s JOIN users u ON u.id=s.user_id "
         "WHERE s.token=? AND s.expires_at>? AND u.active=1 "
         # 必须限定 ACCESS：否则长效 refresh token 可当 access token 使用，
         # 短时效设计形同虚设，泄露后危害窗口被放大到 30 天。
@@ -393,6 +399,8 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
     c.close()
     if not row:
         raise HTTPException(401, "会话已失效")
+    if row["role"] not in ROLES:
+        raise HTTPException(403, "账号角色无效")
     return row
 
 
@@ -487,6 +495,23 @@ class Transfer(BaseModel):
     remark: str | None = Field(default=None, max_length=500)
     # 契约：可变默认值必须用 default_factory
     evidenceIds: list[str] = Field(default_factory=list, max_length=20)
+
+
+class HandoverCreate(BaseModel):
+    workItemId: str = Field(min_length=1, max_length=128)
+    transferRequestId: str = Field(min_length=1, max_length=128)
+    quantity: int = Field(ge=1)
+    fromLocation: str = Field(min_length=1, max_length=128)
+    deviceId: str | None = Field(default=None, max_length=128)
+    receiverUserId: str | None = Field(default=None, max_length=128)
+    remark: str | None = Field(default=None, max_length=500)
+    clientOperationId: uuid.UUID
+
+
+class HandoverDecision(BaseModel):
+    clientOperationId: uuid.UUID
+    requestId: uuid.UUID
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class Decision(BaseModel):
@@ -1139,6 +1164,119 @@ def list_transfers(status: str | None = None, user: sqlite3.Row = Depends(curren
         query += " WHERE status=?"; args.append(status)
     rows = c.execute(query + " ORDER BY created_at DESC LIMIT 100", args).fetchall(); c.close()
     return {"items": [dict(r) for r in rows], "serverTime": now()}
+
+
+def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,
+                 actor: sqlite3.Row, request_id: str, operation_id: str,
+                 before: dict[str, Any], after: dict[str, Any], request: Request,
+                 result: str = "SUCCESS") -> None:
+    c.execute(
+        """INSERT INTO audit_events
+           (event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,
+            client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (event_type, "MATERIAL_HANDOVER", entity_id, actor["id"], actor["role"],
+         request_id, operation_id, json.dumps(before, ensure_ascii=False),
+         json.dumps(after, ensure_ascii=False), now(), actor["session_device_id"],
+         request.client.host if request.client else None, result),
+    )
+
+
+def _handover_headers(x_request_id: str | None, idempotency_key: str | None,
+                      operation_id: uuid.UUID) -> str:
+    trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, operation_id, trace_id)
+    return trace_id
+
+
+@app.post("/api/v1/handovers")
+def create_handover(
+    body: HandoverCreate, request: Request,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    trace_id = _handover_headers(x_request_id, idempotency_key, body.clientOperationId)
+    if user["role"] not in {"MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "OPERATOR"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无交接权限", trace_id=trace_id)
+    c = db()
+    operation_id = str(body.clientOperationId)
+    old = c.execute("SELECT * FROM material_handovers WHERE client_operation_id=?", (operation_id,)).fetchone()
+    if old:
+        if _payload_digest(body.model_dump_json()) != _payload_digest(json.dumps({
+            "workItemId": old["work_item_id"], "transferRequestId": old["transfer_request_id"],
+            "quantity": old["quantity"], "fromLocation": old["from_location"],
+            "deviceId": old["device_id"], "receiverUserId": old["receiver_user_id"],
+            "remark": old["remark"], "clientOperationId": operation_id}, ensure_ascii=False)):
+            c.close()
+            raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+        c.close()
+        return {"handoverId": old["id"], "status": old["status"], "idempotent": True, "traceId": trace_id}
+    transfer = c.execute("SELECT id,status,type FROM transfer_requests WHERE id=?", (body.transferRequestId,)).fetchone()
+    if not transfer or transfer["type"] != "OUTBOUND":
+        c.close(); raise ApiError(400, CODE_VALIDATION_ERROR, "transferRequestId 必须关联 OUTBOUND 流转单", trace_id=trace_id)
+    if transfer["status"] not in {"APPROVED", "EXECUTED"}:
+        c.close(); raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "流转单尚未审批通过", trace_id=trace_id)
+    hid = "ho_" + uuid.uuid4().hex
+    c.execute("""INSERT INTO material_handovers
+        (id,work_item_id,transfer_request_id,quantity,from_location,device_id,receiver_user_id,remark,client_operation_id,status,created_by,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (hid, body.workItemId, body.transferRequestId, body.quantity, body.fromLocation,
+         body.deviceId, body.receiverUserId, body.remark, operation_id, "PENDING", user["id"], now()))
+    _audit_event(c, "HANDOVER_CREATED", hid, user, trace_id, operation_id, {},
+                 {"status": "PENDING", "transferRequestId": body.transferRequestId, "quantity": body.quantity}, request)
+    c.commit(); c.close()
+    return {"handoverId": hid, "status": "PENDING", "transferRequestId": body.transferRequestId, "traceId": trace_id}
+
+
+def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row,
+                     x_request_id: str | None, idempotency_key: str | None, action: str) -> dict[str, Any]:
+    trace_id = _handover_headers(x_request_id, idempotency_key, body.clientOperationId)
+    if action == "CONFIRMED" and user["role"] not in {"OPERATOR", "WAREHOUSE_ADMIN", "ADMIN"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无确认权限", trace_id=trace_id)
+    if action in {"REJECTED", "CANCELLED"} and user["role"] not in {"WAREHOUSE_ADMIN", "ADMIN", "MATERIAL"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无处理权限", trace_id=trace_id)
+    if action == "REJECTED" and not (body.reason or "").strip():
+        raise ApiError(400, CODE_VALIDATION_ERROR, "驳回必须填写原因", trace_id=trace_id)
+    c = db(); row = c.execute("SELECT * FROM material_handovers WHERE id=?", (hid,)).fetchone()
+    if not row:
+        c.close(); raise HTTPException(404, "交接不存在")
+    event_type = {"CONFIRMED": "HANDOVER_CONFIRMED", "REJECTED": "HANDOVER_REJECTED", "CANCELLED": "HANDOVER_CANCELLED"}[action]
+    prior = c.execute("SELECT after_json FROM audit_events WHERE entity_id=? AND client_operation_id=? AND event_type=?", (hid, str(body.clientOperationId), event_type)).fetchone()
+    if prior:
+        c.close(); return {"handoverId": hid, "status": json.loads(prior["after_json"])["status"], "idempotent": True, "traceId": trace_id}
+    if row["status"] != "PENDING":
+        c.close(); raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "交接状态不允许重复处理", trace_id=trace_id)
+    new_status = action
+    before = {"status": row["status"]}
+    c.execute("UPDATE material_handovers SET status=?,confirmed_by=?,confirmed_at=?,decision_reason=? WHERE id=? AND status='PENDING'",
+              (new_status, user["id"], now(), body.reason, hid))
+    event_type = {"CONFIRMED": "HANDOVER_CONFIRMED", "REJECTED": "HANDOVER_REJECTED", "CANCELLED": "HANDOVER_CANCELLED"}[action]
+    _audit_event(c, event_type, hid, user, trace_id, str(body.clientOperationId), before, {"status": new_status}, request)
+    c.commit(); c.close()
+    return {"handoverId": hid, "status": new_status, "traceId": trace_id}
+
+
+@app.post("/api/v1/handovers/{hid}/confirm")
+def confirm_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    return _decide_handover(hid, body, request, user, x_request_id, idempotency_key, "CONFIRMED")
+
+
+@app.post("/api/v1/handovers/{hid}/reject")
+def reject_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    return _decide_handover(hid, body, request, user, x_request_id, idempotency_key, "REJECTED")
+
+
+@app.post("/api/v1/handovers/{hid}/cancel")
+def cancel_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    return _decide_handover(hid, body, request, user, x_request_id, idempotency_key, "CANCELLED")
+
+
+@app.get("/api/v1/handovers/{hid}/timeline")
+def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    c = db(); rows = c.execute("SELECT * FROM audit_events WHERE entity_id=? ORDER BY id", (hid,)).fetchall(); c.close()
+    if not rows: raise HTTPException(404, "交接不存在")
+    return {"handoverId": hid, "items": [dict(r) for r in rows], "serverTime": now()}
 
 
 @app.get("/api/v1/transfer-requests/{rid}")
