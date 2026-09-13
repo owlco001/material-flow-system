@@ -24,6 +24,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = BACKEND_ROOT / "app" / "main.py"
 VERSION_PATH = BACKEND_ROOT / "VERSION"
 SERVICE_PATH = BACKEND_ROOT / "material-flow.service"
+DEPLOYMENT_PATH = BACKEND_ROOT / "docs" / "DEPLOYMENT.md"
 spec = importlib.util.spec_from_file_location("deployment_readiness_backend", APP_PATH)
 assert spec is not None and spec.loader is not None
 backend = importlib.util.module_from_spec(spec)
@@ -245,33 +246,57 @@ def test_package_version_is_the_health_check_version_identifier():
 
     with TestClient(backend.app) as client:
         response = client.get("/healthz")
+        openapi = client.get("/openapi.json")
     assert response.json()["version"] == package_version
+    assert openapi.json()["info"]["version"] == package_version
+
+    deployment = DEPLOYMENT_PATH.read_text(encoding="utf-8")
+    assert "`FastAPI.version`, the `/openapi.json` document" in deployment
+    assert "contents of `VERSION`" in deployment
 
 
-def test_explicit_migration_entrypoint_initializes_database():
+def test_explicit_migration_entrypoint_is_repeatable():
     data_dir = Path(tempfile.mkdtemp(prefix="mf_explicit_migration_")) / "data"
     child_env = os.environ.copy()
     child_env["MATERIAL_FLOW_DATA"] = str(data_dir)
     child_env["MATERIAL_FLOW_UPLOADS"] = str(data_dir.parent / "uploads")
     child_env["INITIAL_ADMIN_PASSWORD"] = "MigrationAdmin@2026"
-    result = subprocess.run(
-        [sys.executable, "-m", "app.migrate"],
-        cwd=BACKEND_ROOT,
-        env=child_env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr or result.stdout
+    results = [
+        subprocess.run(
+            [sys.executable, "-m", "app.migrate"],
+            cwd=BACKEND_ROOT,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for _ in range(2)
+    ]
+    assert all(result.returncode == 0 for result in results), [
+        result.stderr or result.stdout for result in results
+    ]
 
     connection = sqlite3.connect(data_dir / "material_flow.db")
     try:
+        for table in (
+            "users", "production_orders", "order_devices", "order_material_requirements"
+        ):
+            assert connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
         assert connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
-        ).fetchone()
+            "SELECT COUNT(*) FROM users WHERE username='owlco'"
+        ).fetchone()[0] == 1
         assert connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='production_orders'"
-        ).fetchone()
+            "SELECT COUNT(*) FROM production_orders WHERE order_no='26B-013'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM order_devices WHERE order_id='ord_demo_26b013'"
+        ).fetchone()[0] == 25
+        assert connection.execute(
+            "SELECT COUNT(*) FROM order_material_requirements "
+            "WHERE order_id='ord_demo_26b013'"
+        ).fetchone()[0] == 75
     finally:
         connection.close()
 
@@ -283,7 +308,12 @@ def test_deployment_inputs_are_pinned_and_service_uses_canonical_entries():
         line for line in requirements.splitlines()
         if line and not line.startswith("#")
     ]
+    test_lines = [
+        line for line in test_requirements.splitlines()
+        if line and not line.startswith("#") and not line.startswith("-r ")
+    ]
     assert all("==" in line for line in runtime_lines)
+    assert all("==" in line for line in test_lines)
     assert {"fastapi", "uvicorn", "python-multipart", "argon2-cffi"} <= {
         line.split("==", 1)[0].split("[", 1)[0]
         for line in runtime_lines
@@ -291,6 +321,14 @@ def test_deployment_inputs_are_pinned_and_service_uses_canonical_entries():
     assert "-r requirements.txt" in test_requirements
 
     service = SERVICE_PATH.read_text(encoding="ascii")
+    service_lines = service.splitlines()
+    migration_line = next(
+        i for i, line in enumerate(service_lines) if line.startswith("ExecStartPre=")
+    )
+    start_line = next(i for i, line in enumerate(service_lines) if line.startswith("ExecStart="))
+    assert migration_line < start_line
+    assert sum(line.startswith("ExecStartPre=") for line in service_lines) == 1
+    assert sum(line.startswith("ExecStart=") for line in service_lines) == 1
     assert (
         "ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate"
         in service

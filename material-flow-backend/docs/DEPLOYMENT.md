@@ -2,7 +2,7 @@
 
 This runbook records the executable deployment-package contract for the
 backend. Network topology and access policy remain governed by the existing
-system architecture documents; this file does not contain a machine address,
+system architecture documents; this file does not contain a VPS address,
 hostname, or credential.
 
 ## Package contract
@@ -16,10 +16,10 @@ The deployable source package must contain these paths together:
 - `requirements-test.txt` - the runtime requirements plus test-only dependencies.
 - `material-flow.service` - the systemd process contract.
 
-`app.main:app`, `FastAPI.version`, and the `/healthz` response all read the
-same value from `VERSION`. Change that file as part of a release; do not add a
-second version source or use a runtime value that can make the package
-ambiguous.
+`app.main:app`, `FastAPI.version`, the `/openapi.json` document, and the
+`/healthz` response all read the same value from `VERSION`. Change that file as
+part of a release; do not add a second version source or use a runtime value
+that can make the package ambiguous.
 
 ## Runtime preparation
 
@@ -78,17 +78,33 @@ A healthy response has `status: "ok"`, `service: "material-flow"`,
 only the stable service, version, and health fields; database paths and
 internal exception details are not returned.
 
-## Release gate
+## Release checklist
+
+Complete this checklist from `material-flow-backend/` before packaging. It is
+local-only; do not point these checks at a real VPS.
+
+- [ ] `VERSION` matches `FastAPI.version`, `/openapi.json` `info.version`, and
+  `/healthz` `version`.
+- [ ] Every runtime and test dependency is pinned with `==`; install from the
+  locked requirements files.
+- [ ] Run `app.migrate` twice against the same local database and confirm the
+  schema and seed counts remain stable.
+- [ ] Confirm systemd runs `python -m app.migrate` in `ExecStartPre` before
+  Uvicorn and binds only to `127.0.0.1`.
+- [ ] Run the automated gate below and `git diff --check`.
+
+## Automated gate
 
 Run these checks from `material-flow-backend/` before packaging:
 
 ```bash
-python3 -m compileall -q app tests
-python3 -m pytest -q
-python3 tests/test_auth_security.py
-python3 tests/test_contract_acceptance.py
-python3 tests/test_order_material_status.py
-python3 tests/test_token_lifecycle.py
+.venv/bin/python -m compileall -q app tests
+.venv/bin/python -m pytest -q
+.venv/bin/python tests/test_auth_security.py
+.venv/bin/python tests/test_contract_acceptance.py
+.venv/bin/python tests/test_order_material_status.py
+.venv/bin/python tests/test_token_lifecycle.py
+git diff --check
 ```
 
 The four direct scripts are intentionally excluded from pytest collection
