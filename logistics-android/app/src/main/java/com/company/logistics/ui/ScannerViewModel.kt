@@ -7,10 +7,16 @@ import androidx.lifecycle.viewModelScope
 import com.company.logistics.domain.ScannerRepository
 import com.company.logistics.domain.ScannerUiState
 import com.company.logistics.data.remote.ApiException
+import com.company.logistics.data.remote.safeMessage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -75,6 +81,10 @@ class ScannerViewModel(
     private val _manualInputVisible = MutableStateFlow(false)
     val manualInputVisible: StateFlow<Boolean> = _manualInputVisible.asStateFlow()
 
+    private var cameraStartJob: Job? = null
+    private var scanEventsJob: Job? = null
+    private var cameraGeneration = 0L
+
     /**
      * 绑定预览并开始识别。
      * 仅当权限已被授予时调用；权限流程由 UI 层负责请求。
@@ -90,17 +100,37 @@ class ScannerViewModel(
             is CameraStatus.Ready, is CameraStatus.Starting -> return
             else -> Unit // Idle / Failed 允许继续
         }
+        val generation = ++cameraGeneration
         _cameraStatus.value = CameraStatus.Starting
         _cameraError.value = null
 
-        viewModelScope.launch {
+        cameraStartJob?.cancel()
+        cameraStartJob = viewModelScope.launch {
             // 超时兜底：CameraX 在某些 ROM 上会静默卡住不回调，
             // 没有超时用户就会无限期停在「正在启动摄像头…」。
-            runCatching {
+            val result = try {
                 withTimeout(CAMERA_START_TIMEOUT_MS) {
                     scannerRepository.startCamera(owner, preview).getOrThrow()
                 }
+                Result.success(Unit)
+            } catch (timeout: TimeoutCancellationException) {
+                withContext(NonCancellable) { scannerRepository.stopCamera() }
+                Result.failure(timeout)
+            } catch (cancelled: CancellationException) {
+                // A start can be cancelled after CameraX has bound the use cases. Always
+                // release on a non-cancellable context so a leaving screen cannot leak it.
+                withContext(NonCancellable) { scannerRepository.stopCamera() }
+                throw cancelled
+            } catch (error: Throwable) {
+                Result.failure(error)
             }
+
+            if (!isActiveGeneration(generation)) {
+                if (result.isSuccess) scannerRepository.stopCamera()
+                return@launch
+            }
+
+            result
                 .onSuccess {
                     _cameraBoundMirror.value = true
                     _torchAvailable.value = scannerRepository.isTorchAvailable
@@ -120,13 +150,11 @@ class ScannerViewModel(
                     _uiState.value = ScannerUiState.Ready
                 }
         }
-        // 订阅识别事件（只订阅一次，避免重试后重复收集导致重复解析）
-        if (!scanEventsSubscribed) {
-            scanEventsSubscribed = true
-            viewModelScope.launch {
-                scannerRepository.observeScanEvents().collect { event ->
-                    resolve(event.rawValue)
-                }
+        // Subscribe once per ViewModel instance. A process-wide flag would leave a newly
+        // created ViewModel without a collector after Activity recreation.
+        if (scanEventsJob == null) {
+            scanEventsJob = viewModelScope.launch {
+                scannerRepository.observeScanEvents().collect { event -> resolve(event.rawValue) }
             }
         }
     }
@@ -140,31 +168,42 @@ class ScannerViewModel(
      * 才能重新拿到 PreviewView 去绑定 —— 否则无视图可绑。
      */
     fun resetForRetry() {
+        val generation = ++cameraGeneration
+        cameraStartJob?.cancel()
+        cameraStartJob = null
         viewModelScope.launch {
             runCatching { scannerRepository.stopCamera() }
+            if (generation != cameraGeneration) return@launch
             _cameraBoundMirror.value = false
             _torchOn.value = false
             _torchAvailable.value = false
             _cameraError.value = null
             _cameraStatus.value = CameraStatus.Idle
+            if (_uiState.value !is ScannerUiState.PermissionDenied) {
+                _uiState.value = ScannerUiState.Ready
+            }
         }
     }
 
     fun stopScanning() {
+        cameraGeneration++
+        cameraStartJob?.cancel()
+        cameraStartJob = null
+        _cameraBoundMirror.value = false
+        _torchOn.value = false
+        _torchAvailable.value = false
+        _cameraError.value = null
+        _cameraStatus.value = CameraStatus.Idle
         viewModelScope.launch {
-            scannerRepository.stopCamera()
-            _cameraBoundMirror.value = false
-            _torchOn.value = false
-            _torchAvailable.value = false
-            // 必须一并清错误：否则上次失败的原因会残留，
-            // 下次进页面时 UI 会先闪一下上一次的错误
-            _cameraError.value = null
-            if (_cameraStatus.value is CameraStatus.Ready ||
-                _cameraStatus.value is CameraStatus.Starting
-            ) {
-                _cameraStatus.value = CameraStatus.Idle
-            }
+            runCatching { scannerRepository.stopCamera() }
         }
+    }
+
+    override fun onCleared() {
+        cameraGeneration++
+        cameraStartJob?.cancel()
+        scannerRepository.releaseCameraResources()
+        super.onCleared()
     }
 
     /** 把异常翻译成现场能看懂、且能据此行动的原因（不外泄堆栈） */
@@ -178,11 +217,11 @@ class ScannerViewModel(
             "缺少摄像头权限"
         e is IllegalStateException && e.message?.contains("Lifecycle", ignoreCase = true) == true ->
             "相机与页面生命周期绑定失败"
-        else ->
-            e.message?.takeIf { it.isNotBlank() } ?: "摄像头初始化失败"
+        else -> "摄像头初始化失败，请重试"
     }
 
     fun onPermissionResult(granted: Boolean, permanentlyDenied: Boolean) {
+        if (!granted) stopScanning()
         _uiState.value = if (granted) {
             ScannerUiState.Ready
         } else {
@@ -219,10 +258,10 @@ class ScannerViewModel(
     private companion object {
         /** 相机启动超时；超过则判定失败并给用户重试入口 */
         const val CAMERA_START_TIMEOUT_MS = 3_000L
-
-        /** 识别事件流是否已订阅（防重试后重复收集） */
-        var scanEventsSubscribed = false
     }
+
+    private fun isActiveGeneration(generation: Long): Boolean =
+        generation == cameraGeneration
 
     private fun resolve(rawValue: String) {
         if (_uiState.value is ScannerUiState.Processing) return
@@ -242,12 +281,15 @@ class ScannerViewModel(
                 .onSuccess { _uiState.value = ScannerUiState.Resolved(it) }
                 .onFailure { e ->
                     val (code, retryable) = when (e) {
-                        is ApiException -> e.code to e.retryable
+                        is ApiException -> e.code to (e.retryable || e.isUnauthorized)
                         else -> "NETWORK_ERROR" to true
                     }
                     _uiState.value = ScannerUiState.Error(
                         code = code,
-                        message = e.message ?: "解析失败",
+                        message = when (e) {
+                            is ApiException -> e.safeMessage("条码解析失败，请重试")
+                            else -> "网络不可用，请检查连接后重试"
+                        },
                         retryable = retryable,
                     )
                 }

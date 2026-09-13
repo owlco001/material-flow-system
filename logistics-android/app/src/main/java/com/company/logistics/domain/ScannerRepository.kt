@@ -24,6 +24,9 @@ interface ScannerRepository {
     /** 停止分析并释放 CameraX use case */
     suspend fun stopCamera(): Result<Unit>
 
+    /** Synchronous last-resort cleanup when the owning ViewModel is cleared. */
+    fun releaseCameraResources() = Unit
+
     /** 切换闪光灯；设备不支持时返回失败原因 */
     fun toggleTorch(): Boolean
 

@@ -4,6 +4,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -25,6 +27,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,6 +36,7 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * CameraX + ML Kit 扫码实现。
@@ -63,6 +67,7 @@ class CameraXScannerRepository(
     private var torchEnabled = false
     private var torchSupported = false
     private var cameraBound = false
+    private var lifecycleGeneration = 0L
 
     /** 去重表：key = rawValue|format，value = 上次处理时间戳 */
     private val recentScans = mutableMapOf<String, Long>()
@@ -73,15 +78,18 @@ class CameraXScannerRepository(
     @SuppressLint("UnsafeOptInUsageError")
     override suspend fun startCamera(owner: LifecycleOwner, preview: PreviewView): Result<Unit> =
         withContext(Dispatchers.Main.immediate) {
-            runCatching {
+            val generation = ++lifecycleGeneration
+            try {
                 if (!hasCameraPermission()) {
                     // 带 CAMERA 关键字，便于上层翻译成「缺少摄像头权限」这类人能读的原因
                     throw IllegalStateException("CAMERA_PERMISSION_MISSING")
                 }
-                // 已绑定时直接成功返回（幂等），避免重复 bindToLifecycle 抛异常
-                if (cameraBound) return@runCatching
+                // PreviewView / LifecycleOwner may have been recreated. Rebind instead of
+                // claiming success for a stale binding that points at an old surface.
+                if (cameraBound) releaseCamera()
 
                 val provider = ProcessCameraProvider.getInstance(context).await()
+                if (generation != lifecycleGeneration) return@withContext Result.success(Unit)
                 cameraProvider = provider
 
                 val previewUseCase = Preview.Builder().build().also {
@@ -104,6 +112,10 @@ class CameraXScannerRepository(
                     }
 
                 provider.unbindAll()
+                if (generation != lifecycleGeneration) {
+                    releaseCamera()
+                    return@withContext Result.success(Unit)
+                }
                 // 相机可能被其他应用独占，bindToLifecycle 会抛 CamcorderProfileProvider
                 // 或 IllegalArgumentException；原样上抛给 ViewModel 翻译成可读原因
                 val camera = provider.bindToLifecycle(
@@ -117,10 +129,14 @@ class CameraXScannerRepository(
                 torchEnabled = false
                 this@CameraXScannerRepository.camera = camera
                 cameraBound = true
-            }.onFailure { e ->
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                releaseCamera()
+                throw cancelled
+            } catch (e: Throwable) {
                 // 失败必须彻底释放，否则下次重试会带着半绑定状态再次失败
                 releaseCamera()
-                throw CameraStartException(describe(e), e)
+                Result.failure(CameraStartException(describe(e), e))
             }
         }
 
@@ -133,11 +149,21 @@ class CameraXScannerRepository(
         e.message?.contains("in use", ignoreCase = true) == true ||
             e.message?.contains("disconnected", ignoreCase = true) == true ->
             "相机被其他应用占用"
-        else -> e.message?.takeIf { it.isNotBlank() } ?: "摄像头初始化失败"
+        else -> "摄像头初始化失败，请重试"
     }
 
     override suspend fun stopCamera(): Result<Unit> = withContext(Dispatchers.Main.immediate) {
+        lifecycleGeneration++
         runCatching { releaseCamera() }
+    }
+
+    override fun releaseCameraResources() {
+        lifecycleGeneration++
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            releaseCamera()
+        } else {
+            Handler(Looper.getMainLooper()).post { releaseCamera() }
+        }
     }
 
     override fun toggleTorch(): Boolean {
@@ -160,6 +186,7 @@ class CameraXScannerRepository(
         cameraProvider = null
         camera = null
         torchEnabled = false
+        torchSupported = false
     }
 
     override suspend fun resolve(rawValue: String): Result<ScanResult> {
@@ -244,21 +271,33 @@ private class BarcodeAnalyzer(
     private val onDetected: (Barcode) -> Unit,
 ) : ImageAnalysis.Analyzer {
 
+    private val closed = AtomicBoolean(false)
+
     @SuppressLint("UnsafeOptInUsageError")
     override fun analyze(imageProxy: ImageProxy) {
+        if (closed.get()) {
+            imageProxy.close()
+            return
+        }
         val mediaImage = imageProxy.image ?: run {
             imageProxy.close()
             return
         }
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        scanner.process(image)
-            .addOnSuccessListener { barcodes ->
-                barcodes.firstOrNull()?.let(onDetected)
-            }
-            .addOnCompleteListener { imageProxy.close() }
+        try {
+            scanner.process(image)
+                .addOnSuccessListener { barcodes ->
+                    if (!closed.get()) barcodes.firstOrNull()?.let(onDetected)
+                }
+                .addOnCompleteListener { imageProxy.close() }
+        } catch (_: Throwable) {
+            // ML Kit may reject a frame synchronously while the scanner is closing.
+            imageProxy.close()
+        }
     }
 
     fun close() {
+        closed.set(true)
         runCatching { scanner.close() }
     }
 }

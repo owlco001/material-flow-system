@@ -6,6 +6,7 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
+import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.AuditLog
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
@@ -203,11 +204,7 @@ class LogisticsViewModel(
 
     init {
         repo.onSessionExpired = {
-            sessionGeneration++
-            _state.value = LogisticsUiState(
-                authState = AuthState.Unauthenticated,
-                error = "登录已失效，请重新登录"
-            )
+            expireSession()
         }
         // restoreSession 会读取加密摘要并把 token 对恢复到 API。放进协程后，UI 能明确经历
         // Restoring，而不是在 ViewModel 构造的同一帧里错误地落到登录页。
@@ -275,7 +272,15 @@ class LogisticsViewModel(
                 }
                 .onFailure { e ->
                     if (loginGeneration != sessionGeneration) return@onFailure
-                    _state.update { it.copy(loading = false, error = e.message ?: "登录失败") }
+                    val message = when (e) {
+                        is ApiException -> if (e.isUnauthorized) {
+                            "账号或密码错误，请检查后重试"
+                        } else {
+                            e.safeMessage("登录失败，请重试")
+                        }
+                        else -> "网络不可用，请检查连接后重试"
+                    }
+                    _state.update { it.copy(loading = false, error = message) }
                 }
         }
     }
@@ -284,6 +289,20 @@ class LogisticsViewModel(
         sessionGeneration++
         repo.logout()
         _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
+    }
+
+    /**
+     * 401 is terminal for the current access/refresh pair. Clear both memory and disk so
+     * a later cold start cannot replay the same invalid refresh token.
+     */
+    private fun expireSession() {
+        if (!_state.value.loggedIn) return
+        sessionGeneration++
+        repo.logout()
+        _state.value = LogisticsUiState(
+            authState = AuthState.Unauthenticated,
+            error = "登录已失效，请重新登录",
+        )
     }
 
     // ==================== 路由 ====================
@@ -402,6 +421,10 @@ class LogisticsViewModel(
                     }
                     .onFailure { error ->
                         if (!isSessionActive(currentSession)) return@onFailure
+                        if (error is ApiException && error.isUnauthorized) {
+                            expireSession()
+                            return@onFailure
+                        }
                         _state.update {
                             it.copy(
                                 workspaceSummaryState = WorkspaceLoadState.ERROR,
@@ -444,6 +467,10 @@ class LogisticsViewModel(
                     }
                     .onFailure { error ->
                         if (!isSessionActive(currentSession)) return@onFailure
+                        if (error is ApiException && error.isUnauthorized) {
+                            expireSession()
+                            return@onFailure
+                        }
                         _state.update {
                             it.copy(
                                 workspaceItemsState = WorkspaceLoadState.ERROR,
@@ -458,8 +485,8 @@ class LogisticsViewModel(
 
     private fun workspaceErrorMessage(error: Throwable): String = when {
         isWorkspaceUnavailable(error) -> "服务端未提供工作台接口，当前工作台不可用"
-        error.message.isNullOrBlank() -> "工作台加载失败，请稍后重试"
-        else -> error.message.orEmpty()
+        error is ApiException -> error.safeMessage("工作台加载失败，请稍后重试")
+        else -> "网络不可用，请检查连接后重试"
     }
 
     private fun isWorkspaceUnavailable(error: Throwable): Boolean {
@@ -1074,7 +1101,16 @@ class LogisticsViewModel(
                     }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(loading = false, error = e.message ?: "扫码解析失败") }
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            error = if (e is ApiException) {
+                                e.safeMessage("扫码解析失败，请重试")
+                            } else {
+                                "网络不可用，请检查连接后重试"
+                            },
+                        )
+                    }
                 }
         }
     }
@@ -1094,7 +1130,16 @@ class LogisticsViewModel(
                 }
             }
             .onFailure { e ->
-                _state.update { it.copy(loading = false, error = e.message ?: "料号查询失败") }
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        error = if (e is ApiException) {
+                            e.safeMessage("料号查询失败，请重试")
+                        } else {
+                            "网络不可用，请检查连接后重试"
+                        },
+                    )
+                }
             }
     }
 
@@ -1111,7 +1156,16 @@ class LogisticsViewModel(
                 }
             }
             .onFailure { e ->
-                _state.update { it.copy(loading = false, error = e.message ?: "订单查询失败") }
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        error = if (e is ApiException) {
+                            e.safeMessage("订单查询失败，请重试")
+                        } else {
+                            "网络不可用，请检查连接后重试"
+                        },
+                    )
+                }
             }
     }
 

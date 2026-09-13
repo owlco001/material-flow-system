@@ -56,6 +56,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.company.logistics.domain.ScannerUiState
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
@@ -106,6 +108,8 @@ fun ScannerScreen(
     val manualVisible by viewModel.manualInputVisible.collectAsState()
 
     var manualInput by remember { mutableStateOf("") }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var lifecycleResumed by remember { mutableStateOf(false) }
 
     // 重试触发计数。失败态下 CameraPreviewPanel 已被移除，AndroidView 也随之销毁，
     // 因此重试必须让 UI 重新走一遍「Idle → 渲染 AndroidView → startScanning」。
@@ -123,6 +127,7 @@ fun ScannerScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasPermission = granted
+        previewView = null
         val permanentlyDenied = !granted && !shouldShowCameraRationale(context)
         viewModel.onPermissionResult(granted, permanentlyDenied)
     }
@@ -144,9 +149,39 @@ fun ScannerScreen(
         }
     }
 
-    // 页面离开时释放相机（onStop / 切页都不应继续占用）
+    // Release on background/navigation and restart with the retained PreviewView on return.
     DisposableEffect(lifecycleOwner) {
-        onDispose { viewModel.stopScanning() }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    lifecycleResumed = true
+                    hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.CAMERA,
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    lifecycleResumed = false
+                    viewModel.stopScanning()
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.stopScanning()
+        }
+    }
+
+    // AndroidView's factory is not called again merely because the Activity resumes.
+    // Keep the view and explicitly rebind the use cases after an ON_STOP release.
+    LaunchedEffect(hasPermission, lifecycleResumed, previewView, cameraStatus) {
+        if (hasPermission && lifecycleResumed && previewView != null &&
+            cameraStatus == CameraStatus.Idle
+        ) {
+            viewModel.startScanning(lifecycleOwner, previewView!!)
+        }
     }
 
     // 解析成功后回传结果，由外层决定跳转
@@ -172,7 +207,10 @@ fun ScannerScreen(
             state is ScannerUiState.PermissionDenied -> {
                 PermissionDeniedPanel(
                     permanentlyDenied = state.permanentlyDenied,
-                    onRetry = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+            onRetry = {
+                viewModel.onRetryPermission()
+                permissionLauncher.launch(Manifest.permission.CAMERA)
+            },
                     onOpenSettings = { openAppSettings(context) },
                 )
             }
@@ -182,10 +220,11 @@ fun ScannerScreen(
                 // factory 触发 startScanning。若只在 Ready 渲染，会形成
                 // 「未 Ready 不创建 PreviewView、没有 PreviewView 就永远不能 Ready」的死循环。
                 CameraPreviewPanel(
-                    lifecycleOwner = lifecycleOwner,
-                    previewFactory = { previewView ->
-                        viewModel.startScanning(lifecycleOwner, previewView)
-                        previewView
+                    previewFactory = { preview ->
+                        previewView = preview
+                        if (lifecycleResumed) {
+                            viewModel.startScanning(lifecycleOwner, preview)
+                        }
                     },
                     torchOn = torchOn,
                     torchAvailable = torchAvailable,
@@ -207,7 +246,10 @@ fun ScannerScreen(
                 // 只有重试入口才不会卡死在这一屏
                 CameraFailedPanel(
                     reason = (cameraStatus as CameraStatus.Failed).reason,
-                    onRetry = { cameraRetryTick++ },
+                    onRetry = {
+                        previewView = null
+                        cameraRetryTick++
+                    },
                 )
             }
 
@@ -333,8 +375,7 @@ fun ScannerScreen(
 
 @Composable
 private fun CameraPreviewPanel(
-    lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    previewFactory: (PreviewView) -> PreviewView,
+    previewFactory: (PreviewView) -> Unit,
     torchOn: Boolean,
     torchAvailable: Boolean,
     onToggleTorch: () -> Unit,
@@ -592,8 +633,15 @@ private fun PermissionDeniedPanel(
             PrimaryButton(text = "重新授权", onClick = onRetry)
             Spacer(Modifier.height(Spacing.sm))
         }
-        TextButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
-            Text("我再试一次", fontSize = 13.sp, color = colors.primary)
+        TextButton(
+            onClick = if (permanentlyDenied) onOpenSettings else onRetry,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (permanentlyDenied) "打开系统设置" else "我再试一次",
+                fontSize = 13.sp,
+                color = colors.primary,
+            )
         }
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.TransferItem
+import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.LoginResult
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.HandoverAction
@@ -346,19 +347,25 @@ open class LogisticsRepository(
             when {
                 // 业务失败：不入队，直接报错
                 !e.retryable && e.statusCode in 400..499 ->
-                    SubmitResult.Failure(e.message, retryable = false, traceId = e.traceId)
+                    SubmitResult.Failure(
+                        e.safeMessage("提交失败，请检查数据后重试"),
+                        retryable = false,
+                        traceId = e.traceId,
+                    )
                 // 可重试错误：落本地队列
                 else -> {
+                    val safeReason = e.safeMessage("网络不可用，请稍后重试")
                     enqueue(opType, clientOpId, materialCode, materialId, quantity,
-                        targetLocation, expectedInventoryVersion, remark, e.message)
-                    SubmitResult.Queued(clientOpId, e.message)
+                        targetLocation, expectedInventoryVersion, remark, safeReason)
+                    SubmitResult.Queued(clientOpId, safeReason)
                 }
             }
         } catch (e: Exception) {
             // 网络异常：落本地队列
+            val safeReason = "网络不可用，请稍后重试"
             enqueue(opType, clientOpId, materialCode, materialId, quantity,
-                targetLocation, expectedInventoryVersion, remark, e.message)
-            SubmitResult.Queued(clientOpId, e.message ?: "网络不可用")
+                targetLocation, expectedInventoryVersion, remark, safeReason)
+            SubmitResult.Queued(clientOpId, safeReason)
         }
     }
 
@@ -454,12 +461,12 @@ open class LogisticsRepository(
                 success++
             } catch (e: ApiException) {
                 val status = if (e.isConflict) SyncStatus.CONFLICT else SyncStatus.FAILED
-                dao.updateStatus(item.id, status.name, e.message)
+                dao.updateStatus(item.id, status.name, e.safeMessage("同步失败，请重试"))
                 if (e.isConflict) conflict++ else failed++
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                dao.updateStatus(item.id, SyncStatus.FAILED.name, e.message)
+                dao.updateStatus(item.id, SyncStatus.FAILED.name, "网络不可用，请重试")
                 failed++
             }
         }

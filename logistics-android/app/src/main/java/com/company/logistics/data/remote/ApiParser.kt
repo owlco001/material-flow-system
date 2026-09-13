@@ -593,3 +593,15 @@ class ApiException(
     /** 业务冲突（如库存不足、状态不允许） */
     val isConflict: Boolean get() = statusCode == 409
 }
+
+/**
+ * Convert server-controlled error text to a safe user-facing message.
+ * Tokens, request headers, and backend stack traces must never reach UI or local queue text.
+ */
+fun ApiException.safeMessage(fallback: String): String = when {
+    isUnauthorized -> "登录已失效，请重新登录"
+    isForbidden -> "当前账号无权完成该操作"
+    isConflict -> "数据状态已变化，请刷新后重试"
+    retryable || statusCode >= 500 -> "网络或服务暂时不可用，请重试"
+    else -> fallback
+}

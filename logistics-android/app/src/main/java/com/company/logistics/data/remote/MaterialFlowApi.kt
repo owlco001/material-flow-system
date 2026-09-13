@@ -10,6 +10,7 @@ import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -70,6 +71,14 @@ class MaterialFlowApi(
         if (token == null) refreshToken = null
     }
 
+    /** Clear both in-memory tokens and notify the session owner exactly once. */
+    private fun clearSession() {
+        val hadToken = accessToken != null || refreshToken != null
+        accessToken = null
+        refreshToken = null
+        if (hadToken) onTokensRotated?.invoke(null, null)
+    }
+
     /** 从持久化存储恢复会话（冷启动时调用） */
     fun restoreSession(access: String?, refresh: String?, device: String) {
         accessToken = access
@@ -93,16 +102,21 @@ class MaterialFlowApi(
     /**
      * 用刷新令牌换取新的令牌对。
      *
-     * 返回 true 表示拿到了新的 access token，调用方可重试原请求。
-     * 刷新失败（令牌过期 / 被吊销 / 网络异常）则清空会话，走重新登录。
+     * 区分令牌失效与临时网络失败：只有前者清理会话，后者保留令牌并允许再次重试。
      */
-    private suspend fun refreshAccessToken(): Boolean = withContext(Dispatchers.IO) {
-        val token = refreshToken ?: return@withContext false
+    private enum class RefreshOutcome {
+        REFRESHED,
+        INVALID,
+        RETRYABLE_FAILURE,
+    }
+
+    private suspend fun refreshAccessToken(): RefreshOutcome = withContext(Dispatchers.IO) {
+        val token = refreshToken ?: return@withContext RefreshOutcome.INVALID
 
         synchronized(refreshLock) {
             // 双重检查：若刚才已有其他协程刷新成功，直接用新令牌
             if (accessToken != null && lastRefreshAt > System.currentTimeMillis() - 1000) {
-                return@withContext true
+                return@withContext RefreshOutcome.REFRESHED
             }
             val conn = openConnection("/api/v1/auth/refresh", "POST")
             try {
@@ -117,25 +131,34 @@ class MaterialFlowApi(
 
                 val (code, text) = readResponse(conn)
                 if (code !in 200..299) {
-                    // 刷新令牌已失效（过期 / 被吊销 / 检测到重放）：
-                    // 清空会话并通知上层擦除磁盘副本，必须重新登录
-                    accessToken = null
-                    refreshToken = null
-                    onTokensRotated?.invoke(null, null)
-                    return@withContext false
+                    // 4xx 表示 refresh token 已失效；5xx/网关错误仍可重试，不能把用户
+                    // 因一次临时网络故障踢回登录页。
+                    return@withContext if (code in 400..499) {
+                        clearSession()
+                        RefreshOutcome.INVALID
+                    } else {
+                        RefreshOutcome.RETRYABLE_FAILURE
+                    }
                 }
                 val json = JSONObject(text ?: "")
-                accessToken = json.optString("accessToken").takeIf { it.isNotEmpty() }
+                val newAccess = json.optString("accessToken").takeIf { it.isNotEmpty() }
+                    ?: return@withContext RefreshOutcome.RETRYABLE_FAILURE
+                accessToken = newAccess
                 json.optString("refreshToken")
                     .takeIf { it.isNotEmpty() }
                     ?.let { refreshToken = it }
                 lastRefreshAt = System.currentTimeMillis()
                 // 通知上层落盘，否则新令牌只存在于内存
                 onTokensRotated?.invoke(accessToken, refreshToken)
-                accessToken != null
+                RefreshOutcome.REFRESHED
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 // 网络异常：保留令牌，下次请求再试
-                false
+                RefreshOutcome.RETRYABLE_FAILURE
+            } finally {
+                // readResponse disconnects on its normal path; this also covers write/parse failures.
+                conn.disconnect()
             }
         }
     }
@@ -439,10 +462,11 @@ class MaterialFlowApi(
         fileName: String,
         purpose: String
     ): FileUploadResult = withContext(Dispatchers.IO) {
+        val token = requireToken()
         val boundary = "----LogisticsBoundary${UUID.randomUUID().toString().replace("-", "")}"
         val conn = openConnection("/api/v1/files?purpose=$purpose", "POST")
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
+        conn.setRequestProperty("Authorization", "Bearer $token")
         conn.doOutput = true
 
         conn.outputStream.use { out ->
@@ -481,11 +505,14 @@ class MaterialFlowApi(
     }
 
     private fun readResponse(conn: HttpURLConnection): Pair<Int, String?> {
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader()?.use(BufferedReader::readText)
-        conn.disconnect()
-        return code to text
+        return try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use(BufferedReader::readText)
+            code to text
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private suspend fun request(
@@ -496,10 +523,11 @@ class MaterialFlowApi(
         idempotencyKey: String? = null,
         allowRetry: Boolean = true
     ): String = withContext(Dispatchers.IO) {
+        val token = if (auth) requireToken() else null
         val conn = openConnection(path, method)
 
         if (auth) {
-            conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
+            conn.setRequestProperty("Authorization", "Bearer $token")
         }
         // 契约：所有请求携带 X-Request-Id；写操作额外携带幂等键。
         conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
@@ -517,18 +545,28 @@ class MaterialFlowApi(
         // access token 过期 → 静默刷新后重试一次。
         // allowRetry 防死循环：刷新后的新令牌若仍 401（如账号被停用），
         // 说明不是时效问题，直接按失败处理。
-        if (code == 401 && auth && allowRetry && refreshToken != null) {
-            if (refreshAccessToken()) {
-                return@withContext request(method, path, body, auth, idempotencyKey, allowRetry = false)
+        if (code == 401 && auth && allowRetry) {
+            when (refreshAccessToken()) {
+                RefreshOutcome.REFRESHED -> {
+                    return@withContext request(method, path, body, auth, idempotencyKey, allowRetry = false)
+                }
+                RefreshOutcome.RETRYABLE_FAILURE -> {
+                    // Keep the old token pair. A later user retry can attempt refresh again.
+                    throw ApiException(
+                        statusCode = 503,
+                        code = "REFRESH_UNAVAILABLE",
+                        message = "网络暂时不可用，请重试",
+                        retryable = true,
+                    )
+                }
+                RefreshOutcome.INVALID -> Unit
             }
         }
 
         if (code !in 200..299) {
             // 401 且无法刷新 → 清空会话并擦除磁盘副本
             if (code == 401) {
-                accessToken = null
-                refreshToken = null
-                onTokensRotated?.invoke(null, null)
+                clearSession()
             }
             throw ApiParser.parseError(code, text)
         }
