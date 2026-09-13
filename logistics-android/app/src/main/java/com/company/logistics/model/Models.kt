@@ -270,6 +270,7 @@ data class OrderMaterialItem(
     val materialId: String,
     val materialCode: String,
     val name: String,
+    val specification: String?,
     val requiredQuantity: Int,
     val arrivedQuantity: Int,
     val inStockQuantity: Int,

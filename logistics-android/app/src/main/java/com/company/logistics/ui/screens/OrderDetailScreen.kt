@@ -280,6 +280,15 @@ private fun OrderMaterialRow(item: OrderMaterialItem) {
             color = LogisticsTheme.colors.textSecondary
         )
 
+        item.specification?.let {
+            VSpace(4.dp)
+            Text(
+                "规格：$it",
+                fontSize = 12.sp,
+                color = LogisticsTheme.colors.textTertiary
+            )
+        }
+
         VSpace(Spacing.md)
 
         // 三列数据：需求 / 到料 / 在库

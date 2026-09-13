@@ -106,6 +106,7 @@ object ApiParser {
                 materialId = o.optString("materialId"),
                 materialCode = o.optString("materialCode"),
                 name = o.optString("materialName").ifBlank { o.optString("name") },
+                specification = o.optString("specification").takeIf { it.isNotBlank() },
                 requiredQuantity = o.optInt("requiredQuantity"),
                 arrivedQuantity = o.optInt("arrivedQuantity"),
                 inStockQuantity = o.optInt("inStockQuantity"),
