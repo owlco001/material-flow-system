@@ -25,6 +25,11 @@ APP_PATH = BACKEND_ROOT / "app" / "main.py"
 VERSION_PATH = BACKEND_ROOT / "VERSION"
 SERVICE_PATH = BACKEND_ROOT / "material-flow.service"
 DEPLOYMENT_PATH = BACKEND_ROOT / "docs" / "DEPLOYMENT.md"
+MIGRATION_COMMAND = "ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate"
+SERVER_COMMAND = (
+    "ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app "
+    "--host 127.0.0.1 --port 8000"
+)
 spec = importlib.util.spec_from_file_location("deployment_readiness_backend", APP_PATH)
 assert spec is not None and spec.loader is not None
 backend = importlib.util.module_from_spec(spec)
@@ -255,6 +260,29 @@ def test_package_version_is_the_health_check_version_identifier():
     assert "contents of `VERSION`" in deployment
 
 
+def test_release_documentation_replays_version_and_systemd_contract():
+    package_version = VERSION_PATH.read_text(encoding="ascii").strip()
+    deployment = DEPLOYMENT_PATH.read_text(encoding="ascii")
+    service = SERVICE_PATH.read_text(encoding="ascii")
+
+    with TestClient(backend.app) as client:
+        health = client.get("/healthz")
+
+    assert health.status_code == 200, health.text
+    assert health.json()["version"] == package_version
+    assert health.json()["service"] == "material-flow"
+    normalized_deployment = " ".join(deployment.split())
+    assert package_version not in normalized_deployment
+    assert "`VERSION` is the only release version source" in normalized_deployment
+    assert "The systemd unit does not define a separate version" in normalized_deployment
+    assert "# app.main reads VERSION from this package; keep the unit versionless." in service
+    assert package_version not in service
+    assert MIGRATION_COMMAND in service
+    assert SERVER_COMMAND in service
+    assert MIGRATION_COMMAND in deployment
+    assert SERVER_COMMAND in deployment
+
+
 def test_explicit_migration_entrypoint_is_repeatable():
     data_dir = Path(tempfile.mkdtemp(prefix="mf_explicit_migration_")) / "data"
     child_env = os.environ.copy()
@@ -330,12 +358,11 @@ def test_deployment_inputs_are_pinned_and_service_uses_canonical_entries():
     assert sum(line.startswith("ExecStartPre=") for line in service_lines) == 1
     assert sum(line.startswith("ExecStart=") for line in service_lines) == 1
     assert (
-        "ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate"
+        MIGRATION_COMMAND
         in service
     )
     assert (
-        "ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app "
-        "--host 127.0.0.1 --port 8000"
+        SERVER_COMMAND
     ) in service
     assert "--host 0.0.0.0" not in service
 

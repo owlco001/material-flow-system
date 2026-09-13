@@ -21,6 +21,11 @@ The deployable source package must contain these paths together:
 part of a release; do not add a second version source or use a runtime value
 that can make the package ambiguous.
 
+`VERSION` is the only release version source. The systemd unit does not define
+a separate version: it starts `app.main:app` from this package, and the
+application reads the package `VERSION` file. Keep the unit and this runbook
+versionless so a release cannot leave a stale hard-coded version behind.
+
 ## Runtime preparation
 
 From the deployment directory, create the virtual environment and install the
@@ -59,6 +64,13 @@ The systemd unit runs the same command as `ExecStartPre`, then starts:
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+The checked-in unit contract is:
+
+```ini
+ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate
+ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
 The application keeps its startup initialization as a safety net for direct
 Uvicorn launches. The service binds only to the loopback interface; external
 TLS termination and access control belong to the existing reverse-proxy and
@@ -85,6 +97,8 @@ local-only; do not point these checks at a real VPS.
 
 - [ ] `VERSION` matches `FastAPI.version`, `/openapi.json` `info.version`, and
   `/healthz` `version`.
+- [ ] The systemd unit remains versionless and its commands match the unit
+  contract documented above.
 - [ ] Every runtime and test dependency is pinned with `==`; install from the
   locked requirements files.
 - [ ] Run `app.migrate` twice against the same local database and confirm the
