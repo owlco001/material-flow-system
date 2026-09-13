@@ -50,4 +50,15 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // ---- 摄像头扫码（版本锁定，不使用动态版本号）----
+    // CameraX 1.3.4：兼容 compileSdk 34 / Compose BOM 2024.09.03
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    // ProcessCameraProvider.getInstance(...).await() 需要
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
+    // ML Kit 条码识别：本地离线识别，不依赖网络
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 }

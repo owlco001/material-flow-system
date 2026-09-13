@@ -1,7 +1,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:allowBackup="false" android:usesCleartextTraffic="true" android:label="物料流转" android:supportsRtl="true" android:theme="@style/Theme.Logistics">
-        <activity android:name=".MainActivity" android:exported="true">
+    <!-- 摄像头扫码：仅扫码页在页面可见时占用，禁止后台预占 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 摄像头为可选硬件：无摄像头设备仍需能安装并用手动输入 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:label="物料流转"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Logistics">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

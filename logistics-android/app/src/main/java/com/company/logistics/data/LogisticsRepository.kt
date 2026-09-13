@@ -31,6 +31,14 @@ class LogisticsRepository(
     private val dao: OfflineOperationDao
 ) {
 
+    /**
+     * 契约 API 句柄。
+     *
+     * 暴露给摄像头扫码链路（[com.company.logistics.data.CameraXScannerRepository]）复用同一份
+     * 会话与 baseUrl 配置 —— 避免出现两个 ApiConfig 实例导致 token / 环境不一致。
+     */
+    val apiHandle: MaterialFlowApi get() = api
+
     // ==================== 会话 ====================
 
     suspend fun login(username: String, password: String, deviceId: String): LoginResult =

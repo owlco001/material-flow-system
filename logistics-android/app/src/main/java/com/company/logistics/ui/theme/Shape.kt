@@ -60,6 +60,9 @@ object Dimens {
     val PagePadding = 16.dp
     /** 扫码取景框尺寸 */
     val ViewfinderSize = 260.dp
+    var CardCorner = 12.dp
+    /** 胶囊圆角（状态标签、筛选 chip） */
+    var PillCorner = 999.dp
     /** 状态标签高度 */
-    val TagHeight = 24.dp
+    var TagHeight = 24.dp
 }

@@ -72,6 +72,9 @@ private val DarkColors = darkColorScheme(
  * 通过 [LocalLogisticsColors] 提供，业务组件用 [LogisticsTheme.colors] 读取。
  */
 data class LogisticsColorTokens(
+    val primary: Color,
+    val primaryContainer: Color,
+    val danger: Color,
     val success: Color,
     val warning: Color,
     val info: Color,
@@ -79,11 +82,16 @@ data class LogisticsColorTokens(
     val textPrimary: Color,
     val textSecondary: Color,
     val textTertiary: Color,
+    val textOnDark: Color,
     val border: Color,
+    val cardBackground: Color,
     val pageBackground: Color
 )
 
 private val LightTokens = LogisticsColorTokens(
+    primary = LogisticsColors.Primary,
+    primaryContainer = LogisticsColors.PrimaryLight,
+    danger = LogisticsColors.Danger,
     success = LogisticsColors.Success,
     warning = LogisticsColors.Warning,
     info = LogisticsColors.Info,
@@ -91,11 +99,16 @@ private val LightTokens = LogisticsColorTokens(
     textPrimary = LogisticsColors.TextPrimary,
     textSecondary = LogisticsColors.TextSecondary,
     textTertiary = LogisticsColors.TextTertiary,
+    textOnDark = Color.White,
     border = LogisticsColors.Border,
+    cardBackground = LogisticsColors.BgCard,
     pageBackground = LogisticsColors.BgPage
 )
 
 private val DarkTokens = LogisticsColorTokens(
+    primary = LogisticsColors.Info,
+    primaryContainer = LogisticsColors.PrimaryDark,
+    danger = LogisticsColors.Danger,
     success = LogisticsColors.Success,
     warning = LogisticsColors.Warning,
     info = LogisticsColors.Info,
@@ -103,7 +116,9 @@ private val DarkTokens = LogisticsColorTokens(
     textPrimary = LogisticsColors.DarkTextPrimary,
     textSecondary = LogisticsColors.DarkTextSecondary,
     textTertiary = LogisticsColors.DarkTextTertiary,
+    textOnDark = Color.White,
     border = LogisticsColors.DarkBorder,
+    cardBackground = LogisticsColors.DarkBgCard,
     pageBackground = LogisticsColors.DarkBgPage
 )
 

@@ -58,7 +58,10 @@ import java.util.UUID
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun LogisticsApp(viewModel: LogisticsViewModel) {
+fun LogisticsApp(
+    viewModel: LogisticsViewModel,
+    scannerViewModel: ScannerViewModel
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
@@ -134,13 +137,11 @@ fun LogisticsApp(viewModel: LogisticsViewModel) {
 
                 when (state.screen) {
                     Screen.SCANNER -> ScannerScreen(
+                        viewModel = scannerViewModel,
                         role = state.role,
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
-                        loading = state.loading,
-                        lastCode = state.materialInventory?.material?.code
-                            ?: state.lastScan?.normalizedValue,
-                        onScanned = { viewModel.onScanned(it) },
+                        onResolved = { viewModel.onScanned(it.normalizedValue) },
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) }
                     )
 

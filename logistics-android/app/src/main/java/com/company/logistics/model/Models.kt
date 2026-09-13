@@ -186,14 +186,16 @@ enum class ApprovalStatus(val code: String, val label: String) {
 // ==================== 扫码类型（契约 3 / 业务模型更正） ====================
 
 /**
- * 扫码结果类型 —— 契约 3 节，并经业务模型更正。
- * 注意：已删除 LOGISTICS_NO（物流号）概念，不再支持外部物流语义。
+ * 扫码类型。
+ * 严格对齐《物料流转系统-V1-API契约冻结补遗》第 1.1 节，只允许 5 个值：
+ * PRODUCTION_ORDER / FLOW_NO / MATERIAL_CODE / LOCATION_CODE / UNKNOWN。
+ * 禁止出现 ORDER_NO、LOGISTICS_NO、ORDER、LOGISTICS（后两者为外部物流语义，已作废）。
  */
 enum class ScanType(val code: String, val label: String) {
     PRODUCTION_ORDER("PRODUCTION_ORDER", "生产订单号"),
     MATERIAL_CODE("MATERIAL_CODE", "料号"),
     LOCATION_CODE("LOCATION_CODE", "库位码"),
-    FLOW_RECORD("FLOW_RECORD", "流转单号"),
+    FLOW_NO("FLOW_NO", "流转单号"),
     UNKNOWN("UNKNOWN", "未识别");
 
     val isKnown: Boolean get() = this != UNKNOWN

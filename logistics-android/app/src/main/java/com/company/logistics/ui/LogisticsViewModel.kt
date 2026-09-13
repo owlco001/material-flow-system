@@ -171,7 +171,7 @@ class LogisticsViewModel(
                                 )
                             }
                         }
-                        ScanType.FLOW_RECORD -> {
+                        ScanType.FLOW_NO -> {
                             _state.update {
                                 it.copy(loading = false, message = "流转单 ${scan.normalizedValue}（详情页待接入）")
                             }
