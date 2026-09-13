@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.company.logistics.BuildConfig
 import com.company.logistics.data.EndpointStore
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.PrimaryButton
@@ -60,6 +61,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun EndpointConfigScreen(
     store: EndpointStore,
+    onEndpointChanged: (String) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -198,6 +200,7 @@ fun EndpointConfigScreen(
                 store.save(input)
                     .onSuccess {
                         input = it
+                        onEndpointChanged(it)
                         errorText = null
                         savedHint = "已保存"
                     }
@@ -264,9 +267,12 @@ fun EndpointConfigScreen(
                 )
                 VSpace(4.dp)
                 Text(
-                    "当前版本已放开明文策略，内网任意 IP 均可直连，无需重新打包。" +
-                        "但明文流量可被同网段嗅探或篡改，仅限受控内网使用；" +
-                        "生产环境请改用 https:// 证书地址。",
+                    if (BuildConfig.DEBUG) {
+                        "Debug 验收版本允许受控内网使用明文 HTTP，但流量可被同网段嗅探或篡改；" +
+                            "仅限受控内网使用，生产环境请改用 HTTPS。"
+                    } else {
+                        "正式版不允许明文 HTTP，请改用 HTTPS 证书地址。"
+                    },
                     fontSize = 12.sp,
                     color = colors.textSecondary,
                     lineHeight = 18.sp,
@@ -282,6 +288,7 @@ fun EndpointConfigScreen(
             onClick = {
                 store.clear()
                 input = store.effectiveUrl
+                onEndpointChanged(store.effectiveUrl)
                 errorText = null
                 savedHint = "已恢复默认值"
                 testResult = null

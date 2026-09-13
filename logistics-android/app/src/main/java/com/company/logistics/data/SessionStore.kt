@@ -21,11 +21,13 @@ class SessionStore private constructor(
     )
 
     fun save(accessToken: String?, refreshToken: String?, deviceId: String) {
+        if (!encrypted) return
         prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken)
             .putString(KEY_DEVICE, deviceId).apply()
     }
 
     fun save(accessToken: String?, refreshToken: String?, deviceId: String, user: UserSummary) {
+        if (!encrypted) return
         prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken)
             .putString(KEY_DEVICE, deviceId).putString(KEY_USER_ID, user.id)
             .putString(KEY_USERNAME, user.username).putString(KEY_DISPLAY_NAME, user.displayName)
@@ -34,6 +36,7 @@ class SessionStore private constructor(
     }
 
     fun updateTokens(accessToken: String?, refreshToken: String?) {
+        if (!encrypted) return
         prefs.edit().putString(KEY_ACCESS, accessToken).putString(KEY_REFRESH, refreshToken).apply()
     }
 
@@ -78,6 +81,7 @@ class SessionStore private constructor(
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
             SessionStore(prefs, encrypted = true)
         } catch (_: Exception) {
+            // Keep device identity available, but never persist session tokens in plaintext.
             SessionStore(context.getSharedPreferences("${FILE_NAME}_fallback", Context.MODE_PRIVATE), encrypted = false)
         }
     }

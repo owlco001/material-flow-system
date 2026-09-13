@@ -91,7 +91,12 @@ class MainActivity : ComponentActivity() {
                     reduceMotion = reduceMotion,
                 )
             } else {
-                LogisticsApp(vm, scannerVm, endpointStore)
+                LogisticsApp(
+                    viewModel = vm,
+                    scannerViewModel = scannerVm,
+                    endpointStore = endpointStore,
+                    onEndpointChanged = { ApiConfig.baseUrl = it },
+                )
             }
         }
     }

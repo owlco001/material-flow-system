@@ -3,6 +3,8 @@ package com.company.logistics.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.company.logistics.BuildConfig
+import java.net.URI
+import java.net.URL
 
 /**
  * 后端地址配置（可运行时修改）。
@@ -14,8 +16,7 @@ import com.company.logistics.BuildConfig
  *
  * 安全约束：
  *  - 仅接受 http/https，且必须能解析出 host，防止误填 `abc` 之类导致崩溃；
- *  - 生产环境应使用 HTTPS；当前构建为内网调试放开了明文策略，
- *    上线前应收紧 network_security_config.xml 并改用 https 地址；
+ *  - Debug 可用于受控内网验收；Release 只接受 HTTPS，且不会沿用旧的明文覆盖值；
  *  - 地址本身不含凭据，无需加密存储。
  */
 class EndpointStore private constructor(
@@ -24,7 +25,9 @@ class EndpointStore private constructor(
 
     /** 用户显式配置的地址；null 表示未配置过，走构建期默认值 */
     val savedUrl: String?
-        get() = prefs.getString(KEY_URL, null)
+        get() = prefs.getString(KEY_URL, null)?.takeUnless {
+            !BuildConfig.DEBUG && it.startsWith("http://", ignoreCase = true)
+        }
 
     /** 当前生效的地址 */
     val effectiveUrl: String get() = savedUrl?.takeIf { it.isNotBlank() } ?: BuildConfig.API_BASE_URL
@@ -39,6 +42,9 @@ class EndpointStore private constructor(
     fun save(rawUrl: String): Result<String> {
         val normalized = normalize(rawUrl)
             ?: return Result.failure(IllegalArgumentException(ERR_INVALID))
+        if (!BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true)) {
+            return Result.failure(IllegalArgumentException(ERR_RELEASE_HTTP))
+        }
         prefs.edit().putString(KEY_URL, normalized).apply()
         return Result.success(normalized)
     }
@@ -53,6 +59,7 @@ class EndpointStore private constructor(
 
         const val ERR_INVALID = "地址格式不正确，请填写形如 http://192.168.1.10:8000 的完整地址"
         const val ERR_SCHEME = "只支持 http:// 或 https:// 开头的地址"
+        const val ERR_RELEASE_HTTP = "正式版只支持 HTTPS 地址，请改用 https://"
 
         @Volatile
         private var instance: EndpointStore? = null
@@ -88,13 +95,15 @@ class EndpointStore private constructor(
 
             s = s.trimEnd('/')
 
-            // 校验 host 段非空且不含空格
-            val authority = s.substringAfter("://")
-            val host = authority.substringBefore('/').substringBefore('?')
-            val hostOnly = host.substringBeforeLast(':', host)
-            if (hostOnly.isBlank() || hostOnly.contains(' ')) return null
             if (s.endsWith("://")) return null
 
+            // Reject credentials, query strings, fragments, and malformed hosts.
+            val uri = runCatching { URI(s) }.getOrNull() ?: return null
+            if (uri.scheme?.lowercase() !in setOf("http", "https")) return null
+            if (uri.host.isNullOrBlank() || uri.userInfo != null || uri.query != null || uri.fragment != null) {
+                return null
+            }
+            runCatching { URL(s) }.getOrNull() ?: return null
             return s
         }
     }

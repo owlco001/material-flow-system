@@ -13,6 +13,13 @@ val apiBaseUrl: String = (project.findProperty("apiBaseUrl") as String?)
     ?: System.getenv("API_BASE_URL")
     ?: "https://api.example.invalid"
 
+// BuildConfig is generated Kotlin/Java source, so escape build-time input before embedding it.
+val escapedApiBaseUrl = apiBaseUrl
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\r", "\\r")
+    .replace("\n", "\\n")
+
 android {
     namespace = "com.company.logistics"
     compileSdk = 34
@@ -23,7 +30,7 @@ android {
         versionCode = 6
         versionName = "0.3.5"
 
-        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        buildConfigField("String", "API_BASE_URL", "\"$escapedApiBaseUrl\"")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -33,6 +40,17 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    buildTypes {
+        debug {
+            isDebuggable = true
+        }
+        release {
+            isDebuggable = false
+            // Release remains buildable for packaging checks; production shrinking/signing is CI-owned.
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
 }
 

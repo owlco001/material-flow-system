@@ -65,7 +65,8 @@ import java.util.UUID
 fun LogisticsApp(
     viewModel: LogisticsViewModel,
     scannerViewModel: ScannerViewModel,
-    endpointStore: EndpointStore
+    endpointStore: EndpointStore,
+    onEndpointChanged: (String) -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -281,6 +282,7 @@ fun LogisticsApp(
 
                     Screen.ENDPOINT_CONFIG -> EndpointConfigScreen(
                         store = endpointStore,
+                        onEndpointChanged = onEndpointChanged,
                         onBack = { viewModel.navigate(Screen.PROFILE) }
                     )
 

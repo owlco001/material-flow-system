@@ -76,8 +76,9 @@ open class LogisticsRepository(
 
     open suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
-        persistSession = remember
-        if (remember) {
+        val canPersistSession = remember && sessionStore?.encrypted == true
+        persistSession = canPersistSession
+        if (canPersistSession) {
             sessionStore?.save(result.accessToken, result.refreshToken, deviceId,
                 SessionStore.UserSummary(result.user.id, result.user.username, result.user.displayName,
                     result.user.role, result.mustChangePassword))
@@ -114,6 +115,11 @@ open class LogisticsRepository(
      */
     fun restoreSession(): Boolean {
         val store = sessionStore ?: return false
+        if (!store.encrypted) {
+            store.clear()
+            api.updateToken(null)
+            return false
+        }
         val access = store.accessToken()
         val refresh = store.refreshToken()
         if (access == null || refresh == null || store.userSummary() == null) {

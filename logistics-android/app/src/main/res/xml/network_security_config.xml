@@ -1,32 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  网络安全配置。
-
-  ⚠ 当前策略：全局放开明文 HTTP（cleartextTrafficPermitted="true"）。
-  这是**内网调试期的临时选择**，原因是后端地址已改为运行时可通过
-  「我的 → 服务端配置」任意填写，白名单方式无法覆盖未知的现场 IP 段。
-
-  安全影响：
-    - 明文流量可被同网段嗅探/篡改（中间人）。仅可接受于受控可信内网。
-    - 上线前必须二选一：
-        a) 后端启用 HTTPS（自签需配 trust-anchors，推荐用正式证书）；
-        b) 收窄为白名单 —— 把 base-config 改回 false，
-           再在 <domain-config> 中逐个列出实际厂内域名/网段。
-      收窄步骤见 README「安全基线」一节。
-
-  注意：改动此文件必须重新打包 APK，无法通过 App 内运行时而改。
+  Release 网络安全基线：仅允许系统信任链上的 HTTPS。
+  Debug 变体使用 app/src/debug/res/xml/network_security_config.xml，
+  仅为受控内网真机验收临时允许 HTTP；变更后必须重新打包 APK。
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-
-    <!-- 保留显式声明，便于后续收窄时直接改回白名单模式 -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">127.0.0.1</domain>
-        <domain includeSubdomains="true">10.0.2.2</domain>
-    </domain-config>
 </network-security-config>
