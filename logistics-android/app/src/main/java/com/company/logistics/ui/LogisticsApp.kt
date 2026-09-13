@@ -173,6 +173,20 @@ fun LogisticsApp(
                         onPreviousPage = { viewModel.loadPreviousWorkspacePage() },
                         onOpenApproval = { viewModel.navigate(Screen.APPROVAL) },
                         onOpenAudit = { viewModel.navigate(Screen.AUDIT) },
+                        currentUserId = state.currentUserId,
+                        timelineItemId = state.workspaceTimelineItemId,
+                        timeline = state.workspaceTimeline,
+                        timelineState = state.workspaceTimelineState,
+                        timelineError = state.workspaceTimelineError,
+                        handoverSubmittingId = state.handoverSubmittingId,
+                        onOpenTimeline = { viewModel.openHandoverTimeline(it) },
+                        onRetryTimeline = { viewModel.retryHandoverTimeline() },
+                        onHandoverAction = { item, action, reason ->
+                            viewModel.decideHandover(item, action, reason)
+                        },
+                        onCreateHandover = { item, quantity, fromLocation, remark ->
+                            viewModel.createHandover(item, quantity, fromLocation, remark)
+                        },
                     )
 
                     Screen.SCANNER -> ScannerScreen(

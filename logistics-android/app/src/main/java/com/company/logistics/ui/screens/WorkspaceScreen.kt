@@ -11,15 +11,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.RoleWorkspaceSummary
+import com.company.logistics.model.HandoverAction
+import com.company.logistics.model.HandoverActionPolicy
+import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMetric
@@ -71,9 +81,21 @@ fun WorkspaceScreen(
     onPreviousPage: () -> Unit,
     onOpenApproval: () -> Unit,
     onOpenAudit: () -> Unit,
+    currentUserId: String?,
+    timelineItemId: String?,
+    timeline: HandoverTimeline?,
+    timelineState: WorkspaceLoadState,
+    timelineError: String?,
+    handoverSubmittingId: String?,
+    onOpenTimeline: (WorkspaceMaterialItem) -> Unit,
+    onRetryTimeline: () -> Unit,
+    onHandoverAction: (WorkspaceMaterialItem, HandoverAction, String?) -> Unit,
+    onCreateHandover: (WorkspaceMaterialItem, Int, String, String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val entries = entriesFor(role)
+    var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
+    var reasonRequest by remember { mutableStateOf<ReasonRequest?>(null) }
 
     Column(
         modifier = modifier
@@ -166,7 +188,26 @@ fun WorkspaceScreen(
             WorkspaceLoadState.LOADING, WorkspaceLoadState.CONTENT -> {
                 if (items.isNotEmpty()) {
                     items.forEach { item ->
-                        WorkspaceItemCard(item)
+                        WorkspaceItemCard(
+                            item = item,
+                            role = role,
+                            currentUserId = currentUserId,
+                            timelineItemId = timelineItemId,
+                            timeline = timeline,
+                            timelineState = timelineState,
+                            timelineError = timelineError,
+                            handoverSubmittingId = handoverSubmittingId,
+                            onOpenTimeline = onOpenTimeline,
+                            onRetryTimeline = onRetryTimeline,
+                            onHandoverAction = { action ->
+                                if (action.requiresReason) {
+                                    reasonRequest = ReasonRequest(item, action)
+                                } else {
+                                    onHandoverAction(item, action, null)
+                                }
+                            },
+                            onCreateHandover = { createItem = item },
+                        )
                         VSpace(Spacing.sm)
                     }
                     WorkspacePager(
@@ -184,6 +225,29 @@ fun WorkspaceScreen(
         }
 
         VSpace(Spacing.xxl)
+    }
+
+    createItem?.let { item ->
+        CreateHandoverDialog(
+            item = item,
+            submitting = item.id == handoverSubmittingId,
+            onDismiss = { createItem = null },
+            onSubmit = { quantity, fromLocation, remark ->
+                createItem = null
+                onCreateHandover(item, quantity, fromLocation, remark)
+            },
+        )
+    }
+
+    reasonRequest?.let { request ->
+        ReasonDialog(
+            request = request,
+            onDismiss = { reasonRequest = null },
+            onSubmit = { reason ->
+                reasonRequest = null
+                onHandoverAction(request.item, request.action, reason)
+            },
+        )
     }
 }
 
@@ -277,8 +341,26 @@ private fun WorkspaceMetricCard(entry: WorkspaceEntry, metric: WorkspaceMetric, 
     }
 }
 
+private data class ReasonRequest(
+    val item: WorkspaceMaterialItem,
+    val action: HandoverAction,
+)
+
 @Composable
-private fun WorkspaceItemCard(item: WorkspaceMaterialItem) {
+private fun WorkspaceItemCard(
+    item: WorkspaceMaterialItem,
+    role: UserRole,
+    currentUserId: String?,
+    timelineItemId: String?,
+    timeline: HandoverTimeline?,
+    timelineState: WorkspaceLoadState,
+    timelineError: String?,
+    handoverSubmittingId: String?,
+    onOpenTimeline: (WorkspaceMaterialItem) -> Unit,
+    onRetryTimeline: () -> Unit,
+    onHandoverAction: (HandoverAction) -> Unit,
+    onCreateHandover: () -> Unit,
+) {
     AppCard(accentColor = LogisticsTheme.colors.border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -298,10 +380,17 @@ private fun WorkspaceItemCard(item: WorkspaceMaterialItem) {
             text = listOfNotNull(
                 item.orderNo.takeIf { it.isNotBlank() }?.let { "订单 $it" },
                 item.deviceNo?.takeIf { it.isNotBlank() }?.let { "机台 $it" },
-                item.currentOwnerName?.takeIf { it.isNotBlank() }?.let { "责任人 $it" },
+                (item.responsibilitySummary?.currentOwnerName ?: item.currentOwnerName)
+                    ?.takeIf { it.isNotBlank() }?.let { "当前责任人 $it" },
             ).joinToString(" · ").ifBlank { "服务端未返回附加责任信息" },
             fontSize = 12.sp,
             color = LogisticsTheme.colors.textSecondary,
+        )
+        VSpace(4.dp)
+        Text(
+            text = "服务端状态 ${item.statusLabel.ifBlank { "未知状态" }} · 状态码 ${item.statusCode.ifBlank { "—" }}",
+            fontSize = 11.sp,
+            color = LogisticsTheme.colors.textTertiary,
         )
         VSpace(4.dp)
         Text(
@@ -309,19 +398,210 @@ private fun WorkspaceItemCard(item: WorkspaceMaterialItem) {
             fontSize = 11.sp,
             color = LogisticsTheme.colors.textTertiary,
         )
-        if (item.lastHandoverStatus != null || item.transferStatus != null) {
+        item.lastHandover?.let { handover ->
             VSpace(4.dp)
             Text(
                 text = listOfNotNull(
-                    item.transferStatus?.let { "流转 $it" },
-                    item.lastHandoverStatus?.let { "交接 $it" },
-                    item.lastHandoverId?.let { "记录 $it" },
+                    handover.status?.let { "最近交接 $it" },
+                    handover.quantity?.let { "数量 $it" },
+                    handover.fromLocation?.let { "出库库位 $it" },
+                    handover.initiatedAt?.let { "发起 $it" },
+                    handover.confirmedAt?.let { "完成 $it" },
                 ).joinToString(" · "),
                 fontSize = 11.sp,
                 color = LogisticsTheme.colors.textTertiary,
             )
+            Text(
+                text = listOfNotNull(
+                    handover.senderName?.let { "发起人 $it" },
+                    handover.receiverName?.let { "接收人 $it" },
+                ).joinToString(" · ").ifBlank { "服务端未返回交接参与人" },
+                fontSize = 11.sp,
+                color = LogisticsTheme.colors.textTertiary,
+            )
+        }
+        if (item.lastHandover == null && item.lastHandoverStatus != null) {
+            Text(
+                text = "最近交接 ${item.lastHandoverStatus}",
+                fontSize = 11.sp,
+                color = LogisticsTheme.colors.textTertiary,
+            )
+        }
+
+        val actions = HandoverActionPolicy.actionsFor(role, currentUserId, item)
+        val canCreate = HandoverActionPolicy.canCreate(role, item)
+        if (actions.isNotEmpty() || canCreate || !item.lastHandoverId.isNullOrBlank()) {
+            VSpace(Spacing.sm)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (canCreate) {
+                    PrimaryButton(
+                        text = "发起交接",
+                        onClick = onCreateHandover,
+                        enabled = handoverSubmittingId == null,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                actions.forEach { action ->
+                    SecondaryButton(
+                        text = action.label,
+                        onClick = { onHandoverAction(action) },
+                        enabled = handoverSubmittingId == null,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (!item.lastHandoverId.isNullOrBlank()) {
+                    SecondaryButton(
+                        text = if (timelineItemId == item.id) "收起时间线" else "时间线",
+                        onClick = { onOpenTimeline(item) },
+                        enabled = handoverSubmittingId == null,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+        if (timelineItemId == item.id) {
+            HandoverTimelineCard(
+                timeline = timeline,
+                state = timelineState,
+                error = timelineError,
+                onRetry = onRetryTimeline,
+            )
         }
     }
+}
+
+@Composable
+private fun HandoverTimelineCard(
+    timeline: HandoverTimeline?,
+    state: WorkspaceLoadState,
+    error: String?,
+    onRetry: () -> Unit,
+) {
+    VSpace(Spacing.sm)
+    AppCard(accentColor = MaterialTheme.colorScheme.primary) {
+        Text("交接时间线（服务端）", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+        when (state) {
+            WorkspaceLoadState.LOADING -> {
+                VSpace(Spacing.sm)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(Spacing.sm))
+                    Text("正在读取时间线…", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+                }
+            }
+            WorkspaceLoadState.ERROR -> {
+                VSpace(Spacing.sm)
+                Text(error ?: "时间线读取失败", fontSize = 12.sp, color = LogisticsTheme.colors.danger)
+                VSpace(Spacing.sm)
+                SecondaryButton(text = "重试时间线", onClick = onRetry)
+            }
+            WorkspaceLoadState.EMPTY -> {
+                VSpace(Spacing.sm)
+                Text("服务端未返回时间线事件", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+            }
+            WorkspaceLoadState.CONTENT -> timeline?.items?.forEach { event ->
+                VSpace(Spacing.sm)
+                Text(
+                    text = listOfNotNull(
+                        event.eventType,
+                        event.serverTime,
+                        event.actorRole?.let { "角色 $it" },
+                    ).joinToString(" · "),
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.textSecondary,
+                )
+            }
+            WorkspaceLoadState.IDLE -> Unit
+        }
+    }
+}
+
+@Composable
+private fun ReasonDialog(
+    request: ReasonRequest,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    var reason by remember(request.item.id, request.action) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${request.action.label}交接") },
+        text = {
+            OutlinedTextField(
+                value = reason,
+                onValueChange = { if (it.length <= 500) reason = it },
+                label = { Text("原因（必填）") },
+                supportingText = { Text("${reason.length}/500") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = false,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSubmit(reason.trim()) }, enabled = reason.isNotBlank()) {
+                Text(request.action.label)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("返回") } },
+    )
+}
+
+@Composable
+private fun CreateHandoverDialog(
+    item: WorkspaceMaterialItem,
+    submitting: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (Int, String, String?) -> Unit,
+) {
+    var quantity by remember(item.id) {
+        mutableStateOf(item.issuedQuantity?.takeIf { it > 0 }?.toString().orEmpty())
+    }
+    var fromLocation by remember(item.id) { mutableStateOf("") }
+    var remark by remember(item.id) { mutableStateOf("") }
+    val parsedQuantity = quantity.toIntOrNull()
+    AlertDialog(
+        onDismissRequest = { if (!submitting) onDismiss() },
+        title = { Text("发起出库交接") },
+        text = {
+            Column {
+                Text("订单 ${item.orderNo} · ${item.materialCode}", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+                VSpace(Spacing.sm)
+                OutlinedTextField(
+                    value = quantity,
+                    onValueChange = { if (it.length <= 9 && it.all { char -> char.isDigit() }) quantity = it },
+                    label = { Text("交接数量") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                VSpace(Spacing.sm)
+                OutlinedTextField(
+                    value = fromLocation,
+                    onValueChange = { if (it.length <= 128) fromLocation = it },
+                    label = { Text("出库库位") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                VSpace(Spacing.sm)
+                OutlinedTextField(
+                    value = remark,
+                    onValueChange = { if (it.length <= 500) remark = it },
+                    label = { Text("备注（可选）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(parsedQuantity ?: 0, fromLocation.trim(), remark.trim().ifBlank { null }) },
+                enabled = !submitting && parsedQuantity != null && parsedQuantity > 0 && fromLocation.isNotBlank(),
+            ) { Text(if (submitting) "提交中…" else "发起") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !submitting) { Text("返回") } },
+    )
 }
 
 @Composable
@@ -378,7 +658,7 @@ private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
     )
     UserRole.MATERIAL -> listOf(
         WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_PENDING, "待出库", "服务端返回的待出库状态", "刷新", true),
-        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_CONFIRMED, "已出库", "摘要接口未提供该计数", "刷新"),
+        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_CONFIRMED, "已出库", "服务端返回的已出库状态", "刷新"),
     )
     UserRole.WAREHOUSE_ADMIN -> listOf(
         WorkspaceEntry(WorkspaceMetricKey.PENDING_APPROVAL, "待审批", "服务端返回的审批状态", "去审批", true),

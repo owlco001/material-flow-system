@@ -402,7 +402,8 @@ data class WorkspaceSummary(
     val outOfStockCount: Int? = null,
     val generatedAt: String? = null,
     val serverTime: String? = null,
-    val traceId: String? = null
+    val traceId: String? = null,
+    val outboundConfirmedCount: Int? = null,
 )
 
 /** 工作台分页工作项响应。客户端只保留当前页，避免一次性加载全量数据。 */
@@ -527,6 +528,94 @@ data class WorkspaceMaterialItem(
     )
 }
 
+/** 交接写操作；服务端状态与角色策略共同决定是否可以展示。 */
+enum class HandoverAction(val label: String, val pathSegment: String, val requiresReason: Boolean) {
+    CONFIRM("确认", "confirm", false),
+    REJECT("驳回", "reject", true),
+    CANCEL("取消", "cancel", true)
+}
+
+/**
+ * 交接按钮策略只读取服务端返回的工作项/交接状态，不从数量推导状态。
+ * 这层策略同时供 UI 和 ViewModel 使用，避免仅隐藏按钮而仍可发起越权请求。
+ */
+object HandoverActionPolicy {
+    fun actionsFor(role: UserRole, userId: String?, item: WorkspaceMaterialItem): List<HandoverAction> {
+        if (!item.lastHandoverId.isNullOrBlank() &&
+            item.lastHandoverStatus.equals("PENDING", ignoreCase = true)
+        ) {
+            return when (role) {
+                UserRole.OPERATOR -> if (isAssignedReceiver(userId, item)) {
+                    listOf(HandoverAction.CONFIRM)
+                } else {
+                    emptyList()
+                }
+                UserRole.MATERIAL -> if (isSender(userId, item)) {
+                    listOf(HandoverAction.CANCEL)
+                } else {
+                    emptyList()
+                }
+                UserRole.WAREHOUSE_ADMIN, UserRole.ADMIN -> listOf(
+                    HandoverAction.CONFIRM,
+                    HandoverAction.REJECT,
+                    HandoverAction.CANCEL,
+                )
+            }
+        }
+        return emptyList()
+    }
+
+    /** 只有服务端明确返回已审批/可执行的出库单时才显示发起入口。 */
+    fun canCreate(role: UserRole, item: WorkspaceMaterialItem): Boolean =
+        role == UserRole.MATERIAL &&
+            item.lastHandoverId.isNullOrBlank() &&
+            item.lastHandoverStatus.isNullOrBlank() &&
+            !item.transferRequestId.isNullOrBlank() &&
+            item.transferStatus?.uppercase(java.util.Locale.ROOT) in setOf("APPROVED", "EXECUTED")
+
+    private fun isAssignedReceiver(userId: String?, item: WorkspaceMaterialItem): Boolean {
+        if (userId.isNullOrBlank()) return false
+        return userId == item.lastHandover?.receiverUserId ||
+            userId == item.assignedUserId ||
+            userId == item.responsibilitySummary?.assignedUserId
+    }
+
+    private fun isSender(userId: String?, item: WorkspaceMaterialItem): Boolean =
+        !userId.isNullOrBlank() && userId == item.lastHandover?.senderUserId
+}
+
+/** 交接动作响应；服务端返回的状态是唯一事实来源。 */
+data class HandoverActionResult(
+    val handoverId: String,
+    val status: String,
+    val transferRequestId: String? = null,
+    val eventTypes: List<String> = emptyList(),
+    val traceId: String? = null,
+    val idempotent: Boolean = false
+)
+
+/** 时间线中的审计事件；仅保留展示所需字段，不暴露来源 IP 等敏感字段。 */
+data class HandoverTimelineEvent(
+    val id: String,
+    val eventType: String,
+    val actorUserId: String?,
+    val actorRole: String?,
+    val requestId: String?,
+    val clientOperationId: String?,
+    val serverTime: String?,
+    val result: String?
+)
+
+/** 当前工作项的交接时间线；客户端最多保留一条、最多 20 个事件。 */
+data class HandoverTimeline(
+    val handoverId: String,
+    val workItemId: String,
+    val status: String,
+    val workspaceStatus: String,
+    val items: List<HandoverTimelineEvent>,
+    val serverTime: String?
+)
+
 /** 用服务端摘要构造工作台展示模型；缺失字段明确保持 unavailable。 */
 object ServerWorkspaceSummaryFactory {
     fun from(summary: WorkspaceSummary): RoleWorkspaceSummary = RoleWorkspaceSummary(
@@ -537,8 +626,7 @@ object ServerWorkspaceSummaryFactory {
             WorkspaceMetricKey.CLAIMED to metric(summary.pickedUpCount),
             WorkspaceMetricKey.AT_STATION to metric(summary.atStationCount),
             WorkspaceMetricKey.OUTBOUND_PENDING to metric(summary.pendingOutboundCount),
-            // 摘要契约没有已出库计数，禁止用工作项当前页或其他数量猜测。
-            WorkspaceMetricKey.OUTBOUND_CONFIRMED to WorkspaceMetric.unavailable(),
+            WorkspaceMetricKey.OUTBOUND_CONFIRMED to metric(summary.outboundConfirmedCount),
             WorkspaceMetricKey.PENDING_APPROVAL to metric(summary.pendingApprovalCount),
             WorkspaceMetricKey.PENDING_HANDOVER to metric(summary.pendingHandoverCount),
             // 全量数量由分页接口的 server total 提供，不能从当前页推导。

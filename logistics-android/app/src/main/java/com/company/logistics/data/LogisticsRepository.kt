@@ -5,6 +5,9 @@ import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.TransferItem
 import com.company.logistics.model.LoginResult
+import com.company.logistics.model.HandoverAction
+import com.company.logistics.model.HandoverActionResult
+import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOpType
 import com.company.logistics.model.OfflineOperation
@@ -158,6 +161,53 @@ open class LogisticsRepository(
         pageSize: Int = 20
     ): Result<WorkspaceMaterialItemsPage> = runCatching {
         api.workspaceMaterialItems(status, orderNo, page, pageSize)
+    }
+
+    /** 创建交接保持在线；幂等键由调用方生成并原样交给 API 层。 */
+    open suspend fun createHandover(
+        clientOperationId: String,
+        workItemId: String,
+        transferRequestId: String,
+        quantity: Int,
+        fromLocation: String,
+        deviceId: String?,
+        receiverUserId: String?,
+        remark: String? = null,
+    ): Result<HandoverActionResult> = runCatching {
+        api.createHandover(
+            clientOperationId = clientOperationId,
+            workItemId = workItemId,
+            transferRequestId = transferRequestId,
+            quantity = quantity,
+            fromLocation = fromLocation,
+            deviceId = deviceId,
+            receiverUserId = receiverUserId,
+            remark = remark,
+        )
+    }
+
+    /** 确认/驳回/取消默认不进入离线队列，网络失败由 UI 明确提示并允许重试。 */
+    open suspend fun decideHandover(
+        handoverId: String,
+        action: HandoverAction,
+        clientOperationId: String,
+        reason: String? = null,
+        requestId: String? = null,
+    ): Result<HandoverActionResult> = runCatching {
+        if (requestId == null) {
+            api.decideHandover(handoverId, action, clientOperationId, reason)
+        } else {
+            api.decideHandover(handoverId, action, clientOperationId, reason, requestId)
+        }
+    }
+
+    /** 只返回当前工作项的一页时间线，仓储层不拼接历史页。 */
+    open suspend fun handoverTimeline(
+        workItemId: String,
+        page: Int = 1,
+        pageSize: Int = 20,
+    ): Result<HandoverTimeline> = runCatching {
+        api.handoverTimeline(workItemId, page, pageSize)
     }
 
     // ==================== 写操作（离线优先） ====================

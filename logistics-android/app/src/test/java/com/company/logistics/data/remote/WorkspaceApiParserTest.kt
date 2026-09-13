@@ -45,6 +45,24 @@ class WorkspaceApiParserTest {
     }
 
     @Test
+    fun parsesConfirmedOutboundCountOnlyFromServerStatusCounts() {
+        val summary = ApiParser.parseWorkspaceSummary(
+            """
+            {
+              "role":"MATERIAL",
+              "pendingOutboundCount":2,
+              "statusCounts":{"OUTBOUND_CONFIRMED":3}
+            }
+            """.trimIndent()
+        )
+
+        val view = ServerWorkspaceSummaryFactory.from(summary)
+        assertEquals(2, view.metric(WorkspaceMetricKey.OUTBOUND_PENDING).count)
+        assertEquals(3, view.metric(WorkspaceMetricKey.OUTBOUND_CONFIRMED).count)
+        assertTrue(view.metric(WorkspaceMetricKey.OUTBOUND_CONFIRMED).available)
+    }
+
+    @Test
     fun parsesPagedWorkspaceItemWithoutInventingMissingFields() {
         val page = ApiParser.parseWorkspaceMaterialItems(
             """
@@ -152,5 +170,34 @@ class WorkspaceApiParserTest {
         assertEquals("未来状态", item.statusLabel)
         assertEquals("?", item.statusSymbol)
         assertEquals(MaterialStatusColors.Unknown, item.statusColor)
+    }
+
+    @Test
+    fun parsesHandoverActionAndSnakeCaseTimelineEventsWithoutExposingSourceIp() {
+        val action = ApiParser.parseHandoverAction(
+            """
+            {"handoverId":"ho-1","status":"CONFIRMED",
+             "eventTypes":["HANDOVER_CONFIRMED","MATERIAL_AT_STATION"],
+             "traceId":"trace-1","idempotent":true}
+            """.trimIndent()
+        )
+        val timeline = ApiParser.parseHandoverTimeline(
+            """
+            {"handoverId":"ho-1","workItemId":"wi-1","status":"CONFIRMED",
+             "workspaceStatus":"AT_STATION","items":[
+               {"id":"event-1","event_type":"HANDOVER_CONFIRMED",
+                "actor_user_id":"u-1","actor_role":"OPERATOR",
+                "request_id":"request-1","client_operation_id":"op-1",
+                "server_time":"2026-09-14T01:02:03Z","source_ip":"not-for-ui"}
+             ],"serverTime":"2026-09-14T01:02:03Z"}
+            """.trimIndent()
+        )
+
+        assertEquals("ho-1", action.handoverId)
+        assertTrue(action.idempotent)
+        assertEquals(listOf("HANDOVER_CONFIRMED", "MATERIAL_AT_STATION"), action.eventTypes)
+        assertEquals("HANDOVER_CONFIRMED", timeline.items.single().eventType)
+        assertEquals("u-1", timeline.items.single().actorUserId)
+        assertEquals("request-1", timeline.items.single().requestId)
     }
 }

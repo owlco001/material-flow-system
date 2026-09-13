@@ -5,6 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
+import com.company.logistics.data.remote.ApiException
+import com.company.logistics.model.HandoverAction
+import com.company.logistics.model.HandoverActionPolicy
+import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
@@ -23,6 +27,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * 页面路由 —— 按角色动态生成，无权限页面不渲染。
@@ -105,6 +110,15 @@ data class LogisticsUiState(
     val workspaceTotal: Int = 0,
     val workspaceTotalPages: Int = 0,
     val workspaceServerTime: String? = null,
+    val workspaceTimelineItemId: String? = null,
+    val workspaceTimeline: HandoverTimeline? = null,
+    val workspaceTimelineState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workspaceTimelineError: String? = null,
+    val handoverSubmittingId: String? = null,
+    /** 同一业务 payload 的网络重试复用同一个幂等键，避免服务端已成功但响应丢失时重复建单。 */
+    val handoverPendingOperationKey: String? = null,
+    val handoverClientOperationId: String? = null,
+    val handoverRequestId: String? = null,
 
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
@@ -118,6 +132,8 @@ data class LogisticsUiState(
     val loggedIn: Boolean get() = authState is AuthState.Authenticated
     val currentUser: String
         get() = (authState as? AuthState.Authenticated)?.user?.displayName.orEmpty()
+    val currentUserId: String?
+        get() = (authState as? AuthState.Authenticated)?.user?.id
     val role: UserRole
         get() = (authState as? AuthState.Authenticated)?.user?.role ?: UserRole.OPERATOR
     val mustChangePassword: Boolean
@@ -392,6 +408,249 @@ class LogisticsViewModel(
         val apiError = error as? com.company.logistics.data.remote.ApiException
         return apiError?.statusCode == 404 || apiError?.statusCode == 405 ||
             apiError?.code in setOf("NOT_FOUND", "WORKSPACE_NOT_SUPPORTED")
+    }
+
+    // ==================== 交接 ====================
+
+    /** 打开当前工作项的一页交接时间线；客户端只保留这一条时间线。 */
+    fun openHandoverTimeline(item: WorkspaceMaterialItem) {
+        if (item.lastHandoverId.isNullOrBlank()) {
+            _state.update { it.copy(error = "该工作项暂无交接记录") }
+            return
+        }
+        val current = _state.value
+        if (current.workspaceTimelineItemId == item.id &&
+            current.workspaceTimelineState == WorkspaceLoadState.CONTENT
+        ) {
+            _state.update {
+                it.copy(
+                    workspaceTimelineItemId = null,
+                    workspaceTimeline = null,
+                    workspaceTimelineState = WorkspaceLoadState.IDLE,
+                    workspaceTimelineError = null,
+                )
+            }
+            return
+        }
+        loadHandoverTimeline(item.id)
+    }
+
+    fun retryHandoverTimeline() {
+        _state.value.workspaceTimelineItemId?.let { loadHandoverTimeline(it) }
+    }
+
+    private fun loadHandoverTimeline(workItemId: String) {
+        if (!_state.value.loggedIn) return
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    workspaceTimelineItemId = workItemId,
+                    workspaceTimeline = null,
+                    workspaceTimelineState = WorkspaceLoadState.LOADING,
+                    workspaceTimelineError = null,
+                )
+            }
+            repo.handoverTimeline(workItemId, page = 1, pageSize = 20)
+                .onSuccess { timeline ->
+                    _state.update {
+                        it.copy(
+                            workspaceTimeline = timeline,
+                            workspaceTimelineState = if (timeline.items.isEmpty()) {
+                                WorkspaceLoadState.EMPTY
+                            } else {
+                                WorkspaceLoadState.CONTENT
+                            },
+                            workspaceTimelineError = null,
+                            workspaceServerTime = timeline.serverTime ?: it.workspaceServerTime,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            workspaceTimelineState = WorkspaceLoadState.ERROR,
+                            workspaceTimelineError = handoverErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 物料员发起交接；网络失败不入队，用户可用同一页面重新提交。 */
+    fun createHandover(
+        item: WorkspaceMaterialItem,
+        quantity: Int,
+        fromLocation: String,
+        remark: String? = null,
+    ) {
+        val current = _state.value
+        if (!HandoverActionPolicy.canCreate(current.role, item)) {
+            _state.update { it.copy(error = "当前角色或服务端状态不允许发起交接") }
+            return
+        }
+        val transferRequestId = item.transferRequestId
+        if (transferRequestId.isNullOrBlank()) {
+            _state.update { it.copy(error = "服务端未返回有效出库单，不能发起交接") }
+            return
+        }
+        if (quantity <= 0 || fromLocation.isBlank()) {
+            _state.update { it.copy(error = "请填写正整数交接数量和出库库位") }
+            return
+        }
+        if (current.handoverSubmittingId != null) return
+        val operationKey = listOf(
+            "CREATE",
+            item.id,
+            transferRequestId,
+            quantity,
+            fromLocation.trim(),
+            remark.orEmpty().trim(),
+        ).joinToString("|")
+        val operationId = operationIdFor(operationKey)
+
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    handoverSubmittingId = item.id,
+                    handoverPendingOperationKey = operationKey,
+                    handoverClientOperationId = operationId,
+                    handoverRequestId = null,
+                    error = null,
+                    message = null,
+                )
+            }
+            repo.createHandover(
+                clientOperationId = operationId,
+                workItemId = item.id,
+                transferRequestId = transferRequestId,
+                quantity = quantity,
+                fromLocation = fromLocation,
+                deviceId = item.deviceId,
+                receiverUserId = item.assignedUserId,
+                remark = remark,
+            ).onSuccess { result ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = null,
+                        handoverClientOperationId = null,
+                        handoverRequestId = null,
+                        message = if (result.idempotent) "交接已提交（已使用原有幂等结果）" else "交接已发起",
+                    )
+                }
+                refreshWorkspaceAfterHandover(item.id)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = if (canRetryHandover(error)) operationKey else null,
+                        handoverClientOperationId = if (canRetryHandover(error)) operationId else null,
+                        handoverRequestId = null,
+                        error = handoverErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    /** 按服务端状态和角色策略再次校验，防止绕过 UI 按钮直接调用。 */
+    fun decideHandover(item: WorkspaceMaterialItem, action: HandoverAction, reason: String? = null) {
+        val current = _state.value
+        if (action !in HandoverActionPolicy.actionsFor(current.role, current.currentUserId, item)) {
+            _state.update { it.copy(error = "当前角色或服务端状态不允许该交接操作") }
+            return
+        }
+        if (action.requiresReason && reason.isNullOrBlank()) {
+            _state.update { it.copy(error = "驳回或取消交接必须填写原因") }
+            return
+        }
+        val handoverId = item.lastHandoverId
+        if (handoverId.isNullOrBlank() || current.handoverSubmittingId != null) return
+        val operationKey = listOf(
+            action.name,
+            handoverId,
+            reason.orEmpty().trim(),
+        ).joinToString("|")
+        val operationId = operationIdFor(operationKey)
+        val requestId = requestIdFor(operationKey)
+
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    handoverSubmittingId = item.id,
+                    handoverPendingOperationKey = operationKey,
+                    handoverClientOperationId = operationId,
+                    handoverRequestId = requestId,
+                    error = null,
+                    message = null,
+                )
+            }
+            repo.decideHandover(
+                handoverId = handoverId,
+                action = action,
+                clientOperationId = operationId,
+                reason = reason?.trim(),
+                requestId = requestId,
+            ).onSuccess { result ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = null,
+                        handoverClientOperationId = null,
+                        handoverRequestId = null,
+                        message = if (result.idempotent) "交接操作已完成（已使用原有幂等结果）" else "交接${action.label}成功",
+                    )
+                }
+                refreshWorkspaceAfterHandover(item.id)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = if (canRetryHandover(error)) operationKey else null,
+                        handoverClientOperationId = if (canRetryHandover(error)) operationId else null,
+                        handoverRequestId = if (canRetryHandover(error)) requestId else null,
+                        error = handoverErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun refreshWorkspaceAfterHandover(itemId: String) {
+        loadWorkspacePage(resetToFirstPage = true)
+        loadHandoverTimeline(itemId)
+    }
+
+    private fun operationIdFor(operationKey: String): String {
+        val current = _state.value
+        return if (current.handoverPendingOperationKey == operationKey) {
+            current.handoverClientOperationId ?: UUID.randomUUID().toString()
+        } else {
+            UUID.randomUUID().toString()
+        }
+    }
+
+    private fun requestIdFor(operationKey: String): String {
+        val current = _state.value
+        return if (current.handoverPendingOperationKey == operationKey) {
+            current.handoverRequestId ?: UUID.randomUUID().toString()
+        } else {
+            UUID.randomUUID().toString()
+        }
+    }
+
+    private fun canRetryHandover(error: Throwable): Boolean =
+        error !is ApiException || error.retryable || error.isUnauthorized
+
+    private fun handoverErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权执行该交接操作"
+            error.isConflict -> "交接状态已变化，请刷新工作台后重试"
+            error.retryable || error.statusCode >= 500 -> "服务端暂时不可用，请稍后重试"
+            else -> "交接操作未完成，请检查服务端状态"
+        }
+        else -> "网络不可用，交接操作未完成，请重试"
     }
 
     // ==================== 扫码 ====================

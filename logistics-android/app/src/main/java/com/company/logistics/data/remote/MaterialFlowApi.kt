@@ -4,6 +4,9 @@ import com.company.logistics.BuildConfig
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.ScanResult
+import com.company.logistics.model.HandoverAction
+import com.company.logistics.model.HandoverActionResult
+import com.company.logistics.model.HandoverTimeline
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -220,6 +223,76 @@ class MaterialFlowApi(
         }.joinToString("&")
         ApiParser.parseWorkspaceMaterialItems(
             request("GET", "/api/v1/workspace/material-items?$query", null)
+        )
+    }
+
+    // ==================== 4.3 交接 ====================
+
+    /** 物料员发起已审批出库单的交接；clientOperationId 同时写入 body 和幂等请求头。 */
+    suspend fun createHandover(
+        clientOperationId: String,
+        workItemId: String,
+        transferRequestId: String,
+        quantity: Int,
+        fromLocation: String,
+        deviceId: String?,
+        receiverUserId: String?,
+        remark: String? = null,
+    ): HandoverActionResult = withContext(Dispatchers.IO) {
+        require(quantity > 0) { "交接数量必须大于 0" }
+        require(fromLocation.isNotBlank()) { "交接出库库位不能为空" }
+        val body = JSONObject().apply {
+            put("workItemId", workItemId)
+            put("transferRequestId", transferRequestId)
+            put("quantity", quantity)
+            put("fromLocation", fromLocation)
+            put("deviceId", deviceId ?: JSONObject.NULL)
+            put("receiverUserId", receiverUserId ?: JSONObject.NULL)
+            put("remark", remark ?: JSONObject.NULL)
+            put("clientOperationId", clientOperationId)
+        }
+        ApiParser.parseHandoverAction(
+            request("POST", "/api/v1/handovers", body.toString(), idempotencyKey = clientOperationId)
+        )
+    }
+
+    /** 确认、驳回或取消交接；动作请求默认在线执行，避免离线重复确认。 */
+    suspend fun decideHandover(
+        handoverId: String,
+        action: HandoverAction,
+        clientOperationId: String,
+        reason: String? = null,
+        requestId: String = UUID.randomUUID().toString(),
+    ): HandoverActionResult = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("clientOperationId", clientOperationId)
+            put("requestId", requestId)
+            reason?.let { put("reason", it) }
+        }
+        ApiParser.parseHandoverAction(
+            request(
+                "POST",
+                "/api/v1/handovers/$handoverId/${action.pathSegment}",
+                body.toString(),
+                idempotencyKey = clientOperationId,
+            )
+        )
+    }
+
+    /** 交接时间线只请求并保留 20 条，满足中端设备的内存约束。 */
+    suspend fun handoverTimeline(
+        workItemId: String,
+        page: Int = 1,
+        pageSize: Int = 20,
+    ): HandoverTimeline = withContext(Dispatchers.IO) {
+        require(page >= 1) { "page 必须从 1 开始" }
+        require(pageSize == 20) { "交接时间线每页只能是 20" }
+        ApiParser.parseHandoverTimeline(
+            request(
+                "GET",
+                "/api/v1/handovers/$workItemId/timeline?page=$page&pageSize=$pageSize",
+                null,
+            )
         )
     }
 

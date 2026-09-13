@@ -21,6 +21,9 @@ import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceResponsibilitySummary
 import com.company.logistics.model.WorkspaceSummary
+import com.company.logistics.model.HandoverActionResult
+import com.company.logistics.model.HandoverTimeline
+import com.company.logistics.model.HandoverTimelineEvent
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -157,10 +160,13 @@ object ApiParser {
     /** GET /api/v1/workspace/summary —— 指标缺失时保留 null，表示接口未提供。 */
     fun parseWorkspaceSummary(json: String): WorkspaceSummary {
         val root = JSONObject(json)
+        val statusCounts = root.optJSONObject("statusCounts")
         return WorkspaceSummary(
             role = UserRole.from(nullableString(root, "role")),
             pendingApprovalCount = nullableInt(root, "pendingApprovalCount"),
             pendingOutboundCount = nullableInt(root, "pendingOutboundCount"),
+            outboundConfirmedCount = nullableInt(root, "outboundConfirmedCount")
+                ?: nullableInt(statusCounts, "OUTBOUND_CONFIRMED"),
             pendingHandoverCount = nullableInt(root, "pendingHandoverCount"),
             atStationCount = nullableInt(root, "atStationCount"),
             pickedUpCount = nullableInt(root, "pickedUpCount"),
@@ -168,6 +174,60 @@ object ApiParser {
             generatedAt = nullableString(root, "generatedAt"),
             serverTime = nullableString(root, "serverTime"),
             traceId = nullableString(root, "traceId")
+        )
+    }
+
+    /** POST /api/v1/handovers 以及确认/驳回/取消响应。 */
+    fun parseHandoverAction(json: String): HandoverActionResult {
+        val root = JSONObject(json)
+        val eventTypes = root.optJSONArray("eventTypes")?.let { array ->
+            buildList {
+                for (i in 0 until array.length()) add(array.optString(i))
+            }
+        }.orEmpty()
+        return HandoverActionResult(
+            handoverId = root.optString("handoverId"),
+            status = root.optString("status"),
+            transferRequestId = nullableString(root, "transferRequestId"),
+            eventTypes = eventTypes,
+            traceId = nullableString(root, "traceId"),
+            idempotent = root.optBoolean("idempotent", false),
+        )
+    }
+
+    /** GET /api/v1/handovers/{workItemId}/timeline；只保留客户端内存分页上限。 */
+    fun parseHandoverTimeline(json: String, maxItems: Int = 20): HandoverTimeline {
+        val root = JSONObject(json)
+        val events = mutableListOf<HandoverTimelineEvent>()
+        val array = root.optJSONArray("items") ?: JSONArray()
+        val startIndex = (array.length() - maxItems).coerceAtLeast(0)
+        for (i in startIndex until array.length()) {
+            val event = array.getJSONObject(i)
+            events += HandoverTimelineEvent(
+                id = nullableString(event, "id") ?: "event-$i",
+                eventType = nullableString(event, "eventType")
+                    ?: nullableString(event, "event_type")
+                    ?: "UNKNOWN",
+                actorUserId = nullableString(event, "actorUserId")
+                    ?: nullableString(event, "actor_user_id"),
+                actorRole = nullableString(event, "actorRole")
+                    ?: nullableString(event, "actor_role"),
+                requestId = nullableString(event, "requestId")
+                    ?: nullableString(event, "request_id"),
+                clientOperationId = nullableString(event, "clientOperationId")
+                    ?: nullableString(event, "client_operation_id"),
+                serverTime = nullableString(event, "serverTime")
+                    ?: nullableString(event, "server_time"),
+                result = nullableString(event, "result"),
+            )
+        }
+        return HandoverTimeline(
+            handoverId = root.optString("handoverId"),
+            workItemId = root.optString("workItemId"),
+            status = root.optString("status"),
+            workspaceStatus = root.optString("workspaceStatus"),
+            items = events,
+            serverTime = nullableString(root, "serverTime"),
         )
     }
 
@@ -266,11 +326,11 @@ object ApiParser {
         )
     }
 
-    private fun nullableString(json: JSONObject, key: String): String? =
-        json.optString(key).takeIf { it.isNotBlank() && it != "null" }
+    private fun nullableString(json: JSONObject?, key: String): String? =
+        json?.optString(key)?.takeIf { it.isNotBlank() && it != "null" }
 
-    private fun nullableInt(json: JSONObject, key: String): Int? =
-        if (json.has(key) && !json.isNull(key)) json.optInt(key) else null
+    private fun nullableInt(json: JSONObject?, key: String): Int? =
+        if (json != null && json.has(key) && !json.isNull(key)) json.optInt(key) else null
 
     /** 契约 4.5 创建流转申请 —— 返回 requestId / status */
     fun parseTransferRequest(json: String): TransferRequestResult {
