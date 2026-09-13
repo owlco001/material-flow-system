@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动页背景：深蓝渐变，向开机动画底色对齐，避免闪白 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="360dp"
+    android:height="640dp"
+    android:viewportWidth="360"
+    android:viewportHeight="640">
+    <path android:pathData="M0,0h360v640h-360z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="0" android:startY="0"
+                android:endX="0" android:endY="640"
+                android:startColor="#0B2E6F"
+                android:endColor="#08214F"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+</vector>

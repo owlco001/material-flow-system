@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8.0+）。
+
+  分层原因：各厂商启动器会自行裁切、缩放、加动效，
+  单一扁平图会被裁掉边缘或变形，必须拆成 background + foreground 两层，
+  并保证关键图形落在中央 66% 安全区内。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
