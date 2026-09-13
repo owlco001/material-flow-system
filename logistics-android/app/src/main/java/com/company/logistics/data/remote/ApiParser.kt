@@ -1,6 +1,8 @@
 package com.company.logistics.data.remote
 
 import com.company.logistics.model.ApprovalStatus
+import com.company.logistics.model.AuditLog
+import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.FlowStatus
 import com.company.logistics.model.FlowType
 import com.company.logistics.model.Inventory
@@ -21,6 +23,9 @@ import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceResponsibilitySummary
 import com.company.logistics.model.WorkspaceSummary
+import com.company.logistics.model.TransferRequest
+import com.company.logistics.model.TransferRequestItem
+import com.company.logistics.model.TransferRequestPage
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.HandoverTimelineEvent
@@ -326,11 +331,142 @@ object ApiParser {
         )
     }
 
+    /** GET /api/v1/transfer-requests；后端当前返回最多 100 条，不在客户端拼接全量。 */
+    fun parseTransferRequestList(json: String, statusFilter: String? = null): TransferRequestPage {
+        val root = JSONObject(json)
+        val items = mutableListOf<TransferRequest>()
+        val array = root.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until array.length()) {
+            items += parseTransferRequest(array.getJSONObject(i))
+        }
+        return TransferRequestPage(
+            items = items,
+            statusFilter = statusFilter,
+            serverTime = nullableStringAny(root, "serverTime", "server_time"),
+            traceId = nullableStringAny(root, "traceId", "trace_id"),
+        )
+    }
+
+    /** 别名供调用方按“分页/列表”语义读取同一个响应。 */
+    fun parseTransferRequestPage(json: String, statusFilter: String? = null): TransferRequestPage =
+        parseTransferRequestList(json, statusFilter)
+
+    fun parseTransferRequests(json: String, statusFilter: String? = null): TransferRequestPage =
+        parseTransferRequestList(json, statusFilter)
+
+    /** GET /api/v1/transfer-requests/{requestId}；详情只投影安全可展示字段。 */
+    fun parseTransferRequestDetail(json: String): TransferRequest =
+        parseTransferRequest(JSONObject(json))
+
+    private fun parseTransferRequest(json: JSONObject): TransferRequest {
+        val payload = nullableStringAny(json, "payloadJson", "payload_json")?.let { raw ->
+            runCatching { JSONObject(raw) }.getOrNull()
+        }
+        val itemsArray = json.optJSONArray("items") ?: payload?.optJSONArray("items") ?: JSONArray()
+        val items = buildList {
+            for (i in 0 until itemsArray.length()) {
+                val item = itemsArray.optJSONObject(i) ?: continue
+                add(
+                    TransferRequestItem(
+                        materialId = nullableStringAny(item, "materialId", "material_id").orEmpty(),
+                        quantity = item.optInt("quantity"),
+                        batchNo = nullableStringAny(item, "batchNo", "batch_no"),
+                        sourceLocationCode = nullableStringAny(
+                            item, "sourceLocationCode", "source_location_code"
+                        ),
+                        targetLocationCode = nullableStringAny(
+                            item, "targetLocationCode", "target_location_code"
+                        ),
+                        expectedInventoryVersion = nullableIntAny(
+                            item, "expectedInventoryVersion", "expected_inventory_version"
+                        ),
+                    )
+                )
+            }
+        }
+        return TransferRequest(
+            id = nullableStringAny(json, "id", "requestId", "request_id").orEmpty(),
+            clientOperationId = nullableStringAny(
+                json, "clientOperationId", "client_operation_id"
+            ),
+            type = nullableStringAny(json, "type").orEmpty(),
+            documentNo = nullableStringAny(json, "documentNo", "document_no")
+                ?: nullableStringAny(payload, "documentNo", "document_no"),
+            status = nullableStringAny(json, "status", "statusCode", "status_code").orEmpty(),
+            statusLabel = nullableStringAny(json, "statusLabel", "status_label"),
+            items = items,
+            remark = nullableStringAny(json, "remark") ?: nullableStringAny(payload, "remark"),
+            createdBy = nullableStringAny(json, "createdBy", "created_by"),
+            createdAt = nullableStringAny(json, "createdAt", "created_at"),
+            approvedBy = nullableStringAny(json, "approvedBy", "approved_by"),
+            approvedAt = nullableStringAny(json, "approvedAt", "approved_at"),
+            executedAt = nullableStringAny(json, "executedAt", "executed_at"),
+            serverTime = nullableStringAny(json, "serverTime", "server_time"),
+            traceId = nullableStringAny(json, "traceId", "trace_id"),
+        )
+    }
+
+    /** GET /api/v1/audit-logs；兼容后端 snake_case 数据库投影和契约 camelCase 字段。 */
+    fun parseAuditLogs(json: String): AuditLogPage {
+        val root = JSONObject(json)
+        val page = root.optInt("page", 1).coerceAtLeast(1)
+        val pageSize = root.optInt("pageSize", 50).coerceIn(1, 100)
+        val array = root.optJSONArray("items") ?: JSONArray()
+        val items = buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                add(
+                    AuditLog(
+                        id = longValue(item, "id"),
+                        operatorId = nullableStringAny(item, "operatorId", "operator_id"),
+                        role = nullableStringAny(item, "role"),
+                        action = nullableStringAny(item, "action").orEmpty(),
+                        resourceType = nullableStringAny(
+                            item, "resourceType", "resource_type"
+                        ).orEmpty(),
+                        resourceId = nullableStringAny(item, "resourceId", "resource_id"),
+                        requestId = nullableStringAny(item, "requestId", "request_id"),
+                        deviceId = nullableStringAny(item, "deviceId", "device_id"),
+                        occurredAt = nullableStringAny(item, "occurredAt", "occurred_at"),
+                        result = nullableStringAny(item, "result").orEmpty(),
+                    )
+                )
+            }
+        }
+        val hasNext = if (root.has("hasNext") && !root.isNull("hasNext")) {
+            root.optBoolean("hasNext")
+        } else {
+            // 当前后端没有 total；满页意味着可能仍有下一页，避免一次拉取全量审计。
+            items.size >= pageSize && items.isNotEmpty()
+        }
+        return AuditLogPage(
+            items = items,
+            page = page,
+            pageSize = pageSize,
+            hasNext = hasNext,
+            serverTime = nullableStringAny(root, "serverTime", "server_time"),
+            traceId = nullableStringAny(root, "traceId", "trace_id"),
+        )
+    }
+
+    fun parseAuditLogPage(json: String): AuditLogPage = parseAuditLogs(json)
+
     private fun nullableString(json: JSONObject?, key: String): String? =
         json?.optString(key)?.takeIf { it.isNotBlank() && it != "null" }
 
+    private fun nullableStringAny(json: JSONObject?, vararg keys: String): String? =
+        keys.asSequence().mapNotNull { key -> nullableString(json, key) }.firstOrNull()
+
     private fun nullableInt(json: JSONObject?, key: String): Int? =
         if (json != null && json.has(key) && !json.isNull(key)) json.optInt(key) else null
+
+    private fun nullableIntAny(json: JSONObject?, vararg keys: String): Int? =
+        keys.asSequence().mapNotNull { key -> nullableInt(json, key) }.firstOrNull()
+
+    private fun longValue(json: JSONObject, key: String): Long = when (val value = json.opt(key)) {
+        is Number -> value.toLong()
+        else -> value?.toString()?.toLongOrNull() ?: 0L
+    }
 
     /** 契约 4.5 创建流转申请 —— 返回 requestId / status */
     fun parseTransferRequest(json: String): TransferRequestResult {
@@ -348,7 +484,10 @@ object ApiParser {
         val root = JSONObject(json)
         return ApprovalDecisionResult(
             requestId = root.optString("requestId"),
-            status = ApprovalStatus.from(root.optString("status"))
+            status = ApprovalStatus.from(root.optString("status")),
+            idempotent = root.optBoolean("idempotent", false),
+            serverTime = nullableStringAny(root, "serverTime", "server_time"),
+            traceId = nullableStringAny(root, "traceId", "trace_id"),
         )
     }
 
@@ -414,7 +553,10 @@ data class TransferRequestResult(
 /** 审批结果 */
 data class ApprovalDecisionResult(
     val requestId: String,
-    val status: ApprovalStatus
+    val status: ApprovalStatus,
+    val idempotent: Boolean = false,
+    val serverTime: String? = null,
+    val traceId: String? = null,
 )
 
 /** 库位绑定结果 */

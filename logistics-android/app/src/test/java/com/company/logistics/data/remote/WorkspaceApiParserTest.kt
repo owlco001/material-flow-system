@@ -200,4 +200,52 @@ class WorkspaceApiParserTest {
         assertEquals("u-1", timeline.items.single().actorUserId)
         assertEquals("request-1", timeline.items.single().requestId)
     }
+
+    @Test
+    fun parsesTransferRequestListAndDetailWithoutInventingStatusOrPayloadFields() {
+        val page = ApiParser.parseTransferRequestList(
+            """
+            {"items":[{"id":"tr-1","type":"OUTBOUND","document_no":"PO-1",
+              "status":"PENDING_APPROVAL","created_by":"u-1","created_at":"server",
+              "approved_by":null}],"serverTime":"server-time"}
+            """.trimIndent(),
+            statusFilter = "PENDING_APPROVAL",
+        )
+        val detail = ApiParser.parseTransferRequestDetail(
+            """
+            {"id":"tr-1","type":"OUTBOUND","document_no":"PO-1","status":"APPROVED",
+              "payload_json":"{\"remark\":\"check\",\"items\":[{\"materialId\":\"mat-1\",\"quantity\":2,\"sourceLocationCode\":\"A-01\",\"expectedInventoryVersion\":3}]}"
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("PENDING_APPROVAL", page.items.single().effectiveStatusCode)
+        assertEquals("PENDING_APPROVAL", page.statusFilter)
+        assertEquals("APPROVED", detail.effectiveStatusCode)
+        assertEquals("check", detail.remark)
+        assertEquals("A-01", detail.items.single().sourceLocationCode)
+        assertEquals(3, detail.items.single().expectedInventoryVersion)
+    }
+
+    @Test
+    fun parsesAuditPageInBothServerFieldStylesAndDerivesOnlySafeNextPageSignal() {
+        val page = ApiParser.parseAuditLogs(
+            """
+            {"items":[{"id":9,"operator_id":"u-1","role":"ADMIN","action":"EXECUTE",
+              "resource_type":"TRANSFER_REQUEST","resource_id":"tr-1","request_id":"req-1",
+              "device_id":"device-1","occurred_at":"server","result":"SUCCESS"}],
+             "page":2,"pageSize":1,"serverTime":"server-time"}
+            """.trimIndent(),
+        )
+
+        val log = page.items.single()
+        assertEquals(2, page.page)
+        assertEquals(1, page.pageSize)
+        assertTrue(page.hasNext)
+        assertEquals("u-1", log.operatorId)
+        assertEquals("TRANSFER_REQUEST", log.resourceType)
+        assertEquals("req-1", log.requestId)
+        assertEquals("server", log.occurredAt)
+        assertEquals("server-time", page.serverTime)
+    }
 }

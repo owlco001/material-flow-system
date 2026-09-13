@@ -6,6 +6,7 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
+import com.company.logistics.model.AuditLog
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
 import com.company.logistics.model.HandoverTimeline
@@ -20,11 +21,15 @@ import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.ServerWorkspaceSummaryFactory
+import com.company.logistics.model.TransferRequest
+import com.company.logistics.model.TransferRequestAction
+import com.company.logistics.model.TransferRequestActionPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -114,6 +119,22 @@ data class LogisticsUiState(
     val workspaceTimeline: HandoverTimeline? = null,
     val workspaceTimelineState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val workspaceTimelineError: String? = null,
+    val transferRequests: List<TransferRequest> = emptyList(),
+    val transferRequestState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val transferRequestError: String? = null,
+    val transferRequestFilter: String? = null,
+    val transferRequestServerTime: String? = null,
+    val selectedTransferRequestId: String? = null,
+    val transferRequestDetail: TransferRequest? = null,
+    val transferRequestDetailState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val transferRequestDetailError: String? = null,
+    val auditLogs: List<AuditLog> = emptyList(),
+    val auditState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val auditError: String? = null,
+    val auditPage: Int = 1,
+    val auditPageSize: Int = AUDIT_PAGE_SIZE,
+    val auditHasNext: Boolean = false,
+    val auditServerTime: String? = null,
     val handoverSubmittingId: String? = null,
     /** 同一业务 payload 的网络重试复用同一个幂等键，避免服务端已成功但响应丢失时重复建单。 */
     val handoverPendingOperationKey: String? = null,
@@ -147,8 +168,15 @@ data class LogisticsUiState(
         get() = workspaceSummaryState == WorkspaceLoadState.LOADING ||
             workspaceItemsState == WorkspaceLoadState.LOADING
 
+    val transferRequestLoading: Boolean
+        get() = transferRequestState == WorkspaceLoadState.LOADING
+
+    val auditLoading: Boolean
+        get() = auditState == WorkspaceLoadState.LOADING
+
     companion object {
         const val WORKSPACE_PAGE_SIZE = 20
+        const val AUDIT_PAGE_SIZE = 50
     }
 }
 
@@ -166,8 +194,16 @@ class LogisticsViewModel(
     private val _state = MutableStateFlow(LogisticsUiState())
     val state: StateFlow<LogisticsUiState> = _state.asStateFlow()
 
+    // Generation guards prevent a late response from an older refresh replacing newer data.
+    private var transferRequestLoadGeneration = 0L
+    private var transferRequestDetailGeneration = 0L
+    private var auditLoadGeneration = 0L
+    @Volatile
+    private var sessionGeneration = 0L
+
     init {
         repo.onSessionExpired = {
+            sessionGeneration++
             _state.value = LogisticsUiState(
                 authState = AuthState.Unauthenticated,
                 error = "登录已失效，请重新登录"
@@ -175,9 +211,11 @@ class LogisticsViewModel(
         }
         // restoreSession 会读取加密摘要并把 token 对恢复到 API。放进协程后，UI 能明确经历
         // Restoring，而不是在 ViewModel 构造的同一帧里错误地落到登录页。
+        val restoreGeneration = sessionGeneration
         operationScope.launch {
             repo.restoreSession()
             val persisted = repo.persistedUser()
+            if (restoreGeneration != sessionGeneration) return@launch
             _state.update {
                 if (persisted == null) {
                     it.copy(authState = AuthState.Unauthenticated)
@@ -217,10 +255,12 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "请输入账号与密码") }
             return
         }
+        val loginGeneration = ++sessionGeneration
         operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            runCatching { repo.login(username, password, deviceId, remember) }
+            resultOf { repo.login(username, password, deviceId, remember) }
                 .onSuccess { result ->
+                    if (loginGeneration != sessionGeneration) return@onSuccess
                     _state.update {
                         it.copy(
                             authState = AuthState.Authenticated(result.user, result.mustChangePassword),
@@ -234,12 +274,14 @@ class LogisticsViewModel(
                     loadWorkspacePage(resetToFirstPage = true)
                 }
                 .onFailure { e ->
+                    if (loginGeneration != sessionGeneration) return@onFailure
                     _state.update { it.copy(loading = false, error = e.message ?: "登录失败") }
                 }
         }
     }
 
     fun logout() {
+        sessionGeneration++
         repo.logout()
         _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
     }
@@ -251,6 +293,12 @@ class LogisticsViewModel(
             it.copy(error = "当前角色无权访问该页面")
         } else {
             it.copy(screen = screen, error = null)
+        }
+    }.also {
+        when (screen) {
+            Screen.APPROVAL -> refreshTransferRequests()
+            Screen.AUDIT -> refreshAuditLogs()
+            else -> Unit
         }
     }
 
@@ -304,7 +352,9 @@ class LogisticsViewModel(
         pageSize: Int = _state.value.workspacePageSize,
     ) {
         if (!_state.value.loggedIn) return
+        val currentSession = sessionGeneration
         operationScope.launch {
+            if (!isSessionActive(currentSession)) return@launch
             val requestedPage = if (resetToFirstPage) 1 else page
             _state.update {
                 it.copy(
@@ -338,6 +388,7 @@ class LogisticsViewModel(
                 if (summaryResult != null) {
                     summaryResult
                     .onSuccess { serverSummary ->
+                        if (!isSessionActive(currentSession)) return@onSuccess
                         _state.update {
                             it.copy(
                                 workspaceSummary = ServerWorkspaceSummaryFactory.from(serverSummary),
@@ -350,6 +401,7 @@ class LogisticsViewModel(
                         }
                     }
                     .onFailure { error ->
+                        if (!isSessionActive(currentSession)) return@onFailure
                         _state.update {
                             it.copy(
                                 workspaceSummaryState = WorkspaceLoadState.ERROR,
@@ -362,6 +414,7 @@ class LogisticsViewModel(
 
                 itemsResult
                     .onSuccess { pageResult ->
+                        if (!isSessionActive(currentSession)) return@onSuccess
                         _state.update {
                             val currentSummary = it.workspaceSummary
                             val summaryWithTotal = currentSummary.copy(
@@ -390,6 +443,7 @@ class LogisticsViewModel(
                         }
                     }
                     .onFailure { error ->
+                        if (!isSessionActive(currentSession)) return@onFailure
                         _state.update {
                             it.copy(
                                 workspaceItemsState = WorkspaceLoadState.ERROR,
@@ -414,16 +468,150 @@ class LogisticsViewModel(
             apiError?.code in setOf("NOT_FOUND", "WORKSPACE_NOT_SUPPORTED")
     }
 
-    // ==================== 交接 ====================
+    // ==================== 审批与审计 ====================
 
-    /** 审批/执行使用稳定操作键，失败重试时沿用同一幂等身份。 */
+    /** 刷新审批列表；筛选条件只作为服务端 query，不在客户端二次筛选。 */
+    fun refreshTransferRequests(status: String? = _state.value.transferRequestFilter) {
+        if (!_state.value.loggedIn || !_state.value.role.canApprove) return
+        val filter = status?.trim()?.takeIf { it.isNotEmpty() }
+        val generation = ++transferRequestLoadGeneration
+        val currentSession = sessionGeneration
+        operationScope.launch {
+            if (!isSessionActive(currentSession)) return@launch
+            _state.update {
+                it.copy(
+                    transferRequestState = WorkspaceLoadState.LOADING,
+                    transferRequestError = null,
+                    transferRequestFilter = filter,
+                    transferRequests = emptyList(),
+                )
+            }
+            repo.transferRequests(filter)
+                .onSuccess { page ->
+                    if (generation != transferRequestLoadGeneration || !isSessionActive(currentSession)) {
+                        return@onSuccess
+                    }
+                    _state.update {
+                        it.copy(
+                            transferRequests = page.items,
+                            transferRequestState = if (page.items.isEmpty()) {
+                                WorkspaceLoadState.EMPTY
+                            } else {
+                                WorkspaceLoadState.CONTENT
+                            },
+                            transferRequestError = null,
+                            transferRequestServerTime = page.serverTime,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (generation != transferRequestLoadGeneration || !isSessionActive(currentSession)) {
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            transferRequestState = WorkspaceLoadState.ERROR,
+                            transferRequestError = transferRequestErrorMessage(error),
+                            transferRequests = emptyList(),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun selectTransferRequest(requestId: String) {
+        if (!_state.value.loggedIn || !_state.value.role.canApprove || requestId.isBlank()) return
+        val generation = ++transferRequestDetailGeneration
+        val currentSession = sessionGeneration
+        operationScope.launch {
+            if (!isSessionActive(currentSession)) return@launch
+            _state.update {
+                it.copy(
+                    selectedTransferRequestId = requestId,
+                    transferRequestDetail = null,
+                    transferRequestDetailState = WorkspaceLoadState.LOADING,
+                    transferRequestDetailError = null,
+                )
+            }
+            repo.transferRequestDetail(requestId)
+                .onSuccess { detail ->
+                    if (generation != transferRequestDetailGeneration || !isSessionActive(currentSession)) {
+                        return@onSuccess
+                    }
+                    _state.update {
+                        it.copy(
+                            transferRequestDetail = detail,
+                            transferRequestDetailState = WorkspaceLoadState.CONTENT,
+                            transferRequestDetailError = null,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (generation != transferRequestDetailGeneration || !isSessionActive(currentSession)) {
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            transferRequestDetailState = WorkspaceLoadState.ERROR,
+                            transferRequestDetailError = transferRequestErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeTransferRequestDetail() {
+        transferRequestDetailGeneration++
+        _state.update {
+            it.copy(
+                selectedTransferRequestId = null,
+                transferRequestDetail = null,
+                transferRequestDetailState = WorkspaceLoadState.IDLE,
+                transferRequestDetailError = null,
+            )
+        }
+    }
+
+    fun retryTransferRequestDetail() {
+        _state.value.selectedTransferRequestId?.let(::selectTransferRequest)
+    }
+
+    /** 按列表中服务端最新状态再次校验，避免通过旧详情或绕过按钮越权提交。 */
     fun approveTransferRequest(transferRequestId: String, approve: Boolean, comment: String = "") {
-        submitTransferDecision(transferRequestId, "APPROVE:$approve:${comment.trim()}") { operationId, requestId ->
-            repo.approveTransferRequest(transferRequestId, approve, comment, operationId, requestId)
+        val current = _state.value
+        val request = current.transferRequests.firstOrNull { it.id == transferRequestId }
+            ?: current.transferRequestDetail?.takeIf { it.id == transferRequestId }
+        val action = if (approve) TransferRequestAction.APPROVE else TransferRequestAction.REJECT
+        if (request == null || action !in TransferRequestActionPolicy.actionsFor(current.role, request)
+        ) {
+            _state.update { it.copy(error = "当前申请状态不允许该审批操作，请先刷新列表") }
+            return
+        }
+        if (!approve && comment.trim().isBlank()) {
+            _state.update { it.copy(error = "驳回申请必须填写原因") }
+            return
+        }
+        submitTransferDecision(
+            transferRequestId = transferRequestId,
+            actionKey = "${action.name}:${comment.trim()}",
+        ) { operationId, requestId ->
+            repo.approveTransferRequest(
+                transferRequestId, approve, comment.trim(), operationId, requestId
+            )
         }
     }
 
     fun executeTransferRequest(transferRequestId: String) {
+        val current = _state.value
+        val request = current.transferRequests.firstOrNull { it.id == transferRequestId }
+            ?: current.transferRequestDetail?.takeIf { it.id == transferRequestId }
+        if (request == null || TransferRequestAction.EXECUTE !in TransferRequestActionPolicy.actionsFor(
+                current.role, request
+            )
+        ) {
+            _state.update { it.copy(error = "当前申请状态不允许执行，请先刷新列表") }
+            return
+        }
         submitTransferDecision(transferRequestId, "EXECUTE") { operationId, requestId ->
             repo.executeTransferRequest(transferRequestId, operationId, requestId)
         }
@@ -434,44 +622,159 @@ class LogisticsViewModel(
         actionKey: String,
         call: suspend (String, String) -> Result<*>,
     ) {
-        if (!_state.value.loggedIn || _state.value.transferDecisionSubmittingId != null) return
+        if (!_state.value.loggedIn || !_state.value.role.canApprove ||
+            _state.value.transferDecisionSubmittingId != null
+        ) return
         val operationKey = "$actionKey:$transferRequestId"
         val operationId = stableTransferOperationId(operationKey)
         val requestId = stableTransferRequestId(operationKey)
+        val currentSession = sessionGeneration
+        // 先同步占用提交槽，再启动协程；连续点击发生在同一帧时也只能产生一次请求。
+        _state.update {
+            it.copy(
+                transferDecisionSubmittingId = transferRequestId,
+                transferDecisionPendingOperationKey = operationKey,
+                transferDecisionClientOperationId = operationId,
+                transferDecisionRequestId = requestId,
+                error = null,
+                message = null,
+            )
+        }
         operationScope.launch {
-            _state.update {
-                it.copy(
-                    transferDecisionSubmittingId = transferRequestId,
-                    transferDecisionPendingOperationKey = operationKey,
-                    transferDecisionClientOperationId = operationId,
-                    transferDecisionRequestId = requestId,
-                    error = null,
-                    message = null,
-                )
-            }
+            if (!isSessionActive(currentSession)) return@launch
             call(operationId, requestId).onSuccess {
+                if (!isSessionActive(currentSession)) return@onSuccess
                 _state.update {
                     it.copy(
                         transferDecisionSubmittingId = null,
                         transferDecisionPendingOperationKey = null,
                         transferDecisionClientOperationId = null,
                         transferDecisionRequestId = null,
-                        message = "流转申请操作成功",
+                        message = "流转申请操作成功，列表已刷新",
                     )
                 }
+                refreshTransferRequests()
+                if (_state.value.selectedTransferRequestId == transferRequestId) {
+                    selectTransferRequest(transferRequestId)
+                }
             }.onFailure { error ->
+                if (!isSessionActive(currentSession)) return@onFailure
+                val canRetry = canRetryTransferDecision(error)
                 _state.update {
                     it.copy(
                         transferDecisionSubmittingId = null,
-                        transferDecisionPendingOperationKey = operationKey,
-                        transferDecisionClientOperationId = operationId,
-                        transferDecisionRequestId = requestId,
-                        error = error.message ?: "流转申请操作失败",
+                        transferDecisionPendingOperationKey = if (canRetry) operationKey else null,
+                        transferDecisionClientOperationId = if (canRetry) operationId else null,
+                        transferDecisionRequestId = if (canRetry) requestId else null,
+                        error = transferRequestErrorMessage(error),
                     )
+                }
+                if (error is ApiException && error.isConflict) {
+                    // 另一位审批人可能已改变状态；马上重新读取列表/详情，避免按钮继续基于旧事实。
+                    refreshTransferRequests()
+                    if (_state.value.selectedTransferRequestId == transferRequestId) {
+                        selectTransferRequest(transferRequestId)
+                    }
                 }
             }
         }
     }
+
+    private fun canRetryTransferDecision(error: Throwable): Boolean =
+        error !is ApiException || error.retryable || error.isUnauthorized
+
+    private fun transferRequestErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权访问或操作流转申请"
+            error.isConflict -> "申请状态已变化，请刷新列表后重试"
+            error.statusCode == 404 -> "流转申请不存在，请刷新列表"
+            error.retryable || error.statusCode >= 500 -> "服务端暂时不可用，请稍后重试"
+            else -> "流转申请请求未完成，请稍后重试"
+        }
+        else -> "网络不可用，请检查连接后重试"
+    }
+
+    /** 管理员审计页只读取服务端分页；非管理员调用在 ViewModel 层也被拒绝。 */
+    fun refreshAuditLogs(page: Int = 1) {
+        if (!_state.value.loggedIn || !_state.value.role.canAdmin) return
+        val requestedPage = page.coerceAtLeast(1)
+        val generation = ++auditLoadGeneration
+        val currentSession = sessionGeneration
+        operationScope.launch {
+            if (!isSessionActive(currentSession)) return@launch
+            _state.update {
+                it.copy(
+                    auditState = WorkspaceLoadState.LOADING,
+                    auditError = null,
+                    auditPage = requestedPage,
+                    auditLogs = emptyList(),
+                )
+            }
+            repo.auditLogs(requestedPage, LogisticsUiState.AUDIT_PAGE_SIZE)
+                .onSuccess { result ->
+                    if (generation != auditLoadGeneration || !isSessionActive(currentSession)) {
+                        return@onSuccess
+                    }
+                    _state.update {
+                        it.copy(
+                            auditLogs = result.items,
+                            auditState = if (result.items.isEmpty()) {
+                                WorkspaceLoadState.EMPTY
+                            } else {
+                                WorkspaceLoadState.CONTENT
+                            },
+                            auditError = null,
+                            auditPage = result.page,
+                            auditPageSize = result.pageSize,
+                            auditHasNext = result.hasNext,
+                            auditServerTime = result.serverTime,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (generation != auditLoadGeneration || !isSessionActive(currentSession)) {
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            auditState = WorkspaceLoadState.ERROR,
+                            auditError = auditErrorMessage(error),
+                            auditLogs = emptyList(),
+                            auditHasNext = false,
+                        )
+                    }
+                }
+        }
+    }
+
+    fun loadNextAuditPage() {
+        val current = _state.value
+        if (current.auditHasNext && !current.auditLoading) refreshAuditLogs(current.auditPage + 1)
+    }
+
+    fun loadPreviousAuditPage() {
+        val current = _state.value
+        if (current.auditPage > 1 && !current.auditLoading) refreshAuditLogs(current.auditPage - 1)
+    }
+
+    fun retryAuditLogs() = refreshAuditLogs(_state.value.auditPage)
+
+    private fun auditErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权查看审计记录"
+            error.statusCode == 404 -> "审计接口暂不可用"
+            error.retryable || error.statusCode >= 500 -> "服务端暂时不可用，请稍后重试"
+            else -> "审计记录加载失败，请稍后重试"
+        }
+        else -> "网络不可用，请检查连接后重试"
+    }
+
+    private fun isSessionActive(generation: Long): Boolean =
+        generation == sessionGeneration && _state.value.loggedIn
+
+    // ==================== 交接 ====================
 
     private fun stableTransferOperationId(operationKey: String): String {
         val current = _state.value
@@ -924,6 +1227,15 @@ class LogisticsViewModel(
             else -> true
         }
     }
+}
+
+/** 与 ViewModel 生命周期一致：取消页面请求时不能把 CancellationException 当业务错误。 */
+private suspend fun <T> resultOf(block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (error: Throwable) {
+    Result.failure(error)
 }
 
 private fun com.company.logistics.data.SessionStore.UserSummary.toUser(): User = User(

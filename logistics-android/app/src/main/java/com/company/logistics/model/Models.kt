@@ -417,6 +417,107 @@ data class WorkspaceMaterialItemsPage(
     val traceId: String?
 )
 
+/** 流转申请明细条目；详情接口中的 payload 只投影到可展示字段。 */
+data class TransferRequestItem(
+    val materialId: String,
+    val quantity: Int,
+    val batchNo: String? = null,
+    val sourceLocationCode: String? = null,
+    val targetLocationCode: String? = null,
+    val expectedInventoryVersion: Int? = null,
+)
+
+/** GET /api/v1/transfer-requests 及详情接口的服务端记录。 */
+data class TransferRequest(
+    val id: String,
+    val clientOperationId: String? = null,
+    val type: String,
+    val documentNo: String? = null,
+    /** 保留服务端原始状态码，按钮策略不得从数量或本地推导。 */
+    val status: String,
+    val statusLabel: String? = null,
+    val items: List<TransferRequestItem> = emptyList(),
+    val remark: String? = null,
+    val createdBy: String? = null,
+    val createdAt: String? = null,
+    val approvedBy: String? = null,
+    val approvedAt: String? = null,
+    val executedAt: String? = null,
+    val serverTime: String? = null,
+    val traceId: String? = null,
+) {
+    val requestId: String get() = id
+
+    val effectiveStatusCode: String
+        get() = status.trim().uppercase(java.util.Locale.ROOT)
+
+    val displayStatusLabel: String
+        get() = statusLabel?.takeIf { it.isNotBlank() }
+            ?: ApprovalStatus.entries.firstOrNull { it.code == effectiveStatusCode }?.label
+            ?: status.ifBlank { "未知状态" }
+}
+
+/** 列表接口当前最多返回服务端允许的 100 条记录。 */
+data class TransferRequestPage(
+    val items: List<TransferRequest>,
+    val statusFilter: String? = null,
+    val serverTime: String? = null,
+    val traceId: String? = null,
+)
+
+typealias TransferRequestList = TransferRequestPage
+
+/** 管理员审计列表的安全投影；不保存 IP、前后 JSON 等不需要在移动端展示的字段。 */
+data class AuditLog(
+    val id: Long,
+    val operatorId: String?,
+    val role: String?,
+    val action: String,
+    val resourceType: String,
+    val resourceId: String?,
+    val requestId: String?,
+    val deviceId: String?,
+    val occurredAt: String?,
+    val result: String,
+)
+
+/** GET /api/v1/audit-logs 的服务端分页结果。总数不是接口契约的一部分，以 hasNext 控制翻页。 */
+data class AuditLogPage(
+    val items: List<AuditLog>,
+    val page: Int,
+    val pageSize: Int,
+    val hasNext: Boolean,
+    val serverTime: String? = null,
+    val traceId: String? = null,
+)
+
+/** 管理员/仓库管理员可见的流转申请写操作。 */
+enum class TransferRequestAction(val label: String) {
+    APPROVE("批准"),
+    REJECT("驳回"),
+    EXECUTE("执行"),
+}
+
+/** 只根据角色和服务端状态决定按钮；服务端仍是最终权限与状态裁决者。 */
+object TransferRequestActionPolicy {
+    fun actionsFor(
+        role: UserRole,
+        request: TransferRequest,
+    ): List<TransferRequestAction> {
+        if (!role.canApprove) return emptyList()
+        return when (request.effectiveStatusCode) {
+            "PENDING_APPROVAL" -> listOf(
+                TransferRequestAction.APPROVE,
+                TransferRequestAction.REJECT,
+            )
+            // 审批人与执行人隔离由服务端裁决；这里仍按服务端状态显示执行入口，
+            // 409 会被统一映射为“状态已变化/不可执行”，避免客户端复制权限事实。
+            "APPROVED" -> listOf(TransferRequestAction.EXECUTE)
+            else -> emptyList()
+        }
+    }
+}
+
 /** 工作台责任人投影；数量和状态事实仍来自服务端工作台接口。 */
 data class WorkspaceResponsibilitySummary(
     val assignedUserId: String?,

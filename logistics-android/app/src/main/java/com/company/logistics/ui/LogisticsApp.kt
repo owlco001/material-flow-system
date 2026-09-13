@@ -225,10 +225,42 @@ fun LogisticsApp(
                         onClearSynced = { viewModel.clearSynced() }
                     )
 
-                    Screen.APPROVAL -> ApprovalScreen(role = state.role)
+                    Screen.APPROVAL -> ApprovalScreen(
+                        role = state.role,
+                        requests = state.transferRequests,
+                        requestState = state.transferRequestState,
+                        requestError = state.transferRequestError,
+                        requestFilter = state.transferRequestFilter,
+                        serverTime = state.transferRequestServerTime,
+                        selectedRequestId = state.selectedTransferRequestId,
+                        detail = state.transferRequestDetail,
+                        detailState = state.transferRequestDetailState,
+                        detailError = state.transferRequestDetailError,
+                        submittingRequestId = state.transferDecisionSubmittingId,
+                        onRefresh = { viewModel.refreshTransferRequests() },
+                        onRetry = { viewModel.refreshTransferRequests() },
+                        onFilter = { viewModel.refreshTransferRequests(it) },
+                        onSelectRequest = { viewModel.selectTransferRequest(it) },
+                        onCloseDetail = { viewModel.closeTransferRequestDetail() },
+                        onRetryDetail = { viewModel.retryTransferRequestDetail() },
+                        onApprove = { viewModel.approveTransferRequest(it, true) },
+                        onReject = { id, reason -> viewModel.approveTransferRequest(id, false, reason) },
+                        onExecute = { viewModel.executeTransferRequest(it) },
+                    )
 
                     Screen.AUDIT -> AuditScreen(
                         role = state.role,
+                        logs = state.auditLogs,
+                        state = state.auditState,
+                        error = state.auditError,
+                        page = state.auditPage,
+                        pageSize = state.auditPageSize,
+                        hasNext = state.auditHasNext,
+                        serverTime = state.auditServerTime,
+                        onRefresh = { viewModel.refreshAuditLogs() },
+                        onRetry = { viewModel.retryAuditLogs() },
+                        onNextPage = { viewModel.loadNextAuditPage() },
+                        onPreviousPage = { viewModel.loadPreviousAuditPage() },
                         onBack = { viewModel.navigate(Screen.WORKSPACE) },
                     )
 

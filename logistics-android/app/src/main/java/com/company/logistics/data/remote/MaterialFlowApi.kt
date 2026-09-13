@@ -7,6 +7,9 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
+import com.company.logistics.model.AuditLogPage
+import com.company.logistics.model.TransferRequest
+import com.company.logistics.model.TransferRequestPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -326,6 +329,7 @@ class MaterialFlowApi(
                 put("materialId", item.materialId)
                 put("quantity", item.quantity)
                 item.batchNo?.let { put("batchNo", it) }
+                item.sourceLocationCode?.let { put("sourceLocationCode", it) }
                 item.targetLocationCode?.let { put("targetLocationCode", it) }
                 item.expectedInventoryVersion?.let { put("expectedInventoryVersion", it) }
             })
@@ -383,11 +387,28 @@ class MaterialFlowApi(
         )
     }
 
-    /** 查询流转申请列表 */
-    suspend fun listTransferRequests(status: String? = null): String = withContext(Dispatchers.IO) {
+    /** 查询流转申请列表；列表接口由服务端按当前用户权限裁剪，客户端不本地过滤。 */
+    suspend fun listTransferRequests(status: String? = null): TransferRequestPage = withContext(Dispatchers.IO) {
         val path = if (status.isNullOrBlank()) "/api/v1/transfer-requests"
-        else "/api/v1/transfer-requests?status=$status"
-        request("GET", path, null)
+        else "/api/v1/transfer-requests?status=${encodeQuery(status)}"
+        ApiParser.parseTransferRequestList(request("GET", path, null), status)
+    }
+
+    /** 查询流转申请详情；详情响应中的 payload 由 parser 投影为明细条目。 */
+    suspend fun transferRequestDetail(requestId: String): TransferRequest = withContext(Dispatchers.IO) {
+        require(requestId.isNotBlank()) { "requestId 不能为空" }
+        ApiParser.parseTransferRequestDetail(
+            request("GET", "/api/v1/transfer-requests/${encodeQuery(requestId)}", null)
+        )
+    }
+
+    /** 管理员只读审计分页；服务端返回多少条就展示多少条，不在客户端聚合全量。 */
+    suspend fun auditLogs(page: Int = 1, pageSize: Int = 50): AuditLogPage = withContext(Dispatchers.IO) {
+        require(page >= 1) { "page 必须从 1 开始" }
+        require(pageSize in 1..100) { "pageSize 必须在 1 到 100 之间" }
+        ApiParser.parseAuditLogs(
+            request("GET", "/api/v1/audit-logs?page=$page&pageSize=$pageSize", null)
+        )
     }
 
     // ==================== 4.6 库位绑定 ====================
@@ -520,6 +541,7 @@ data class TransferItem(
     val materialId: String,
     val quantity: Int,
     val batchNo: String? = null,
+    val sourceLocationCode: String? = null,
     val targetLocationCode: String? = null,
     val expectedInventoryVersion: Int? = null
 )

@@ -5,6 +5,7 @@ import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.TransferItem
 import com.company.logistics.model.LoginResult
+import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
@@ -16,6 +17,9 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.SyncStatus
 import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceSummary
+import com.company.logistics.model.TransferRequest
+import com.company.logistics.model.TransferRequestPage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
@@ -90,7 +94,13 @@ open class LogisticsRepository(
 
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
-        runCatching { api.logout() }
+        try {
+            api.logout()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // 本地会话仍需清除；网络失败不阻止退出。
+        }
         persistSession = false
         sessionStore?.clear()
     }
@@ -133,20 +143,20 @@ open class LogisticsRepository(
 
     // ==================== 扫码 ====================
 
-    suspend fun resolveScan(rawValue: String): Result<ScanResult> = runCatching {
+    suspend fun resolveScan(rawValue: String): Result<ScanResult> = resultOf {
         api.resolveScan(rawValue)
     }
 
-    suspend fun materialInventory(code: String): Result<MaterialInventory> = runCatching {
+    suspend fun materialInventory(code: String): Result<MaterialInventory> = resultOf {
         api.materialInventory(code)
     }
 
-    suspend fun orderMaterialStatus(documentNo: String): Result<OrderMaterialStatus> = runCatching {
+    suspend fun orderMaterialStatus(documentNo: String): Result<OrderMaterialStatus> = resultOf {
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo)
     }
 
     /** 读取服务端角色工作台摘要；不从订单或库存响应推导工作流计数。 */
-    open suspend fun workspaceSummary(): Result<WorkspaceSummary> = runCatching {
+    open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {
         api.workspaceSummary()
     }
 
@@ -159,8 +169,23 @@ open class LogisticsRepository(
         orderNo: String? = null,
         page: Int = 1,
         pageSize: Int = 20
-    ): Result<WorkspaceMaterialItemsPage> = runCatching {
+    ): Result<WorkspaceMaterialItemsPage> = resultOf {
         api.workspaceMaterialItems(status, orderNo, page, pageSize)
+    }
+
+    /** 读取服务端流转申请列表；status 过滤交给服务端，避免客户端状态漂移。 */
+    open suspend fun transferRequests(status: String? = null): Result<TransferRequestPage> = resultOf {
+        api.listTransferRequests(status)
+    }
+
+    /** 读取单条流转申请详情，供审批页展开查看服务端明细。 */
+    open suspend fun transferRequestDetail(requestId: String): Result<TransferRequest> = resultOf {
+        api.transferRequestDetail(requestId)
+    }
+
+    /** 管理员只读审计分页。 */
+    open suspend fun auditLogs(page: Int = 1, pageSize: Int = 50): Result<AuditLogPage> = resultOf {
+        api.auditLogs(page, pageSize)
     }
 
     /** 创建交接保持在线；幂等键由调用方生成并原样交给 API 层。 */
@@ -173,7 +198,7 @@ open class LogisticsRepository(
         deviceId: String?,
         receiverUserId: String?,
         remark: String? = null,
-    ): Result<HandoverActionResult> = runCatching {
+    ): Result<HandoverActionResult> = resultOf {
         api.createHandover(
             clientOperationId = clientOperationId,
             workItemId = workItemId,
@@ -193,7 +218,7 @@ open class LogisticsRepository(
         clientOperationId: String,
         reason: String? = null,
         requestId: String? = null,
-    ): Result<HandoverActionResult> = runCatching {
+    ): Result<HandoverActionResult> = resultOf {
         if (requestId == null) {
             api.decideHandover(handoverId, action, clientOperationId, reason)
         } else {
@@ -208,7 +233,7 @@ open class LogisticsRepository(
         comment: String,
         clientOperationId: String,
         requestId: String,
-    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = runCatching {
+    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = resultOf {
         api.approveTransferRequest(
             requestId = transferRequestId,
             approve = approve,
@@ -222,7 +247,7 @@ open class LogisticsRepository(
         transferRequestId: String,
         clientOperationId: String,
         requestId: String,
-    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = runCatching {
+    ): Result<com.company.logistics.data.remote.ApprovalDecisionResult> = resultOf {
         api.executeTransferRequest(
             requestId = transferRequestId,
             clientOperationId = clientOperationId,
@@ -235,7 +260,7 @@ open class LogisticsRepository(
         workItemId: String,
         page: Int = 1,
         pageSize: Int = 20,
-    ): Result<HandoverTimeline> = runCatching {
+    ): Result<HandoverTimeline> = resultOf {
         api.handoverTimeline(workItemId, page, pageSize)
     }
 
@@ -431,6 +456,8 @@ open class LogisticsRepository(
                 val status = if (e.isConflict) SyncStatus.CONFLICT else SyncStatus.FAILED
                 dao.updateStatus(item.id, status.name, e.message)
                 if (e.isConflict) conflict++ else failed++
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 dao.updateStatus(item.id, SyncStatus.FAILED.name, e.message)
                 failed++
@@ -441,6 +468,15 @@ open class LogisticsRepository(
 
     /** 清理已同步记录 */
     suspend fun clearSynced() = dao.clearSynced()
+
+    /** Result 不应吞掉 CancellationException，否则页面离开后旧请求仍会写回 UI 状态。 */
+    private suspend fun <T> resultOf(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        Result.failure(error)
+    }
 
     companion object {
         /** 契约 4.1 请求中的 clientVersion 字段 */
