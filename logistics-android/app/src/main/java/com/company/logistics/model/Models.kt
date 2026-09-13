@@ -264,6 +264,9 @@ data class MaterialInventory(
 
 /** 订单物料状态条目 —— 契约 4.3 */
 data class OrderMaterialItem(
+    val deviceId: String?,
+    val deviceType: String?,
+    val deviceNo: String?,
     val materialId: String,
     val materialCode: String,
     val name: String,

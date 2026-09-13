@@ -1,6 +1,7 @@
 package com.company.logistics.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -51,8 +56,20 @@ import com.company.logistics.ui.theme.Spacing
 fun OrderDetailScreen(
     status: OrderMaterialStatus?,
     loading: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
+    var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
+    val selectedItems = status?.items?.filter { it.deviceId == selectedDeviceId }.orEmpty()
+    if (status != null && selectedDeviceId != null && selectedItems.isNotEmpty()) {
+        DeviceMaterialDetail(
+            deviceType = selectedItems.first().deviceType.orEmpty(),
+            deviceNo = selectedItems.first().deviceNo.orEmpty(),
+            items = selectedItems,
+            onBack = { selectedDeviceId = null },
+            modifier = modifier,
+        )
+        return
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -147,12 +164,79 @@ fun OrderDetailScreen(
                 description = "请确认订单号是否正确，或联系仓库管理员维护物料需求"
             )
         } else {
-            status.items.forEach { item ->
-                OrderMaterialRow(item)
+            status.items.groupBy { it.deviceId ?: "__ungrouped__" }.values.forEach { deviceItems ->
+                val first = deviceItems.first()
+                if (first.deviceId != null) {
+                    DeviceCard(
+                        deviceType = first.deviceType.orEmpty(),
+                        deviceNo = first.deviceNo.orEmpty(),
+                        materialCount = deviceItems.size,
+                        onClick = { selectedDeviceId = first.deviceId },
+                    )
+                } else {
+                    deviceItems.forEach { item -> OrderMaterialRow(item) }
+                }
                 VSpace(Spacing.sm)
             }
         }
 
+        VSpace(Spacing.xxl)
+    }
+}
+
+private fun deviceDisplayName(type: String): String = when (type) {
+    "HORIZONTAL_CONVEYOR", "横向输送机" -> "横向输送机"
+    "CROSS_CONVEYOR", "十字输送机" -> "十字输送机"
+    "BUFFER", "缓存" -> "缓存"
+    "SHEET_ASSEMBLER", "合片机" -> "合片机"
+    else -> type.ifBlank { "未命名机台" }
+}
+
+@Composable
+private fun DeviceCard(
+    deviceType: String,
+    deviceNo: String,
+    materialCount: Int,
+    onClick: () -> Unit,
+) {
+    AppCard(modifier = Modifier.clickable(onClick = onClick)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(deviceDisplayName(deviceType), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+                VSpace(4.dp)
+                Text(deviceNo, fontSize = 13.sp, fontFamily = LogisticsType.MonoFamily, color = LogisticsTheme.colors.textSecondary)
+            }
+            Text("物料 $materialCount 项  ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        }
+        VSpace(Spacing.sm)
+        Text("点击查看机台物料详情", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+    }
+}
+
+@Composable
+private fun DeviceMaterialDetail(
+    deviceType: String,
+    deviceNo: String,
+    items: List<OrderMaterialItem>,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = Dimens.PagePadding)) {
+        Spacer(Modifier.height(Spacing.sm))
+        Text("‹ 返回订单", modifier = Modifier.clickable(onClick = onBack), color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+        VSpace(Spacing.md)
+        AppCard(accentColor = MaterialTheme.colorScheme.primary) {
+            Text(deviceDisplayName(deviceType), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+            VSpace(4.dp)
+            Text(deviceNo, fontSize = 15.sp, fontFamily = LogisticsType.MonoFamily, color = LogisticsTheme.colors.textSecondary)
+            VSpace(Spacing.sm)
+            Text("物料详情（${items.size}）", fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
+        }
+        VSpace(Spacing.md)
+        items.forEach {
+            OrderMaterialRow(it)
+            VSpace(Spacing.sm)
+        }
         VSpace(Spacing.xxl)
     }
 }

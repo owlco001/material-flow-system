@@ -100,6 +100,9 @@ object ApiParser {
             val o = arr.getJSONObject(i)
             val label = o.optString("label")
             items += OrderMaterialItem(
+                deviceId = o.optString("deviceId").takeIf { it.isNotBlank() },
+                deviceType = o.optString("deviceType").takeIf { it.isNotBlank() },
+                deviceNo = o.optString("deviceNo").takeIf { it.isNotBlank() },
                 materialId = o.optString("materialId"),
                 materialCode = o.optString("materialCode"),
                 name = o.optString("name"),
