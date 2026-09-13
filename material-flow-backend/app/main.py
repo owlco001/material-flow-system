@@ -227,6 +227,8 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, operator_id TEXT, role TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, request_id TEXT, occurred_at TEXT NOT NULL, result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS material_work_items(id TEXT PRIMARY KEY, requirement_id TEXT, material_id TEXT NOT NULL, device_id TEXT, assigned_user_id TEXT, quantity INTEGER NOT NULL CHECK(quantity > 0));
     CREATE TABLE IF NOT EXISTS material_handovers(id TEXT PRIMARY KEY, work_item_id TEXT NOT NULL, transfer_request_id TEXT NOT NULL REFERENCES transfer_requests(id), quantity INTEGER NOT NULL CHECK(quantity > 0), from_location TEXT NOT NULL, device_id TEXT, receiver_user_id TEXT, remark TEXT, client_operation_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','CONFIRMED','REJECTED','CANCELLED')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT, decision_reason TEXT);
     CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT);
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -1189,6 +1191,59 @@ def _handover_headers(x_request_id: str | None, idempotency_key: str | None,
     return trace_id
 
 
+def _handover_visible(c: sqlite3.Connection, row: sqlite3.Row,
+                      user: sqlite3.Row) -> bool:
+    if user["role"] in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        return True
+    if user["id"] in {row["created_by"], row["receiver_user_id"]}:
+        return True
+    # Work-item assignments are the non-privileged read scope.
+    return c.execute(
+        "SELECT 1 FROM material_work_items WHERE id=? AND assigned_user_id=?",
+        (row["work_item_id"], user["id"]),
+    ).fetchone() is not None
+
+
+def _validate_handover_relation(c: sqlite3.Connection, body: HandoverCreate,
+                                transfer: sqlite3.Row, user: sqlite3.Row,
+                                trace_id: str) -> None:
+    work = c.execute("SELECT * FROM material_work_items WHERE id=?",
+                     (body.workItemId,)).fetchone()
+    req = c.execute("SELECT * FROM order_material_requirements WHERE id=?",
+                    (body.workItemId,)).fetchone()
+    if not work and not req:
+        raise ApiError(400, CODE_VALIDATION_ERROR,
+                       "workItemId 不存在或不属于出库单", trace_id=trace_id)
+    if work:
+        if work["assigned_user_id"] and body.receiverUserId != work["assigned_user_id"]:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "receiverUserId 与工作项归属不一致", trace_id=trace_id)
+        if body.deviceId and work["device_id"] and body.deviceId != work["device_id"]:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "deviceId 与工作项目标机台不一致", trace_id=trace_id)
+        material_id = work["material_id"]
+        max_quantity = work["quantity"]
+    else:
+        if body.deviceId and req["device_id"] and body.deviceId != req["device_id"]:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "deviceId 与工作项目标机台不一致", trace_id=trace_id)
+        material_id = req["material_id"]
+        max_quantity = req["required_quantity"]
+    payload = json.loads(transfer["payload_json"])
+    if not any(i.get("materialId") == material_id for i in payload.get("items", [])):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "工作项不属于出库单", trace_id=trace_id)
+    if body.quantity > max_quantity:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "交接数量超过工作项数量", trace_id=trace_id)
+    if body.receiverUserId:
+        receiver = c.execute("SELECT id,role,active FROM users WHERE id=?",
+                             (body.receiverUserId,)).fetchone()
+        if not receiver or not receiver["active"] or receiver["role"] != "OPERATOR":
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "receiverUserId 必须是有效操作员", trace_id=trace_id)
+        if user["role"] == "OPERATOR" and user["id"] != body.receiverUserId:
+            raise ApiError(403, CODE_FORBIDDEN, "只能为本人接收交接", trace_id=trace_id)
+
+
 @app.post("/api/v1/handovers")
 def create_handover(
     body: HandoverCreate, request: Request,
@@ -1212,11 +1267,12 @@ def create_handover(
             raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
         c.close()
         return {"handoverId": old["id"], "status": old["status"], "idempotent": True, "traceId": trace_id}
-    transfer = c.execute("SELECT id,status,type FROM transfer_requests WHERE id=?", (body.transferRequestId,)).fetchone()
+    transfer = c.execute("SELECT id,status,type,payload_json FROM transfer_requests WHERE id=?", (body.transferRequestId,)).fetchone()
     if not transfer or transfer["type"] != "OUTBOUND":
         c.close(); raise ApiError(400, CODE_VALIDATION_ERROR, "transferRequestId 必须关联 OUTBOUND 流转单", trace_id=trace_id)
     if transfer["status"] not in {"APPROVED", "EXECUTED"}:
         c.close(); raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "流转单尚未审批通过", trace_id=trace_id)
+    _validate_handover_relation(c, body, transfer, user, trace_id)
     hid = "ho_" + uuid.uuid4().hex
     c.execute("""INSERT INTO material_handovers
         (id,work_item_id,transfer_request_id,quantity,from_location,device_id,receiver_user_id,remark,client_operation_id,status,created_by,created_at)
@@ -1241,10 +1297,24 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
     c = db(); row = c.execute("SELECT * FROM material_handovers WHERE id=?", (hid,)).fetchone()
     if not row:
         c.close(); raise HTTPException(404, "交接不存在")
-    event_type = {"CONFIRMED": "HANDOVER_CONFIRMED", "REJECTED": "HANDOVER_REJECTED", "CANCELLED": "HANDOVER_CANCELLED"}[action]
-    prior = c.execute("SELECT after_json FROM audit_events WHERE entity_id=? AND client_operation_id=? AND event_type=?", (hid, str(body.clientOperationId), event_type)).fetchone()
+    if not _handover_visible(c, row, user):
+        c.close(); raise ApiError(403, CODE_FORBIDDEN, "无权处理该交接", trace_id=trace_id)
+    if action == "CONFIRMED" and row["receiver_user_id"] and row["receiver_user_id"] != user["id"] and user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        c.close(); raise ApiError(403, CODE_FORBIDDEN, "只能由指定接收人确认", trace_id=trace_id)
+    operation_id = str(body.clientOperationId)
+    operation_payload = body.model_dump_json()
+    prior = c.execute("SELECT * FROM handover_operations WHERE client_operation_id=?",
+                      (operation_id,)).fetchone()
     if prior:
-        c.close(); return {"handoverId": hid, "status": json.loads(prior["after_json"])["status"], "idempotent": True, "traceId": trace_id}
+        if prior["handover_id"] != hid or prior["action"] != action or _payload_digest(prior["payload_json"]) != _payload_digest(operation_payload):
+            c.close()
+            raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                           "相同幂等键的请求体不一致", trace_id=trace_id)
+        result = json.loads(prior["result_json"])
+        c.close()
+        result["idempotent"] = True
+        result["traceId"] = trace_id
+        return result
     if row["status"] != "PENDING":
         c.close(); raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "交接状态不允许重复处理", trace_id=trace_id)
     new_status = action
@@ -1253,8 +1323,11 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
               (new_status, user["id"], now(), body.reason, hid))
     event_type = {"CONFIRMED": "HANDOVER_CONFIRMED", "REJECTED": "HANDOVER_REJECTED", "CANCELLED": "HANDOVER_CANCELLED"}[action]
     _audit_event(c, event_type, hid, user, trace_id, str(body.clientOperationId), before, {"status": new_status}, request)
+    result = {"handoverId": hid, "status": new_status, "traceId": trace_id}
+    c.execute("INSERT INTO handover_operations VALUES(?,?,?,?,?,?)",
+              (operation_id, hid, action, operation_payload, json.dumps(result), now()))
     c.commit(); c.close()
-    return {"handoverId": hid, "status": new_status, "traceId": trace_id}
+    return result
 
 
 @app.post("/api/v1/handovers/{hid}/confirm")
@@ -1274,9 +1347,20 @@ def cancel_handover(hid: str, body: HandoverDecision, request: Request, user: sq
 
 @app.get("/api/v1/handovers/{hid}/timeline")
 def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    c = db(); rows = c.execute("SELECT * FROM audit_events WHERE entity_id=? ORDER BY id", (hid,)).fetchall(); c.close()
-    if not rows: raise HTTPException(404, "交接不存在")
-    return {"handoverId": hid, "items": [dict(r) for r in rows], "serverTime": now()}
+    c = db()
+    handover = c.execute("SELECT * FROM material_handovers WHERE id=?", (hid,)).fetchone()
+    if not handover:
+        handover = c.execute(
+            "SELECT * FROM material_handovers WHERE work_item_id=? ORDER BY created_at DESC LIMIT 1",
+            (hid,),
+        ).fetchone()
+    if not handover or not _handover_visible(c, handover, user):
+        c.close()
+        raise HTTPException(404, "交接不存在")
+    rows = c.execute("SELECT * FROM audit_events WHERE entity_id=? ORDER BY id", (hid,)).fetchall()
+    c.close()
+    return {"handoverId": handover["id"], "workItemId": handover["work_item_id"],
+            "items": [dict(r) for r in rows], "serverTime": now()}
 
 
 @app.get("/api/v1/transfer-requests/{rid}")
