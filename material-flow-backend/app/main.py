@@ -15,6 +15,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from pydantic import BaseModel, Field
 
 DATA_DIR = Path(os.environ.get("MATERIAL_FLOW_DATA", "/srv/material-flow/data"))
@@ -24,6 +26,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="物料流转系统 API", version="0.1.0")
 bearer = HTTPBearer(auto_error=False)
+
+# 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
+_ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
 
 # ==================== 契约常量 ====================
 # 依据《物料流转系统-V1-API契约冻结补遗》，本文件覆盖旧文档中的冲突定义。
@@ -43,6 +48,12 @@ CODE_IDEMPOTENCY_KEY_MISMATCH = "IDEMPOTENCY_KEY_MISMATCH"
 CODE_IDEMPOTENCY_PAYLOAD_MISMATCH = "IDEMPOTENCY_PAYLOAD_MISMATCH"
 CODE_INVENTORY_VERSION_CONFLICT = "INVENTORY_VERSION_CONFLICT"
 CODE_INSUFFICIENT_INVENTORY = "INSUFFICIENT_INVENTORY"
+CODE_ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+
+# 登录失败锁定策略（契约 A03）
+LOGIN_MAX_FAILURES = 5          # 窗口内允许的最大失败次数
+LOGIN_WINDOW_SECONDS = 15 * 60  # 计数窗口：15 分钟
+LOGIN_LOCK_SECONDS = 15 * 60    # 锁定时长：15 分钟
 CODE_TRANSFER_STATE_CONFLICT = "TRANSFER_STATE_CONFLICT"
 CODE_APPROVAL_EXECUTOR_SAME_USER = "APPROVAL_EXECUTOR_SAME_USER"
 CODE_VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -115,16 +126,67 @@ def db() -> sqlite3.Connection:
     return c
 
 
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return f"scrypt${salt.hex()}${digest.hex()}"
+def hash_password(password: str) -> str:
+    """生成 Argon2id 密码哈希（契约 A03）。
+
+    参数对齐 OWASP 2024 推荐值：
+      time_cost=3、memory_cost=64MiB、parallelism=4。
+    编码串自带算法与参数，便于后续平滑调参。
+    """
+    return _ph.hash(password)
 
 
-def check_password(password: str, encoded: str) -> bool:
-    _, salt_hex, digest_hex = encoded.split("$", 2)
-    actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1)
-    return hmac.compare_digest(actual.hex(), digest_hex)
+def check_password(password: str, encoded: str, c: sqlite3.Connection | None = None,
+                   user_id: str | None = None) -> bool:
+    """校验密码，并在命中历史 scrypt 哈希时透明升级为 Argon2id。
+
+    历史库中存在 scrypt$salt$digest 格式；校验通过后立即改写为 Argon2id，
+    无需强制全员改密，也无需停机迁移。
+    """
+    # --- 历史格式：透明升级路径 ---
+    if encoded.startswith("scrypt$"):
+        try:
+            _, salt_hex, digest_hex = encoded.split("$", 2)
+        except ValueError:
+            return False
+        actual = hashlib.scrypt(
+            password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1
+        )
+        if not hmac.compare_digest(actual.hex(), digest_hex):
+            return False
+        # 校验通过 → 就地升级为 Argon2id
+        if c is not None and user_id is not None:
+            try:
+                c.execute(
+                    "UPDATE users SET password_hash=? WHERE id=?",
+                    (hash_password(password), user_id),
+                )
+                c.commit()
+            except sqlite3.Error:
+                # 升级失败不影响本次登录，下次登录会重试
+                pass
+        return True
+
+    # --- 当前格式：Argon2id ---
+    try:
+        _ph.verify(encoded, password)
+    except VerifyMismatchError:
+        return False
+    except (InvalidHashError, VerificationError):
+        # 哈希串损坏 / 格式非法，一律视为校验失败，不抛 500
+        return False
+
+    # 参数已过时则顺带重算（Argon2 官方推荐的 needs_rehash 机制）
+    if _ph.check_needs_rehash(encoded) and c is not None and user_id is not None:
+        try:
+            c.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (hash_password(password), user_id),
+            )
+            c.commit()
+        except sqlite3.Error:
+            pass
+    return True
 
 
 def audit(c: sqlite3.Connection, user_id: str | None, role: str | None, action: str, resource: str, resource_id: str | None, result: str = "SUCCESS", request_id: str = "") -> None:
@@ -146,6 +208,7 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
     CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, model_name TEXT, status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS order_material_requirements(id TEXT PRIMARY KEY, order_id TEXT NOT NULL, material_id TEXT NOT NULL, required_quantity INTEGER NOT NULL CHECK(required_quantity >= 0), arrived_quantity INTEGER NOT NULL DEFAULT 0 CHECK(arrived_quantity >= 0), UNIQUE(order_id, material_id));
+    CREATE TABLE IF NOT EXISTS login_attempts(username TEXT PRIMARY KEY, failed_count INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL, locked_until INTEGER);
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
         password = os.environ.get("INITIAL_ADMIN_PASSWORD")
@@ -219,11 +282,71 @@ def health() -> dict[str, str]: return {"status": "ok", "service": "material-flo
 
 @app.post("/api/v1/auth/login")
 def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
-    c = db(); user = c.execute("SELECT * FROM users WHERE username=? AND active=1", (body.username,)).fetchone()
-    if not user or not check_password(body.password, user["password_hash"]):
-        audit(c, user["id"] if user else None, user["role"] if user else None, "LOGIN", "USER", user["id"] if user else None, "FAILED", x_request_id or ""); c.commit(); c.close(); raise HTTPException(401, "账号或密码错误")
-    token = secrets.token_urlsafe(32); expires = int(time.time()) + 86400
-    c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], expires)); audit(c, user["id"], user["role"], "LOGIN", "USER", user["id"], "SUCCESS", x_request_id or ""); c.commit(); c.close()
+    """登录。
+
+    契约 A03 —— 失败锁定：同一账号 15 分钟内累计 5 次失败即锁定 15 分钟。
+    锁定期间即使密码正确也拒绝，避免离线暴力破解。
+
+    Argon2id 迁移：历史 scrypt 哈希在校验通过后就地升级（见 check_password）。
+    """
+    c = db()
+    username = body.username
+    attempt = c.execute("SELECT * FROM login_attempts WHERE username=?", (username,)).fetchone()
+
+    # 1) 锁定窗口检查（先于密码校验，避免锁定期间仍消耗哈希算力）
+    if attempt and attempt["locked_until"] and int(time.time()) < attempt["locked_until"]:
+        remain = attempt["locked_until"] - int(time.time())
+        audit(c, None, None, "LOGIN", "USER", username, "LOCKED", x_request_id or "")
+        c.commit(); c.close()
+        raise ApiError(
+            429, CODE_ACCOUNT_LOCKED,
+            f"账号已锁定，请在 {max(1, remain // 60)} 分钟后重试",
+            retryable=True,
+        )
+
+    user = c.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
+    ok = bool(user) and check_password(body.password, user["password_hash"], c, user["id"])
+
+    if not ok:
+        # 2) 累计失败次数与首败时间（超出窗口则重新计数）
+        window_start = int(time.time()) - LOGIN_WINDOW_SECONDS
+        if attempt and attempt["first_failed_at"] >= window_start:
+            count = attempt["failed_count"] + 1
+            first_at = attempt["first_failed_at"]
+        else:
+            count, first_at = 1, int(time.time())
+
+        locked_until = (
+            int(time.time()) + LOGIN_LOCK_SECONDS
+            if count >= LOGIN_MAX_FAILURES else None
+        )
+        c.execute(
+            "INSERT INTO login_attempts(username, failed_count, first_failed_at, locked_until) "
+            "VALUES(?,?,?,?) ON CONFLICT(username) DO UPDATE SET "
+            "failed_count=excluded.failed_count, first_failed_at=excluded.first_failed_at, "
+            "locked_until=excluded.locked_until",
+            (username, count, first_at, locked_until),
+        )
+        audit(c, user["id"] if user else None, user["role"] if user else None,
+              "LOGIN", "USER", user["id"] if user else None, "FAILED", x_request_id or "")
+        c.commit(); c.close()
+
+        if locked_until:
+            raise ApiError(
+                429, CODE_ACCOUNT_LOCKED,
+                f"连续失败 {count} 次，账号已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟",
+                retryable=True,
+            )
+        # 不回显账号是否存在，避免用户名枚举
+        raise HTTPException(401, "账号或密码错误")
+
+    # 3) 登录成功 → 清空失败计数
+    c.execute("DELETE FROM login_attempts WHERE username=?", (username,))
+    token = secrets.token_urlsafe(32)
+    expires = int(time.time()) + 86400
+    c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], expires))
+    audit(c, user["id"], user["role"], "LOGIN", "USER", user["id"], "SUCCESS", x_request_id or "")
+    c.commit(); c.close()
     return {"accessToken": token, "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat(), "mustChangePassword": bool(user["must_change_password"]), "user": {"id": user["id"], "username": user["username"], "displayName": user["display_name"], "role": user["role"]}}
 
 

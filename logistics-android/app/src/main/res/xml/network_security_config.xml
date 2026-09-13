@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置。
+
+  背景：V1 采用构建期注入的后端地址，厂内网络环境通常为内网 IP + 明文 HTTP。
+  为同时满足「内网可用」与「公网不得明文」两条约束，采用白名单方式：
+
+  - cleartextTrafficPermitted="false" 作为全局默认值（fail-closed）
+  - 仅对显式列出的内网域名 / 回环地址放开明文
+
+  新增内网域名请在此处追加 <domain>，不要直接改回 usesCleartextTraffic="true"。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 内网 / 本机调试白名单 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
