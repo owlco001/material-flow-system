@@ -356,8 +356,9 @@ enum class WorkspaceMetricKey(val label: String, val description: String) {
     OUTBOUND_CONFIRMED("已出库", "服务端返回的已出库状态"),
     PENDING_APPROVAL("待审批", "服务端返回的审批状态"),
     PENDING_HANDOVER("待交接", "服务端返回的交接状态"),
-    ALL("全量物料", "当前订单接口返回的全部物料项"),
+    ALL("全量工作项", "服务端分页工作台接口返回的全量数量"),
     EXCEPTION("异常", "服务端明确标记的异常项"),
+    OUT_OF_STOCK("缺货", "服务端摘要返回的缺货数量"),
     AUDIT("审计记录", "服务端审计接口返回的记录")
 }
 
@@ -384,6 +385,173 @@ data class RoleWorkspaceSummary(
             metrics = emptyMap()
         )
     }
+}
+
+/**
+ * GET /api/v1/workspace/summary 的服务端响应。
+ *
+ * 数量使用可空 Int：字段缺失代表服务端没有提供该指标，不能与服务端明确返回的 0 混淆。
+ */
+data class WorkspaceSummary(
+    val role: UserRole = UserRole.OPERATOR,
+    val pendingApprovalCount: Int? = null,
+    val pendingOutboundCount: Int? = null,
+    val pendingHandoverCount: Int? = null,
+    val atStationCount: Int? = null,
+    val pickedUpCount: Int? = null,
+    val outOfStockCount: Int? = null,
+    val generatedAt: String? = null,
+    val serverTime: String? = null,
+    val traceId: String? = null
+)
+
+/** 工作台分页工作项响应。客户端只保留当前页，避免一次性加载全量数据。 */
+data class WorkspaceMaterialItemsPage(
+    val items: List<WorkspaceMaterialItem>,
+    val page: Int,
+    val pageSize: Int,
+    val total: Int,
+    val totalPages: Int,
+    val serverTime: String?,
+    val traceId: String?
+)
+
+/** 工作台责任人投影；数量和状态事实仍来自服务端工作台接口。 */
+data class WorkspaceResponsibilitySummary(
+    val assignedUserId: String?,
+    val assignedUserName: String?,
+    val currentOwnerUserId: String?,
+    val currentOwnerName: String?
+)
+
+/** 工作台最近交接记录。 */
+data class WorkspaceLastHandover(
+    val id: String,
+    val status: String?,
+    val quantity: Int?,
+    val fromLocation: String?,
+    val deviceId: String?,
+    val transferRequestId: String?,
+    val senderUserId: String?,
+    val senderName: String?,
+    val receiverUserId: String?,
+    val receiverName: String?,
+    val initiatedAt: String?,
+    val confirmedBy: String?,
+    val confirmedAt: String?,
+    val remark: String?
+)
+
+/** 工作台交接摘要。 */
+data class WorkspaceHandoverSummary(
+    val lastHandoverId: String?,
+    val lastStatus: String?,
+    val lastInitiatedAt: String?,
+    val lastConfirmedAt: String?,
+    val count: Int?
+)
+
+/**
+ * GET /api/v1/workspace/material-items 的单项。
+ *
+ * statusCode/statusLabel/statusDomain/colorToken 始终保留服务端原值；客户端不把库存数量
+ * 推导成领取、审批、交接或审计状态。
+ */
+data class WorkspaceMaterialItem(
+    val id: String,
+    val requirementId: String?,
+    val orderNo: String,
+    val productName: String?,
+    val orderStatus: String?,
+    val deviceId: String?,
+    val deviceType: String?,
+    val deviceNo: String?,
+    val materialId: String,
+    val materialCode: String,
+    val materialName: String,
+    val specification: String?,
+    val unit: String?,
+    val requiredQuantity: Int?,
+    val arrivedQuantity: Int?,
+    val inStockQuantity: Int?,
+    val issuedQuantity: Int?,
+    val pickedQuantity: Int?,
+    val statusCode: String,
+    val statusLabel: String,
+    val colorToken: String,
+    val statusDomain: String,
+    val updatedAt: String?,
+    val assignedUserId: String?,
+    val assignedUserName: String?,
+    val currentOwnerUserId: String?,
+    val currentOwnerName: String?,
+    val responsibilitySummary: WorkspaceResponsibilitySummary?,
+    val lastHandoverId: String?,
+    val lastHandoverStatus: String?,
+    val lastHandover: WorkspaceLastHandover?,
+    val handoverSummary: WorkspaceHandoverSummary?,
+    val transferRequestId: String?,
+    val transferStatus: String?
+) {
+    /** 按服务端 colorToken 展示；未知 token 使用安全中性色。 */
+    val statusColor: Color
+        get() = if (!hasKnownStatus()) MaterialStatusColors.Unknown else when (colorToken.uppercase(java.util.Locale.ROOT)) {
+            "STATUS-RED" -> MaterialStatusColors.Shortage
+            "STATUS-YELLOW" -> MaterialStatusColors.Arrived
+            "STATUS-GREEN" -> MaterialStatusColors.InStock
+            "STATUS-BLUE" -> Color(0xFF0E5FD8)
+            else -> MaterialStatusColors.Unknown
+        }
+
+    val statusContainerColor: Color
+        get() = if (!hasKnownStatus()) MaterialStatusColors.UnknownContainer else when (colorToken.uppercase(java.util.Locale.ROOT)) {
+            "STATUS-RED" -> MaterialStatusColors.ShortageContainer
+            "STATUS-YELLOW" -> MaterialStatusColors.ArrivedContainer
+            "STATUS-GREEN" -> MaterialStatusColors.InStockContainer
+            else -> MaterialStatusColors.UnknownContainer
+        }
+
+    /** 服务端没有认识该状态时使用安全中性色符号，不把它显示成成功。 */
+    val statusSymbol: String
+        get() = when (statusCode.uppercase(java.util.Locale.ROOT)) {
+            "AT_STATION", "PICKED_UP", "OUTBOUND_CONFIRMED", "CONFIRMED", "IN_STOCK" -> "✓"
+            "OUT_OF_STOCK", "EXCEPTION", "REJECTED", "CANCELLED" -> "!"
+            "PENDING", "OUTBOUND_PENDING", "OUTBOUND_APPROVED", "ARRIVED" -> "↓"
+            else -> "?"
+        }
+
+    private fun hasKnownStatus(): Boolean = statusCode.uppercase(java.util.Locale.ROOT) in setOf(
+        "OUT_OF_STOCK", "ARRIVED", "IN_STOCK",
+        "OUTBOUND_PENDING", "OUTBOUND_APPROVED", "OUTBOUND_CONFIRMED",
+        "PENDING", "PICKED_UP", "AT_STATION", "REJECTED", "CANCELLED"
+    )
+}
+
+/** 用服务端摘要构造工作台展示模型；缺失字段明确保持 unavailable。 */
+object ServerWorkspaceSummaryFactory {
+    fun from(summary: WorkspaceSummary): RoleWorkspaceSummary = RoleWorkspaceSummary(
+        role = summary.role,
+        sourceOrderNo = null,
+        serverTime = summary.serverTime ?: summary.generatedAt,
+        metrics = mapOf(
+            WorkspaceMetricKey.CLAIMED to metric(summary.pickedUpCount),
+            WorkspaceMetricKey.AT_STATION to metric(summary.atStationCount),
+            WorkspaceMetricKey.OUTBOUND_PENDING to metric(summary.pendingOutboundCount),
+            // 摘要契约没有已出库计数，禁止用工作项当前页或其他数量猜测。
+            WorkspaceMetricKey.OUTBOUND_CONFIRMED to WorkspaceMetric.unavailable(),
+            WorkspaceMetricKey.PENDING_APPROVAL to metric(summary.pendingApprovalCount),
+            WorkspaceMetricKey.PENDING_HANDOVER to metric(summary.pendingHandoverCount),
+            // 全量数量由分页接口的 server total 提供，不能从当前页推导。
+            WorkspaceMetricKey.ALL to WorkspaceMetric.unavailable(),
+            // 摘要契约没有异常计数和审计接口数据。
+            WorkspaceMetricKey.EXCEPTION to WorkspaceMetric.unavailable(),
+            WorkspaceMetricKey.OUT_OF_STOCK to metric(summary.outOfStockCount),
+            WorkspaceMetricKey.AUDIT to WorkspaceMetric.unavailable()
+        )
+    )
+
+    private fun metric(count: Int?): WorkspaceMetric =
+        count?.let { WorkspaceMetric.of(it) } ?: WorkspaceMetric.unavailable()
 }
 
 /** 从既有订单物料响应生成摘要；不调用新后端接口，也不推断缺失状态。 */
@@ -442,6 +610,10 @@ object RoleWorkspaceSummaryFactory {
             )
         )
     }
+
+    /** 新工作台摘要入口；保留旧 from(role, orderStatus) 以兼容订单查询。 */
+    fun from(summary: WorkspaceSummary): RoleWorkspaceSummary =
+        ServerWorkspaceSummaryFactory.from(summary)
 }
 
 /** 扫码解析结果 —— 契约 4.2 */

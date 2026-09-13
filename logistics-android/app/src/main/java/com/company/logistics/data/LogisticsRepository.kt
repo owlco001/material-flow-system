@@ -11,6 +11,8 @@ import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.SyncStatus
+import com.company.logistics.model.WorkspaceMaterialItemsPage
+import com.company.logistics.model.WorkspaceSummary
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
@@ -26,7 +28,7 @@ import java.util.UUID
  * 幂等保证：离线记录保存 clientOperationId，重放时原样回传，
  *          由服务端幂等键去重，避免重复建单（契约第 5 节）。
  */
-class LogisticsRepository(
+open class LogisticsRepository(
     private val api: MaterialFlowApi,
     private val dao: OfflineOperationDao,
     private val sessionStore: SessionStore? = null
@@ -64,7 +66,7 @@ class LogisticsRepository(
 
     // ==================== 会话 ====================
 
-    suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
+    open suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
         persistSession = remember
         if (remember) {
@@ -138,6 +140,24 @@ class LogisticsRepository(
 
     suspend fun orderMaterialStatus(documentNo: String): Result<OrderMaterialStatus> = runCatching {
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo)
+    }
+
+    /** 读取服务端角色工作台摘要；不从订单或库存响应推导工作流计数。 */
+    open suspend fun workspaceSummary(): Result<WorkspaceSummary> = runCatching {
+        api.workspaceSummary()
+    }
+
+    /**
+     * 读取服务端角色工作项的一个分页。
+     * pageSize 由 API 层限制为 20/50，仓储层不缓存或拼接全量列表。
+     */
+    open suspend fun workspaceMaterialItems(
+        status: String? = null,
+        orderNo: String? = null,
+        page: Int = 1,
+        pageSize: Int = 20
+    ): Result<WorkspaceMaterialItemsPage> = runCatching {
+        api.workspaceMaterialItems(status, orderNo, page, pageSize)
     }
 
     // ==================== 写操作（离线优先） ====================

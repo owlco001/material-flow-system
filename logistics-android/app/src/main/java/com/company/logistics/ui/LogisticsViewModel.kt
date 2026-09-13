@@ -14,10 +14,14 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.WorkspaceMaterialItem
+import com.company.logistics.model.ServerWorkspaceSummaryFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -62,6 +66,15 @@ enum class NavTab(val label: String, val symbol: String, val screen: Screen) {
     PROFILE("我的", "◎", Screen.PROFILE)
 }
 
+/** 工作台两个独立接口的可观测加载状态。 */
+enum class WorkspaceLoadState {
+    IDLE,
+    LOADING,
+    CONTENT,
+    EMPTY,
+    ERROR
+}
+
 /**
  * 全局 UI 状态。
  */
@@ -80,6 +93,18 @@ data class LogisticsUiState(
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
+    val workspaceSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workspaceSummaryError: String? = null,
+    val workspaceSummaryUnavailable: Boolean = false,
+    val workspaceItems: List<WorkspaceMaterialItem> = emptyList(),
+    val workspaceItemsState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workspaceItemsError: String? = null,
+    val workspaceItemsUnavailable: Boolean = false,
+    val workspacePage: Int = 1,
+    val workspacePageSize: Int = WORKSPACE_PAGE_SIZE,
+    val workspaceTotal: Int = 0,
+    val workspaceTotalPages: Int = 0,
+    val workspaceServerTime: String? = null,
 
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
@@ -97,14 +122,26 @@ data class LogisticsUiState(
         get() = (authState as? AuthState.Authenticated)?.user?.role ?: UserRole.OPERATOR
     val mustChangePassword: Boolean
         get() = (authState as? AuthState.Authenticated)?.mustChangePassword ?: false
+
+    val workspaceLoading: Boolean
+        get() = workspaceSummaryState == WorkspaceLoadState.LOADING ||
+            workspaceItemsState == WorkspaceLoadState.LOADING
+
+    companion object {
+        const val WORKSPACE_PAGE_SIZE = 20
+    }
 }
 
 /**
  * 主 ViewModel —— 承载会话、路由、扫码流程与离线队列。
  */
 class LogisticsViewModel(
-    private val repo: LogisticsRepository
+    private val repo: LogisticsRepository,
+    private val injectedScope: CoroutineScope? = null
 ) : ViewModel() {
+
+    private val operationScope: CoroutineScope
+        get() = injectedScope ?: viewModelScope
 
     private val _state = MutableStateFlow(LogisticsUiState())
     val state: StateFlow<LogisticsUiState> = _state.asStateFlow()
@@ -118,7 +155,7 @@ class LogisticsViewModel(
         }
         // restoreSession 会读取加密摘要并把 token 对恢复到 API。放进协程后，UI 能明确经历
         // Restoring，而不是在 ViewModel 构造的同一帧里错误地落到登录页。
-        viewModelScope.launch {
+        operationScope.launch {
             repo.restoreSession()
             val persisted = repo.persistedUser()
             _state.update {
@@ -130,18 +167,23 @@ class LogisticsViewModel(
                         authState = AuthState.Authenticated(user, persisted.mustChangePassword),
                         navTabs = tabsFor(user.role),
                         screen = defaultScreenFor(user.role),
-                        workspaceSummary = RoleWorkspaceSummaryFactory.from(user.role, null)
+                        workspaceSummary = RoleWorkspaceSummaryFactory.from(user.role, null),
+                        workspaceSummaryState = WorkspaceLoadState.IDLE,
+                        workspaceItemsState = WorkspaceLoadState.IDLE
                     )
                 }
             }
+            if (persisted != null) {
+                loadWorkspacePage(resetToFirstPage = true)
+            }
         }
         // 队列变化实时反映到 UI
-        viewModelScope.launch {
+        operationScope.launch {
             repo.observeQueue().collect { queue ->
                 _state.update { it.copy(offlineQueue = queue) }
             }
         }
-        viewModelScope.launch {
+        operationScope.launch {
             repo.observePendingCount().collect { count ->
                 _state.update { it.copy(pendingCount = count) }
             }
@@ -155,7 +197,7 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "请输入账号与密码") }
             return
         }
-        viewModelScope.launch {
+        operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             runCatching { repo.login(username, password, deviceId, remember) }
                 .onSuccess { result ->
@@ -169,6 +211,7 @@ class LogisticsViewModel(
                             message = "登录成功"
                         )
                     }
+                    loadWorkspacePage(resetToFirstPage = true)
                 }
                 .onFailure { e ->
                     _state.update { it.copy(loading = false, error = e.message ?: "登录失败") }
@@ -193,6 +236,164 @@ class LogisticsViewModel(
 
     fun consumeMessage() = _state.update { it.copy(message = null, error = null) }
 
+    // ==================== 工作台 ====================
+
+    /** 刷新服务端摘要与第一页工作项；服务端分页是唯一数据来源。 */
+    fun refreshWorkspace() {
+        loadWorkspacePage(resetToFirstPage = true)
+    }
+
+    /** 切换服务端分页大小；仅支持内存约束规定的 20/50。 */
+    fun setWorkspacePageSize(pageSize: Int) {
+        if (pageSize !in WORKSPACE_PAGE_SIZES) {
+            _state.update { it.copy(error = "工作台每页数量只能是 20 或 50") }
+            return
+        }
+        if (_state.value.loggedIn && _state.value.workspacePageSize != pageSize) {
+            loadWorkspacePage(resetToFirstPage = true, pageSize = pageSize)
+        }
+    }
+
+    fun loadNextWorkspacePage() {
+        val current = _state.value
+        if (canLoadNextWorkspacePage(current.workspacePage, current.workspaceTotalPages) &&
+            !current.workspaceLoading
+        ) {
+            loadWorkspacePage(
+                resetToFirstPage = false,
+                page = current.workspacePage + 1,
+                pageSize = current.workspacePageSize,
+            )
+        }
+    }
+
+    fun loadPreviousWorkspacePage() {
+        val current = _state.value
+        if (canLoadPreviousWorkspacePage(current.workspacePage) && !current.workspaceLoading) {
+            loadWorkspacePage(
+                resetToFirstPage = false,
+                page = current.workspacePage - 1,
+                pageSize = current.workspacePageSize,
+            )
+        }
+    }
+
+    private fun loadWorkspacePage(
+        resetToFirstPage: Boolean,
+        page: Int = 1,
+        pageSize: Int = _state.value.workspacePageSize,
+    ) {
+        if (!_state.value.loggedIn) return
+        operationScope.launch {
+            val requestedPage = if (resetToFirstPage) 1 else page
+            _state.update {
+                it.copy(
+                    workspaceSummary = if (resetToFirstPage) RoleWorkspaceSummary.empty(it.role) else it.workspaceSummary,
+                    workspaceSummaryState = if (resetToFirstPage) WorkspaceLoadState.LOADING else it.workspaceSummaryState,
+                    workspaceSummaryError = if (resetToFirstPage) null else it.workspaceSummaryError,
+                    workspaceSummaryUnavailable = if (resetToFirstPage) false else it.workspaceSummaryUnavailable,
+                    workspaceItemsState = WorkspaceLoadState.LOADING,
+                    workspaceItemsError = null,
+                    workspaceItemsUnavailable = false,
+                    workspacePage = requestedPage,
+                    workspacePageSize = pageSize,
+                    workspaceItems = if (resetToFirstPage) emptyList() else it.workspaceItems,
+                    workspaceTotal = if (resetToFirstPage) 0 else it.workspaceTotal,
+                    workspaceTotalPages = if (resetToFirstPage) 0 else it.workspaceTotalPages,
+                )
+            }
+
+            kotlinx.coroutines.coroutineScope {
+                val summary = if (resetToFirstPage) async { repo.workspaceSummary() } else null
+                val items = async {
+                    repo.workspaceMaterialItems(
+                        page = requestedPage,
+                        pageSize = pageSize
+                    )
+                }
+
+                val summaryResult = summary?.await()
+                val itemsResult = items.await()
+
+                if (summaryResult != null) {
+                    summaryResult
+                    .onSuccess { serverSummary ->
+                        _state.update {
+                            it.copy(
+                                workspaceSummary = ServerWorkspaceSummaryFactory.from(serverSummary),
+                                workspaceSummaryState = WorkspaceLoadState.CONTENT,
+                                workspaceSummaryError = null,
+                                workspaceSummaryUnavailable = false,
+                                workspaceServerTime = serverSummary.serverTime
+                                    ?: serverSummary.generatedAt
+                            )
+                        }
+                    }
+                    .onFailure { error ->
+                        _state.update {
+                            it.copy(
+                                workspaceSummaryState = WorkspaceLoadState.ERROR,
+                                workspaceSummaryError = workspaceErrorMessage(error),
+                                workspaceSummaryUnavailable = isWorkspaceUnavailable(error)
+                            )
+                        }
+                    }
+                }
+
+                itemsResult
+                    .onSuccess { pageResult ->
+                        _state.update {
+                            val currentSummary = it.workspaceSummary
+                            val summaryWithTotal = currentSummary.copy(
+                                metrics = currentSummary.metrics + (
+                                    com.company.logistics.model.WorkspaceMetricKey.ALL to
+                                        com.company.logistics.model.WorkspaceMetric.of(pageResult.total)
+                                    )
+                            )
+                            it.copy(
+                                workspaceSummary = summaryWithTotal,
+                                workspaceItems = pageResult.items,
+                                workspaceItemsState = if (pageResult.items.isEmpty()) {
+                                    WorkspaceLoadState.EMPTY
+                                } else {
+                                    WorkspaceLoadState.CONTENT
+                                },
+                                workspaceItemsError = null,
+                                workspaceItemsUnavailable = false,
+                                workspacePage = pageResult.page,
+                                workspacePageSize = pageResult.pageSize,
+                                workspaceTotal = pageResult.total,
+                                workspaceTotalPages = pageResult.totalPages,
+                                workspaceServerTime = pageResult.serverTime
+                                    ?: it.workspaceServerTime
+                            )
+                        }
+                    }
+                    .onFailure { error ->
+                        _state.update {
+                            it.copy(
+                                workspaceItemsState = WorkspaceLoadState.ERROR,
+                                workspaceItemsError = workspaceErrorMessage(error),
+                                workspaceItemsUnavailable = isWorkspaceUnavailable(error)
+                            )
+                        }
+                    }
+            }
+        }
+    }
+
+    private fun workspaceErrorMessage(error: Throwable): String = when {
+        isWorkspaceUnavailable(error) -> "服务端未提供工作台接口，当前工作台不可用"
+        error.message.isNullOrBlank() -> "工作台加载失败，请稍后重试"
+        else -> error.message.orEmpty()
+    }
+
+    private fun isWorkspaceUnavailable(error: Throwable): Boolean {
+        val apiError = error as? com.company.logistics.data.remote.ApiException
+        return apiError?.statusCode == 404 || apiError?.statusCode == 405 ||
+            apiError?.code in setOf("NOT_FOUND", "WORKSPACE_NOT_SUPPORTED")
+    }
+
     // ==================== 扫码 ====================
 
     /**
@@ -201,7 +402,7 @@ class LogisticsViewModel(
      */
     fun onScanned(rawValue: String) {
         if (rawValue.isBlank()) return
-        viewModelScope.launch {
+        operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             repo.resolveScan(rawValue)
                 .onSuccess { scan ->
@@ -266,7 +467,6 @@ class LogisticsViewModel(
                 _state.update {
                     it.copy(
                         orderStatus = status,
-                        workspaceSummary = RoleWorkspaceSummaryFactory.from(it.role, status),
                         screen = Screen.ORDER_DETAIL,
                         loading = false,
                         message = "订单状态已更新"
@@ -296,7 +496,7 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "流转数量必须大于 0") }
             return
         }
-        viewModelScope.launch {
+        operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             when (val r = repo.submitInbound(inv, qty, _state.value.formLocation, null)) {
                 is SubmitResult.Success -> _state.update {
@@ -319,7 +519,7 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "请先扫描库位码") }
             return
         }
-        viewModelScope.launch {
+        operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             when (val r = repo.submitLocationBinding(inv.material.code, loc, _state.value.formQuantity)) {
                 is SubmitResult.Success -> _state.update {
@@ -364,6 +564,13 @@ class LogisticsViewModel(
     }
 
     companion object {
+        val WORKSPACE_PAGE_SIZES: Set<Int> = setOf(20, 50)
+
+        fun canLoadNextWorkspacePage(page: Int, totalPages: Int): Boolean =
+            page >= 1 && page < totalPages
+
+        fun canLoadPreviousWorkspacePage(page: Int): Boolean = page > 1
+
         /** 按角色生成底部导航 —— 无权限入口不渲染 */
         fun tabsFor(role: UserRole): List<NavTab> = when (role) {
             UserRole.OPERATOR -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.QUEUE, NavTab.PROFILE)

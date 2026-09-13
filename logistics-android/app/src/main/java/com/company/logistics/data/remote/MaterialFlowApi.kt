@@ -11,6 +11,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.UUID
 
 /**
@@ -189,6 +190,39 @@ class MaterialFlowApi(
         )
     }
 
+    // ==================== 4.3 工作台 ====================
+
+    /** 读取当前登录角色的服务端工作台摘要。 */
+    suspend fun workspaceSummary() = withContext(Dispatchers.IO) {
+        ApiParser.parseWorkspaceSummary(
+            request("GET", "/api/v1/workspace/summary", null)
+        )
+    }
+
+    /**
+     * 读取当前角色可见的工作台物料项。
+     *
+     * 只允许产品约束中的 20/50 页大小；调用方必须通过分页读取，不能请求全量数据。
+     */
+    suspend fun workspaceMaterialItems(
+        status: String? = null,
+        orderNo: String? = null,
+        page: Int = 1,
+        pageSize: Int = 20
+    ) = withContext(Dispatchers.IO) {
+        require(page >= 1) { "page 必须从 1 开始" }
+        require(pageSize == 20 || pageSize == 50) { "pageSize 只能是 20 或 50" }
+        val query = buildList {
+            status?.takeIf { it.isNotBlank() }?.let { add("status=${encodeQuery(it)}") }
+            orderNo?.takeIf { it.isNotBlank() }?.let { add("orderNo=${encodeQuery(it)}") }
+            add("page=$page")
+            add("pageSize=$pageSize")
+        }.joinToString("&")
+        ApiParser.parseWorkspaceMaterialItems(
+            request("GET", "/api/v1/workspace/material-items?$query", null)
+        )
+    }
+
     // ==================== 4.4 料号库存 ====================
 
     suspend fun materialInventory(materialCode: String): MaterialInventory = withContext(Dispatchers.IO) {
@@ -321,6 +355,9 @@ class MaterialFlowApi(
     private fun requireToken(): String =
         accessToken ?: throw ApiException(401, "NOT_LOGGED_IN", "未登录，请先登录")
 
+    private fun encodeQuery(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
+
     private fun openConnection(path: String, method: String): HttpURLConnection {
         // 契约：客户端不得硬编码 IP，Base URL 由配置注入
         val url = URL(config.baseUrl.trimEnd('/') + path)
@@ -353,9 +390,9 @@ class MaterialFlowApi(
         if (auth) {
             conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
         }
-        // 契约第 5 节：所有写操作需携带 Idempotency-Key 与 X-Request-Id
+        // 契约：所有请求携带 X-Request-Id；写操作额外携带幂等键。
+        conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
         if (method != "GET") {
-            conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
             conn.setRequestProperty("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
         }
         if (body != null) {

@@ -67,4 +67,6 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
+    // Android 本地单测不提供 org.json 实现（android.jar 仅含桩）；用同包 JVM 实现验证 parser。
+    testImplementation("org.json:json:20240303")
 }

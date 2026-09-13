@@ -2,6 +2,7 @@ package com.company.logistics.ui.screens
 
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,11 +19,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.RoleWorkspaceSummary
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMetric
 import com.company.logistics.model.WorkspaceMetricKey
+import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.PrimaryButton
@@ -30,6 +33,7 @@ import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
+import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
 
 private data class WorkspaceEntry(
@@ -40,13 +44,31 @@ private data class WorkspaceEntry(
     val actionIsPrimary: Boolean = false
 )
 
+/**
+ * 角色工作台 —— 摘要和工作项均来自独立的服务端工作台接口。
+ *
+ * [items] 只包含当前分页，不在客户端聚合或加载全量工作项；[total] 是服务端返回的总数。
+ */
 @Composable
 fun WorkspaceScreen(
     role: UserRole,
     summary: RoleWorkspaceSummary,
-    orderStatus: OrderMaterialStatus?,
-    onOpenScanner: () -> Unit,
-    onOpenOrder: () -> Unit,
+    items: List<WorkspaceMaterialItem>,
+    summaryState: WorkspaceLoadState,
+    summaryError: String?,
+    summaryUnavailable: Boolean,
+    itemsState: WorkspaceLoadState,
+    itemsError: String?,
+    itemsUnavailable: Boolean,
+    page: Int,
+    pageSize: Int,
+    total: Int,
+    totalPages: Int,
+    serverTime: String?,
+    onRefresh: () -> Unit,
+    onPageSizeChange: (Int) -> Unit,
+    onNextPage: () -> Unit,
+    onPreviousPage: () -> Unit,
     onOpenApproval: () -> Unit,
     onOpenAudit: () -> Unit,
     modifier: Modifier = Modifier
@@ -62,18 +84,19 @@ fun WorkspaceScreen(
         Spacer(Modifier.height(Spacing.sm))
 
         AppCard(accentColor = MaterialTheme.colorScheme.primary) {
-            Text(
-                text = titleFor(role),
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = LogisticsTheme.colors.textPrimary,
-            )
-            VSpace(6.dp)
-            Text(
-                text = subtitleFor(role),
-                fontSize = 13.sp,
-                color = LogisticsTheme.colors.textSecondary,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(titleFor(role), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+                    VSpace(6.dp)
+                    Text(subtitleFor(role), fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
+                }
+                SecondaryButton(
+                    text = "刷新",
+                    onClick = onRefresh,
+                    enabled = summaryState != WorkspaceLoadState.LOADING && itemsState != WorkspaceLoadState.LOADING,
+                    modifier = Modifier.width(84.dp),
+                )
+            }
             VSpace(Spacing.md)
             StatusTag(
                 label = role.label,
@@ -84,9 +107,33 @@ fun WorkspaceScreen(
         }
 
         VSpace(Spacing.md)
-        DataSourceNotice(summary = summary, orderStatus = orderStatus, onOpenScanner = onOpenScanner)
-        VSpace(Spacing.md)
+        WorkspaceDataSourceNotice(
+            summaryState = summaryState,
+            summaryError = summaryError,
+            summaryUnavailable = summaryUnavailable,
+            itemsState = itemsState,
+            itemsError = itemsError,
+            itemsUnavailable = itemsUnavailable,
+            page = page,
+            total = total,
+            serverTime = serverTime,
+            onRefresh = onRefresh,
+        )
 
+        if (summaryState == WorkspaceLoadState.LOADING || itemsState == WorkspaceLoadState.LOADING) {
+            VSpace(Spacing.lg)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.width(24.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(Spacing.sm))
+                Text("正在加载服务端工作台…", color = LogisticsTheme.colors.textSecondary)
+            }
+        }
+
+        VSpace(Spacing.md)
         entries.forEach { entry ->
             WorkspaceMetricCard(
                 entry = entry,
@@ -94,18 +141,46 @@ fun WorkspaceScreen(
                 onClick = when (entry.key) {
                     WorkspaceMetricKey.PENDING_APPROVAL -> onOpenApproval
                     WorkspaceMetricKey.AUDIT -> onOpenAudit
-                    else -> onOpenOrder
+                    else -> onRefresh
                 },
             )
             VSpace(Spacing.sm)
         }
 
-        if (orderStatus == null) {
-            EmptyState(
-                title = "等待订单数据",
-                description = "工作台不会创建演示计数。扫描生产订单后，这里会展示服务端返回的订单物料摘要。",
-                action = { PrimaryButton(text = "扫描生产订单", onClick = onOpenScanner) },
+        when (itemsState) {
+            WorkspaceLoadState.EMPTY -> EmptyState(
+                title = "当前没有工作项",
+                description = "服务端返回了空的当前页（总数为 $total），可以刷新后重试。",
+                action = { SecondaryButton(text = "刷新工作台", onClick = onRefresh) },
             )
+            WorkspaceLoadState.ERROR -> EmptyState(
+                title = if (itemsUnavailable) "工作项接口不可用" else "工作项加载失败",
+                description = itemsError ?: "未能读取服务端工作项，请检查网络后重试。",
+                action = { PrimaryButton(text = "重试", onClick = onRefresh) },
+            )
+            WorkspaceLoadState.IDLE -> EmptyState(
+                title = "等待工作台数据",
+                description = "刷新后从服务端读取当前角色可见的分页工作项。",
+                action = { PrimaryButton(text = "加载工作台", onClick = onRefresh) },
+            )
+            WorkspaceLoadState.LOADING, WorkspaceLoadState.CONTENT -> {
+                if (items.isNotEmpty()) {
+                    items.forEach { item ->
+                        WorkspaceItemCard(item)
+                        VSpace(Spacing.sm)
+                    }
+                    WorkspacePager(
+                        page = page,
+                        pageSize = pageSize,
+                        total = total,
+                        totalPages = totalPages,
+                        onPrevious = onPreviousPage,
+                        onNext = onNextPage,
+                        enabled = itemsState != WorkspaceLoadState.LOADING,
+                        onPageSizeChange = onPageSizeChange,
+                    )
+                }
+            }
         }
 
         VSpace(Spacing.xxl)
@@ -113,62 +188,71 @@ fun WorkspaceScreen(
 }
 
 @Composable
-private fun DataSourceNotice(
-    summary: RoleWorkspaceSummary,
-    orderStatus: OrderMaterialStatus?,
-    onOpenScanner: () -> Unit,
+private fun WorkspaceDataSourceNotice(
+    summaryState: WorkspaceLoadState,
+    summaryError: String?,
+    summaryUnavailable: Boolean,
+    itemsState: WorkspaceLoadState,
+    itemsError: String?,
+    itemsUnavailable: Boolean,
+    page: Int,
+    total: Int,
+    serverTime: String?,
+    onRefresh: () -> Unit,
 ) {
     AppCard(
-        accentColor = if (orderStatus == null) LogisticsTheme.colors.warning else LogisticsTheme.colors.success,
+        accentColor = if (summaryState == WorkspaceLoadState.ERROR || itemsState == WorkspaceLoadState.ERROR) {
+            LogisticsTheme.colors.warning
+        } else {
+            LogisticsTheme.colors.success
+        },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = if (summary.sourceOrderNo == null) "未载入生产订单" else "当前订单 ${summary.sourceOrderNo}",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LogisticsTheme.colors.textPrimary,
-                )
-                VSpace(4.dp)
-                Text(
-                    text = if (summary.serverTime == null) {
-                        "摘要只使用现有订单接口数据"
-                    } else {
-                        "服务端时间：${summary.serverTime}"
-                    },
-                    fontSize = 11.sp,
-                    color = LogisticsTheme.colors.textTertiary,
-                )
-            }
-            SecondaryButton(
-                text = if (orderStatus == null) "去扫码" else "刷新订单",
-                onClick = onOpenScanner,
-                modifier = Modifier.width(104.dp),
-            )
+        Text(
+            text = when {
+                summaryUnavailable || itemsUnavailable -> "工作台接口不可用"
+                summaryState == WorkspaceLoadState.ERROR || itemsState == WorkspaceLoadState.ERROR -> "工作台读取失败"
+                summaryState == WorkspaceLoadState.CONTENT && itemsState == WorkspaceLoadState.CONTENT -> "已连接服务端工作台"
+                else -> "工作台数据加载中"
+            },
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = LogisticsTheme.colors.textPrimary,
+        )
+        VSpace(4.dp)
+        Text(
+            text = when {
+                summaryUnavailable -> summaryError ?: "服务端未提供摘要接口，相关指标不可用"
+                itemsUnavailable -> itemsError ?: "服务端未提供工作项接口，分页工作项不可用"
+                summaryState == WorkspaceLoadState.ERROR -> summaryError ?: "摘要读取失败"
+                else -> "当前页 $page · 服务端总计 $total"
+            },
+            fontSize = 11.sp,
+            color = LogisticsTheme.colors.textTertiary,
+        )
+        if (itemsState == WorkspaceLoadState.ERROR && !itemsUnavailable) {
+            VSpace(4.dp)
+            Text(itemsError ?: "工作项读取失败", fontSize = 11.sp, color = LogisticsTheme.colors.danger)
+        }
+        if (serverTime != null) {
+            VSpace(4.dp)
+            Text("服务端时间：$serverTime", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+        }
+        if (summaryState == WorkspaceLoadState.ERROR || itemsState == WorkspaceLoadState.ERROR) {
+            VSpace(Spacing.sm)
+            SecondaryButton(text = "重试", onClick = onRefresh)
         }
     }
 }
 
 @Composable
-private fun WorkspaceMetricCard(
-    entry: WorkspaceEntry,
-    metric: WorkspaceMetric,
-    onClick: () -> Unit,
-) {
-    AppCard(
-        accentColor = if (metric.available) MaterialTheme.colorScheme.primary else LogisticsTheme.colors.border,
-    ) {
+private fun WorkspaceMetricCard(entry: WorkspaceEntry, metric: WorkspaceMetric, onClick: () -> Unit) {
+    AppCard(accentColor = if (metric.available) MaterialTheme.colorScheme.primary else LogisticsTheme.colors.border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    text = entry.title,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LogisticsTheme.colors.textPrimary,
-                )
+                Text(entry.title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
                 VSpace(4.dp)
                 Text(
-                    text = if (metric.available) entry.hint else "当前订单接口未提供该状态域数据",
+                    text = if (metric.available) entry.hint else "服务端当前未提供该指标",
                     fontSize = 11.sp,
                     color = LogisticsTheme.colors.textTertiary,
                 )
@@ -181,27 +265,95 @@ private fun WorkspaceMetricCard(
             )
             Spacer(Modifier.width(Spacing.sm))
             if (entry.actionIsPrimary) {
-                PrimaryButton(
-                    text = entry.actionLabel,
-                    onClick = onClick,
-                    modifier = Modifier.width(96.dp),
-                )
+                PrimaryButton(text = entry.actionLabel, onClick = onClick, modifier = Modifier.width(96.dp))
             } else {
-                SecondaryButton(
-                    text = entry.actionLabel,
-                    onClick = onClick,
-                    modifier = Modifier.width(96.dp),
-                )
+                SecondaryButton(text = entry.actionLabel, onClick = onClick, modifier = Modifier.width(96.dp))
             }
         }
         if (!metric.available) {
             VSpace(Spacing.sm)
+            Text("— 表示接口未提供数据，不代表数量为 0", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceItemCard(item: WorkspaceMaterialItem) {
+    AppCard(accentColor = LogisticsTheme.colors.border) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(item.materialCode, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = LogisticsType.MonoFamily, color = LogisticsTheme.colors.textPrimary)
+                VSpace(4.dp)
+                Text(item.materialName, fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
+            }
+            StatusTag(
+                label = item.statusLabel.ifBlank { "未知状态" },
+                color = item.statusColor,
+                containerColor = item.statusContainerColor,
+                symbol = item.statusSymbol,
+            )
+        }
+        VSpace(Spacing.sm)
+        Text(
+            text = listOfNotNull(
+                item.orderNo.takeIf { it.isNotBlank() }?.let { "订单 $it" },
+                item.deviceNo?.takeIf { it.isNotBlank() }?.let { "机台 $it" },
+                item.currentOwnerName?.takeIf { it.isNotBlank() }?.let { "责任人 $it" },
+            ).joinToString(" · ").ifBlank { "服务端未返回附加责任信息" },
+            fontSize = 12.sp,
+            color = LogisticsTheme.colors.textSecondary,
+        )
+        VSpace(4.dp)
+        Text(
+            text = "需求 ${item.requiredQuantity ?: "—"} · 到料 ${item.arrivedQuantity ?: "—"} · 在库 ${item.inStockQuantity ?: "—"}",
+            fontSize = 11.sp,
+            color = LogisticsTheme.colors.textTertiary,
+        )
+        if (item.lastHandoverStatus != null || item.transferStatus != null) {
+            VSpace(4.dp)
             Text(
-                text = "— 表示未从服务端获得数据，不代表数量为 0",
+                text = listOfNotNull(
+                    item.transferStatus?.let { "流转 $it" },
+                    item.lastHandoverStatus?.let { "交接 $it" },
+                    item.lastHandoverId?.let { "记录 $it" },
+                ).joinToString(" · "),
                 fontSize = 11.sp,
                 color = LogisticsTheme.colors.textTertiary,
             )
         }
+    }
+}
+
+@Composable
+private fun WorkspacePager(
+    page: Int,
+    pageSize: Int,
+    total: Int,
+    totalPages: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    enabled: Boolean,
+    onPageSizeChange: (Int) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        SecondaryButton(text = "上一页", onClick = onPrevious, enabled = enabled && page > 1, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(Spacing.sm))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("$page / ${totalPages.coerceAtLeast(1)} · 共 $total", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+            Row {
+                listOf(20, 50).forEach { size ->
+                    SecondaryButton(
+                        text = "$size/页",
+                        onClick = { onPageSizeChange(size) },
+                        enabled = enabled && pageSize != size,
+                        modifier = Modifier.width(64.dp),
+                    )
+                    if (size == 20) Spacer(Modifier.width(4.dp))
+                }
+            }
+        }
+        Spacer(Modifier.width(Spacing.sm))
+        SecondaryButton(text = "下一页", onClick = onNext, enabled = enabled && page < totalPages, modifier = Modifier.weight(1f))
     }
 }
 
@@ -213,28 +365,29 @@ private fun titleFor(role: UserRole): String = when (role) {
 }
 
 private fun subtitleFor(role: UserRole): String = when (role) {
-    UserRole.OPERATOR -> "优先关注已领取与已到机台，按订单查看本人负责范围"
-    UserRole.MATERIAL -> "优先处理待出库与已出库，出库动作沿用现有申请流程"
-    UserRole.WAREHOUSE_ADMIN -> "优先查看待审批与待交接，实际权限仍由服务端校验"
-    UserRole.ADMIN -> "查看全量与异常入口，并保留审计查询入口"
+    UserRole.OPERATOR -> "只查看服务端登记的本人责任范围与交接状态"
+    UserRole.MATERIAL -> "处理服务端返回的待出库与已出库工作项"
+    UserRole.WAREHOUSE_ADMIN -> "查看服务端返回的待审批与待交接工作项"
+    UserRole.ADMIN -> "查看服务端角色范围内的工作项与明确可用指标"
 }
 
 private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
     UserRole.OPERATOR -> listOf(
-        WorkspaceEntry(WorkspaceMetricKey.CLAIMED, "已领取", "服务端确认的领取记录", "查看订单", true),
-        WorkspaceEntry(WorkspaceMetricKey.AT_STATION, "已到机台", "服务端确认目标机台的交接", "查看订单"),
+        WorkspaceEntry(WorkspaceMetricKey.CLAIMED, "已领取", "服务端确认的领取记录", "刷新", true),
+        WorkspaceEntry(WorkspaceMetricKey.AT_STATION, "已到机台", "服务端确认目标机台的交接", "刷新"),
     )
     UserRole.MATERIAL -> listOf(
-        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_PENDING, "待出库", "服务端返回的待出库状态", "查看订单", true),
-        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_CONFIRMED, "已出库", "服务端返回的已出库状态", "查看订单"),
+        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_PENDING, "待出库", "服务端返回的待出库状态", "刷新", true),
+        WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_CONFIRMED, "已出库", "摘要接口未提供该计数", "刷新"),
     )
     UserRole.WAREHOUSE_ADMIN -> listOf(
         WorkspaceEntry(WorkspaceMetricKey.PENDING_APPROVAL, "待审批", "服务端返回的审批状态", "去审批", true),
-        WorkspaceEntry(WorkspaceMetricKey.PENDING_HANDOVER, "待交接", "服务端返回的交接状态", "查看订单"),
+        WorkspaceEntry(WorkspaceMetricKey.PENDING_HANDOVER, "待交接", "服务端返回的交接状态", "刷新"),
     )
     UserRole.ADMIN -> listOf(
-        WorkspaceEntry(WorkspaceMetricKey.ALL, "全量物料", "当前订单接口返回的全部物料项", "查看全量", true),
-        WorkspaceEntry(WorkspaceMetricKey.EXCEPTION, "异常", "服务端明确标记的异常项", "查看异常"),
-        WorkspaceEntry(WorkspaceMetricKey.AUDIT, "审计入口", "服务端审计接口返回的记录", "打开审计"),
+        WorkspaceEntry(WorkspaceMetricKey.ALL, "全量工作项", "服务端分页接口返回的 total", "刷新", true),
+        WorkspaceEntry(WorkspaceMetricKey.OUT_OF_STOCK, "缺货", "服务端摘要返回的缺货数量", "刷新"),
+        WorkspaceEntry(WorkspaceMetricKey.EXCEPTION, "异常", "摘要接口未提供该计数", "刷新"),
+        WorkspaceEntry(WorkspaceMetricKey.AUDIT, "审计入口", "审计接口未在本迭代提供", "打开审计"),
     )
 }

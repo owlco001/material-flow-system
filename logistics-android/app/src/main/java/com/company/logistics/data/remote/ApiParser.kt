@@ -15,6 +15,12 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.WorkspaceHandoverSummary
+import com.company.logistics.model.WorkspaceLastHandover
+import com.company.logistics.model.WorkspaceMaterialItem
+import com.company.logistics.model.WorkspaceMaterialItemsPage
+import com.company.logistics.model.WorkspaceResponsibilitySummary
+import com.company.logistics.model.WorkspaceSummary
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -148,6 +154,118 @@ object ApiParser {
         )
     }
 
+    /** GET /api/v1/workspace/summary —— 指标缺失时保留 null，表示接口未提供。 */
+    fun parseWorkspaceSummary(json: String): WorkspaceSummary {
+        val root = JSONObject(json)
+        return WorkspaceSummary(
+            role = UserRole.from(nullableString(root, "role")),
+            pendingApprovalCount = nullableInt(root, "pendingApprovalCount"),
+            pendingOutboundCount = nullableInt(root, "pendingOutboundCount"),
+            pendingHandoverCount = nullableInt(root, "pendingHandoverCount"),
+            atStationCount = nullableInt(root, "atStationCount"),
+            pickedUpCount = nullableInt(root, "pickedUpCount"),
+            outOfStockCount = nullableInt(root, "outOfStockCount"),
+            generatedAt = nullableString(root, "generatedAt"),
+            serverTime = nullableString(root, "serverTime"),
+            traceId = nullableString(root, "traceId")
+        )
+    }
+
+    /** GET /api/v1/workspace/material-items —— 仅解析服务端当前页。 */
+    fun parseWorkspaceMaterialItems(json: String): WorkspaceMaterialItemsPage {
+        val root = JSONObject(json)
+        val items = mutableListOf<WorkspaceMaterialItem>()
+        val arr = root.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            items += parseWorkspaceMaterialItem(arr.getJSONObject(i))
+        }
+        return WorkspaceMaterialItemsPage(
+            items = items,
+            page = root.optInt("page", 1),
+            pageSize = root.optInt("pageSize", 20),
+            total = root.optInt("total", 0),
+            totalPages = root.optInt("totalPages", 0),
+            serverTime = nullableString(root, "serverTime"),
+            traceId = nullableString(root, "traceId")
+        )
+    }
+
+    private fun parseWorkspaceMaterialItem(json: JSONObject): WorkspaceMaterialItem {
+        val responsibility = json.optJSONObject("responsibilitySummary")?.let { summary ->
+            WorkspaceResponsibilitySummary(
+                assignedUserId = nullableString(summary, "assignedUserId"),
+                assignedUserName = nullableString(summary, "assignedUserName"),
+                currentOwnerUserId = nullableString(summary, "currentOwnerUserId"),
+                currentOwnerName = nullableString(summary, "currentOwnerName")
+            )
+        }
+        val lastHandover = json.optJSONObject("lastHandover")?.let { handover ->
+            WorkspaceLastHandover(
+                id = handover.optString("id"),
+                status = nullableString(handover, "status"),
+                quantity = nullableInt(handover, "quantity"),
+                fromLocation = nullableString(handover, "fromLocation"),
+                deviceId = nullableString(handover, "deviceId"),
+                transferRequestId = nullableString(handover, "transferRequestId"),
+                senderUserId = nullableString(handover, "senderUserId"),
+                senderName = nullableString(handover, "senderName"),
+                receiverUserId = nullableString(handover, "receiverUserId"),
+                receiverName = nullableString(handover, "receiverName"),
+                initiatedAt = nullableString(handover, "initiatedAt"),
+                confirmedBy = nullableString(handover, "confirmedBy"),
+                confirmedAt = nullableString(handover, "confirmedAt"),
+                remark = nullableString(handover, "remark")
+            )
+        }
+        val handoverSummary = json.optJSONObject("handoverSummary")?.let { summary ->
+            WorkspaceHandoverSummary(
+                lastHandoverId = nullableString(summary, "lastHandoverId"),
+                lastStatus = nullableString(summary, "lastStatus"),
+                lastInitiatedAt = nullableString(summary, "lastInitiatedAt"),
+                lastConfirmedAt = nullableString(summary, "lastConfirmedAt"),
+                count = nullableInt(summary, "count")
+            )
+        }
+        return WorkspaceMaterialItem(
+            id = json.optString("id"),
+            requirementId = nullableString(json, "requirementId"),
+            orderNo = json.optString("orderNo"),
+            productName = nullableString(json, "productName"),
+            orderStatus = nullableString(json, "orderStatus"),
+            deviceId = nullableString(json, "deviceId"),
+            deviceType = nullableString(json, "deviceType"),
+            deviceNo = nullableString(json, "deviceNo"),
+            materialId = json.optString("materialId"),
+            materialCode = json.optString("materialCode"),
+            materialName = json.optString("materialName"),
+            specification = nullableString(json, "specification"),
+            unit = nullableString(json, "unit"),
+            requiredQuantity = nullableInt(json, "requiredQuantity"),
+            arrivedQuantity = nullableInt(json, "arrivedQuantity"),
+            inStockQuantity = nullableInt(json, "inStockQuantity"),
+            issuedQuantity = nullableInt(json, "issuedQuantity"),
+            pickedQuantity = nullableInt(json, "pickedQuantity"),
+            statusCode = json.optString("statusCode"),
+            statusLabel = nullableString(json, "statusLabel")
+                ?: nullableString(json, "label")
+                ?: "未知状态",
+            colorToken = json.optString("colorToken"),
+            statusDomain = json.optString("statusDomain"),
+            updatedAt = nullableString(json, "updatedAt"),
+            assignedUserId = nullableString(json, "assignedUserId"),
+            assignedUserName = nullableString(json, "assignedUserName"),
+            currentOwnerUserId = nullableString(json, "currentOwnerUserId"),
+            currentOwnerName = nullableString(json, "currentOwnerName"),
+            responsibilitySummary = responsibility,
+            lastHandoverId = nullableString(json, "lastHandoverId"),
+            lastHandoverStatus = nullableString(json, "lastHandoverStatus"),
+            lastHandover = lastHandover,
+            handoverSummary = handoverSummary,
+            transferRequestId = nullableString(json, "transferRequestId"),
+            transferStatus = nullableString(json, "transferStatus")
+        )
+    }
+
     private fun nullableString(json: JSONObject, key: String): String? =
         json.optString(key).takeIf { it.isNotBlank() && it != "null" }
 
@@ -207,16 +325,17 @@ object ApiParser {
         if (!body.isNullOrBlank()) {
             runCatching {
                 val root = JSONObject(body)
+                val error = root.optJSONObject("error") ?: root
                 // FastAPI 默认错误为 {"detail": "..."}；契约错误结构为 code/message
-                val detail = root.optString("detail")
-                val msg = root.optString("message")
+                val detail = error.optString("detail")
+                val msg = error.optString("message")
                 when {
                     msg.isNotBlank() -> message = msg
                     detail.isNotBlank() -> message = detail
                 }
-                code = root.optString("code").ifBlank { code }
-                traceId = root.optString("traceId").takeIf { it.isNotBlank() }
-                if (root.has("retryable")) retryable = root.optBoolean("retryable")
+                code = error.optString("code").ifBlank { code }
+                traceId = error.optString("traceId").takeIf { it.isNotBlank() }
+                if (error.has("retryable")) retryable = error.optBoolean("retryable")
             }
         }
         return ApiException(statusCode, code, message, traceId, retryable)
