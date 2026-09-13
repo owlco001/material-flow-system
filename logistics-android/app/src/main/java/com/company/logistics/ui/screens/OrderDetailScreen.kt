@@ -170,7 +170,7 @@ fun OrderDetailScreen(
                     DeviceCard(
                         deviceType = first.deviceType.orEmpty(),
                         deviceNo = first.deviceNo.orEmpty(),
-                        materialCount = deviceItems.size,
+                        items = deviceItems,
                         onClick = { selectedDeviceId = first.deviceId },
                     )
                 } else {
@@ -196,7 +196,7 @@ private fun deviceDisplayName(type: String): String = when (type) {
 private fun DeviceCard(
     deviceType: String,
     deviceNo: String,
-    materialCount: Int,
+    items: List<OrderMaterialItem>,
     onClick: () -> Unit,
 ) {
     AppCard(modifier = Modifier.clickable(onClick = onClick)) {
@@ -206,10 +206,30 @@ private fun DeviceCard(
                 VSpace(4.dp)
                 Text(deviceNo, fontSize = 13.sp, fontFamily = LogisticsType.MonoFamily, color = LogisticsTheme.colors.textSecondary)
             }
-            Text("物料 $materialCount 项  ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+            Text("物料 ${items.size} 项  ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
         }
         VSpace(Spacing.sm)
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            DeviceStatusSummary(items)
+        }
+        VSpace(4.dp)
         Text("点击查看机台物料详情", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+    }
+}
+
+@Composable
+private fun DeviceStatusSummary(items: List<OrderMaterialItem>) {
+    val counts = items.groupingBy { it.statusCode }.eachCount()
+    MaterialStatusCode.entries.forEach { status ->
+        val count = counts[status] ?: 0
+        if (count > 0) {
+            StatusTag(
+                label = "${status.label} $count",
+                color = status.color,
+                containerColor = status.containerColor,
+                symbol = status.symbol,
+            )
+        }
     }
 }
 
