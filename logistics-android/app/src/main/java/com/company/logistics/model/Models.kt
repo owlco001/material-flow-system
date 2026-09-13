@@ -44,7 +44,8 @@ enum class UserRole(val code: String, val label: String) {
 enum class MaterialStatusCode(val code: String, val label: String) {
     OUT_OF_STOCK("OUT_OF_STOCK", "缺货"),
     ARRIVED("ARRIVED", "到货"),
-    IN_STOCK("IN_STOCK", "在库");
+    IN_STOCK("IN_STOCK", "在库"),
+    UNKNOWN("UNKNOWN", "未知状态");
 
     /** 对应色值（客户端展示用；语义以服务端 colorToken 为准） */
     val color: Color
@@ -52,6 +53,7 @@ enum class MaterialStatusCode(val code: String, val label: String) {
             OUT_OF_STOCK -> MaterialStatusColors.Shortage
             ARRIVED -> MaterialStatusColors.Arrived
             IN_STOCK -> MaterialStatusColors.InStock
+            UNKNOWN -> MaterialStatusColors.Unknown
         }
 
     /** 浅色容器背景 */
@@ -60,6 +62,7 @@ enum class MaterialStatusCode(val code: String, val label: String) {
             OUT_OF_STOCK -> MaterialStatusColors.ShortageContainer
             ARRIVED -> MaterialStatusColors.ArrivedContainer
             IN_STOCK -> MaterialStatusColors.InStockContainer
+            UNKNOWN -> MaterialStatusColors.UnknownContainer
         }
 
     /**
@@ -71,13 +74,14 @@ enum class MaterialStatusCode(val code: String, val label: String) {
             OUT_OF_STOCK -> "!"
             ARRIVED -> "↓"
             IN_STOCK -> "✓"
+            UNKNOWN -> "?"
         }
 
     companion object {
         fun from(code: String?, label: String? = null): MaterialStatusCode =
             entries.firstOrNull { it.code.equals(code, ignoreCase = true) }
                 ?: entries.firstOrNull { label != null && it.label == label }
-                ?: OUT_OF_STOCK
+                ?: UNKNOWN
     }
 }
 

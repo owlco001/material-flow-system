@@ -68,9 +68,12 @@ object MaterialStatusColors {
     val Arrived = Color(0xFFF2A900)
     /** 在库 IN_STOCK —— 契约色 #1F9D55 */
     val InStock = Color(0xFF1F9D55)
+    /** 未知状态 —— 不得伪装成缺货、到货或在库 */
+    val Unknown = Color(0xFF667085)
 
     /** 缺货 / 到货 / 在库 对应的浅色填充背景 */
     val ShortageContainer = Color(0x1FD92D20)
     val ArrivedContainer = Color(0x24F2A900)
     val InStockContainer = Color(0x1F1F9D55)
+    val UnknownContainer = Color(0x1F667085)
 }

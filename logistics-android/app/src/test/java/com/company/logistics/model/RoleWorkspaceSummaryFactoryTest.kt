@@ -77,6 +77,7 @@ class RoleWorkspaceSummaryFactoryTest {
 
         assertEquals("未知状态", item.effectiveStatusLabel)
         assertEquals(MaterialStatusCode.IN_STOCK, item.statusCode)
+        assertEquals(MaterialStatusCode.UNKNOWN, MaterialStatusCode.from("FUTURE_STATUS"))
         assertFalse(
             RoleWorkspaceSummaryFactory.from(UserRole.OPERATOR, order(item))
                 .metric(WorkspaceMetricKey.AT_STATION).available
