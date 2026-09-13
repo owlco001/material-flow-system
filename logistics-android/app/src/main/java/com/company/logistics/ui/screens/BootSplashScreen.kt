@@ -193,11 +193,24 @@ fun BootSplashScreen(
 
                 Spacer(Modifier.height(24.dp))
                 Text(
-                    text = "物料流转系统",
+                    text = "博阳智造，构建未来",
                     color = Color.White,
-                    fontSize = 26.sp,
+                    fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.5.sp,
+                    letterSpacing = 2.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .offset(y = (8f * (1f - titleAlpha)).dp)
+                        .alpha(titleAlpha),
+                )
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "物料流转系统",
+                    color = Color.White.copy(alpha = 0.88f),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .offset(y = (8f * (1f - titleAlpha)).dp)
