@@ -48,7 +48,10 @@ class MaterialFlowApiContractTest {
             val previous = ApiConfig.baseUrl
             try {
                 ApiConfig.baseUrl = "http://127.0.0.1:$port"
-                MaterialFlowApi().createException(operationId, "WO-1", "device-1", "mat-1", "OTHER", 1, 0)
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    api.createException(operationId, "WO-1", "device-1", "mat-1", "OTHER", 1, 0)
+                }
             } finally { ApiConfig.baseUrl = previous }
         }
         assertEquals(operationId, captured.headers["Idempotency-Key"])
