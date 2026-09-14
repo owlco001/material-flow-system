@@ -24,6 +24,7 @@ import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceSummary
 import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.WorkshopProgressSummary
+import com.company.logistics.model.ExceptionSubmissionResult
 import com.company.logistics.model.RoleWorkspaceRepository
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
@@ -178,6 +179,13 @@ open class LogisticsRepository(
 
     open suspend fun orderDetail(orderNo: String, page: Int = 1, pageSize: Int = 20): Result<OrderDetail> = resultOf {
         api.orderDetail(orderNo, page, pageSize)
+    }
+
+    open suspend fun createException(
+        orderNo: String, deviceId: String, materialId: String, type: String,
+        bookQuantity: Int, actualQuantity: Int, description: String? = null,
+    ): Result<ExceptionSubmissionResult> = resultOf {
+        api.createException(orderNo, deviceId, materialId, type, bookQuantity, actualQuantity, description)
     }
 
     /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */

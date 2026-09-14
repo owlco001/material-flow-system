@@ -150,11 +150,13 @@ fun WorkspaceScreen(
     onCompleteAssemblyWork: (AssemblyTask) -> Unit = {},
     onStartTemporaryTransfer: (String?, String) -> Unit = { _, _ -> },
     onCompleteTemporaryTransfer: (String) -> Unit = {},
+    onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit = { _, _, _, _ -> },
 ) {
     val entries = entriesFor(role)
     var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
     var reasonRequest by remember { mutableStateOf<ReasonRequest?>(null) }
     var selectorVisible by remember { mutableStateOf(false) }
+    var exceptionItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
 
     LaunchedEffect(previewRole) {
         if (previewRole != null) {
@@ -361,6 +363,7 @@ fun WorkspaceScreen(
                                 }
                             },
                             onCreateHandover = { createItem = item },
+                            onSubmitException = { exceptionItem = item },
                         )
                         VSpace(Spacing.sm)
                     }
@@ -390,6 +393,17 @@ fun WorkspaceScreen(
             onSubmit = { quantity, fromLocation, remark ->
                 createItem = null
                 onCreateHandover(item, quantity, fromLocation, remark)
+            },
+        )
+    }
+
+    exceptionItem?.let { item ->
+        ExceptionReportDialog(
+            item = item,
+            onDismiss = { exceptionItem = null },
+            onSubmit = { type, actual, description ->
+                exceptionItem = null
+                onSubmitException(item, type, actual, description)
             },
         )
     }
@@ -537,6 +551,32 @@ private fun WorkspaceMetricCard(entry: WorkspaceEntry, metric: WorkspaceMetric, 
     }
 }
 
+@Composable
+private fun ExceptionReportDialog(
+    item: WorkspaceMaterialItem,
+    onDismiss: () -> Unit,
+    onSubmit: (String, Int, String?) -> Unit,
+) {
+    var actual by remember(item.id) { mutableStateOf("") }
+    var description by remember(item.id) { mutableStateOf("") }
+    val actualValue = actual.toIntOrNull()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("提报物料异常") },
+        text = {
+            Column {
+                Text("订单 ${item.orderNo} · ${item.deviceNo ?: "机台"} · ${item.materialCode}", fontSize = 12.sp)
+                VSpace(Spacing.sm)
+                OutlinedTextField(actual, { if (it.all(Char::isDigit)) actual = it }, label = { Text("实际数量") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                VSpace(Spacing.sm)
+                OutlinedTextField(description, { if (it.length <= 500) description = it }, label = { Text("说明（可选）") }, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSubmit("OTHER", actualValue ?: 0, description.trim().ifBlank { null }) }, enabled = actualValue != null && actualValue >= 0) { Text("提交") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
 private data class ReasonRequest(
     val item: WorkspaceMaterialItem,
     val action: HandoverAction,
@@ -557,6 +597,7 @@ private fun WorkspaceItemCard(
     onRetryTimeline: () -> Unit,
     onHandoverAction: (HandoverAction) -> Unit,
     onCreateHandover: () -> Unit,
+    onSubmitException: () -> Unit,
 ) {
     AppCard(accentColor = LogisticsTheme.colors.border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -627,7 +668,8 @@ private fun WorkspaceItemCard(
 
         val actions = HandoverActionPolicy.actionsFor(role, currentUserId, item)
         val canCreate = HandoverActionPolicy.canCreate(role, item)
-        if (actions.isNotEmpty() || canCreate || !item.lastHandoverId.isNullOrBlank()) {
+        val canReportException = role == UserRole.OPERATOR && !readOnly && !item.deviceId.isNullOrBlank()
+        if (actions.isNotEmpty() || canCreate || canReportException || !item.lastHandoverId.isNullOrBlank()) {
             VSpace(Spacing.sm)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -649,6 +691,9 @@ private fun WorkspaceItemCard(
                         enabled = AdminRolePreviewUiPolicy.actionsEnabled(readOnly) && handoverSubmittingId == null,
                         modifier = Modifier.weight(1f),
                     )
+                }
+                if (canReportException) {
+                    SecondaryButton(text = "提报异常", onClick = onSubmitException, modifier = Modifier.weight(1f))
                 }
                 if (!item.lastHandoverId.isNullOrBlank()) {
                     SecondaryButton(

@@ -11,6 +11,39 @@ import org.junit.Test
 class MaterialFlowApiContractTest {
 
     @Test
+    fun parsesExceptionSubmissionStatusAndDifference() {
+        val result = ApiParser.parseExceptionSubmission("""{"exceptionId":"ex-1","status":"PENDING","difference":-1,"serverTime":"now"}""")
+        assertEquals("ex-1", result.exceptionId)
+        assertEquals("PENDING", result.status)
+        assertEquals(-1, result.difference)
+        assertEquals("now", result.serverTime)
+    }
+
+    @Test
+    fun exceptionRequiresAllServerAssociationFieldsBeforeNetworkAccess() = runBlocking {
+        val error = runCatching {
+            MaterialFlowApi().createException("WO-1", "", "mat-1", "OTHER", 1, 0)
+        }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun loginUsesEmployeeNoWireField() = runBlocking {
+        val captured = captureOneRequest("""{"accessToken":"a","user":{"id":"u","username":"E-1","displayName":"E","role":"OPERATOR"}}""") { port ->
+            val old = ApiConfig.baseUrl
+            try { ApiConfig.baseUrl = "http://127.0.0.1:$port"; MaterialFlowApi().login("E-1", "secret", "pda", "0.3.0") }
+            finally { ApiConfig.baseUrl = old }
+        }
+        assertTrue(captured.body.contains("\"employeeNo\":\"E-1\""))
+        assertTrue(!captured.body.contains("\"username\""))
+    }
+
+    @Test
+    fun scanMachineTypeIsPreserved() {
+        assertEquals(com.company.logistics.model.ScanType.MACHINE, ApiParser.parseScanResolve("""{"type":"MACHINE","normalizedValue":"M-01","resourceId":"d1"}""").type)
+    }
+
+    @Test
     fun timelineRejectsPageSizeAboveMemoryBoundBeforeNetworkAccess() = runBlocking {
         val error = runCatching {
             MaterialFlowApi().handoverTimeline("work-item", pageSize = 50)

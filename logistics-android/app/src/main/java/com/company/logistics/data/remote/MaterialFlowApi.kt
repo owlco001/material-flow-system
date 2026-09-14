@@ -17,6 +17,7 @@ import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.OrderDetail
+import com.company.logistics.model.ExceptionSubmissionResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -179,7 +180,8 @@ open class MaterialFlowApi(
         clientVersion: String
     ): LoginResultDto = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
-            put("username", username)
+            // 服务端同时兼容 username / employeeNo；Android 使用员工工号字段。
+            put("employeeNo", username)
             // 密码不写入日志（契约 4.1）
             put("password", password)
             put("deviceId", deviceId)
@@ -209,6 +211,28 @@ open class MaterialFlowApi(
             put("clientOperationId", UUID.randomUUID().toString())
         }
         ApiParser.parseScanResolve(request("POST", "/api/v1/scan/resolve", body.toString()))
+    }
+
+    /** POST /api/v1/exceptions；服务端创建待审批异常，不在客户端伪造成功。 */
+    suspend fun createException(
+        orderNo: String,
+        deviceId: String,
+        materialId: String,
+        type: String,
+        bookQuantity: Int,
+        actualQuantity: Int,
+        description: String? = null,
+        evidenceIds: List<String> = emptyList(),
+    ): ExceptionSubmissionResult = withContext(Dispatchers.IO) {
+        require(orderNo.isNotBlank() && deviceId.isNotBlank() && materialId.isNotBlank()) { "异常必须关联订单、机台和物料" }
+        require(bookQuantity >= 0 && actualQuantity >= 0) { "数量必须是非负整数" }
+        val body = JSONObject().apply {
+            put("orderNo", orderNo); put("deviceId", deviceId); put("materialId", materialId)
+            put("type", type); put("bookQuantity", bookQuantity); put("actualQuantity", actualQuantity)
+            description?.let { put("description", it) }
+            put("evidenceIds", JSONArray(evidenceIds))
+        }
+        ApiParser.parseExceptionSubmission(request("POST", "/api/v1/exceptions", body.toString()))
     }
 
     // ==================== 4.3 生产订单物料状态 ====================

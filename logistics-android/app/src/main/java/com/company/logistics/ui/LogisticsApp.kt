@@ -225,6 +225,7 @@ fun LogisticsApp(
                         onCompleteAssemblyWork = { viewModel.completeAssemblyWork(it) },
                         onStartTemporaryTransfer = { taskId, remark -> viewModel.startTemporaryTransfer(taskId, remark) },
                         onCompleteTemporaryTransfer = { remark -> viewModel.completeTemporaryTransfer(remark) },
+                        onSubmitException = { item, type, actual, description -> viewModel.submitException(item, type, actual, description) },
                     )
 
                     Screen.SCANNER -> ScannerScreen(

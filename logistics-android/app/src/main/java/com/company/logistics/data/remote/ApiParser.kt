@@ -40,6 +40,7 @@ import com.company.logistics.model.LaborType
 import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.OrderDetailLaborSummary
 import com.company.logistics.model.OrderDetailTimelineEvent
+import com.company.logistics.model.ExceptionSubmissionResult
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -101,6 +102,16 @@ object ApiParser {
                 displayName = u.optString("displayName"),
                 role = UserRole.from(u.optString("role"))
             )
+        )
+    }
+
+    fun parseExceptionSubmission(json: String): ExceptionSubmissionResult {
+        val root = JSONObject(json)
+        return ExceptionSubmissionResult(
+            exceptionId = root.optString("exceptionId"),
+            status = root.optString("status"),
+            difference = root.optInt("difference"),
+            serverTime = nullableStringAny(root, "serverTime", "server_time"),
         )
     }
 

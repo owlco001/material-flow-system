@@ -199,6 +199,7 @@ enum class ApprovalStatus(val code: String, val label: String) {
  */
 enum class ScanType(val code: String, val label: String) {
     PRODUCTION_ORDER("PRODUCTION_ORDER", "生产订单号"),
+    MACHINE("MACHINE", "机台码"),
     MATERIAL_CODE("MATERIAL_CODE", "料号"),
     LOCATION_CODE("LOCATION_CODE", "库位码"),
     FLOW_NO("FLOW_NO", "流转单号"),
@@ -211,6 +212,14 @@ enum class ScanType(val code: String, val label: String) {
             entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: UNKNOWN
     }
 }
+
+/** 服务端异常提报结果；提交成功只表示服务端创建了待审批记录。 */
+data class ExceptionSubmissionResult(
+    val exceptionId: String,
+    val status: String,
+    val difference: Int,
+    val serverTime: String?
+)
 
 // ==================== 数据模型 ====================
 

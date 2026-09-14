@@ -1810,8 +1810,11 @@ class LogisticsViewModel(
                         }
                         ScanType.FLOW_NO -> {
                             _state.update {
-                                it.copy(loading = false, message = "流转单 ${scan.normalizedValue}（详情页待接入）")
+                                it.copy(loading = false, message = "流转单 ${scan.normalizedValue} 暂未接入详情查询，请使用订单或物料码")
                             }
+                        }
+                        ScanType.MACHINE -> _state.update {
+                            it.copy(loading = false, message = "已识别机台 ${scan.normalizedValue}，请从订单详情查看关联物料")
                         }
                         ScanType.UNKNOWN -> _state.update {
                             it.copy(loading = false, error = "无法识别该条码")
@@ -1896,6 +1899,24 @@ class LogisticsViewModel(
 
     private fun refreshOrderAfterMutation() {
         if (_state.value.orderStatus != null) refreshOrderDetail()
+    }
+
+    /** 仅在服务端订单详情中已加载的机台物料上提报异常；不写入本地伪成功状态。 */
+    fun submitException(item: WorkspaceMaterialItem, type: String, actualQuantity: Int, description: String?) {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能提报异常") }
+            return
+        }
+        val bookQuantity = item.requiredQuantity ?: 0
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            repo.createException(item.orderNo, item.deviceId.orEmpty(), item.materialId, type, bookQuantity, actualQuantity, description)
+                .onSuccess { result ->
+                    _state.update { it.copy(loading = false, message = "异常已提交，状态：${result.status}") }
+                    refreshOrderAfterMutation()
+                }
+                .onFailure { e -> _state.update { it.copy(loading = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
+        }
     }
 
     // ==================== 表单 ====================
