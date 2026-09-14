@@ -11,6 +11,16 @@ data class OrderDetailLoadState(
     val requestId: Long = 0L,
 )
 
+data class MultiOrderEntry(
+    val orderNo: String,
+    val state: OrderDetailLoadState,
+)
+
+data class MultiOrderSnapshot(
+    val selectedOrderNo: String?,
+    val entries: List<MultiOrderEntry>,
+)
+
 /**
  * Pure, UI-independent state container for parallel order detail screens.
  *
@@ -32,6 +42,11 @@ class MultiOrderDetailState(
     val currentOrderNo: String? get() = selectedOrderNo
     val orderNos: List<String> get() = entries.keys.toList()
     val size: Int get() = entries.size
+
+    fun snapshot(): MultiOrderSnapshot = MultiOrderSnapshot(
+        selectedOrderNo = selectedOrderNo,
+        entries = entries.map { (orderNo, state) -> MultiOrderEntry(orderNo, state) },
+    )
 
     fun state(orderNo: String): OrderDetailLoadState? = entries[orderNo]
 

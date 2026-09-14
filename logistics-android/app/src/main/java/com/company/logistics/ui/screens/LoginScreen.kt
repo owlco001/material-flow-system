@@ -104,7 +104,7 @@ fun LoginScreen(
         Spacer(Modifier.height(36.dp))
 
         Text(
-            "账号",
+            "账号/工号",
             modifier = Modifier.fillMaxWidth(),
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,

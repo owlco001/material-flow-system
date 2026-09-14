@@ -36,6 +36,7 @@ import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
+import com.company.logistics.ui.MultiOrderSnapshot
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
@@ -58,6 +59,8 @@ fun OrderDetailScreen(
     detail: com.company.logistics.model.OrderDetail? = null,
     loading: Boolean,
     onRefresh: () -> Unit = {},
+    multiOrder: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
+    onSelectOrder: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
@@ -86,6 +89,28 @@ fun OrderDetailScreen(
                 description = "扫描生产订单号后，在此展示订单下各物料的需求、到料与在库情况"
             )
             return@Column
+        }
+
+        if (multiOrder.entries.isNotEmpty()) {
+            SectionTitle("最近订单")
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                multiOrder.entries.forEach { entry ->
+                    androidx.compose.material3.TextButton(onClick = { onSelectOrder(entry.orderNo) }) {
+                        Text(
+                            entry.orderNo + when {
+                                entry.state.isLoading -> " · 加载中"
+                                entry.state.error != null -> " · 失败"
+                                else -> ""
+                            },
+                            color = if (entry.orderNo == multiOrder.selectedOrderNo) MaterialTheme.colorScheme.primary else LogisticsTheme.colors.textSecondary,
+                        )
+                    }
+                }
+            }
+            multiOrder.entries.firstOrNull { it.orderNo == multiOrder.selectedOrderNo }?.state?.error?.let {
+                Text("订单读取失败：$it", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+            VSpace(Spacing.sm)
         }
 
         // 订单头卡

@@ -115,6 +115,7 @@ data class LogisticsUiState(
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
     val orderDetail: OrderDetail? = null,
+    val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
     val workspaceSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
@@ -257,6 +258,7 @@ class LogisticsViewModel(
     private var auditLoadGeneration = 0L
     private var workspaceLoadGeneration = 0L
     private var workspaceLoadJob: Job? = null
+    private val multiOrderDetails = MultiOrderDetailState()
     private var previewController: AdminRolePreviewController? = null
     @Volatile
     private var sessionGeneration = 0L
@@ -1797,8 +1799,7 @@ class LogisticsViewModel(
                     }
                     when (scan.type) {
                         ScanType.MATERIAL_CODE -> loadMaterial(scan.normalizedValue)
-                        ScanType.PRODUCTION_ORDER ->
-                            loadOrder(scan.normalizedValue)
+                        ScanType.PRODUCTION_ORDER -> openOrderDetail(scan.normalizedValue)
                         ScanType.LOCATION_CODE -> {
                             _state.update {
                                 it.copy(
@@ -1891,11 +1892,48 @@ class LogisticsViewModel(
             }
     }
 
-    /** Re-reads the same order after a successful mutation; failures never optimistically change order facts. */
-    fun refreshOrderDetail() {
-        val orderNo = _state.value.orderStatus?.documentNo ?: return
-        operationScope.launch { loadOrder(orderNo) }
+    fun openOrderDetail(orderNo: String) {
+        if (orderNo.isBlank()) return
+        multiOrderDetails.select(orderNo)
+        publishMultiOrderState()
+        refreshOrderDetail(orderNo)
     }
+
+    fun selectOrder(orderNo: String) {
+        if (!multiOrderDetails.orderNos.contains(orderNo)) return openOrderDetail(orderNo)
+        multiOrderDetails.select(orderNo)
+        val entry = multiOrderDetails.state(orderNo)
+        _state.update { it.copy(orderDetail = entry?.content, orderStatus = entry?.content?.let(::toOrderStatus), loading = entry?.isLoading == true, error = entry?.error) }
+        publishMultiOrderState()
+    }
+
+    /** Re-reads the selected order only; each order owns its loading/error/content state. */
+    fun refreshOrderDetail() {
+        _state.value.multiOrderSnapshot.selectedOrderNo?.let(::refreshOrderDetail)
+            ?: _state.value.orderStatus?.documentNo?.let(::refreshOrderDetail)
+    }
+
+    private fun refreshOrderDetail(orderNo: String) {
+        val requestId = multiOrderDetails.beginRefresh(orderNo)
+        publishMultiOrderState()
+        operationScope.launch {
+            repo.orderDetail(orderNo)
+                .onSuccess { detail ->
+                    if (!multiOrderDetails.applySuccess(orderNo, requestId, detail)) return@onSuccess
+                    _state.update { it.copy(orderDetail = detail, orderStatus = toOrderStatus(detail), screen = Screen.ORDER_DETAIL, loading = false, message = "订单详情已更新") }
+                    publishMultiOrderState()
+                }
+                .onFailure { error ->
+                    if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
+                    _state.update { it.copy(loading = false, error = orderErrorMessage(error)) }
+                    publishMultiOrderState()
+                }
+        }
+    }
+
+    private fun toOrderStatus(detail: OrderDetail) = OrderMaterialStatus(detail.orderNo, "PRODUCTION_ORDER", detail.materials, null, detail.orderId, detail.productName, detail.orderStatus)
+    private fun orderErrorMessage(error: Throwable) = if (error is ApiException) error.safeMessage("订单查询失败，请重试") else "网络不可用，请检查连接后重试"
+    private fun publishMultiOrderState() { _state.update { it.copy(multiOrderSnapshot = multiOrderDetails.snapshot()) } }
 
     private fun refreshOrderAfterMutation() {
         if (_state.value.orderStatus != null) refreshOrderDetail()

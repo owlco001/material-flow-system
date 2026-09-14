@@ -75,3 +75,27 @@ class MultiOrderDetailStateTest {
         total = 0,
     )
 }
+
+
+class MultiOrderDetailStateBoundedTest {
+    @Test
+    fun keepsAtMostFiveOrdersAndProtectsStaleResponses() {
+        val state = MultiOrderDetailState()
+        val ids = (1..6).map { "ORD-$it" }
+        ids.forEach { state.select(it) }
+        assertEquals(5, state.size)
+        assertFalse(state.orderNos.contains("ORD-1"))
+        val request = state.beginRefresh("ORD-6")
+        assertFalse(state.applySuccess("ORD-6", request - 1, detail("ORD-6")))
+        assertTrue(state.applySuccess("ORD-6", request, detail("ORD-6")))
+        assertEquals("ORD-6", state.snapshot().selectedOrderNo)
+        assertEquals("ORD-6", state.snapshot().entries.single { it.orderNo == "ORD-6" }.state.content?.orderNo)
+    }
+
+    private fun detail(orderNo: String) = OrderDetail(
+        orderId = "id-$orderNo", orderNo = orderNo, productName = null, orderStatus = "OPEN",
+        materials = emptyList(), assemblyTasks = emptyList(),
+        laborSummary = com.company.logistics.model.OrderDetailLaborSummary(0, 0, 0),
+        timeline = emptyList(), page = 1, pageSize = 20, total = 0,
+    )
+}
