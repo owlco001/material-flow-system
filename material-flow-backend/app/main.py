@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="物料流转系统 API", version="0.1.0")
 bearer = HTTPBearer(auto_error=False)
+password_hasher = PasswordHasher()
 
 
 def now() -> str:
@@ -38,12 +41,19 @@ def db() -> sqlite3.Connection:
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
+    if salt is None:
+        return password_hasher.hash(password)
     salt = salt or secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
     return f"scrypt${salt.hex()}${digest.hex()}"
 
 
 def check_password(password: str, encoded: str) -> bool:
+    if encoded.startswith("$argon2id$"):
+        try:
+            return password_hasher.verify(encoded, password)
+        except VerifyMismatchError:
+            return False
     _, salt_hex, digest_hex = encoded.split("$", 2)
     actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1)
     return hmac.compare_digest(actual.hex(), digest_hex)
@@ -57,6 +67,7 @@ def init_db() -> None:
     c = db()
     c.executescript("""
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL, password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS setup_initializations(idempotency_key TEXT PRIMARY KEY, user_id TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS materials(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, batch_no TEXT, expiry_date TEXT, total_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS locations(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
@@ -69,9 +80,9 @@ def init_db() -> None:
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
         password = os.environ.get("INITIAL_ADMIN_PASSWORD")
-        if not password:
-            raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
-        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
+        if password:
+            user_hash = hash_password(password)
+            c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", user_hash, 1, 1, now()))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
@@ -84,11 +95,13 @@ def startup() -> None:
     init_db()
 
 
-def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> sqlite3.Row:
+def current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> sqlite3.Row:
     if not credentials:
         raise HTTPException(401, "未登录")
     c = db(); row = c.execute("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>? AND u.active=1", (credentials.credentials, int(time.time()))).fetchone(); c.close()
     if not row: raise HTTPException(401, "会话已失效")
+    if row["must_change_password"] and request.url.path != "/api/v1/auth/change-password":
+        raise HTTPException(403, {"code": "PASSWORD_CHANGE_REQUIRED", "message": "首次登录必须修改密码", "traceId": request.headers.get("x-request-id", ""), "retryable": False, "details": {}})
     return row
 
 
@@ -97,6 +110,22 @@ class Login(BaseModel):
     password: str
     deviceId: str = Field(min_length=1, max_length=128)
     clientVersion: str = "0.1.0"
+
+
+class SetupAdmin(BaseModel):
+    password: str = Field(min_length=12, max_length=256)
+    confirmPassword: str = Field(min_length=12, max_length=256)
+    idempotencyKey: str = Field(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$", min_length=8, max_length=128)
+
+
+class ChangePassword(BaseModel):
+    currentPassword: str = Field(min_length=1, max_length=256)
+    newPassword: str = Field(min_length=12, max_length=256)
+    confirmPassword: str = Field(min_length=12, max_length=256)
+
+
+def setup_error(code: str, message: str, status: int, request_id: str = "") -> HTTPException:
+    return HTTPException(status, {"code": code, "message": message, "traceId": request_id, "retryable": False, "details": {}})
 
 
 class Scan(BaseModel):
@@ -122,6 +151,43 @@ class Decision(BaseModel):
 def health() -> dict[str, str]: return {"status": "ok", "service": "material-flow", "serverTime": now()}
 
 
+@app.get("/api/v1/setup/status")
+def setup_status() -> dict[str, Any]:
+    c = db(); initialized = c.execute("SELECT 1 FROM users WHERE username='owlco' AND active=1").fetchone() is not None; c.close()
+    return {"initialized": initialized, "username": "owlco"}
+
+
+@app.post("/api/v1/setup/initialize-admin")
+def initialize_admin(body: SetupAdmin, response: Response, x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
+    request_id = x_request_id or ""
+    if body.password != body.confirmPassword:
+        raise setup_error("PASSWORD_CONFIRMATION_MISMATCH", "两次密码不一致", 400, request_id)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        old = c.execute("SELECT user_id,password_hash FROM setup_initializations WHERE idempotency_key=?", (body.idempotencyKey,)).fetchone()
+        if old:
+            if not check_password(body.password, old["password_hash"]):
+                audit(c, None, None, "INITIALIZE_ADMIN", "SETUP", body.idempotencyKey, "FAILED", request_id); c.commit()
+                raise setup_error("IDEMPOTENCY_PAYLOAD_MISMATCH", "幂等键对应的请求内容不同", 409, request_id)
+            audit(c, old["user_id"], "ADMIN", "INITIALIZE_ADMIN", "SETUP", body.idempotencyKey, "SUCCESS", request_id); c.commit()
+            response.status_code = 200
+            return {"initialized": True, "username": "owlco", "mustChangePassword": True, "idempotent": True}
+        if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone():
+            audit(c, None, None, "INITIALIZE_ADMIN", "SETUP", body.idempotencyKey, "FAILED", request_id); c.commit()
+            raise setup_error("ALREADY_INITIALIZED", "管理员已初始化", 409, request_id)
+        user_id = "u_admin"; password_hash = hash_password(body.password)
+        response.status_code = 201
+        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", (user_id, "owlco", "系统管理员", "ADMIN", password_hash, 1, 1, now()))
+        c.execute("INSERT INTO setup_initializations VALUES(?,?,?,?)", (body.idempotencyKey, user_id, password_hash, now()))
+        audit(c, user_id, "ADMIN", "INITIALIZE_ADMIN", "SETUP", body.idempotencyKey, "SUCCESS", request_id); c.commit()
+        return {"initialized": True, "username": "owlco", "mustChangePassword": True}
+    except HTTPException:
+        c.rollback(); raise
+    finally:
+        c.close()
+
+
 @app.post("/api/v1/auth/login")
 def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
     c = db(); user = c.execute("SELECT * FROM users WHERE username=? AND active=1", (body.username,)).fetchone()
@@ -130,6 +196,16 @@ def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[
     token = secrets.token_urlsafe(32); expires = int(time.time()) + 86400
     c.execute("INSERT INTO sessions VALUES(?,?,?)", (token, user["id"], expires)); audit(c, user["id"], user["role"], "LOGIN", "USER", user["id"], "SUCCESS", x_request_id or ""); c.commit(); c.close()
     return {"accessToken": token, "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat(), "mustChangePassword": bool(user["must_change_password"]), "user": {"id": user["id"], "username": user["username"], "displayName": user["display_name"], "role": user["role"]}}
+
+
+@app.post("/api/v1/auth/change-password")
+def change_password(body: ChangePassword, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None)) -> dict[str, bool]:
+    if body.newPassword != body.confirmPassword:
+        raise setup_error("PASSWORD_CONFIRMATION_MISMATCH", "两次密码不一致", 400, x_request_id or "")
+    if not check_password(body.currentPassword, user["password_hash"]):
+        raise setup_error("CURRENT_PASSWORD_INVALID", "当前密码错误", 401, x_request_id or "")
+    c = db(); c.execute("UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?", (hash_password(body.newPassword), user["id"])); audit(c, user["id"], user["role"], "CHANGE_PASSWORD", "USER", user["id"], "SUCCESS", x_request_id or ""); c.commit(); c.close()
+    return {"success": True, "mustChangePassword": False}
 
 
 @app.post("/api/v1/scan/resolve")
