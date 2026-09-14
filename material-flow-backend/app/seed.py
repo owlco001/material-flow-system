@@ -41,10 +41,11 @@ def _insert_fixture(c: sqlite3.Connection) -> None:
     rnd = random.Random(20260914)
     ts = now()
     user_password = os.environ.get(SEED_USER_PASSWORD_ENV)
-    assemblers = [
+    assembler_specs = [
         (f"{SEED_PREFIX}_ASM_{i}", f"{SEED_PREFIX.lower()}_assembler_{i}", "装配测试工")
         for i in range(1, 4)
     ]
+    assemblers = assembler_specs
     users = [
         (f"{SEED_PREFIX}_SUP_{i}", f"{SEED_PREFIX.lower()}_supervisor_{i}", "车间测试主管", "WORKSHOP_SUPERVISOR")
         for i in range(1, 3)
@@ -59,8 +60,12 @@ def _insert_fixture(c: sqlite3.Connection) -> None:
                 (uid, username, display_name, role, password_hash, 1, 1, ts),
             )
     else:
-        # Tasks remain useful without creating accounts that could be logged into.
-        assemblers = []
+        # Reuse previously-created fixture accounts, but never create loginable
+        # accounts implicitly when the password was not supplied.
+        assemblers = [
+            spec for spec in assembler_specs
+            if c.execute("SELECT 1 FROM users WHERE id=? AND role='ASSEMBLER' AND active=1", (spec[0],)).fetchone()
+        ]
 
     assembler_ids = [row[0] for row in assemblers]
     statuses = ["WAITING_MATERIAL", "MATERIAL_ACCEPTED", "IN_PROGRESS", "COMPLETED"]
@@ -120,10 +125,10 @@ def _insert_fixture(c: sqlite3.Connection) -> None:
                 (transfer_id, worker_id, task_id, transfer_labor_id, "COMPLETED", f"{SEED_PREFIX} transfer fixture", ts, ts,
                  f"{SEED_PREFIX}_TRANSFER_OP_{i}"))
 
-    _insert_operational_fixture(c, ts)
+    _insert_operational_fixture(c, ts, assembler_ids)
 
 
-def _insert_operational_fixture(c: sqlite3.Connection, ts: str) -> None:
+def _insert_operational_fixture(c: sqlite3.Connection, ts: str, assembler_ids: list[str]) -> None:
     """Write the relational order/material/warehouse fixture without accounts."""
     rnd = random.Random(20260915)
     for index, (_label, code, name, spec, unit, quantity) in enumerate(SEED_MATERIALS, 1):
@@ -164,7 +169,7 @@ def _insert_operational_fixture(c: sqlite3.Connection, ts: str) -> None:
             device_rows.append((order_index, device_id, device_no))
 
     for order_index, device_id, device_no in device_rows:
-        for material_index in range(1, 4):
+        for material_index in range(1, 5):
             material_id = f"{SEED_PREFIX}_MATERIAL_{((order_index + material_index - 2) % len(SEED_MATERIALS)) + 1}"
             required = 4 + order_index + material_index
             arrived = 0 if material_index == 1 else required
@@ -184,7 +189,9 @@ def _insert_operational_fixture(c: sqlite3.Connection, ts: str) -> None:
         c.execute("""INSERT OR IGNORE INTO assembly_tasks
                    (id,order_no,device_id,device_no,assigned_assembler_id,status,progress_stage,task_version,created_at,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?)""", (task_id, f"MF_TEST_ORDER_0{order_index}", device_id,
-                   c.execute("SELECT device_no FROM order_devices WHERE id=?", (device_id,)).fetchone()[0], None, task_status, stage, stage + 1, ts, ts))
+                   c.execute("SELECT device_no FROM order_devices WHERE id=?", (device_id,)).fetchone()[0],
+                   assembler_ids[(order_index - 1) % len(assembler_ids)] if assembler_ids else None,
+                   task_status, stage, stage + 1, ts, ts))
 
     for index in range(1, 4):
         material_id = f"{SEED_PREFIX}_MATERIAL_{index}"
@@ -210,10 +217,15 @@ def validate_seed(c: sqlite3.Connection) -> dict[str, Any]:
     tables = ("users", "assembly_tasks", "labor_records", "progress_events", "temporary_transfers")
     counts = {table: c.execute(f"SELECT COUNT(*) FROM {table} WHERE id LIKE ?", (f"{SEED_PREFIX}%",)).fetchone()[0]
               for table in tables}
-    has_users = bool(c.execute("SELECT COUNT(*) FROM users WHERE id LIKE ?", (f"{SEED_PREFIX}%",)).fetchone()[0])
-    expected = {"users": 5 if has_users else 0, "assembly_tasks": 6,
-                "labor_records": 6 if has_users else 0, "progress_events": 5 if has_users else 0,
-                "temporary_transfers": 2 if has_users else 0}
+    assembler_count = c.execute(
+        "SELECT COUNT(*) FROM users WHERE id LIKE ? AND role='ASSEMBLER' AND active=1",
+        (f"{SEED_PREFIX}_ASM_%",),
+    ).fetchone()[0]
+    expected = {"users": c.execute("SELECT COUNT(*) FROM users WHERE id LIKE ?", (f"{SEED_PREFIX}%",)).fetchone()[0],
+                "assembly_tasks": 6,
+                "labor_records": 6 if assembler_count else 0,
+                "progress_events": 5 if assembler_count else 0,
+                "temporary_transfers": 2 if assembler_count else 0}
     if counts != expected:
         raise RuntimeError(f"fixture counts mismatch: {counts} != {expected}")
     if c.execute("PRAGMA foreign_key_check").fetchall():
