@@ -39,7 +39,7 @@ def test_seed_without_password_skips_users_but_keeps_tasks(tmp_path):
     result = _run(data_dir, "--seed")
     assert result.returncode == 0, result.stderr
     assert '"users": 0' in result.stdout
-    assert '"assembly_tasks": 4' in result.stdout
+    assert '"assembly_tasks": 6' in result.stdout
     assert '"temporary_transfers": 0' in result.stdout
 
 
@@ -56,7 +56,7 @@ def test_seed_twice_is_idempotent_and_validates_database(tmp_path, monkeypatch):
     try:
         prefix = "MF_TEST_SEED_V1%"
         for table, expected in {
-            "users": 5, "assembly_tasks": 4, "labor_records": 6,
+            "users": 5, "assembly_tasks": 6, "labor_records": 6,
             "progress_events": 5, "temporary_transfers": 2,
         }.items():
             assert connection.execute(f"SELECT COUNT(*) FROM {table} WHERE id LIKE ?", (prefix,)).fetchone()[0] == expected
