@@ -526,7 +526,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS materials(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, batch_no TEXT, expiry_date TEXT, total_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS locations(id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS inventory(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), UNIQUE(material_id, location_id));
-    CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT);
+    CREATE TABLE IF NOT EXISTS transfer_requests(id TEXT PRIMARY KEY, client_operation_id TEXT UNIQUE NOT NULL, type TEXT NOT NULL, document_no TEXT, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT, executed_at TEXT, rejection_reason TEXT);
     CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, operator_id TEXT, role TEXT, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, request_id TEXT, occurred_at TEXT NOT NULL, result TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL, view_role TEXT, action TEXT);
     CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -680,6 +680,10 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     结构，并把历史需求保留为未入库的按订单级需求。
     """
     c.execute("UPDATE users SET role='MATERIAL' WHERE role='MATERIAL_CLERK'")
+
+    transfer_cols = {r["name"] for r in c.execute("PRAGMA table_info(transfer_requests)").fetchall()}
+    if "rejection_reason" not in transfer_cols:
+        c.execute("ALTER TABLE transfer_requests ADD COLUMN rejection_reason TEXT")
 
     exception_cols = {r["name"] for r in c.execute("PRAGMA table_info(exceptions)").fetchall()}
     if "order_no" not in exception_cols:
@@ -1959,6 +1963,7 @@ def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
         "created_at": row["created_at"],
         "approved_by": row["approved_by"],
         "approved_at": row["approved_at"],
+        "rejection_reason": row["rejection_reason"] if "rejection_reason" in row.keys() else None,
         "executed_at": row["executed_at"],
         "handoverStatus": handover["status"] if handover else None,
         "lastHandoverId": handover["id"] if handover else None,
@@ -2644,9 +2649,9 @@ def create_transfer(
 
         rid = "tr_" + uuid.uuid4().hex
         c.execute(
-            "INSERT INTO transfer_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO transfer_requests (id,client_operation_id,type,document_no,status,payload_json,created_by,created_at,approved_by,approved_at,executed_at,rejection_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (rid, op_id_str, body.type, body.documentNo, "PENDING_APPROVAL",
-             body.model_dump_json(), user["id"], now(), None, None, None),
+             body.model_dump_json(), user["id"], now(), None, None, None, None),
         )
         audit(c, user["id"], user["role"], "CREATE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
         c.commit()
@@ -2661,9 +2666,6 @@ def create_transfer(
                        retryable=True, trace_id=trace_id) from None
     c.close()
     status = "PENDING_APPROVAL"
-    if body.type == "TRANSFER":
-        # 契约 4.3：TRANSFER 由创建接口完成事务执行，不进入审批
-        status = _execute_transfer_items(rid, user, trace_id)["status"]
     return {"requestId": rid, "status": status, "serverTime": now(), "traceId": trace_id}
 
 
@@ -2735,7 +2737,7 @@ def _execute_transfer_items(
         if row["status"] == "EXECUTED":
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
                            "申请已执行，不能重复执行", trace_id=trace_id)
-        if row["status"] != "APPROVED" and row["type"] != "TRANSFER":
+        if row["status"] != "APPROVED":
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "申请尚未审批通过", trace_id=trace_id)
 
         # 审批人与执行人不能是同一用户（TRANSFER 无需审批，跳过）
@@ -2872,8 +2874,7 @@ def approve(
 ) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id)
     require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
-        raise ApiError(403, CODE_FORBIDDEN, "无审批权限", trace_id=trace_id)
+    # ADMIN may approve any request; other roles require the applicant's direct manager relation.
     if body.decision not in {"APPROVE", "REJECT"}:
         raise ApiError(400, CODE_VALIDATION_ERROR, "decision 无效", trace_id=trace_id)
     # 契约 4.2：拒绝必须填写原因，长度 1-500
@@ -2910,15 +2911,26 @@ def approve(
             return result
 
         transfer = c.execute(
-            "SELECT id,type,status,approved_by,approved_at FROM transfer_requests WHERE id=?",
+            "SELECT id,type,status,created_by,approved_by,approved_at FROM transfer_requests WHERE id=?",
             (rid,),
         ).fetchone()
         if not transfer:
             raise ApiError(404, CODE_VALIDATION_ERROR, "申请不存在", trace_id=trace_id)
+        if user["role"] != "ADMIN":
+            if transfer["created_by"] == user["id"]:
+                raise ApiError(403, CODE_FORBIDDEN, "申请人不能审批本人申请", trace_id=trace_id)
+            if not c.execute("SELECT 1 FROM employee_managers LIMIT 1").fetchone() and user["role"] == "WAREHOUSE_ADMIN":
+                # Backward-compatible databases predating manager assignments.
+                pass
+            elif not c.execute(
+                "SELECT 1 FROM employee_managers WHERE employee_id=? AND manager_id=?",
+                (transfer["created_by"], user["id"]),
+            ).fetchone():
+                raise ApiError(403, CODE_FORBIDDEN, "仅申请人的直属领导可审批", trace_id=trace_id)
         cur = c.execute(
-            "UPDATE transfer_requests SET status=?,approved_by=?,approved_at=? "
+            "UPDATE transfer_requests SET status=?,approved_by=?,approved_at=?,rejection_reason=? "
             "WHERE id=? AND status='PENDING_APPROVAL'",
-            (status, user["id"], now(), rid),
+            (status, user["id"], now(), (body.comment.strip() if status == "REJECTED" else None), rid),
         )
         if cur.rowcount != 1:
             raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
@@ -2932,6 +2944,13 @@ def approve(
                 c, "OUTBOUND_APPROVED", rid, user, trace_id, operation_id,
                 {"status": "PENDING_APPROVAL"},
                 {"status": "APPROVED", "approvedAt": decision_time},
+                request, entity_type="TRANSFER_REQUEST",
+            )
+        elif status == "REJECTED":
+            _audit_event(
+                c, "TRANSFER_REJECTED", rid, user, trace_id, operation_id,
+                {"status": "PENDING_APPROVAL"},
+                {"status": "REJECTED", "reason": body.comment.strip()},
                 request, entity_type="TRANSFER_REQUEST",
             )
         result = {
