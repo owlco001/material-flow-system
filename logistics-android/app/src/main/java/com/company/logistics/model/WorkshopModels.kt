@@ -20,10 +20,10 @@ enum class AssemblyAction(val label: String) {
 }
 
 data class AssemblyTask(
-    val id: String, val orderNo: String, val deviceId: String, val deviceNo: String,
-    val materialSummary: String, val status: AssemblyTaskStatus, val progressStage: Int,
-    val taskVersion: Int, val currentLaborRecordId: String?, val currentLaborStartedAt: String?,
-    val accumulatedLaborMinutes: Int?, val assignedAssemblerId: String?, val assignedAssemblerName: String?,
+    val id: String, val orderNo: String = "", val deviceId: String, val deviceNo: String,
+    val materialSummary: String = "", val status: AssemblyTaskStatus, val progressStage: Int,
+    val taskVersion: Int, val currentLaborRecordId: String? = null, val currentLaborStartedAt: String? = null,
+    val accumulatedLaborMinutes: Int? = null, val assignedAssemblerId: String? = null, val assignedAssemblerName: String? = null,
     val serverTime: String? = null,
 )
 
@@ -58,6 +58,21 @@ data class WorkshopProgressSummary(
     val workshopId: String?, val totalTasks: Int, val completedTasks: Int, val overallProgressPercent: Int,
     val totalLaborMinutes: Int, val assemblyLaborMinutes: Int, val temporaryTransferLaborMinutes: Int,
     val machines: List<MachineProgress>, val generatedAt: String
+)
+
+data class OrderDetailTimelineEvent(
+    val type: String, val entityId: String, val status: String?, val serverTime: String?, val actorId: String?
+)
+
+data class OrderDetailLaborSummary(
+    val assemblyLaborMinutes: Int, val temporaryTransferLaborMinutes: Int, val totalLaborMinutes: Int
+)
+
+data class OrderDetail(
+    val orderId: String, val orderNo: String, val productName: String?, val orderStatus: String?,
+    val materials: List<OrderMaterialItem>, val assemblyTasks: List<AssemblyTask>,
+    val laborSummary: OrderDetailLaborSummary, val timeline: List<OrderDetailTimelineEvent>,
+    val page: Int, val pageSize: Int, val total: Int
 )
 
 data class AssemblyActionRequest(val clientOperationId: String, val expectedVersion: Int? = null, val stage: Int? = null, val remark: String? = null)

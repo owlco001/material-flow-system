@@ -18,6 +18,7 @@ import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.MachineProgress
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.RoleWorkspaceSummary
 import com.company.logistics.model.RoleWorkspaceSummaryFactory
 import com.company.logistics.model.ScanResult
@@ -113,6 +114,7 @@ data class LogisticsUiState(
     val lastScan: ScanResult? = null,
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
+    val orderDetail: OrderDetail? = null,
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
     val workspaceSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
@@ -1860,14 +1862,15 @@ class LogisticsViewModel(
     }
 
     private suspend fun loadOrder(orderNo: String) {
-        repo.orderMaterialStatus(orderNo)
-            .onSuccess { status ->
+        repo.orderDetail(orderNo)
+            .onSuccess { detail ->
                 _state.update {
                     it.copy(
-                        orderStatus = status,
+                        orderDetail = detail,
+                        orderStatus = OrderMaterialStatus(detail.orderNo, "PRODUCTION_ORDER", detail.materials, null, detail.orderId, detail.productName, detail.orderStatus),
                         screen = Screen.ORDER_DETAIL,
                         loading = false,
-                        message = "订单状态已更新"
+                        message = "订单详情已更新"
                     )
                 }
             }

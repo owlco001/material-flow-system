@@ -55,6 +55,7 @@ import com.company.logistics.ui.theme.Spacing
 @Composable
 fun OrderDetailScreen(
     status: OrderMaterialStatus?,
+    detail: com.company.logistics.model.OrderDetail? = null,
     loading: Boolean,
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -160,6 +161,29 @@ fun OrderDetailScreen(
                     fontSize = 11.sp,
                     color = LogisticsTheme.colors.textTertiary
                 )
+            }
+        }
+
+        detail?.let { aggregate ->
+            VSpace(Spacing.md)
+            SectionTitle("装配任务（${aggregate.assemblyTasks.size}/${aggregate.total}）")
+            aggregate.assemblyTasks.forEach { task ->
+                AppCard {
+                    Text("${task.deviceNo} · ${task.status.label}", fontWeight = FontWeight.Bold)
+                    Text("进度阶段：${task.progressStage}  版本：${task.taskVersion}", fontSize = 12.sp)
+                    Text("责任人：${task.assignedAssemblerId ?: "服务端未提供"}", fontSize = 12.sp)
+                }
+                VSpace(Spacing.sm)
+            }
+            SectionTitle("工时（分钟）")
+            AppCard {
+                Text("装配：${aggregate.laborSummary.assemblyLaborMinutes}  临时调拨：${aggregate.laborSummary.temporaryTransferLaborMinutes}")
+                Text("总工时：${aggregate.laborSummary.totalLaborMinutes}", fontWeight = FontWeight.Bold)
+            }
+            VSpace(Spacing.md)
+            SectionTitle("流转时间线（${aggregate.timeline.size}）")
+            aggregate.timeline.forEach { event ->
+                Text("${event.serverTime ?: "服务端未提供"} · ${event.type} · ${event.status ?: "服务端未提供"} · ${event.actorId ?: "服务端未提供"}", fontSize = 12.sp)
             }
         }
 

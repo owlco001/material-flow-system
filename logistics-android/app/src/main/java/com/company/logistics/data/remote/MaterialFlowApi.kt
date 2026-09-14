@@ -16,6 +16,7 @@ import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.WorkshopProgressSummary
+import com.company.logistics.model.OrderDetail
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -223,6 +224,12 @@ open class MaterialFlowApi(
         ApiParser.parseOrderMaterialStatus(
             request("POST", "/api/v1/orders/material-status", body.toString())
         )
+    }
+
+    suspend fun orderDetail(orderNo: String, page: Int = 1, pageSize: Int = 20): OrderDetail = withContext(Dispatchers.IO) {
+        require(orderNo.isNotBlank()) { "orderNo 不能为空" }
+        require(page >= 1 && pageSize == 20) { "订单详情分页固定为 20 条" }
+        ApiParser.parseOrderDetail(request("GET", "/api/v1/orders/${encodeQuery(orderNo)}/detail?page=$page&pageSize=$pageSize", null))
     }
 
     // ==================== 4.3 工作台 ====================

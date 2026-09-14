@@ -37,6 +37,9 @@ import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskStatus
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
+import com.company.logistics.model.OrderDetail
+import com.company.logistics.model.OrderDetailLaborSummary
+import com.company.logistics.model.OrderDetailTimelineEvent
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -49,6 +52,40 @@ import org.json.JSONObject
  *  - 解析失败抛 [ApiException]，由上层统一转换为可展示的错误文案。
  */
 object ApiParser {
+
+    private fun parseOrderDetailTask(o: JSONObject): AssemblyTask = AssemblyTask(
+        id = o.optString("taskId"), orderNo = "", deviceId = o.optString("deviceId"), deviceNo = o.optString("deviceNo"),
+        materialSummary = "", status = AssemblyTaskStatus.from(o.optString("status")), progressStage = o.optInt("progressStage"),
+        taskVersion = o.optInt("taskVersion"), currentLaborRecordId = null, currentLaborStartedAt = null,
+        accumulatedLaborMinutes = null, assignedAssemblerId = nullableString(o, "assignedAssemblerId"), assignedAssemblerName = null
+    )
+    fun parseOrderDetail(json: String): OrderDetail {
+        val root = JSONObject(json)
+        val materials = buildList {
+            val array = root.optJSONArray("materials") ?: JSONArray()
+            for (i in 0 until array.length()) {
+                val o = array.getJSONObject(i)
+                val code = nullableString(o, "statusCode")
+                val label = nullableString(o, "statusLabel") ?: ""
+                add(OrderMaterialItem(
+                    deviceId = nullableString(o, "deviceId"), deviceType = nullableString(o, "deviceType"), deviceNo = nullableString(o, "deviceNo"),
+                    materialId = o.optString("materialId"), materialCode = o.optString("materialCode"), name = o.optString("materialName"),
+                    specification = nullableString(o, "specification"), requiredQuantity = o.optInt("requiredQuantity"),
+                    arrivedQuantity = o.optInt("arrivedQuantity"), inStockQuantity = o.optInt("inStockQuantity"),
+                    statusCode = MaterialStatusCode.from(code, label), label = label, colorToken = o.optString("colorToken"), serverStatusCode = code
+                ))
+            }
+        }
+        val tasks = root.optJSONArray("assemblyTasks")?.let { arr -> buildList { for (i in 0 until arr.length()) add(parseOrderDetailTask(arr.getJSONObject(i))) } }.orEmpty()
+        val labor = root.optJSONObject("laborSummary") ?: JSONObject()
+        val timeline = root.optJSONArray("timeline")?.let { arr -> buildList { for (i in 0 until arr.length()) { val e = arr.getJSONObject(i); add(OrderDetailTimelineEvent(e.optString("type"), e.optString("entityId"), nullableString(e, "status"), nullableString(e, "serverTime"), nullableString(e, "actorId"))) } } }.orEmpty()
+        return OrderDetail(
+            orderId = root.optString("orderId"), orderNo = root.optString("orderNo"), productName = nullableString(root, "productName"), orderStatus = nullableString(root, "orderStatus"),
+            materials = materials, assemblyTasks = tasks,
+            laborSummary = OrderDetailLaborSummary(labor.optInt("assemblyLaborMinutes"), labor.optInt("temporaryTransferLaborMinutes"), labor.optInt("totalLaborMinutes")),
+            timeline = timeline, page = root.optInt("page", 1), pageSize = root.optInt("pageSize", 20), total = root.optInt("total", tasks.size)
+        )
+    }
 
     fun parseLogin(json: String): LoginResult {
         val root = JSONObject(json)

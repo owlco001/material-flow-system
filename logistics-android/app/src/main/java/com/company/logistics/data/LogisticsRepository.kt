@@ -17,6 +17,7 @@ import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOpType
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.SyncStatus
 import com.company.logistics.model.WorkspaceMaterialItemsPage
@@ -173,6 +174,10 @@ open class LogisticsRepository(
 
     suspend fun orderMaterialStatus(documentNo: String): Result<OrderMaterialStatus> = resultOf {
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo)
+    }
+
+    open suspend fun orderDetail(orderNo: String, page: Int = 1, pageSize: Int = 20): Result<OrderDetail> = resultOf {
+        api.orderDetail(orderNo, page, pageSize)
     }
 
     /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */
