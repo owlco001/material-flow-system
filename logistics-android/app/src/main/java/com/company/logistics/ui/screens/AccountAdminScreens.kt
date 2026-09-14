@@ -11,6 +11,21 @@ import androidx.compose.ui.unit.dp
 import com.company.logistics.model.ManagedUser
 import com.company.logistics.model.UserRole
 
+private val assignableUserRoles = listOf(
+    UserRole.OPERATOR,
+    UserRole.MATERIAL,
+    UserRole.WAREHOUSE_ADMIN,
+    UserRole.WORKSHOP_SUPERVISOR,
+    UserRole.ASSEMBLER,
+)
+
+internal object AddUserFormPolicy {
+    val allowedRoles: List<UserRole> = assignableUserRoles
+
+    fun canSubmit(employeeNo: String, displayName: String, password: String, role: UserRole?): Boolean =
+        employeeNo.isNotBlank() && displayName.isNotBlank() && password.isNotBlank() && role in allowedRoles
+}
+
 @Composable
 fun ChangePasswordScreen(loading: Boolean, error: String?, onSubmit: (String, String, String) -> Unit) {
     var old by remember { mutableStateOf("") }
@@ -27,18 +42,63 @@ fun ChangePasswordScreen(loading: Boolean, error: String?, onSubmit: (String, St
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UserManagementScreen(users: List<ManagedUser>, loading: Boolean, error: String?, onRefresh: () -> Unit, onAdd: (String, String, String, String, String?) -> Unit) {
-    var employeeNo by remember { mutableStateOf("") }; var displayName by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }; var managerId by remember { mutableStateOf("") }
-    var role by remember { mutableStateOf(UserRole.OPERATOR.code) }
+fun UserManagementScreen(
+    users: List<ManagedUser>,
+    loading: Boolean,
+    error: String?,
+    onRefresh: () -> Unit,
+    onBack: () -> Unit,
+    onAdd: (String, String, String, String, String?) -> Unit,
+) {
+    var employeeNo by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var managerId by remember { mutableStateOf("") }
+    var selectedRole by remember { mutableStateOf<UserRole?>(null) }
+    var roleMenuExpanded by remember { mutableStateOf(false) }
+    val canSubmit = AddUserFormPolicy.canSubmit(employeeNo, displayName, password, selectedRole)
+
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("用户管理", style = MaterialTheme.typography.headlineSmall); TextButton(onClick = onRefresh) { Text("刷新") } }
-        OutlinedTextField(employeeNo, { employeeNo = it }, Modifier.fillMaxWidth(), label = { Text("员工工号") }, singleLine = true)
-        OutlinedTextField(displayName, { displayName = it }, Modifier.fillMaxWidth(), label = { Text("姓名") }, singleLine = true)
-        OutlinedTextField(role, { role = it.uppercase() }, Modifier.fillMaxWidth(), label = { Text("角色（非 ADMIN）") }, singleLine = true)
-        OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("临时密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onBack) { Text("返回管理员工作台") }
+            Text("用户管理", style = MaterialTheme.typography.headlineSmall)
+            TextButton(onClick = onRefresh) { Text("刷新") }
+        }
+        Text("添加员工（带 * 为必填项）", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(employeeNo, { employeeNo = it }, Modifier.fillMaxWidth(), label = { Text("员工工号 *") }, singleLine = true)
+        OutlinedTextField(displayName, { displayName = it }, Modifier.fillMaxWidth(), label = { Text("姓名 *") }, singleLine = true)
+        ExposedDropdownMenuBox(
+            expanded = roleMenuExpanded,
+            onExpandedChange = { roleMenuExpanded = !roleMenuExpanded },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedTextField(
+                value = selectedRole?.label.orEmpty(),
+                onValueChange = {},
+                modifier = Modifier.menuAnchor().fillMaxWidth(),
+                readOnly = true,
+                label = { Text("角色 *") },
+                placeholder = { Text("请选择角色") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleMenuExpanded) },
+                singleLine = true,
+            )
+            ExposedDropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
+                assignableUserRoles.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text("${option.code} ${option.label}") },
+                        onClick = {
+                            selectedRole = option
+                            roleMenuExpanded = false
+                        },
+                    )
+                }
+            }
+        }
+        OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("临时密码 *") }, supportingText = { Text("必填，密码要求由后端校验") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
         OutlinedTextField(managerId, { managerId = it }, Modifier.fillMaxWidth(), label = { Text("直属领导 ID（可选）") }, singleLine = true)
-        Button(onClick = { onAdd(employeeNo, displayName, role, password, managerId.ifBlank { null }) }, enabled = !loading && employeeNo.isNotBlank() && displayName.isNotBlank() && password.isNotBlank()) { Text("添加员工") }
+        Button(onClick = { onAdd(employeeNo, displayName, selectedRole!!.code, password, managerId.ifBlank { null }) }, enabled = !loading && canSubmit, modifier = Modifier.fillMaxWidth()) { Text("添加员工") }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) { items(users) { u -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) { Text("${u.displayName} (${u.username})"); Text("角色：${u.role.label} · 首次改密：${if (u.mustChangePassword) "是" else "否"}"); Text(if (u.active) "启用" else "停用") } } } }
     }

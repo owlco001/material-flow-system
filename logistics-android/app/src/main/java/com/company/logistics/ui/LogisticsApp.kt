@@ -367,7 +367,13 @@ fun LogisticsApp(
 
                     Screen.USER_MANAGEMENT -> {
                         LaunchedEffect(Unit) { viewModel.loadManagedUsers() }
-                        UserManagementScreen(state.managedUsers, state.managedUsersLoading, state.managedUsersError, { viewModel.loadManagedUsers() }) { no, name, role, pw, manager -> viewModel.addManagedUser(no, name, role, pw, manager) }
+                        UserManagementScreen(
+                            users = state.managedUsers,
+                            loading = state.managedUsersLoading,
+                            error = state.managedUsersError,
+                            onRefresh = { viewModel.loadManagedUsers() },
+                            onBack = { viewModel.navigate(Screen.PROFILE) },
+                        ) { no, name, role, pw, manager -> viewModel.addManagedUser(no, name, role, pw, manager) }
                     }
 
                     Screen.LOCATION_BIND, Screen.SUBMIT, Screen.LOGIN, Screen.CHANGE_PASSWORD ->
