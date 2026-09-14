@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -14,7 +15,7 @@ def _run(data_dir: Path, *args: str, enabled: str | None = None) -> subprocess.C
     env = os.environ.copy()
     env["MATERIAL_FLOW_DATA"] = str(data_dir)
     env["MATERIAL_FLOW_UPLOADS"] = str(data_dir.parent / "uploads")
-    env["INITIAL_ADMIN_PASSWORD"] = "SeedTestAdmin@2026"
+    env["INITIAL_ADMIN_PASSWORD"] = secrets.token_urlsafe(24)
     if enabled is not None:
         env["ENABLE_TEST_DATA_SEED"] = enabled
     else:
@@ -33,7 +34,18 @@ def test_seed_is_disabled_by_default(tmp_path):
     assert not (data_dir / "material_flow.db").exists()
 
 
-def test_seed_twice_is_idempotent_and_validates_database(tmp_path):
+def test_seed_without_password_skips_users_but_keeps_tasks(tmp_path):
+    data_dir = tmp_path / "data"
+    result = _run(data_dir, "--seed")
+    assert result.returncode == 0, result.stderr
+    assert '"users": 0' in result.stdout
+    assert '"assembly_tasks": 4' in result.stdout
+    assert '"temporary_transfers": 0' in result.stdout
+
+
+def test_seed_twice_is_idempotent_and_validates_database(tmp_path, monkeypatch):
+    # Generate a process-local value; no credential is stored in the test source.
+    monkeypatch.setenv("TEST_DATA_SEED_PASSWORD", secrets.token_urlsafe(24))
     data_dir = tmp_path / "data"
     first = _run(data_dir, "--seed")
     second = _run(data_dir, enabled="true")
@@ -44,7 +56,8 @@ def test_seed_twice_is_idempotent_and_validates_database(tmp_path):
     try:
         prefix = "MF_TEST_SEED_V1%"
         for table, expected in {
-            "users": 5, "assembly_tasks": 4, "labor_records": 4, "progress_events": 5,
+            "users": 5, "assembly_tasks": 4, "labor_records": 6,
+            "progress_events": 5, "temporary_transfers": 2,
         }.items():
             assert connection.execute(f"SELECT COUNT(*) FROM {table} WHERE id LIKE ?", (prefix,)).fetchone()[0] == expected
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -54,7 +67,8 @@ def test_seed_twice_is_idempotent_and_validates_database(tmp_path):
             (prefix,),
         ).fetchone()[0] == 0
         assert connection.execute(
-            "SELECT COUNT(*) FROM users WHERE id LIKE ? AND password_hash LIKE '%SeedTestAdmin%'", (prefix,)
+            "SELECT COUNT(*) FROM temporary_transfers WHERE id LIKE ? AND status NOT IN ('ACTIVE','COMPLETED')",
+            (prefix,),
         ).fetchone()[0] == 0
     finally:
         connection.close()

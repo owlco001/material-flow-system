@@ -60,8 +60,11 @@ redacted audit event and do not change the session role or permissions.
 `app.seed` is a separate test-data operation. It is disabled unless the
 command includes `--seed` or the environment explicitly sets
 `ENABLE_TEST_DATA_SEED=true`. It creates only a small, fixed-prefix
-`MF_TEST_SEED_V1` fixture set with synthetic credentials and is safe to run
-repeatedly. Do not set this flag in production.
+`MF_TEST_SEED_V1` fixture set and is safe to run repeatedly. User rows are
+inserted only when `TEST_DATA_SEED_PASSWORD` is explicitly supplied by the
+local test runner; otherwise user insertion is skipped while business
+fixtures are still populated. Never store that value in source, docs, shell
+history, or Git, and never enable this flag in production.
 
 ## Migration and startup
 
@@ -91,8 +94,9 @@ Uvicorn launches. The service binds only to the loopback interface; external
 TLS termination and access control belong to the existing reverse-proxy and
 network policy.
 
-After a systemd-backed release, load the environment file and run the fixture
-operation explicitly, only in a test/staging database:
+After every release that changes the schema, run the migration and then refresh
+fixtures explicitly, only in a test/staging database. Load the environment file
+without copying its contents into the repository or logs:
 
 ```bash
 cd /srv/material-flow
