@@ -112,6 +112,12 @@ open class LogisticsRepository(
         Unit
     }
 
+    open suspend fun setupStatus(): Result<com.company.logistics.data.remote.SetupStatusDto> = resultOf { api.setupStatus() }
+
+    open suspend fun initializeAdmin(password: String, confirmPassword: String): Result<com.company.logistics.data.remote.InitializeAdminResponseDto> = resultOf {
+        api.initializeAdmin(password, confirmPassword, UUID.randomUUID().toString())
+    }
+
     open suspend fun listUsers(): Result<List<com.company.logistics.model.ManagedUser>> = resultOf { api.listUsers() }
 
     open suspend fun addUser(employeeNo: String, displayName: String, role: String, password: String, managerId: String?): Result<Unit> = resultOf {

@@ -210,6 +210,20 @@ class MaterialFlowApiContractTest {
         }
     }
 
+    @Test
+    fun setupStatusParsesContractFields() {
+        val status = ApiParser.parseSetupStatus("""{"initialized":false,"adminUsername":"owlco","mustChangePassword":true,"serverTime":"now"}""")
+        assertEquals(false, status.initialized)
+        assertEquals("owlco", status.adminUsername)
+        assertTrue(status.mustChangePassword)
+    }
+
+    @Test
+    fun initializeAdminRejectsShortOrMismatchedPasswordsBeforeNetworkAccess() = runBlocking {
+        assertTrue(runCatching { MaterialFlowApi().initializeAdmin("short", "short", UUID.randomUUID().toString()) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { MaterialFlowApi().initializeAdmin("long-enough", "different", UUID.randomUUID().toString()) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
     private fun readRequest(socket: Socket): CapturedRequest {
         val input = socket.getInputStream().bufferedReader()
         val requestLine = input.readLine()

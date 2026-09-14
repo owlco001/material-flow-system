@@ -203,6 +203,22 @@ open class MaterialFlowApi(
         }.toString())
     }
 
+    suspend fun setupStatus(): SetupStatusDto = withContext(Dispatchers.IO) {
+        ApiParser.parseSetupStatus(request("GET", "/api/v1/setup/status", null, auth = false))
+    }
+
+    suspend fun initializeAdmin(password: String, confirmPassword: String, clientOperationId: String): InitializeAdminResponseDto = withContext(Dispatchers.IO) {
+        require(password.length in 8..256) { "密码长度必须为 8~256 个字符" }
+        require(password == confirmPassword) { "两次输入的密码不一致" }
+        requireUuid(clientOperationId, "clientOperationId")
+        val body = JSONObject().apply {
+            put("password", password)
+            put("confirmPassword", confirmPassword)
+            put("clientOperationId", clientOperationId)
+        }
+        ApiParser.parseInitializeAdmin(request("POST", "/api/v1/setup/initialize-admin", body.toString(), auth = false, idempotencyKey = clientOperationId))
+    }
+
     suspend fun listUsers(): List<com.company.logistics.model.ManagedUser> = withContext(Dispatchers.IO) {
         val root = JSONObject(request("GET", "/api/v1/users", null))
         val items = root.optJSONArray("items") ?: JSONArray()

@@ -76,6 +76,7 @@ fun LogisticsApp(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showUnauthenticatedEndpointConfig by rememberSaveable { mutableStateOf(false) }
+    var showAdminActivation by rememberSaveable { mutableStateOf(false) }
 
     // 已认证页面的成功 / 错误统一走 Snackbar；登录页保留错误文案，避免
     // LaunchedEffect 在展示后立刻清掉登录失败或 refresh 失效提示。
@@ -96,11 +97,15 @@ fun LogisticsApp(
             }
 
             AuthState.Unauthenticated -> {
-                if (showUnauthenticatedEndpointConfig) {
+                if (showAdminActivation) {
+                    com.company.logistics.ui.screens.AdminActivationScreen(viewModel.repository, { showAdminActivation = false }, { showAdminActivation = false })
+                } else if (showUnauthenticatedEndpointConfig) {
                     EndpointConfigScreen(
                         store = endpointStore,
+                        repository = viewModel.repository,
                         onEndpointChanged = onEndpointChanged,
                         onBack = { showUnauthenticatedEndpointConfig = false },
+                        onOpenActivation = { showAdminActivation = true },
                     )
                 } else {
                     LoginScreen(

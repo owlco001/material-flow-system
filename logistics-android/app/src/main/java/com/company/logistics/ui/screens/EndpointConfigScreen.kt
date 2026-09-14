@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.BuildConfig
 import com.company.logistics.data.EndpointStore
+import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
@@ -61,8 +62,10 @@ import kotlinx.coroutines.delay
 @Composable
 fun EndpointConfigScreen(
     store: EndpointStore,
+    repository: LogisticsRepository? = null,
     onEndpointChanged: (String) -> Unit,
     onBack: () -> Unit,
+    onOpenActivation: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LogisticsTheme.colors
@@ -210,6 +213,11 @@ fun EndpointConfigScreen(
             },
             enabled = input.isNotBlank(),
         )
+
+        if (repository != null && !store.isPlaceholder) {
+            VSpace(Spacing.md)
+            SecondaryButton(text = "初始管理员激活", onClick = onOpenActivation)
+        }
 
         // ---------- 连通性测试 ----------
         VSpace(Spacing.md)

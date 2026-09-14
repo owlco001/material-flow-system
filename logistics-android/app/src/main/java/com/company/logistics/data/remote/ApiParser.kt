@@ -54,6 +54,16 @@ import org.json.JSONObject
  */
 object ApiParser {
 
+    fun parseSetupStatus(json: String): SetupStatusDto {
+        val root = JSONObject(json)
+        return SetupStatusDto(root.optBoolean("initialized"), root.optString("admin_username", root.optString("adminUsername")), root.optBoolean("must_change_password", root.optBoolean("mustChangePassword")), root.optString("server_time", root.optString("serverTime")))
+    }
+
+    fun parseInitializeAdmin(json: String): InitializeAdminResponseDto {
+        val root = JSONObject(json)
+        return InitializeAdminResponseDto(root.optBoolean("initialized"), root.optString("username"), root.optBoolean("mustChangePassword", root.optBoolean("must_change_password")), root.optString("serverTime", root.optString("server_time")), root.optString("traceId", root.optString("trace_id")))
+    }
+
     private fun parseOrderDetailTask(o: JSONObject): AssemblyTask = AssemblyTask(
         id = o.optString("taskId"), orderNo = "", deviceId = o.optString("deviceId"), deviceNo = o.optString("deviceNo"),
         materialSummary = "", status = AssemblyTaskStatus.from(o.optString("status")), progressStage = o.optInt("progressStage"),
@@ -704,6 +714,9 @@ object ApiParser {
 }
 
 /** 创建流转申请结果 */
+data class SetupStatusDto(val initialized: Boolean, val adminUsername: String, val mustChangePassword: Boolean, val serverTime: String)
+data class InitializeAdminResponseDto(val initialized: Boolean, val username: String, val mustChangePassword: Boolean, val serverTime: String, val traceId: String)
+
 data class TransferRequestResult(
     val requestId: String,
     val status: ApprovalStatus,

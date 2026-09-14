@@ -250,6 +250,7 @@ class LogisticsViewModel(
     private val previewControllerFactory: (UserRole) -> AdminRolePreviewController =
         ::InMemoryAdminRolePreviewController,
 ) : ViewModel() {
+    val repository: LogisticsRepository get() = repo
 
     private val operationScope: CoroutineScope
         get() = injectedScope ?: viewModelScope
