@@ -5,16 +5,66 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.company.logistics.model.RoleWorkspaceSummary
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkspaceViewRole
+import com.company.logistics.ui.Screen
 import com.company.logistics.ui.WorkspaceLoadState
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
 class WorkspaceScreenTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun ordinaryRoleBackendSettingsEntryRoutesToEndpointConfig() {
+        var destination: Screen? = null
+        composeRule.setContent {
+            WorkspaceScreen(
+                role = UserRole.OPERATOR,
+                authenticatedRole = UserRole.OPERATOR,
+                previewRole = null,
+                summary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
+                items = emptyList(),
+                summaryState = WorkspaceLoadState.IDLE,
+                summaryError = null,
+                summaryUnavailable = false,
+                itemsState = WorkspaceLoadState.EMPTY,
+                itemsError = null,
+                itemsUnavailable = false,
+                page = 1,
+                pageSize = 20,
+                total = 0,
+                totalPages = 0,
+                serverTime = null,
+                onRefresh = {},
+                onPageSizeChange = {},
+                onNextPage = {},
+                onPreviousPage = {},
+                onOpenApproval = {},
+                onOpenAudit = {},
+                currentUserId = null,
+                timelineItemId = null,
+                timeline = null,
+                timelineState = WorkspaceLoadState.IDLE,
+                timelineError = null,
+                handoverSubmittingId = null,
+                onOpenTimeline = {},
+                onRetryTimeline = {},
+                onHandoverAction = { _, _, _ -> },
+                onCreateHandover = { _, _, _, _ -> },
+                onEnterPreview = {},
+                onExitPreview = {},
+                onOpenEndpointConfig = { destination = Screen.ENDPOINT_CONFIG },
+            )
+        }
+
+        composeRule.onNodeWithText("后端设置").performClick()
+        assertEquals(Screen.ENDPOINT_CONFIG, destination)
+    }
 
     @Test
     fun adminSeesPreviewEntryAndPreviewBannerIsExplicitlyReadOnly() {

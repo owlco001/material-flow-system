@@ -117,6 +117,7 @@ fun WorkspaceScreen(
     onCreateHandover: (WorkspaceMaterialItem, Int, String, String?) -> Unit,
     onEnterPreview: (WorkspaceViewRole) -> Unit,
     onExitPreview: () -> Unit,
+    onOpenEndpointConfig: () -> Unit = {},
     modifier: Modifier = Modifier,
     assemblyTasks: List<AssemblyTask> = emptyList(),
     assemblyTaskState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
@@ -281,6 +282,12 @@ fun WorkspaceScreen(
                     }
                 }
             }
+            VSpace(Spacing.sm)
+            SecondaryButton(
+                text = "后端设置",
+                onClick = onOpenEndpointConfig,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         VSpace(Spacing.md)
