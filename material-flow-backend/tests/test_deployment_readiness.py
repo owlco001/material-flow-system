@@ -367,25 +367,28 @@ def test_deployment_inputs_are_pinned_and_service_uses_canonical_entries():
     assert "--host 0.0.0.0" not in service
 
 
-def test_missing_initial_admin_configuration_fails_without_partial_schema():
+def test_missing_initial_admin_configuration_allows_setup_initialization():
     data_dir = Path(tempfile.mkdtemp(prefix="mf_missing_admin_")) / "data"
     script = """
-import sqlite3
 import sys
 sys.path.insert(0, sys.argv[1])
 import main
-try:
-    main.init_db()
-except RuntimeError:
-    connection = sqlite3.connect(main.DB_PATH)
-    tables = connection.execute(
-        \"SELECT name FROM sqlite_master WHERE type='table'\"
-    ).fetchall()
-    connection.close()
-    if tables:
-        raise SystemExit(2)
-else:
-    raise SystemExit(3)
+from fastapi.testclient import TestClient
+import uuid
+main.init_db()
+with TestClient(main.app) as client:
+    status = client.get('/api/v1/setup/status')
+    assert status.status_code == 200 and status.json()['initialized'] is False
+    key = str(uuid.uuid4())
+    response = client.post('/api/v1/setup/initialize-admin', json={
+        'password': 'SetupAdmin@2026', 'confirmPassword': 'SetupAdmin@2026',
+        'clientOperationId': key,
+    }, headers={'X-Request-Id': str(uuid.uuid4()), 'Idempotency-Key': key})
+    assert response.status_code == 200 and response.json()['mustChangePassword'] is True
+    final_status = client.get('/api/v1/setup/status')
+    assert final_status.json()['initialized'] is True
+    assert final_status.json()['adminUsername'] == 'owlco'
+    assert final_status.json()['mustChangePassword'] is True
 """
     child_env = os.environ.copy()
     child_env.pop("INITIAL_ADMIN_PASSWORD", None)

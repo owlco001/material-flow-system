@@ -560,12 +560,9 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
-    if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
-        password = INITIAL_ADMIN_PASSWORD
-        if not password or not password.strip():
-            raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
+    if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0 and INITIAL_ADMIN_PASSWORD and INITIAL_ADMIN_PASSWORD.strip():
         # 环境注入的初始密码同样是临时凭据，首次登录必须完成改密。
-        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
+        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(INITIAL_ADMIN_PASSWORD), 1, 1, now()))
     setup_state = c.execute("SELECT 1 FROM setup_state WHERE id='default'").fetchone()
     if not setup_state:
         initialized = c.execute("SELECT 1 FROM users WHERE username='owlco' AND role='ADMIN'").fetchone() is not None
