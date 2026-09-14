@@ -1425,6 +1425,141 @@ def material_status(
     }
 
 
+@app.get("/api/v1/orders/{order_no}/detail")
+def order_detail(
+    order_no: str,
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """Return one order's server-fact aggregate with the existing visibility scope."""
+    c = db()
+    order = c.execute(
+        "SELECT id, order_no, product_name, status FROM production_orders WHERE order_no=?",
+        (order_no,),
+    ).fetchone()
+    if not order:
+        c.close()
+        raise ApiError(404, CODE_ORDER_NOT_FOUND, "订单不存在")
+
+    # Material rows deliberately reuse the established server-side scope.  This
+    # prevents this aggregate from becoming a broad order-material disclosure.
+    scoped = _workspace_requirements(c, user, order_no)
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER"} and not scoped:
+        c.close()
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看该订单")
+    if user["role"] == "ASSEMBLER" and not c.execute(
+        "SELECT 1 FROM assembly_tasks WHERE order_no=? AND assigned_assembler_id=?",
+        (order_no, user["id"]),
+    ).fetchone():
+        c.close()
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看该订单")
+
+    if user["role"] in {"ADMIN", "WORKSHOP_SUPERVISOR"}:
+        task_where, task_args = "order_no=?", [order_no]
+    elif user["role"] == "ASSEMBLER":
+        task_where, task_args = "order_no=? AND assigned_assembler_id=?", [order_no, user["id"]]
+    else:
+        task_where, task_args = "1=0", []
+    task_total = c.execute(
+        f"SELECT count(*) AS n FROM assembly_tasks WHERE {task_where}", task_args
+    ).fetchone()["n"]
+    task_rows = c.execute(
+        f"""SELECT id,device_id,device_no,status,progress_stage,task_version,
+                    assigned_assembler_id
+               FROM assembly_tasks WHERE {task_where}
+              ORDER BY created_at,id LIMIT ? OFFSET ?""",
+        task_args + [pageSize, (page - 1) * pageSize],
+    ).fetchall()
+
+    visible_task_ids = [r["id"] for r in task_rows] if user["role"] == "ASSEMBLER" else [
+        r["id"] for r in c.execute("SELECT id FROM assembly_tasks WHERE order_no=?", (order_no,)).fetchall()
+    ]
+    labor_args: list[Any] = [order_no]
+    labor_scope = "t.order_no=?"
+    if user["role"] == "ASSEMBLER":
+        labor_scope += " AND l.worker_user_id=?"
+        labor_args.append(user["id"])
+    elif user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR"}:
+        labor_scope = "1=0"
+        labor_args = []
+    labor = c.execute(
+        f"""SELECT l.type, COALESCE(sum(l.duration_minutes),0) AS minutes
+              FROM labor_records l LEFT JOIN assembly_tasks t ON t.id=l.task_id
+             WHERE ({labor_scope}) AND l.status='COMPLETED'
+             GROUP BY l.type""",
+        labor_args,
+    ).fetchall()
+    labor_totals = {r["type"]: int(r["minutes"] or 0) for r in labor}
+
+    # Only event types already written by the handover/transfer/assembly paths
+    # are projected; raw before/after payloads and network metadata stay private.
+    entity_ids = set(visible_task_ids)
+    entity_ids.update(r["id"] for r in c.execute(
+        """SELECT h.id FROM material_handovers h
+             JOIN material_work_items w ON w.id=h.work_item_id
+             JOIN order_material_requirements r ON r.id=w.requirement_id
+             JOIN production_orders o ON o.id=r.order_id WHERE o.order_no=?""", (order_no,)
+    ).fetchall())
+    entity_ids.update(r["id"] for r in c.execute(
+        "SELECT id FROM transfer_requests WHERE document_no=?", (order_no,)
+    ).fetchall())
+    allowed_events = {
+        "HANDOVER_CREATED", "HANDOVER_CONFIRMED", "MATERIAL_PICKED_UP",
+        "MATERIAL_AT_STATION", "HANDOVER_REJECTED", "HANDOVER_CANCELLED",
+        "OUTBOUND_APPROVED", "OUTBOUND_CONFIRMED", "MATERIAL_ACCEPTED_FOR_ASSEMBLY",
+        "ASSEMBLY_STARTED", "ASSEMBLY_PROGRESS_UPDATED", "ASSEMBLY_COMPLETED",
+    }
+    events: list[dict[str, Any]] = []
+    if entity_ids:
+        marks = ",".join("?" for _ in entity_ids)
+        rows = c.execute(
+            f"SELECT event_type,entity_id,actor_user_id,server_time,after_json FROM audit_events WHERE entity_id IN ({marks}) ORDER BY server_time,id",
+            list(entity_ids),
+        ).fetchall()
+        for row in rows:
+            if row["event_type"] not in allowed_events:
+                continue
+            try:
+                after = json.loads(row["after_json"])
+            except (TypeError, ValueError):
+                after = {}
+            events.append({
+                "type": row["event_type"], "entityId": row["entity_id"],
+                "status": after.get("status") or after.get("workspaceStatus") or after.get("handoverStatus"),
+                "serverTime": row["server_time"], "actorId": row["actor_user_id"],
+            })
+    c.close()
+    materials = [{
+        "requirementId": r["requirement_id"], "deviceId": r["device_id"],
+        "deviceType": r["device_type"], "deviceNo": r["device_no"],
+        "materialId": r["material_id"], "materialCode": r["material_code"],
+        "materialName": r["material_name"], "specification": r["specification"],
+        "unit": r["unit"], "requiredQuantity": r["required_quantity"],
+        "arrivedQuantity": r["arrived_quantity"], "inStockQuantity": r["in_stock_quantity"],
+        "statusCode": r["requirement_status_code"],
+    } for r in scoped]
+    assembly_minutes = labor_totals.get("ASSEMBLY", 0)
+    transfer_minutes = labor_totals.get("TEMPORARY_TRANSFER", 0)
+    return {
+        "orderId": order["id"], "orderNo": order["order_no"],
+        "productName": order["product_name"], "orderStatus": order["status"],
+        "materials": materials,
+        "assemblyTasks": [{
+            "taskId": r["id"], "deviceId": r["device_id"], "deviceNo": r["device_no"],
+            "status": r["status"], "progressStage": r["progress_stage"],
+            "taskVersion": r["task_version"], "assignedAssemblerId": r["assigned_assembler_id"],
+        } for r in task_rows],
+        "laborSummary": {
+            "assemblyLaborMinutes": assembly_minutes,
+            "temporaryTransferLaborMinutes": transfer_minutes,
+            "totalLaborMinutes": assembly_minutes + transfer_minutes,
+        },
+        "timeline": events,
+        "page": page, "pageSize": pageSize, "total": task_total,
+    }
+
+
 def _workspace_status_meta(status_code: str) -> tuple[str, str]:
     """返回服务端状态展示元数据，并对未知状态保持安全降级。"""
     return (
@@ -1623,6 +1758,29 @@ def _workspace_requirements(
         )
         if material_id:
             args.extend([material_id] * 4)
+    elif effective_role == "ASSEMBLER":
+        # Assemblers may see material facts only for devices on their assigned
+        # tasks; this keeps the aggregate consistent with task ownership.
+        assembler_id = user["id"] if view_role is None else None
+        if assembler_id:
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM assembly_tasks at
+                     WHERE at.order_no = o.order_no
+                       AND at.device_id = r.device_id
+                       AND at.assigned_assembler_id = ?
+                )
+            """
+            args.append(assembler_id)
+        else:
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM assembly_tasks at
+                     JOIN users au ON au.id=at.assigned_assembler_id
+                     WHERE at.order_no=o.order_no AND at.device_id=r.device_id
+                       AND au.role='ASSEMBLER' AND au.active=1
+                )
+            """
 
     query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
     return c.execute(query, args).fetchall()
