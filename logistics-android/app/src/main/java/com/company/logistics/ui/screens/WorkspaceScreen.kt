@@ -729,6 +729,8 @@ private fun titleFor(role: UserRole): String = when (role) {
     UserRole.MATERIAL -> "物料员工作台"
     UserRole.WAREHOUSE_ADMIN -> "仓库管理工作台"
     UserRole.ADMIN -> "管理员工作台"
+    UserRole.WORKSHOP_SUPERVISOR -> "车间主管工作台"
+    UserRole.ASSEMBLER -> "装配工工作台"
 }
 
 private fun subtitleFor(role: UserRole): String = when (role) {
@@ -736,6 +738,8 @@ private fun subtitleFor(role: UserRole): String = when (role) {
     UserRole.MATERIAL -> "处理服务端返回的待出库与已出库工作项"
     UserRole.WAREHOUSE_ADMIN -> "查看服务端返回的待审批与待交接工作项"
     UserRole.ADMIN -> "查看服务端角色范围内的工作项与明确可用指标"
+    UserRole.WORKSHOP_SUPERVISOR -> "查看车间总工时、装配工时、临时调拨工时与机台进度"
+    UserRole.ASSEMBLER -> "接受物料、记录装配工时并按 1/2/3 提交进度"
 }
 
 private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
@@ -756,5 +760,15 @@ private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
         WorkspaceEntry(WorkspaceMetricKey.OUT_OF_STOCK, "缺货", "服务端摘要返回的缺货数量", "刷新"),
         WorkspaceEntry(WorkspaceMetricKey.EXCEPTION, "异常", "摘要接口未提供该计数", "刷新"),
         WorkspaceEntry(WorkspaceMetricKey.AUDIT, "审计入口", "审计接口未在本迭代提供", "打开审计"),
+    )
+    UserRole.WORKSHOP_SUPERVISOR -> listOf(
+        WorkspaceEntry(WorkspaceMetricKey.TOTAL_LABOR_MINUTES, "总工时（分钟）", "装配工时 + 临时调拨工时", "刷新", true),
+        WorkspaceEntry(WorkspaceMetricKey.ASSEMBLY_LABOR_MINUTES, "装配工时（分钟）", "服务端装配工时汇总", "刷新"),
+        WorkspaceEntry(WorkspaceMetricKey.TEMPORARY_TRANSFER_LABOR_MINUTES, "临时调拨工时（分钟）", "独立临时调拨工时", "刷新"),
+        WorkspaceEntry(WorkspaceMetricKey.OVERALL_PROGRESS_PERCENT, "订单总进度", "已完工任务占比", "刷新"),
+    )
+    UserRole.ASSEMBLER -> listOf(
+        WorkspaceEntry(WorkspaceMetricKey.ALL, "我的装配任务", "服务端仅返回分配给本人的任务", "刷新", true),
+        WorkspaceEntry(WorkspaceMetricKey.OVERALL_PROGRESS_PERCENT, "当前进度", "按服务端阶段 1/2/3 提交", "刷新"),
     )
 }

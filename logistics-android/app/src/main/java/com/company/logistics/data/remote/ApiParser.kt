@@ -29,6 +29,12 @@ import com.company.logistics.model.TransferRequestPage
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.HandoverTimelineEvent
+import com.company.logistics.model.WorkshopProgressSummary
+import com.company.logistics.model.MachineProgress
+import com.company.logistics.model.AssemblyTask
+import com.company.logistics.model.AssemblyTaskStatus
+import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.LaborType
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -182,6 +188,14 @@ object ApiParser {
             preview = root.optBoolean("preview", false),
             authenticatedRole = UserRole.from(nullableString(root, "authenticatedRole"))
                 .takeIf { nullableString(root, "authenticatedRole") != null },
+            totalLaborMinutes = nullableInt(root, "totalLaborMinutes")
+                ?: nullableInt(root, "total_labor_minutes"),
+            assemblyLaborMinutes = nullableInt(root, "assemblyLaborMinutes")
+                ?: nullableInt(root, "assembly_labor_minutes"),
+            temporaryTransferLaborMinutes = nullableInt(root, "temporaryTransferLaborMinutes")
+                ?: nullableInt(root, "temporary_transfer_labor_minutes"),
+            overallProgressPercent = nullableInt(root, "overallProgressPercent")
+                ?: nullableInt(root, "overall_progress_percent"),
         )
     }
 
@@ -518,9 +532,45 @@ object ApiParser {
         )
     }
 
-    /**
-     * 契约 5 统一错误结构：code / message / traceId / retryable / details
-     */
+    fun parseAssemblyTasks(json: String): List<AssemblyTask> {
+        val root = JSONObject(json)
+        val array = root.optJSONArray("items") ?: JSONArray()
+        return buildList { for (i in 0 until array.length()) add(parseAssemblyTask(array.getJSONObject(i))) }
+    }
+
+    fun parseAssemblyTask(json: String): AssemblyTask = parseAssemblyTask(JSONObject(json))
+
+    private fun parseAssemblyTask(o: JSONObject): AssemblyTask = AssemblyTask(
+        id = o.optString("id"), orderNo = o.optString("orderNo", o.optString("order_no")),
+        deviceId = o.optString("deviceId", o.optString("device_id")), deviceNo = o.optString("deviceNo", o.optString("device_no")),
+        materialSummary = o.optString("materialSummary", o.optString("material_summary")),
+        status = AssemblyTaskStatus.from(o.optString("status")), progressStage = o.optInt("progressStage", o.optInt("progress_stage", 0)),
+        taskVersion = o.optInt("taskVersion", o.optInt("task_version", 1)), currentLaborRecordId = nullableStringAny(o, "currentLaborRecordId", "current_labor_record_id"),
+        currentLaborStartedAt = nullableStringAny(o, "currentLaborStartedAt", "current_labor_started_at"), accumulatedLaborMinutes = o.optInt("accumulatedLaborMinutes", o.optInt("accumulated_labor_minutes", 0)),
+        assignedAssemblerId = nullableStringAny(o, "assignedAssemblerId", "assigned_assembler_id"), assignedAssemblerName = nullableStringAny(o, "assignedAssemblerName", "assigned_assembler_name")
+    )
+
+    fun parseLaborRecord(json: String): LaborRecord = parseLaborRecord(JSONObject(json))
+    private fun parseLaborRecord(o: JSONObject): LaborRecord = LaborRecord(
+        id = o.optString("id"), taskId = nullableStringAny(o, "taskId", "task_id"),
+        type = runCatching { LaborType.valueOf(o.optString("type")) }.getOrDefault(LaborType.ASSEMBLY),
+        startedAt = o.optString("startedAt", o.optString("started_at")), endedAt = nullableStringAny(o, "endedAt", "ended_at"),
+        durationMinutes = nullableIntAny(o, "durationMinutes", "duration_minutes"), remark = nullableString(o, "remark")
+    )
+
+    fun parseWorkshopSummary(json: String): WorkshopProgressSummary {
+        val root = JSONObject(json); val machines = root.optJSONArray("machines") ?: JSONArray()
+        return WorkshopProgressSummary(
+            workshopId = nullableStringAny(root, "workshopId", "workshop_id"), totalTasks = root.optInt("totalTasks", root.optInt("total_tasks")),
+            completedTasks = root.optInt("completedTasks", root.optInt("completed_tasks")), overallProgressPercent = root.optInt("overallProgressPercent", root.optInt("overall_progress_percent")),
+            totalLaborMinutes = root.optInt("totalLaborMinutes", root.optInt("total_labor_minutes")), assemblyLaborMinutes = root.optInt("assemblyLaborMinutes", root.optInt("assembly_labor_minutes")),
+            temporaryTransferLaborMinutes = root.optInt("temporaryTransferLaborMinutes", root.optInt("temporary_transfer_labor_minutes")),
+            machines = buildList { for (i in 0 until machines.length()) { val m = machines.getJSONObject(i); add(MachineProgress(m.optString("deviceId", m.optString("device_id")), m.optString("deviceNo", m.optString("device_no")), m.optInt("taskCount", m.optInt("task_count")), m.optInt("completedTaskCount", m.optInt("completed_task_count")), m.optInt("progressPercent", m.optInt("progress_percent")), m.optInt("laborMinutes", m.optInt("labor_minutes")))) } },
+            generatedAt = root.optString("generatedAt", root.optString("generated_at"))
+        )
+    }
+
+
     fun parseError(statusCode: Int, body: String?): ApiException {
         var message = "请求失败（HTTP $statusCode）"
         var code = "HTTP_$statusCode"

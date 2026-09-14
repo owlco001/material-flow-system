@@ -1455,6 +1455,7 @@ class LogisticsViewModel(
             UserRole.MATERIAL -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.QUEUE, NavTab.PROFILE)
             UserRole.WAREHOUSE_ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.QUEUE)
             UserRole.ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.PROFILE)
+            UserRole.WORKSHOP_SUPERVISOR, UserRole.ASSEMBLER -> listOf(NavTab.WORKSPACE, NavTab.PROFILE)
         }
 
         /** 角色的默认落地页 */

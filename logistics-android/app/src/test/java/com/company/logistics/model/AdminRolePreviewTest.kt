@@ -17,6 +17,8 @@ class AdminRolePreviewTest {
                 WorkspaceViewRole.MATERIAL,
                 WorkspaceViewRole.WAREHOUSE_ADMIN,
                 WorkspaceViewRole.ADMIN,
+                WorkspaceViewRole.WORKSHOP_SUPERVISOR,
+                WorkspaceViewRole.ASSEMBLER,
             ),
         )
 

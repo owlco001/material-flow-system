@@ -171,7 +171,17 @@ open class LogisticsRepository(
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo)
     }
 
-    /** 读取服务端角色工作台摘要；不从订单或库存响应推导工作流计数。 */
+    /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */
+    open suspend fun assemblyTasks(page: Int = 1): Result<List<com.company.logistics.model.AssemblyTask>> = resultOf { api.assemblyTasks(page) }
+    open suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.acceptAssemblyMaterial(taskId, clientOperationId) }
+    open suspend fun startAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.startAssemblyWork(taskId, expectedVersion, clientOperationId) }
+    open suspend fun submitAssemblyProgress(taskId: String, stage: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.submitAssemblyProgress(taskId, stage, expectedVersion, clientOperationId) }
+    open suspend fun completeAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.completeAssemblyWork(taskId, expectedVersion, clientOperationId) }
+    open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
+    open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
+    open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<com.company.logistics.model.WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }
+
+
     open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {
         api.workspaceSummary()
     }

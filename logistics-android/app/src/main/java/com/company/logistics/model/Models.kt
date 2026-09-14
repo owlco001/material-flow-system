@@ -20,7 +20,9 @@ enum class UserRole(val code: String, val label: String) {
     OPERATOR("OPERATOR", "操作员"),
     MATERIAL("MATERIAL", "物料员"),
     WAREHOUSE_ADMIN("WAREHOUSE_ADMIN", "仓库管理员"),
-    ADMIN("ADMIN", "管理员");
+    ADMIN("ADMIN", "管理员"),
+    WORKSHOP_SUPERVISOR("WORKSHOP_SUPERVISOR", "车间主管"),
+    ASSEMBLER("ASSEMBLER", "装配工");
 
     /** 是否可审批入库/出库/异常 */
     val canApprove: Boolean get() = this == WAREHOUSE_ADMIN || this == ADMIN
@@ -359,7 +361,11 @@ enum class WorkspaceMetricKey(val label: String, val description: String) {
     ALL("全量工作项", "服务端分页工作台接口返回的全量数量"),
     EXCEPTION("异常", "服务端明确标记的异常项"),
     OUT_OF_STOCK("缺货", "服务端摘要返回的缺货数量"),
-    AUDIT("审计记录", "服务端审计接口返回的记录")
+    AUDIT("审计记录", "服务端审计接口返回的记录"),
+    TOTAL_LABOR_MINUTES("总工时（分钟）", "服务端汇总的装配与临时调拨工时"),
+    ASSEMBLY_LABOR_MINUTES("装配工时（分钟）", "服务端汇总的装配工时"),
+    TEMPORARY_TRANSFER_LABOR_MINUTES("临时调拨工时（分钟）", "服务端独立临时调拨工时"),
+    OVERALL_PROGRESS_PERCENT("订单总进度", "服务端完成任务比例")
 }
 
 /**
@@ -406,6 +412,10 @@ data class WorkspaceSummary(
     val outboundConfirmedCount: Int? = null,
     val preview: Boolean = false,
     val authenticatedRole: UserRole? = null,
+    val totalLaborMinutes: Int? = null,
+    val assemblyLaborMinutes: Int? = null,
+    val temporaryTransferLaborMinutes: Int? = null,
+    val overallProgressPercent: Int? = null,
 )
 
 /** 工作台分页工作项响应。客户端只保留当前页，避免一次性加载全量数据。 */
@@ -665,6 +675,7 @@ object HandoverActionPolicy {
                     HandoverAction.REJECT,
                     HandoverAction.CANCEL,
                 )
+                UserRole.WORKSHOP_SUPERVISOR, UserRole.ASSEMBLER -> emptyList()
             }
         }
         return emptyList()
@@ -739,7 +750,11 @@ object ServerWorkspaceSummaryFactory {
             // 摘要契约没有异常计数和审计接口数据。
             WorkspaceMetricKey.EXCEPTION to WorkspaceMetric.unavailable(),
             WorkspaceMetricKey.OUT_OF_STOCK to metric(summary.outOfStockCount),
-            WorkspaceMetricKey.AUDIT to WorkspaceMetric.unavailable()
+            WorkspaceMetricKey.AUDIT to WorkspaceMetric.unavailable(),
+            WorkspaceMetricKey.TOTAL_LABOR_MINUTES to metric(summary.totalLaborMinutes),
+            WorkspaceMetricKey.ASSEMBLY_LABOR_MINUTES to metric(summary.assemblyLaborMinutes),
+            WorkspaceMetricKey.TEMPORARY_TRANSFER_LABOR_MINUTES to metric(summary.temporaryTransferLaborMinutes),
+            WorkspaceMetricKey.OVERALL_PROGRESS_PERCENT to metric(summary.overallProgressPercent)
         )
     )
 

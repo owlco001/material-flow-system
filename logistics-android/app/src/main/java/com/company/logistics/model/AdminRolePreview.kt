@@ -5,7 +5,9 @@ enum class WorkspaceViewRole(val code: String, val label: String) {
     OPERATOR("OPERATOR", "操作员"),
     MATERIAL("MATERIAL", "物料员"),
     WAREHOUSE_ADMIN("WAREHOUSE_ADMIN", "仓库管理员"),
-    ADMIN("ADMIN", "管理员");
+    ADMIN("ADMIN", "管理员"),
+    WORKSHOP_SUPERVISOR("WORKSHOP_SUPERVISOR", "车间主管"),
+    ASSEMBLER("ASSEMBLER", "装配工");
 
     fun toUserRole(): UserRole = UserRole.valueOf(name)
 
