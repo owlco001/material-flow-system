@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.company.logistics.R
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.Spacing
@@ -56,6 +59,8 @@ fun LoginScreen(
     errorMessage: String?,
     deviceId: String,
     onLogin: (username: String, password: String, deviceId: String, remember: Boolean) -> Unit,
+    endpointConfigured: Boolean = false,
+    onOpenEndpointConfig: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var username by remember { mutableStateOf("") }
@@ -72,24 +77,16 @@ fun LoginScreen(
     ) {
         Spacer(Modifier.height(72.dp))
 
-        // 品牌标识
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(MaterialTheme.colorScheme.primary, com.company.logistics.ui.theme.LogisticsColors.PrimaryDark)
-                    )
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("⇅", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        }
+        // 品牌标识：复用现有公司齿轮图标，不新增或修改图标资源。
+        Image(
+            painter = painterResource(R.mipmap.ic_launcher_foreground),
+            contentDescription = "博阳智造 Logo",
+            modifier = Modifier.size(72.dp),
+        )
 
         Spacer(Modifier.height(Spacing.lg))
         Text(
-            "物料流转系统",
+            "博阳智造",
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
             color = LogisticsTheme.colors.textPrimary
@@ -166,6 +163,20 @@ fun LoginScreen(
             onClick = { onLogin(username, password, deviceId, rememberLogin) },
             loading = loading,
             enabled = username.isNotBlank() && password.isNotBlank()
+        )
+
+        Spacer(Modifier.height(Spacing.md))
+        PrimaryButton(
+            text = if (endpointConfigured) "后端设置" else "立即设置后端",
+            onClick = onOpenEndpointConfig,
+            enabled = !loading,
+        )
+        Spacer(Modifier.height(Spacing.xs))
+        Text(
+            if (endpointConfigured) "后端已配置，可随时修改服务地址" else "尚未配置后端",
+            fontSize = 12.sp,
+            color = LogisticsTheme.colors.textTertiary,
+            textAlign = TextAlign.Center,
         )
 
         Spacer(Modifier.height(Spacing.lg))

@@ -24,7 +24,10 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,6 +73,7 @@ fun LogisticsApp(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    var showUnauthenticatedEndpointConfig by rememberSaveable { mutableStateOf(false) }
 
     // 已认证页面的成功 / 错误统一走 Snackbar；登录页保留错误文案，避免
     // LaunchedEffect 在展示后立刻清掉登录失败或 refresh 失效提示。
@@ -90,12 +94,22 @@ fun LogisticsApp(
             }
 
             AuthState.Unauthenticated -> {
-                LoginScreen(
-                    loading = state.loading,
-                    errorMessage = state.error,
-                    deviceId = remember { DeviceId.value },
-                    onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
-                )
+                if (showUnauthenticatedEndpointConfig) {
+                    EndpointConfigScreen(
+                        store = endpointStore,
+                        onEndpointChanged = onEndpointChanged,
+                        onBack = { showUnauthenticatedEndpointConfig = false },
+                    )
+                } else {
+                    LoginScreen(
+                        loading = state.loading,
+                        errorMessage = state.error,
+                        deviceId = remember { DeviceId.value },
+                        endpointConfigured = !endpointStore.usingBuildDefault && !endpointStore.isPlaceholder,
+                        onOpenEndpointConfig = { showUnauthenticatedEndpointConfig = true },
+                        onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
+                    )
+                }
                 return@LogisticsTheme
             }
 
