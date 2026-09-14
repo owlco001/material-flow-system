@@ -7,9 +7,12 @@ import com.company.logistics.data.remote.TransferItem
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.LoginResult
 import com.company.logistics.model.AuditLogPage
+import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
+import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOpType
 import com.company.logistics.model.OfflineOperation
@@ -19,6 +22,7 @@ import com.company.logistics.model.SyncStatus
 import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceSummary
 import com.company.logistics.model.WorkspaceViewRole
+import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.RoleWorkspaceRepository
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
@@ -173,13 +177,15 @@ open class LogisticsRepository(
 
     /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */
     open suspend fun assemblyTasks(page: Int = 1): Result<List<com.company.logistics.model.AssemblyTask>> = resultOf { api.assemblyTasks(page) }
+    open suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): Result<AssemblyTaskPage> = resultOf { api.assemblyTaskPage(page, pageSize) }
     open suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.acceptAssemblyMaterial(taskId, clientOperationId) }
-    open suspend fun startAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.startAssemblyWork(taskId, expectedVersion, clientOperationId) }
+    open suspend fun startAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<LaborRecord> = resultOf { api.startAssemblyWork(taskId, expectedVersion, clientOperationId) }
     open suspend fun submitAssemblyProgress(taskId: String, stage: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.submitAssemblyProgress(taskId, stage, expectedVersion, clientOperationId) }
     open suspend fun completeAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.completeAssemblyWork(taskId, expectedVersion, clientOperationId) }
-    open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
-    open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<com.company.logistics.model.LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
-    open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<com.company.logistics.model.WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }
+    open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
+    open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
+    open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }
+    open suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20): Result<MachineProgressPage> = resultOf { api.workshopMachineProgress(page, pageSize) }
 
 
     open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {

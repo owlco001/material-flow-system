@@ -28,6 +28,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.RoleWorkspaceSummary
+import com.company.logistics.model.AssemblyAction
+import com.company.logistics.model.AssemblyTask
+import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.MachineProgress
+import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
 import com.company.logistics.model.HandoverTimeline
@@ -55,6 +60,21 @@ private data class WorkspaceEntry(
     val actionLabel: String,
     val actionIsPrimary: Boolean = false
 )
+
+internal fun AssemblyTask.statusSymbol(): String = when (status) {
+    com.company.logistics.model.AssemblyTaskStatus.WAITING_MATERIAL -> "!"
+    com.company.logistics.model.AssemblyTaskStatus.MATERIAL_ACCEPTED -> "✓"
+    com.company.logistics.model.AssemblyTaskStatus.IN_PROGRESS -> "▶"
+    com.company.logistics.model.AssemblyTaskStatus.PAUSED_FOR_TEMPORARY_TRANSFER -> "Ⅱ"
+    com.company.logistics.model.AssemblyTaskStatus.COMPLETED -> "✓"
+}
+
+internal fun laborMinutesText(record: LaborRecord?): String = when {
+    record == null -> "—"
+    record.durationMinutes != null -> "${record.durationMinutes} 分钟"
+    record.startedAt.isNotBlank() -> "进行中 · 开始 ${record.startedAt}"
+    else -> "进行中"
+}
 
 /**
  * 角色工作台 —— 摘要和工作项均来自独立的服务端工作台接口。
@@ -97,7 +117,39 @@ fun WorkspaceScreen(
     onCreateHandover: (WorkspaceMaterialItem, Int, String, String?) -> Unit,
     onEnterPreview: (WorkspaceViewRole) -> Unit,
     onExitPreview: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    assemblyTasks: List<AssemblyTask> = emptyList(),
+    assemblyTaskState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    assemblyTaskError: String? = null,
+    assemblyTaskUnavailable: Boolean = false,
+    assemblyTaskPage: Int = 1,
+    assemblyTaskPageSize: Int = 20,
+    assemblyTaskTotal: Int = 0,
+    assemblyTaskTotalPages: Int = 0,
+    assemblySubmittingTaskId: String? = null,
+    assemblySubmittingAction: AssemblyAction? = null,
+    assemblyActiveLabor: Map<String, LaborRecord> = emptyMap(),
+    temporaryTransfer: LaborRecord? = null,
+    lastCompletedTemporaryTransfer: LaborRecord? = null,
+    temporaryTransferSourceTaskId: String? = null,
+    temporaryTransferSubmitting: Boolean = false,
+    workshopProgressSummary: WorkshopProgressSummary? = null,
+    workshopSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    workshopSummaryError: String? = null,
+    workshopSummaryUnavailable: Boolean = false,
+    workshopMachineProgress: List<MachineProgress> = emptyList(),
+    workshopMachineState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    workshopMachineError: String? = null,
+    workshopMachineUnavailable: Boolean = false,
+    workshopMachinePage: Int = 1,
+    workshopMachinePageSize: Int = 20,
+    workshopMachineHasNext: Boolean = false,
+    onAcceptAssemblyMaterial: (AssemblyTask) -> Unit = {},
+    onStartAssemblyWork: (AssemblyTask) -> Unit = {},
+    onSubmitAssemblyProgress: (AssemblyTask, Int) -> Unit = { _, _ -> },
+    onCompleteAssemblyWork: (AssemblyTask) -> Unit = {},
+    onStartTemporaryTransfer: (String?, String) -> Unit = { _, _ -> },
+    onCompleteTemporaryTransfer: (String) -> Unit = {},
 ) {
     val entries = entriesFor(role)
     var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
@@ -109,6 +161,65 @@ fun WorkspaceScreen(
             createItem = null
             reasonRequest = null
         }
+    }
+
+    if (role == UserRole.ASSEMBLER) {
+        AssemblerWorkspaceScreen(
+            authenticatedRole = authenticatedRole,
+            previewRole = previewRole,
+            tasks = assemblyTasks,
+            taskState = assemblyTaskState,
+            taskError = assemblyTaskError,
+            taskUnavailable = assemblyTaskUnavailable,
+            page = assemblyTaskPage,
+            pageSize = assemblyTaskPageSize,
+            total = assemblyTaskTotal,
+            totalPages = assemblyTaskTotalPages,
+            submittingTaskId = assemblySubmittingTaskId,
+            submittingAction = assemblySubmittingAction,
+            activeLabor = assemblyActiveLabor,
+            temporaryTransfer = temporaryTransfer ?: lastCompletedTemporaryTransfer,
+            temporaryTransferSourceTaskId = temporaryTransferSourceTaskId,
+            temporaryTransferSubmitting = temporaryTransferSubmitting,
+            onRefresh = onRefresh,
+            onPreviousPage = onPreviousPage,
+            onNextPage = onNextPage,
+            onAcceptMaterial = onAcceptAssemblyMaterial,
+            onStartWork = onStartAssemblyWork,
+            onProgress = onSubmitAssemblyProgress,
+            onCompleteWork = onCompleteAssemblyWork,
+            onStartTemporaryTransfer = onStartTemporaryTransfer,
+            onCompleteTemporaryTransfer = onCompleteTemporaryTransfer,
+            onEnterPreview = onEnterPreview,
+            onExitPreview = onExitPreview,
+            modifier = modifier,
+        )
+        return
+    }
+
+    if (role == UserRole.WORKSHOP_SUPERVISOR) {
+        WorkshopSupervisorScreen(
+            authenticatedRole = authenticatedRole,
+            previewRole = previewRole,
+            summary = workshopProgressSummary,
+            summaryState = workshopSummaryState,
+            summaryError = workshopSummaryError,
+            summaryUnavailable = workshopSummaryUnavailable,
+            machines = workshopMachineProgress,
+            machineState = workshopMachineState,
+            machineError = workshopMachineError,
+            machineUnavailable = workshopMachineUnavailable,
+            page = workshopMachinePage,
+            pageSize = workshopMachinePageSize,
+            hasNextPage = workshopMachineHasNext,
+            onRefresh = onRefresh,
+            onPreviousPage = onPreviousPage,
+            onNextPage = onNextPage,
+            onEnterPreview = onEnterPreview,
+            onExitPreview = onExitPreview,
+            modifier = modifier,
+        )
+        return
     }
 
     Column(
@@ -306,7 +417,7 @@ fun WorkspaceScreen(
 }
 
 @Composable
-private fun AdminRolePreviewDialog(
+internal fun AdminRolePreviewDialog(
     onDismiss: () -> Unit,
     onSelect: (WorkspaceViewRole) -> Unit,
 ) {

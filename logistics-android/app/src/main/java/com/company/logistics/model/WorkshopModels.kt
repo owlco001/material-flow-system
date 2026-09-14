@@ -12,17 +12,48 @@ enum class AssemblyTaskStatus(val code: String, val label: String) {
 
 enum class LaborType { ASSEMBLY, TEMPORARY_TRANSFER }
 
+enum class AssemblyAction(val label: String) {
+    ACCEPT_MATERIAL("接受物料"),
+    START_WORK("开工"),
+    PROGRESS("提交进度"),
+    COMPLETE_WORK("完工"),
+}
+
 data class AssemblyTask(
     val id: String, val orderNo: String, val deviceId: String, val deviceNo: String,
     val materialSummary: String, val status: AssemblyTaskStatus, val progressStage: Int,
     val taskVersion: Int, val currentLaborRecordId: String?, val currentLaborStartedAt: String?,
-    val accumulatedLaborMinutes: Int, val assignedAssemblerId: String?, val assignedAssemblerName: String?
+    val accumulatedLaborMinutes: Int?, val assignedAssemblerId: String?, val assignedAssemblerName: String?,
+    val serverTime: String? = null,
 )
+
+data class AssemblyTaskPage(
+    val items: List<AssemblyTask>,
+    val page: Int,
+    val pageSize: Int,
+    val total: Int,
+    val totalPages: Int,
+    val serverTime: String? = null,
+)
+
 data class LaborRecord(
     val id: String, val taskId: String?, val type: LaborType, val startedAt: String,
-    val endedAt: String?, val durationMinutes: Int?, val remark: String?
+    val endedAt: String?, val durationMinutes: Int?, val remark: String?,
+    val laborRecordId: String? = null,
+    val temporaryTransferId: String? = null,
+    val status: String? = null,
+    val taskVersion: Int? = null,
+    val serverTime: String? = null,
 )
-data class MachineProgress(val deviceId: String, val deviceNo: String, val taskCount: Int, val completedTaskCount: Int, val progressPercent: Int, val laborMinutes: Int)
+
+data class MachineProgress(val deviceId: String, val deviceNo: String, val taskCount: Int, val completedTaskCount: Int, val progressPercent: Int, val laborMinutes: Int?)
+
+data class MachineProgressPage(
+    val items: List<MachineProgress>,
+    val page: Int,
+    val pageSize: Int,
+)
+
 data class WorkshopProgressSummary(
     val workshopId: String?, val totalTasks: Int, val completedTasks: Int, val overallProgressPercent: Int,
     val totalLaborMinutes: Int, val assemblyLaborMinutes: Int, val temporaryTransferLaborMinutes: Int,

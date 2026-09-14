@@ -12,7 +12,9 @@ import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
 import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.AssemblyTask
+import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.WorkshopProgressSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -347,10 +349,15 @@ open class MaterialFlowApi(
         )
     }
 
-    /** Assembly task list, limited to the server-assigned assembler page. */
-    suspend fun assemblyTasks(page: Int = 1, pageSize: Int = 20): List<AssemblyTask> = withContext(Dispatchers.IO) {
+    /** Assembly task list. The server applies the assembler assignment scope. */
+    suspend fun assemblyTasks(page: Int = 1, pageSize: Int = 20): List<AssemblyTask> =
+        assemblyTaskPage(page, pageSize).items
+
+    suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): AssemblyTaskPage = withContext(Dispatchers.IO) {
         require(page >= 1 && pageSize == 20) { "装配任务分页固定为 20 条" }
-        ApiParser.parseAssemblyTasks(request("GET", "/api/v1/assembly/tasks?page=$page&pageSize=$pageSize", null))
+        ApiParser.parseAssemblyTaskPage(
+            request("GET", "/api/v1/assembly/tasks?page=$page&pageSize=$pageSize", null)
+        )
     }
 
     suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): AssemblyTask = assemblyTaskAction(taskId, "accept-material", clientOperationId, null)
@@ -359,34 +366,53 @@ open class MaterialFlowApi(
     suspend fun completeAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): AssemblyTask = assemblyTaskAction(taskId, "complete", clientOperationId, expectedVersion)
 
     suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId")
         require(remark.length in 1..500) { "临时调拨备注长度必须为 1~500 字符" }
-        ApiParser.parseLaborRecord(request("POST", "/api/v1/assembly/temporary-transfers/start", JSONObject().apply {
+        ApiParser.parseTemporaryTransfer(request("POST", "/api/v1/assembly/temporary-transfers/start", JSONObject().apply {
             put("taskId", taskId ?: JSONObject.NULL); put("remark", remark); put("clientOperationId", clientOperationId)
         }.toString(), idempotencyKey = clientOperationId))
     }
 
     suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
+        require(transferId.isNotBlank()) { "temporaryTransferId 不能为空" }
+        requireUuid(clientOperationId, "clientOperationId")
         require(remark.length in 1..500) { "临时调拨备注长度必须为 1~500 字符" }
-        ApiParser.parseLaborRecord(request("POST", "/api/v1/assembly/temporary-transfers/$transferId/complete", JSONObject().apply {
+        ApiParser.parseTemporaryTransfer(request("POST", "/api/v1/assembly/temporary-transfers/$transferId/complete", JSONObject().apply {
             put("remark", remark); put("clientOperationId", clientOperationId)
         }.toString(), idempotencyKey = clientOperationId))
     }
 
     suspend fun workshopSummary(from: String? = null, to: String? = null): WorkshopProgressSummary = withContext(Dispatchers.IO) {
-        val query = listOfNotNull(from?.let { "from=${encodeQuery(it)}" }, to?.let { "to=${encodeQuery(it)}" }).joinToString("&").let { if (it.isBlank()) "" else "?$it" }
-        ApiParser.parseWorkshopSummary(request("GET", "/api/v1/workshop/summary$query", null))
+        require(from == null && to == null) { "真实统计接口不支持日期范围参数" }
+        ApiParser.parseWorkshopSummary(request("GET", "/api/v1/workshop/summary", null))
+    }
+
+    suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20): MachineProgressPage = withContext(Dispatchers.IO) {
+        require(page >= 1 && pageSize == 20) { "机台进度分页固定为 20 条" }
+        ApiParser.parseMachineProgressPage(
+            request("GET", "/api/v1/workshop/machine-progress?page=$page&pageSize=$pageSize", null)
+        )
     }
 
     private suspend fun assemblyTaskAction(taskId: String, action: String, operationId: String, expectedVersion: Int?, stage: Int? = null): AssemblyTask = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()) { "taskId 不能为空" }
+        requireUuid(operationId, "clientOperationId")
+        require(stage == null || stage in 1..3) { "进度阶段必须为 1、2 或 3" }
         ApiParser.parseAssemblyTask(request("POST", "/api/v1/assembly/tasks/$taskId/$action", JSONObject().apply {
             put("clientOperationId", operationId); expectedVersion?.let { put("expectedVersion", it) }; stage?.let { put("stage", it) }
         }.toString(), idempotencyKey = operationId))
     }
 
     private suspend fun assemblyLaborAction(taskId: String, action: String, operationId: String, expectedVersion: Int): LaborRecord = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()) { "taskId 不能为空" }
+        requireUuid(operationId, "clientOperationId")
         ApiParser.parseLaborRecord(request("POST", "/api/v1/assembly/tasks/$taskId/$action", JSONObject().apply {
             put("clientOperationId", operationId); put("expectedVersion", expectedVersion)
         }.toString(), idempotencyKey = operationId))
+    }
+
+    private fun requireUuid(value: String, field: String) {
+        require(runCatching { UUID.fromString(value) }.isSuccess) { "$field 必须是合法 UUID" }
     }
 
 

@@ -8,10 +8,14 @@ import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.AuditLog
+import com.company.logistics.model.AssemblyAction
+import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
 import com.company.logistics.model.HandoverTimeline
+import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.MaterialInventory
+import com.company.logistics.model.MachineProgress
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.RoleWorkspaceSummary
@@ -26,6 +30,7 @@ import com.company.logistics.model.AdminRolePreviewController
 import com.company.logistics.model.InMemoryAdminRolePreviewController
 import com.company.logistics.model.WorkspaceQueryContext
 import com.company.logistics.model.WorkspaceViewRole
+import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestAction
 import com.company.logistics.model.TransferRequestActionPolicy
@@ -122,6 +127,36 @@ data class LogisticsUiState(
     val workspaceTotal: Int = 0,
     val workspaceTotalPages: Int = 0,
     val workspaceServerTime: String? = null,
+    val assemblyTasks: List<AssemblyTask> = emptyList(),
+    val assemblyTaskState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val assemblyTaskError: String? = null,
+    val assemblyTaskUnavailable: Boolean = false,
+    val assemblyTaskPage: Int = 1,
+    val assemblyTaskPageSize: Int = WORKSPACE_PAGE_SIZE,
+    val assemblyTaskTotal: Int = 0,
+    val assemblyTaskTotalPages: Int = 0,
+    val assemblySubmittingTaskId: String? = null,
+    val assemblySubmittingAction: AssemblyAction? = null,
+    val assemblyPendingOperationKey: String? = null,
+    val assemblyClientOperationId: String? = null,
+    val assemblyActiveLabor: Map<String, LaborRecord> = emptyMap(),
+    val temporaryTransfer: LaborRecord? = null,
+    val lastCompletedTemporaryTransfer: LaborRecord? = null,
+    val temporaryTransferSourceTaskId: String? = null,
+    val temporaryTransferSubmitting: Boolean = false,
+    val temporaryTransferPendingOperationKey: String? = null,
+    val temporaryTransferClientOperationId: String? = null,
+    val workshopProgressSummary: WorkshopProgressSummary? = null,
+    val workshopSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workshopSummaryError: String? = null,
+    val workshopSummaryUnavailable: Boolean = false,
+    val workshopMachineProgress: List<MachineProgress> = emptyList(),
+    val workshopMachineState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workshopMachineError: String? = null,
+    val workshopMachineUnavailable: Boolean = false,
+    val workshopMachinePage: Int = 1,
+    val workshopMachinePageSize: Int = WORKSPACE_PAGE_SIZE,
+    val workshopMachineHasNext: Boolean = false,
     val workspaceTimelineItemId: String? = null,
     val workspaceTimeline: HandoverTimeline? = null,
     val workspaceTimelineState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
@@ -184,6 +219,13 @@ data class LogisticsUiState(
 
     val auditLoading: Boolean
         get() = auditState == WorkspaceLoadState.LOADING
+
+    val assemblyLoading: Boolean
+        get() = assemblyTaskState == WorkspaceLoadState.LOADING
+
+    val workshopLoading: Boolean
+        get() = workshopSummaryState == WorkspaceLoadState.LOADING ||
+            workshopMachineState == WorkspaceLoadState.LOADING
 
     companion object {
         const val WORKSPACE_PAGE_SIZE = 20
@@ -378,6 +420,26 @@ class LogisticsViewModel(
                     workspaceTotal = 0,
                     workspaceTotalPages = 0,
                     workspaceServerTime = null,
+                    assemblyTasks = emptyList(),
+                    assemblyTaskState = WorkspaceLoadState.IDLE,
+                    assemblyTaskError = null,
+                    assemblyTaskUnavailable = false,
+                    assemblyTaskPage = 1,
+                    assemblyTaskTotal = 0,
+                    assemblyTaskTotalPages = 0,
+                    temporaryTransfer = null,
+                    lastCompletedTemporaryTransfer = null,
+                    temporaryTransferSourceTaskId = null,
+                    workshopProgressSummary = null,
+                    workshopSummaryState = WorkspaceLoadState.IDLE,
+                    workshopSummaryError = null,
+                    workshopSummaryUnavailable = false,
+                    workshopMachineProgress = emptyList(),
+                    workshopMachineState = WorkspaceLoadState.IDLE,
+                    workshopMachineError = null,
+                    workshopMachineUnavailable = false,
+                    workshopMachinePage = 1,
+                    workshopMachineHasNext = false,
                     message = "已切换到${role.label}测试视图",
                     error = null,
                 )
@@ -417,6 +479,26 @@ class LogisticsViewModel(
                     workspaceTotal = 0,
                     workspaceTotalPages = 0,
                     workspaceServerTime = null,
+                    assemblyTasks = emptyList(),
+                    assemblyTaskState = WorkspaceLoadState.IDLE,
+                    assemblyTaskError = null,
+                    assemblyTaskUnavailable = false,
+                    assemblyTaskPage = 1,
+                    assemblyTaskTotal = 0,
+                    assemblyTaskTotalPages = 0,
+                    temporaryTransfer = null,
+                    lastCompletedTemporaryTransfer = null,
+                    temporaryTransferSourceTaskId = null,
+                    workshopProgressSummary = null,
+                    workshopSummaryState = WorkspaceLoadState.IDLE,
+                    workshopSummaryError = null,
+                    workshopSummaryUnavailable = false,
+                    workshopMachineProgress = emptyList(),
+                    workshopMachineState = WorkspaceLoadState.IDLE,
+                    workshopMachineError = null,
+                    workshopMachineUnavailable = false,
+                    workshopMachinePage = 1,
+                    workshopMachineHasNext = false,
                     message = "已恢复管理员工作台",
                     error = null,
                 )
@@ -435,6 +517,10 @@ class LogisticsViewModel(
 
     /** 切换服务端分页大小；仅支持内存约束规定的 20/50。 */
     fun setWorkspacePageSize(pageSize: Int) {
+        if (_state.value.workspaceRole in setOf(UserRole.ASSEMBLER, UserRole.WORKSHOP_SUPERVISOR) && pageSize != LogisticsUiState.WORKSPACE_PAGE_SIZE) {
+            _state.update { it.copy(error = "装配与车间统计列表每页固定 20 条") }
+            return
+        }
         if (_state.value.preview && pageSize != LogisticsUiState.WORKSPACE_PAGE_SIZE) {
             _state.update { it.copy(error = "测试角色预览每页固定 20 条") }
             return
@@ -450,29 +536,55 @@ class LogisticsViewModel(
 
     fun loadNextWorkspacePage() {
         val current = _state.value
-        if (canLoadNextWorkspacePage(current.workspacePage, current.workspaceTotalPages) &&
-            !current.workspaceLoading
-        ) {
-            loadWorkspacePage(
-                resetToFirstPage = false,
-                page = current.workspacePage + 1,
-                pageSize = current.workspacePageSize,
-            )
+        when (current.workspaceRole) {
+            UserRole.ASSEMBLER -> if (current.assemblyTaskPage < current.assemblyTaskTotalPages && !current.assemblyLoading) {
+                loadWorkspacePage(resetToFirstPage = false, page = current.assemblyTaskPage + 1)
+            }
+            UserRole.WORKSHOP_SUPERVISOR -> if (current.workshopMachineHasNext && !current.workshopLoading) {
+                loadWorkspacePage(resetToFirstPage = false, page = current.workshopMachinePage + 1)
+            }
+            else -> if (canLoadNextWorkspacePage(current.workspacePage, current.workspaceTotalPages) && !current.workspaceLoading) {
+                loadWorkspacePage(
+                    resetToFirstPage = false,
+                    page = current.workspacePage + 1,
+                    pageSize = current.workspacePageSize,
+                )
+            }
         }
     }
 
     fun loadPreviousWorkspacePage() {
         val current = _state.value
-        if (canLoadPreviousWorkspacePage(current.workspacePage) && !current.workspaceLoading) {
-            loadWorkspacePage(
-                resetToFirstPage = false,
-                page = current.workspacePage - 1,
-                pageSize = current.workspacePageSize,
-            )
+        when (current.workspaceRole) {
+            UserRole.ASSEMBLER -> if (canLoadPreviousWorkspacePage(current.assemblyTaskPage) && !current.assemblyLoading) {
+                loadWorkspacePage(resetToFirstPage = false, page = current.assemblyTaskPage - 1)
+            }
+            UserRole.WORKSHOP_SUPERVISOR -> if (canLoadPreviousWorkspacePage(current.workshopMachinePage) && !current.workshopLoading) {
+                loadWorkspacePage(resetToFirstPage = false, page = current.workshopMachinePage - 1)
+            }
+            else -> if (canLoadPreviousWorkspacePage(current.workspacePage) && !current.workspaceLoading) {
+                loadWorkspacePage(
+                    resetToFirstPage = false,
+                    page = current.workspacePage - 1,
+                    pageSize = current.workspacePageSize,
+                )
+            }
         }
     }
 
     private fun loadWorkspacePage(
+        resetToFirstPage: Boolean,
+        page: Int = 1,
+        pageSize: Int = _state.value.workspacePageSize,
+    ) {
+        when (_state.value.workspaceRole) {
+            UserRole.ASSEMBLER -> loadAssemblyTaskPage(resetToFirstPage, page)
+            UserRole.WORKSHOP_SUPERVISOR -> loadWorkshopDashboard(resetToFirstPage, page)
+            else -> loadGenericWorkspacePage(resetToFirstPage, page, pageSize)
+        }
+    }
+
+    private fun loadGenericWorkspacePage(
         resetToFirstPage: Boolean,
         page: Int = 1,
         pageSize: Int = _state.value.workspacePageSize,
@@ -613,9 +725,182 @@ class LogisticsViewModel(
         }
     }
 
+    private fun loadAssemblyTaskPage(
+        resetToFirstPage: Boolean,
+        page: Int = 1,
+    ) {
+        if (!_state.value.loggedIn) return
+        val currentSession = sessionGeneration
+        val loadContext = currentWorkspaceContext()
+        val generation = ++workspaceLoadGeneration
+        workspaceLoadJob?.cancel()
+        workspaceLoadJob = operationScope.launch {
+            if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@launch
+            val requestedPage = if (resetToFirstPage) 1 else page
+            _state.update {
+                it.copy(
+                    assemblyTaskState = WorkspaceLoadState.LOADING,
+                    assemblyTaskError = null,
+                    assemblyTaskUnavailable = false,
+                    assemblyTaskPage = requestedPage,
+                    assemblyTaskPageSize = LogisticsUiState.WORKSPACE_PAGE_SIZE,
+                    assemblyTasks = if (resetToFirstPage) emptyList() else it.assemblyTasks,
+                    assemblyTaskTotal = if (resetToFirstPage) 0 else it.assemblyTaskTotal,
+                    assemblyTaskTotalPages = if (resetToFirstPage) 0 else it.assemblyTaskTotalPages,
+                )
+            }
+            repo.assemblyTaskPage(requestedPage, LogisticsUiState.WORKSPACE_PAGE_SIZE)
+                .onSuccess { result ->
+                    if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
+                    _state.update {
+                        it.copy(
+                            assemblyTasks = result.items,
+                            assemblyTaskState = if (result.items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                            assemblyTaskError = null,
+                            assemblyTaskUnavailable = false,
+                            assemblyTaskPage = result.page,
+                            assemblyTaskPageSize = result.pageSize,
+                            assemblyTaskTotal = result.total,
+                            assemblyTaskTotalPages = result.totalPages,
+                            workspaceServerTime = result.serverTime ?: it.workspaceServerTime,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onFailure
+                    if (error is ApiException && error.isUnauthorized) {
+                        expireSession()
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            assemblyTaskState = WorkspaceLoadState.ERROR,
+                            assemblyTaskError = assemblyErrorMessage(error),
+                            assemblyTaskUnavailable = isWorkspaceUnavailable(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun loadWorkshopDashboard(
+        resetToFirstPage: Boolean,
+        page: Int = 1,
+    ) {
+        if (!_state.value.loggedIn) return
+        val currentSession = sessionGeneration
+        val loadContext = currentWorkspaceContext()
+        val generation = ++workspaceLoadGeneration
+        workspaceLoadJob?.cancel()
+        workspaceLoadJob = operationScope.launch {
+            if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@launch
+            val requestedPage = if (resetToFirstPage) 1 else page
+            _state.update {
+                it.copy(
+                    workshopProgressSummary = if (resetToFirstPage) null else it.workshopProgressSummary,
+                    workshopSummaryState = if (resetToFirstPage) WorkspaceLoadState.LOADING else it.workshopSummaryState,
+                    workshopSummaryError = if (resetToFirstPage) null else it.workshopSummaryError,
+                    workshopSummaryUnavailable = if (resetToFirstPage) false else it.workshopSummaryUnavailable,
+                    workshopMachineState = WorkspaceLoadState.LOADING,
+                    workshopMachineError = null,
+                    workshopMachineUnavailable = false,
+                    workshopMachinePage = requestedPage,
+                    workshopMachinePageSize = LogisticsUiState.WORKSPACE_PAGE_SIZE,
+                    workshopMachineProgress = if (resetToFirstPage) emptyList() else it.workshopMachineProgress,
+                )
+            }
+
+            kotlinx.coroutines.coroutineScope {
+                val summary = if (resetToFirstPage) async { repo.workshopProgressSummary() } else null
+                val machines = async {
+                    repo.workshopMachineProgress(requestedPage, LogisticsUiState.WORKSPACE_PAGE_SIZE)
+                }
+
+                summary?.await()
+                    ?.onSuccess { result ->
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
+                        _state.update {
+                            it.copy(
+                                workshopProgressSummary = result,
+                                workshopSummaryState = WorkspaceLoadState.CONTENT,
+                                workshopSummaryError = null,
+                                workshopSummaryUnavailable = false,
+                                workspaceServerTime = result.generatedAt,
+                            )
+                        }
+                    }
+                    ?.onFailure { error ->
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onFailure
+                        if (error is ApiException && error.isUnauthorized) {
+                            expireSession()
+                            return@onFailure
+                        }
+                        _state.update {
+                            it.copy(
+                                workshopSummaryState = WorkspaceLoadState.ERROR,
+                                workshopSummaryError = workshopErrorMessage(error),
+                                workshopSummaryUnavailable = isWorkspaceUnavailable(error),
+                            )
+                        }
+                    }
+
+                machines.await()
+                    .onSuccess { result ->
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
+                        _state.update {
+                            it.copy(
+                                workshopMachineProgress = result.items,
+                                workshopMachineState = if (result.items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                                workshopMachineError = null,
+                                workshopMachineUnavailable = false,
+                                workshopMachinePage = result.page,
+                                workshopMachinePageSize = result.pageSize,
+                                workshopMachineHasNext = result.items.size >= result.pageSize,
+                            )
+                        }
+                    }
+                    .onFailure { error ->
+                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onFailure
+                        if (error is ApiException && error.isUnauthorized) {
+                            expireSession()
+                            return@onFailure
+                        }
+                        _state.update {
+                            it.copy(
+                                workshopMachineState = WorkspaceLoadState.ERROR,
+                                workshopMachineError = workshopErrorMessage(error),
+                                workshopMachineUnavailable = isWorkspaceUnavailable(error),
+                            )
+                        }
+                    }
+            }
+        }
+    }
+
     private fun workspaceErrorMessage(error: Throwable): String = when {
         isWorkspaceUnavailable(error) -> "服务端未提供工作台接口，当前工作台不可用"
         error is ApiException -> error.safeMessage("工作台加载失败，请稍后重试")
+        else -> "网络不可用，请检查连接后重试"
+    }
+
+    private fun assemblyErrorMessage(error: Throwable): String = when {
+        isWorkspaceUnavailable(error) -> "服务端未提供装配任务接口，当前任务不可用"
+        error is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权查看装配任务"
+            error.isConflict -> "装配任务状态已变化，请刷新后重试"
+            else -> error.safeMessage("装配任务加载失败，请稍后重试")
+        }
+        else -> "网络不可用，请检查连接后重试"
+    }
+
+    private fun workshopErrorMessage(error: Throwable): String = when {
+        isWorkspaceUnavailable(error) -> "服务端未提供车间统计接口，当前统计不可用"
+        error is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权查看车间统计"
+            else -> error.safeMessage("车间统计加载失败，请稍后重试")
+        }
         else -> "网络不可用，请检查连接后重试"
     }
 
@@ -649,6 +934,260 @@ class LogisticsViewModel(
         return apiError?.statusCode == 404 || apiError?.statusCode == 405 ||
             apiError?.code in setOf("NOT_FOUND", "WORKSPACE_NOT_SUPPORTED")
     }
+
+    // Assembly writes stay online because the server owns timestamps and task versions.
+    fun acceptAssemblyMaterial(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.ACCEPT_MATERIAL)
+
+    fun startAssemblyWork(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.START_WORK)
+
+    fun submitAssemblyProgress(task: AssemblyTask, stage: Int) {
+        if (stage !in 1..3) {
+            _state.update { it.copy(error = "进度阶段必须为 1、2 或 3") }
+            return
+        }
+        submitAssemblyAction(task, AssemblyAction.PROGRESS, stage)
+    }
+
+    fun completeAssemblyWork(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.COMPLETE_WORK)
+
+    private fun submitAssemblyAction(task: AssemblyTask, action: AssemblyAction, stage: Int? = null) {
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能执行装配操作") }
+            return
+        }
+        if (current.role != UserRole.ASSEMBLER || current.assemblySubmittingTaskId != null) return
+        val operationKey = listOf(action.name, task.id, task.taskVersion, stage ?: "").joinToString("|")
+        val operationId = if (current.assemblyPendingOperationKey == operationKey) {
+            current.assemblyClientOperationId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    assemblySubmittingTaskId = task.id,
+                    assemblySubmittingAction = action,
+                    assemblyPendingOperationKey = operationKey,
+                    assemblyClientOperationId = operationId,
+                    error = null,
+                    message = null,
+                )
+            }
+            val result = when (action) {
+                AssemblyAction.ACCEPT_MATERIAL -> repo.acceptAssemblyMaterial(task.id, operationId)
+                AssemblyAction.START_WORK -> repo.startAssemblyWork(task.id, task.taskVersion, operationId)
+                AssemblyAction.PROGRESS -> repo.submitAssemblyProgress(task.id, stage ?: 0, task.taskVersion, operationId)
+                AssemblyAction.COMPLETE_WORK -> repo.completeAssemblyWork(task.id, task.taskVersion, operationId)
+            }
+            result.onSuccess { response ->
+                _state.update {
+                    val refreshed = it.assemblyTasks.map { currentTask ->
+                        when {
+                            currentTask.id != task.id -> currentTask
+                            response is AssemblyTask -> response
+                            response is LaborRecord -> currentTask.copy(
+                                status = com.company.logistics.model.AssemblyTaskStatus.IN_PROGRESS,
+                                taskVersion = response.taskVersion ?: currentTask.taskVersion + 1,
+                                currentLaborRecordId = response.laborRecordId ?: response.id,
+                                currentLaborStartedAt = response.startedAt,
+                            )
+                            else -> currentTask
+                        }
+                    }
+                    it.copy(
+                        assemblyTasks = refreshed,
+                        assemblySubmittingTaskId = null,
+                        assemblySubmittingAction = null,
+                        assemblyPendingOperationKey = null,
+                        assemblyClientOperationId = null,
+                        assemblyActiveLabor = if (response is LaborRecord && response.type == com.company.logistics.model.LaborType.ASSEMBLY) {
+                            it.assemblyActiveLabor + (task.id to response)
+                        } else if (action == AssemblyAction.COMPLETE_WORK) {
+                            it.assemblyActiveLabor - task.id
+                        } else it.assemblyActiveLabor,
+                        message = "${action.label}成功",
+                    )
+                }
+                if (action == AssemblyAction.COMPLETE_WORK || action == AssemblyAction.ACCEPT_MATERIAL) loadAssemblyTaskPage(true, 1)
+            }.onFailure { error ->
+                if (error is ApiException && error.isUnauthorized) {
+                    expireSession()
+                    return@onFailure
+                }
+                _state.update {
+                    it.copy(
+                        assemblySubmittingTaskId = null,
+                        assemblySubmittingAction = null,
+                        assemblyPendingOperationKey = if (canRetryAssembly(error)) operationKey else null,
+                        assemblyClientOperationId = if (canRetryAssembly(error)) operationId else null,
+                        error = assemblyActionErrorMessage(error),
+                    )
+                }
+                if (error is ApiException && error.isConflict) loadAssemblyTaskPage(true, 1)
+            }
+        }
+    }
+
+    fun startTemporaryTransfer(taskId: String?, remark: String) {
+        val trimmed = remark.trim()
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能开始临时调拨") }
+            return
+        }
+        if (current.role != UserRole.ASSEMBLER) return
+        if (trimmed.length !in 1..500) {
+            _state.update { it.copy(error = "临时调拨备注必填，长度为 1~500 字符") }
+            return
+        }
+        if (current.temporaryTransferSubmitting) return
+        val operationKey = listOf("START", taskId.orEmpty(), trimmed).joinToString("|")
+        val operationId = if (current.temporaryTransferPendingOperationKey == operationKey) {
+            current.temporaryTransferClientOperationId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    temporaryTransferSubmitting = true,
+                    temporaryTransferPendingOperationKey = operationKey,
+                    temporaryTransferClientOperationId = operationId,
+                    error = null,
+                )
+            }
+            repo.startTemporaryTransfer(taskId, trimmed, operationId)
+                .onSuccess { result ->
+                    _state.update {
+                        it.copy(
+                            temporaryTransfer = result,
+                            lastCompletedTemporaryTransfer = null,
+                            temporaryTransferSourceTaskId = taskId,
+                            assemblyActiveLabor = if (taskId == null) it.assemblyActiveLabor else it.assemblyActiveLabor - taskId,
+                            temporaryTransferSubmitting = false,
+                            temporaryTransferPendingOperationKey = null,
+                            temporaryTransferClientOperationId = null,
+                            message = "临时调拨已开始",
+                        )
+                    }
+                    loadAssemblyTaskPage(true, 1)
+                }
+                .onFailure { error ->
+                    if (error is ApiException && error.isUnauthorized) {
+                        expireSession()
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            temporaryTransferSubmitting = false,
+                            temporaryTransferPendingOperationKey = if (canRetryAssembly(error)) operationKey else null,
+                            temporaryTransferClientOperationId = if (canRetryAssembly(error)) operationId else null,
+                            error = temporaryTransferErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun completeTemporaryTransfer(remark: String) {
+        val current = _state.value
+        val transfer = current.temporaryTransfer
+        val transferId = transfer?.temporaryTransferId
+        val trimmed = remark.trim()
+        if (transferId.isNullOrBlank()) {
+            _state.update { it.copy(error = "当前没有进行中的临时调拨") }
+            return
+        }
+        if (trimmed.length !in 1..500) {
+            _state.update { it.copy(error = "临时调拨备注必填，长度为 1~500 字符") }
+            return
+        }
+        if (current.temporaryTransferSubmitting || current.preview) {
+            if (current.preview) _state.update { it.copy(error = "测试预览只读，不能完成临时调拨") }
+            return
+        }
+        val operationKey = listOf("COMPLETE", transferId, trimmed).joinToString("|")
+        val operationId = if (current.temporaryTransferPendingOperationKey == operationKey) {
+            current.temporaryTransferClientOperationId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    temporaryTransferSubmitting = true,
+                    temporaryTransferPendingOperationKey = operationKey,
+                    temporaryTransferClientOperationId = operationId,
+                    error = null,
+                )
+            }
+            repo.completeTemporaryTransfer(transferId, trimmed, operationId)
+                .onSuccess { result ->
+                    val completed = result.copy(
+                        id = result.id.ifBlank { transfer.id },
+                        taskId = result.taskId ?: transfer.taskId,
+                        startedAt = result.startedAt.ifBlank { transfer.startedAt },
+                        endedAt = result.endedAt ?: transfer.endedAt,
+                        durationMinutes = result.durationMinutes ?: transfer.durationMinutes,
+                        remark = result.remark ?: trimmed,
+                        laborRecordId = result.laborRecordId ?: transfer.laborRecordId,
+                        temporaryTransferId = result.temporaryTransferId ?: transfer.temporaryTransferId,
+                        status = result.status ?: "COMPLETED",
+                        serverTime = result.serverTime ?: transfer.serverTime,
+                    )
+                    _state.update {
+                        it.copy(
+                            temporaryTransfer = null,
+                            lastCompletedTemporaryTransfer = completed,
+                            temporaryTransferSubmitting = false,
+                            temporaryTransferPendingOperationKey = null,
+                            temporaryTransferClientOperationId = null,
+                            message = "临时调拨已完成",
+                        )
+                    }
+                    loadAssemblyTaskPage(true, 1)
+                }
+                .onFailure { error ->
+                    if (error is ApiException && error.isUnauthorized) {
+                        expireSession()
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            temporaryTransferSubmitting = false,
+                            temporaryTransferPendingOperationKey = if (canRetryAssembly(error)) operationKey else null,
+                            temporaryTransferClientOperationId = if (canRetryAssembly(error)) operationId else null,
+                            error = temporaryTransferErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun canRetryAssembly(error: Throwable): Boolean =
+        error !is ApiException || error.retryable || error.isUnauthorized
+
+    private fun assemblyActionErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权操作该装配任务"
+            error.isConflict -> when (error.contractCode()) {
+                "TASK_VERSION_CONFLICT" -> "任务版本已变化，请刷新后重试"
+                "PROGRESS_ORDER_CONFLICT" -> "进度必须按 1、2、3 顺序提交"
+                else -> "装配任务状态已变化，请刷新后重试"
+            }
+            else -> error.safeMessage("装配操作未完成，请重试")
+        }
+        else -> "网络不可用，装配操作未完成，请重试"
+    }
+
+    private fun temporaryTransferErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when {
+            error.isUnauthorized -> "登录已失效，请重新登录"
+            error.isForbidden -> "当前账号无权执行临时调拨"
+            error.isConflict -> "临时调拨状态已变化，请刷新后重试"
+            else -> error.safeMessage("临时调拨未完成，请重试")
+        }
+        else -> "网络不可用，临时调拨未完成，请重试"
+    }
+
+    private fun ApiException.contractCode(): String =
+        if (code == "HTTP_ERROR") message.orEmpty() else code
 
     // ==================== 审批与审计 ====================
 
