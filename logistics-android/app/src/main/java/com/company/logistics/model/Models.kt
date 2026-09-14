@@ -231,6 +231,16 @@ data class User(
     val role: UserRole
 )
 
+data class ManagedUser(
+    val id: String,
+    val username: String,
+    val displayName: String,
+    val role: UserRole,
+    val active: Boolean,
+    val mustChangePassword: Boolean,
+    val createdAt: String?
+)
+
 /** 登录结果 */
 data class LoginResult(
     val accessToken: String,

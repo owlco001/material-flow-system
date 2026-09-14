@@ -40,6 +40,8 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.OfflineBanner
 import com.company.logistics.ui.screens.ApprovalScreen
 import com.company.logistics.ui.screens.AuditScreen
+import com.company.logistics.ui.screens.ChangePasswordScreen
+import com.company.logistics.ui.screens.UserManagementScreen
 import com.company.logistics.ui.screens.EndpointConfigScreen
 import com.company.logistics.ui.screens.InventoryScreen
 import com.company.logistics.ui.screens.LoginScreen
@@ -116,6 +118,11 @@ fun LogisticsApp(
             is AuthState.Authenticated -> Unit
         }
 
+        if (state.mustChangePassword) {
+            ChangePasswordScreen(state.loading, state.error) { old, next, confirm -> viewModel.changePassword(old, next, confirm) }
+            return@LogisticsTheme
+        }
+
         Scaffold(
             containerColor = LogisticsTheme.colors.pageBackground,
             snackbarHost = { SnackbarHost(snackbar) },
@@ -139,7 +146,12 @@ fun LogisticsApp(
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = LogisticsTheme.colors.pageBackground
-                    )
+                    ),
+                    actions = {
+                        if (state.role == com.company.logistics.model.UserRole.ADMIN && !state.preview && state.screen == Screen.WORKSPACE) {
+                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.USER_MANAGEMENT) }) { Text("用户管理") }
+                        }
+                    }
                 )
             },
             bottomBar = {
@@ -348,7 +360,12 @@ fun LogisticsApp(
                         onBack = { viewModel.navigate(Screen.PROFILE) }
                     )
 
-                    Screen.LOCATION_BIND, Screen.SUBMIT, Screen.LOGIN ->
+                    Screen.USER_MANAGEMENT -> {
+                        LaunchedEffect(Unit) { viewModel.loadManagedUsers() }
+                        UserManagementScreen(state.managedUsers, state.managedUsersLoading, state.managedUsersError, { viewModel.loadManagedUsers() }) { no, name, role, pw, manager -> viewModel.addManagedUser(no, name, role, pw, manager) }
+                    }
+
+                    Screen.LOCATION_BIND, Screen.SUBMIT, Screen.LOGIN, Screen.CHANGE_PASSWORD ->
                         ScanPlaceholder(
                             title = state.screen.title,
                             onBack = { viewModel.navigate(Screen.MATERIAL_DETAIL) }

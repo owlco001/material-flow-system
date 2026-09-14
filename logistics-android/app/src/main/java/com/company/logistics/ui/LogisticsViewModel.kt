@@ -62,7 +62,9 @@ enum class Screen(val title: String) {
     AUDIT("审计记录"),
     INVENTORY("库存查询"),
     PROFILE("我的"),
-    ENDPOINT_CONFIG("服务端配置")
+    ENDPOINT_CONFIG("服务端配置"),
+    CHANGE_PASSWORD("首次登录改密"),
+    USER_MANAGEMENT("用户管理")
 }
 
 /**
@@ -197,7 +199,10 @@ data class LogisticsUiState(
 
     // 提交表单
     val formQuantity: Int = 0,
-    val formLocation: String? = null
+    val formLocation: String? = null,
+    val managedUsers: List<com.company.logistics.model.ManagedUser> = emptyList(),
+    val managedUsersLoading: Boolean = false,
+    val managedUsersError: String? = null
 ) {
     val loggedIn: Boolean get() = authState is AuthState.Authenticated
     val currentUser: String
@@ -284,7 +289,7 @@ class LogisticsViewModel(
                     it.copy(
                         authState = AuthState.Authenticated(user, persisted.mustChangePassword),
                         navTabs = tabsFor(user.role),
-                        screen = defaultScreenFor(user.role),
+                        screen = if (persisted.mustChangePassword) Screen.CHANGE_PASSWORD else defaultScreenFor(user.role),
                         workspaceSummary = RoleWorkspaceSummaryFactory.from(user.role, null),
                         previewRole = null,
                         workspaceSummaryState = WorkspaceLoadState.IDLE,
@@ -327,7 +332,7 @@ class LogisticsViewModel(
                         it.copy(
                             authState = AuthState.Authenticated(result.user, result.mustChangePassword),
                             navTabs = tabsFor(result.user.role),
-                            screen = defaultScreenFor(result.user.role),
+                            screen = if (result.mustChangePassword) Screen.CHANGE_PASSWORD else defaultScreenFor(result.user.role),
                             workspaceSummary = RoleWorkspaceSummaryFactory.from(result.user.role, null),
                             previewRole = null,
                             loading = false,
@@ -349,6 +354,30 @@ class LogisticsViewModel(
                     _state.update { it.copy(loading = false, error = message) }
                 }
         }
+    }
+
+    fun changePassword(oldPassword: String, newPassword: String, confirmation: String) {
+        if (newPassword != confirmation) { _state.update { it.copy(error = "两次输入的新密码不一致") }; return }
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            repo.changePassword(oldPassword, newPassword).onSuccess { logout() }.onFailure { e ->
+                _state.update { it.copy(loading = false, error = (e as? ApiException)?.safeMessage("修改密码失败") ?: e.message ?: "修改密码失败") }
+            }
+        }
+    }
+
+    fun loadManagedUsers() {
+        if (_state.value.role != UserRole.ADMIN || _state.value.preview) return
+        operationScope.launch {
+            _state.update { it.copy(managedUsersLoading = true, managedUsersError = null) }
+            repo.listUsers().onSuccess { users -> _state.update { it.copy(managedUsers = users, managedUsersLoading = false) } }
+                .onFailure { e -> _state.update { it.copy(managedUsersLoading = false, managedUsersError = (e as? ApiException)?.safeMessage("加载用户失败") ?: e.message) } }
+        }
+    }
+
+    fun addManagedUser(employeeNo: String, displayName: String, role: String, password: String, managerId: String?) {
+        if (_state.value.role != UserRole.ADMIN || _state.value.preview) return
+        operationScope.launch { repo.addUser(employeeNo, displayName, role, password, managerId).onSuccess { loadManagedUsers() }.onFailure { e -> _state.update { it.copy(managedUsersError = (e as? ApiException)?.safeMessage("添加员工失败") ?: e.message) } } }
     }
 
     fun logout() {
@@ -378,7 +407,9 @@ class LogisticsViewModel(
     // ==================== 路由 ====================
 
     fun navigate(screen: Screen) = _state.update {
-        if (!canNavigate(it.role, screen)) {
+        if (it.mustChangePassword && screen != Screen.CHANGE_PASSWORD) {
+            it.copy(screen = Screen.CHANGE_PASSWORD, error = "请先完成首次登录改密")
+        } else if (!canNavigate(it.role, screen)) {
             it.copy(error = "当前角色无权访问该页面")
         } else {
             it.copy(screen = screen, error = null)
@@ -2081,7 +2112,8 @@ class LogisticsViewModel(
         /** UI 路由收敛；服务端仍是最终鉴权来源。 */
         fun canNavigate(role: UserRole, screen: Screen): Boolean = when (screen) {
             Screen.APPROVAL -> role.canApprove
-            Screen.AUDIT -> role.canAdmin
+            Screen.AUDIT, Screen.USER_MANAGEMENT -> role.canAdmin
+            Screen.CHANGE_PASSWORD -> true
             Screen.LOGIN -> false
             else -> true
         }

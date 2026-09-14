@@ -196,6 +196,36 @@ open class MaterialFlowApi(
         result
     }
 
+    suspend fun changePassword(oldPassword: String, newPassword: String) = withContext(Dispatchers.IO) {
+        require(oldPassword.isNotBlank() && newPassword.isNotBlank()) { "密码不能为空" }
+        request("POST", "/api/v1/auth/change-password", JSONObject().apply {
+            put("oldPassword", oldPassword); put("newPassword", newPassword)
+        }.toString())
+    }
+
+    suspend fun listUsers(): List<com.company.logistics.model.ManagedUser> = withContext(Dispatchers.IO) {
+        val root = JSONObject(request("GET", "/api/v1/users", null))
+        val items = root.optJSONArray("items") ?: JSONArray()
+        (0 until items.length()).map { i ->
+            val u = items.getJSONObject(i)
+            com.company.logistics.model.ManagedUser(
+                id = u.optString("id"), username = u.optString("username"),
+                displayName = u.optString("display_name", u.optString("displayName")),
+                role = com.company.logistics.model.UserRole.from(u.optString("role")),
+                active = u.optBoolean("active", true),
+                mustChangePassword = u.optBoolean("must_change_password", u.optBoolean("mustChangePassword", false)),
+                createdAt = u.optString("created_at", u.optString("createdAt")).takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    suspend fun addUser(employeeNo: String, displayName: String, role: String, password: String, managerId: String?) = withContext(Dispatchers.IO) {
+        request("POST", "/api/v1/admin/users", JSONObject().apply {
+            put("employeeNo", employeeNo); put("displayName", displayName); put("role", role); put("password", password)
+            if (managerId.isNullOrBlank()) put("managerId", JSONObject.NULL) else put("managerId", managerId)
+        }.toString())
+    }
+
     /** 登出：吊销当前设备的 access 与 refresh 令牌 */
     suspend fun logout(): Unit = withContext(Dispatchers.IO) {
         runCatching { request("POST", "/api/v1/auth/logout", "{}") }

@@ -107,6 +107,18 @@ open class LogisticsRepository(
         sessionStore?.clear()
     }
 
+    open suspend fun changePassword(oldPassword: String, newPassword: String): Result<Unit> = resultOf {
+        api.changePassword(oldPassword, newPassword)
+        Unit
+    }
+
+    open suspend fun listUsers(): Result<List<com.company.logistics.model.ManagedUser>> = resultOf { api.listUsers() }
+
+    open suspend fun addUser(employeeNo: String, displayName: String, role: String, password: String, managerId: String?): Result<Unit> = resultOf {
+        api.addUser(employeeNo, displayName, role, password, managerId)
+        Unit
+    }
+
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
         try {
