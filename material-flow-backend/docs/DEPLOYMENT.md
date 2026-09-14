@@ -11,6 +11,7 @@ The deployable source package must contain these paths together:
 
 - `app/main.py` - FastAPI application and safe startup initialization.
 - `app/migrate.py` - explicit database initialization and migration entry point.
+- `app/seed.py` - explicit opt-in test-fixture entry point; never run implicitly.
 - `VERSION` - the single package version identifier.
 - `requirements.txt` - pinned runtime dependencies.
 - `requirements-test.txt` - the runtime requirements plus test-only dependencies.
@@ -56,6 +57,12 @@ server still requires an authenticated ADMIN, emits redacted
 workbench queries; its enter/exit endpoints only append the corresponding
 redacted audit event and do not change the session role or permissions.
 
+`app.seed` is a separate test-data operation. It is disabled unless the
+command includes `--seed` or the environment explicitly sets
+`ENABLE_TEST_DATA_SEED=true`. It creates only a small, fixed-prefix
+`MF_TEST_SEED_V1` fixture set with synthetic credentials and is safe to run
+repeatedly. Do not set this flag in production.
+
 ## Migration and startup
 
 The migration is safe to run repeatedly and is serialized for concurrent
@@ -84,6 +91,22 @@ Uvicorn launches. The service binds only to the loopback interface; external
 TLS termination and access control belong to the existing reverse-proxy and
 network policy.
 
+After a systemd-backed release, load the environment file and run the fixture
+operation explicitly, only in a test/staging database:
+
+```bash
+cd /srv/material-flow
+set -a; . /etc/material-flow/material-flow.env; set +a
+.venv/bin/python -m app.migrate
+ENABLE_TEST_DATA_SEED=true .venv/bin/python -m app.seed
+systemctl restart material-flow
+```
+
+Alternatively use `.venv/bin/python -m app.seed --seed`. The seed command
+prints validated counts and checks foreign keys/status values. Never commit
+`data/material_flow.db`, uploads, environment files, or logs; keep runtime
+data outside Git.
+
 ## Health verification
 
 After startup, probe `/healthz` through the local service boundary:
@@ -111,6 +134,8 @@ local-only; do not point these checks at a real VPS.
   locked requirements files.
 - [ ] Run `app.migrate` twice against the same local database and confirm the
   schema and seed counts remain stable.
+- [ ] In a non-production database, run `app.seed --seed` twice and confirm
+  fixture counts remain stable; leave `ENABLE_TEST_DATA_SEED` unset in production.
 - [ ] Confirm systemd runs `python -m app.migrate` in `ExecStartPre` before
   Uvicorn and binds only to `127.0.0.1`.
 - [ ] Run the automated gate below and `git diff --check`.
