@@ -2,6 +2,9 @@ import os
 import tempfile
 from pathlib import Path
 import sys
+import shutil
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +20,13 @@ os.environ.update(
 from app import main as backend  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def fresh_database():
+    shutil.rmtree(f"{ROOT}/data", ignore_errors=True)
+    shutil.rmtree(f"{ROOT}/uploads", ignore_errors=True)
+    yield
+
+
 def login(client, username, password, device=None):
     response = client.post(
         "/api/v1/auth/login",
@@ -30,9 +40,40 @@ def auth(session):
     return {"Authorization": f"Bearer {session['accessToken']}"}
 
 
+def admin_session(client):
+    session = login(client, "owlco", "Admin@2026")
+    assert session["mustChangePassword"] is True
+    changed = client.post(
+        "/api/v1/auth/change-password",
+        json={"oldPassword": "Admin@2026", "newPassword": "AdminChanged@2026"},
+        headers=auth(session),
+    )
+    assert changed.status_code == 200
+    return login(client, "owlco", "AdminChanged@2026")
+
+
+def test_initial_admin_requires_password_change_before_business_access():
+    with TestClient(backend.app) as client:
+        session = login(client, "owlco", "Admin@2026")
+        assert session["mustChangePassword"] is True
+        assert session["user"]["mustChangePassword"] is True
+        blocked = client.get("/api/v1/materials/MTR-001/inventory", headers=auth(session))
+        assert blocked.status_code == 403
+        assert blocked.json()["error"]["code"] == "PASSWORD_CHANGE_REQUIRED"
+        changed = client.post(
+            "/api/v1/auth/change-password",
+            json={"oldPassword": "Admin@2026", "newPassword": "AdminChanged@2026"},
+            headers=auth(session),
+        )
+        assert changed.status_code == 200
+        fresh = login(client, "owlco", "AdminChanged@2026")
+        assert fresh["mustChangePassword"] is False
+        assert client.get("/api/v1/materials/MTR-001/inventory", headers=auth(fresh)).status_code == 200
+
+
 def test_first_login_is_consistent_and_blocks_business_until_password_change():
     with TestClient(backend.app) as client:
-        admin = login(client, "owlco", "Admin@2026")
+        admin = admin_session(client)
         created = client.post(
             "/api/v1/admin/users",
             json={"employeeNo": "TEMP-1", "displayName": "临时用户", "role": "OPERATOR", "password": "Temp@2026"},
@@ -50,7 +91,7 @@ def test_first_login_is_consistent_and_blocks_business_until_password_change():
 
 def test_login_response_and_session_state_preserve_must_change_flag():
     with TestClient(backend.app) as client:
-        admin = login(client, "owlco", "Admin@2026")
+        admin = admin_session(client)
         client.post(
             "/api/v1/admin/users",
             json={"employeeNo": "TEMP-STATE", "displayName": "状态用户", "role": "OPERATOR", "password": "Temp@2026"},
@@ -63,7 +104,7 @@ def test_login_response_and_session_state_preserve_must_change_flag():
 
 def test_change_password_requires_old_password_and_clears_flag():
     with TestClient(backend.app) as client:
-        admin = login(client, "owlco", "Admin@2026")
+        admin = admin_session(client)
         client.post(
             "/api/v1/admin/users",
             json={"employeeNo": "TEMP-2", "displayName": "临时用户", "role": "OPERATOR", "password": "Temp@2026"},
@@ -90,7 +131,7 @@ def test_change_password_requires_old_password_and_clears_flag():
 
 def test_user_admin_endpoints_are_admin_only_and_password_is_argon2_only():
     with TestClient(backend.app) as client:
-        admin = login(client, "owlco", "Admin@2026")
+        admin = admin_session(client)
         created = client.post(
             "/api/v1/admin/users",
             json={"employeeNo": "TEMP-3", "displayName": "临时用户", "role": "OPERATOR", "password": "Temp@2026"},

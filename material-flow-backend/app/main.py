@@ -561,8 +561,8 @@ def _init_db(c: sqlite3.Connection) -> None:
         password = INITIAL_ADMIN_PASSWORD
         if not password or not password.strip():
             raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
-        # 由部署环境显式提供的初始管理员凭据不是员工临时密码，允许直接管理用户。
-        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 0, 1, now()))
+        # 环境注入的初始密码同样是临时凭据，首次登录必须完成改密。
+        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
