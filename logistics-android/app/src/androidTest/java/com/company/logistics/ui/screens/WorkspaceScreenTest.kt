@@ -20,7 +20,57 @@ class WorkspaceScreenTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun ordinaryRoleBackendSettingsEntryRoutesToEndpointConfig() {
+    fun unconfiguredEndpointShowsSetupPromptAndRoutesToEndpointConfig() {
+        var destination: Screen? = null
+        composeRule.setContent {
+            WorkspaceScreen(
+                role = UserRole.OPERATOR,
+                authenticatedRole = UserRole.OPERATOR,
+                previewRole = null,
+                endpointConfigured = false,
+                summary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
+                items = emptyList(),
+                summaryState = WorkspaceLoadState.IDLE,
+                summaryError = null,
+                summaryUnavailable = false,
+                itemsState = WorkspaceLoadState.EMPTY,
+                itemsError = null,
+                itemsUnavailable = false,
+                page = 1,
+                pageSize = 20,
+                total = 0,
+                totalPages = 0,
+                serverTime = null,
+                onRefresh = {},
+                onPageSizeChange = {},
+                onNextPage = {},
+                onPreviousPage = {},
+                onOpenApproval = {},
+                onOpenAudit = {},
+                currentUserId = null,
+                timelineItemId = null,
+                timeline = null,
+                timelineState = WorkspaceLoadState.IDLE,
+                timelineError = null,
+                handoverSubmittingId = null,
+                onOpenTimeline = {},
+                onRetryTimeline = {},
+                onHandoverAction = { _, _, _ -> },
+                onCreateHandover = { _, _, _, _ -> },
+                onEnterPreview = {},
+                onExitPreview = {},
+                onOpenEndpointConfig = { destination = Screen.ENDPOINT_CONFIG },
+            )
+        }
+
+        composeRule.onNodeWithText("尚未配置后端").assertIsDisplayed()
+        composeRule.onNodeWithText("立即设置后端").performClick()
+        assertEquals(Screen.ENDPOINT_CONFIG, destination)
+        composeRule.onAllNodesWithText("后端设置").assertCountEquals(0)
+    }
+
+    @Test
+    fun configuredEndpointKeepsBackendSettingsEntry() {
         var destination: Screen? = null
         composeRule.setContent {
             WorkspaceScreen(

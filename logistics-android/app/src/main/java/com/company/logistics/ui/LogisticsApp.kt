@@ -194,6 +194,7 @@ fun LogisticsApp(
                         onEnterPreview = { viewModel.enterRolePreview(it) },
                         onExitPreview = { viewModel.exitRolePreview() },
                         onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
+                        endpointConfigured = !endpointStore.usingBuildDefault && !endpointStore.isPlaceholder,
                         assemblyTasks = state.assemblyTasks,
                         assemblyTaskState = state.assemblyTaskState,
                         assemblyTaskError = state.assemblyTaskError,
