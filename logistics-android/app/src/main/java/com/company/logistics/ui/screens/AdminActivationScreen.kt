@@ -120,8 +120,15 @@ fun AdminActivationScreen(
                     busy = true
                     scope.launch {
                         repository.initializeAdmin(password, confirmation)
-                            .onSuccess {
-                                password = ""; confirmation = ""; success = true; busy = false
+                            .onSuccess { result ->
+                                password = ""
+                                confirmation = ""
+                                status = status?.copy(
+                                    initialized = true,
+                                    adminUsername = result.username.ifBlank { status?.adminUsername.orEmpty() },
+                                )
+                                success = true
+                                busy = false
                             }
                             .onFailure { e -> busy = false; error = e.safeActivationMessage("初始化失败") }
                     }
