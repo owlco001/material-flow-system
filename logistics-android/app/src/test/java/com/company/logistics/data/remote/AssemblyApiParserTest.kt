@@ -7,6 +7,19 @@ import org.junit.Test
 class AssemblyApiParserTest {
 
     @Test
+    fun parsesOrderDetailServerFactsWithoutClientDerivedFields() {
+        val order = ApiParser.parseOrderMaterialStatus(
+            """
+            {"documentNo":"WO-1","documentType":"PRODUCTION_ORDER","orderId":"ord-1","productName":"产品","orderStatus":"IN_PROGRESS","serverTime":"server","items":[]}
+            """.trimIndent()
+        )
+        assertEquals("ord-1", order.orderId)
+        assertEquals("产品", order.productName)
+        assertEquals("IN_PROGRESS", order.orderStatus)
+        assertEquals("server", order.serverTime)
+    }
+
+    @Test
     fun parsesBackendAssemblyTaskPageAndServerTaskVersion() {
         val page = ApiParser.parseAssemblyTaskPage(
             """

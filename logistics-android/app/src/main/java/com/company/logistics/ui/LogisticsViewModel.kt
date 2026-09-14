@@ -1008,6 +1008,7 @@ class LogisticsViewModel(
                     )
                 }
                 if (action == AssemblyAction.COMPLETE_WORK || action == AssemblyAction.ACCEPT_MATERIAL) loadAssemblyTaskPage(true, 1)
+                refreshOrderAfterMutation()
             }.onFailure { error ->
                 if (error is ApiException && error.isUnauthorized) {
                     expireSession()
@@ -1068,6 +1069,7 @@ class LogisticsViewModel(
                         )
                     }
                     loadAssemblyTaskPage(true, 1)
+                    refreshOrderAfterMutation()
                 }
                 .onFailure { error ->
                     if (error is ApiException && error.isUnauthorized) {
@@ -1141,6 +1143,7 @@ class LogisticsViewModel(
                         )
                     }
                     loadAssemblyTaskPage(true, 1)
+                    refreshOrderAfterMutation()
                 }
                 .onFailure { error ->
                     if (error is ApiException && error.isUnauthorized) {
@@ -1383,6 +1386,7 @@ class LogisticsViewModel(
                     )
                 }
                 refreshTransferRequests()
+                refreshOrderAfterMutation()
                 if (_state.value.selectedTransferRequestId == transferRequestId) {
                     selectTransferRequest(transferRequestId)
                 }
@@ -1650,6 +1654,7 @@ class LogisticsViewModel(
                     )
                 }
                 refreshWorkspaceAfterHandover(item.id)
+                refreshOrderAfterMutation()
             }.onFailure { error ->
                 _state.update {
                     it.copy(
@@ -1717,6 +1722,7 @@ class LogisticsViewModel(
                     )
                 }
                 refreshWorkspaceAfterHandover(item.id)
+                refreshOrderAfterMutation()
             }.onFailure { error ->
                 _state.update {
                     it.copy(
@@ -1877,6 +1883,16 @@ class LogisticsViewModel(
                     )
                 }
             }
+    }
+
+    /** Re-reads the same order after a successful mutation; failures never optimistically change order facts. */
+    fun refreshOrderDetail() {
+        val orderNo = _state.value.orderStatus?.documentNo ?: return
+        operationScope.launch { loadOrder(orderNo) }
+    }
+
+    private fun refreshOrderAfterMutation() {
+        if (_state.value.orderStatus != null) refreshOrderDetail()
     }
 
     // ==================== 表单 ====================

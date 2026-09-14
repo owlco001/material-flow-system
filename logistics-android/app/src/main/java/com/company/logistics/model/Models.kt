@@ -325,7 +325,10 @@ data class OrderMaterialStatus(
     val documentNo: String,
     val documentType: String,
     val items: List<OrderMaterialItem>,
-    val serverTime: String?
+    val serverTime: String?,
+    val orderId: String? = null,
+    val productName: String? = null,
+    val orderStatus: String? = null
 ) {
     /** 齐套率：已入库数量 / 需求数量 */
     val fulfillmentRate: Float

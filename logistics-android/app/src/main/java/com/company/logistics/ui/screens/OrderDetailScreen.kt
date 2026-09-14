@@ -56,6 +56,7 @@ import com.company.logistics.ui.theme.Spacing
 fun OrderDetailScreen(
     status: OrderMaterialStatus?,
     loading: Boolean,
+    onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
@@ -102,6 +103,16 @@ fun OrderDetailScreen(
                 letterSpacing = 0.5.sp,
                 color = LogisticsTheme.colors.textPrimary
             )
+            Text(
+                "订单状态：${status.orderStatus ?: "服务端未提供"}",
+                fontSize = 13.sp,
+                color = LogisticsTheme.colors.textSecondary,
+            )
+            status.productName?.takeIf { it.isNotBlank() }?.let {
+                Text("产品：$it", fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
+            }
+            Text("服务端时间：${status.serverTime ?: "未提供"}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+            androidx.compose.material3.TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新订单事实") }
             VSpace(Spacing.md)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

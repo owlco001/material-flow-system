@@ -255,7 +255,8 @@ fun LogisticsApp(
 
                     Screen.ORDER_DETAIL -> OrderDetailScreen(
                         status = state.orderStatus,
-                        loading = state.loading
+                        loading = state.loading,
+                        onRefresh = { viewModel.refreshOrderDetail() },
                     )
 
                     Screen.QUEUE -> QueueScreen(

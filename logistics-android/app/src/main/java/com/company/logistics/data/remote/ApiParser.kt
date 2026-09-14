@@ -166,7 +166,10 @@ object ApiParser {
             documentNo = root.optString("documentNo"),
             documentType = root.optString("documentType"),
             items = items,
-            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
+            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() },
+            orderId = nullableString(root, "orderId"),
+            productName = nullableString(root, "productName"),
+            orderStatus = nullableString(root, "orderStatus")
         )
     }
 
