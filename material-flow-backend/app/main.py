@@ -51,7 +51,7 @@ HEALTH_TABLES = frozenset({
     "users", "sessions", "consumed_refresh_tokens", "materials", "locations", "inventory",
     "transfer_requests", "audit_logs", "audit_events", "transfer_operations",
     "handover_operations", "material_work_items", "material_work_item_projections",
-    "material_handovers", "exceptions", "location_bindings", "stocktakes",
+    "material_handovers", "exceptions", "location_bindings", "stocktakes", "employee_managers",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
     "assembly_tasks", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
  })
@@ -62,7 +62,7 @@ _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32,
 # ==================== 契约常量 ====================
 # 依据《物料流转系统-V1-API契约冻结补遗》，本文件覆盖旧文档中的冲突定义。
 
-SCAN_TYPES = ("PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "UNKNOWN")
+SCAN_TYPES = ("PRODUCTION_ORDER", "MACHINE", "MATERIAL_CODE", "LOCATION_CODE", "FLOW_NO", "UNKNOWN")
 # 禁止使用的历史枚举，收到即拒绝
 FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 
@@ -517,6 +517,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     c.executescript("""
     BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, role TEXT NOT NULL, password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS employee_managers(employee_id TEXT PRIMARY KEY REFERENCES users(id), manager_id TEXT NOT NULL REFERENCES users(id));
     CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, token_type TEXT NOT NULL DEFAULT 'ACCESS', device_id TEXT);
     -- 已消费的刷新令牌墓碑表：用于检测令牌重放。
     -- 若直接删除旧令牌，"令牌不存在" 与 "令牌被重放" 无法区分，
@@ -542,7 +543,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     -- 工作台状态投影只保存状态、责任和最后交接引用，不复制订单需求数量事实。
     CREATE TABLE IF NOT EXISTS material_work_item_projections(work_item_id TEXT PRIMARY KEY, status_code TEXT NOT NULL CHECK(status_code IN ('PENDING','PICKED_UP','AT_STATION','REJECTED','CANCELLED')), current_owner_user_id TEXT, last_handover_id TEXT, target_device_id TEXT, status_updated_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS material_handovers(id TEXT PRIMARY KEY, work_item_id TEXT NOT NULL, transfer_request_id TEXT NOT NULL REFERENCES transfer_requests(id), quantity INTEGER NOT NULL CHECK(quantity > 0), from_location TEXT NOT NULL, device_id TEXT, receiver_user_id TEXT, remark TEXT, client_operation_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','CONFIRMED','REJECTED','CANCELLED')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT, decision_reason TEXT);
-    CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT);
+    CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT, order_no TEXT, device_id TEXT);
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
     CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL, updated_at TEXT);
@@ -679,6 +680,12 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     结构，并把历史需求保留为未入库的按订单级需求。
     """
     c.execute("UPDATE users SET role='MATERIAL' WHERE role='MATERIAL_CLERK'")
+
+    exception_cols = {r["name"] for r in c.execute("PRAGMA table_info(exceptions)").fetchall()}
+    if "order_no" not in exception_cols:
+        c.execute("ALTER TABLE exceptions ADD COLUMN order_no TEXT")
+    if "device_id" not in exception_cols:
+        c.execute("ALTER TABLE exceptions ADD COLUMN device_id TEXT")
     existing = {r["name"] for r in c.execute("PRAGMA table_info(sessions)").fetchall()}
     if "token_type" not in existing:
         c.execute("ALTER TABLE sessions ADD COLUMN token_type TEXT NOT NULL DEFAULT 'ACCESS'")
@@ -932,10 +939,17 @@ def _revoke_refresh_family(c: sqlite3.Connection, token: str) -> None:
 
 
 class Login(BaseModel):
-    username: str
+    username: str | None = None
+    employeeNo: str | None = None
     password: str
     deviceId: str = Field(min_length=1, max_length=128)
     clientVersion: str = "0.1.0"
+
+    def login_identifier(self) -> str:
+        value = (self.username or self.employeeNo or "").strip()
+        if not value or (self.username and self.employeeNo and self.username.strip() != self.employeeNo.strip()):
+            raise ValueError("username 或 employeeNo 必须提供且一致")
+        return value
 
 
 class ChangePassword(BaseModel):
@@ -991,6 +1005,41 @@ class Decision(BaseModel):
     comment: str = ""
 
 
+class EmployeeCreate(BaseModel):
+    employeeNo: str = Field(min_length=1, max_length=64)
+    displayName: str = Field(min_length=1, max_length=128)
+    role: str
+    password: str = Field(min_length=8, max_length=256)
+    managerId: str | None = Field(default=None, max_length=128)
+
+
+@app.post("/api/v1/admin/users")
+def add_employee(body: EmployeeCreate, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None)) -> dict[str, Any]:
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可添加员工")
+    if body.role not in ROLES or body.role == "ADMIN":
+        raise ApiError(400, CODE_VALIDATION_ERROR, "角色无效")
+    c = db()
+    try:
+        if body.managerId and not c.execute("SELECT 1 FROM users WHERE id=? AND active=1", (body.managerId,)).fetchone():
+            raise ApiError(400, CODE_VALIDATION_ERROR, "直属领导不存在")
+        existing = c.execute("SELECT * FROM users WHERE username=?", (body.employeeNo,)).fetchone()
+        if existing:
+            manager = c.execute("SELECT manager_id FROM employee_managers WHERE employee_id=?", (existing["id"],)).fetchone()
+            if existing["role"] != body.role or existing["display_name"] != body.displayName or (manager and manager["manager_id"] or None) != body.managerId:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "工号已存在但员工信息不一致")
+            return {"id": existing["id"], "employeeNo": existing["username"], "displayName": existing["display_name"], "role": existing["role"], "mustChangePassword": bool(existing["must_change_password"])}
+        uid = "u_" + uuid.uuid4().hex
+        c.execute("INSERT INTO users(id,username,display_name,role,password_hash,must_change_password,active,created_at) VALUES(?,?,?,?,?,?,?,?)", (uid, body.employeeNo, body.displayName, body.role, hash_password(body.password), 1, 1, now()))
+        if body.managerId:
+            c.execute("INSERT INTO employee_managers(employee_id,manager_id) VALUES(?,?)", (uid, body.managerId))
+        audit(c, user["id"], user["role"], "CREATE", "USER", uid, "SUCCESS", x_request_id or "")
+        c.commit()
+        return {"id": uid, "employeeNo": body.employeeNo, "displayName": body.displayName, "role": body.role, "mustChangePassword": True}
+    finally:
+        c.close()
+
+
 class TransferApproval(BaseModel):
     decision: str
     comment: str = Field(default="", max_length=500)
@@ -1042,7 +1091,7 @@ def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[
     Argon2id 迁移：历史 scrypt 哈希在校验通过后就地升级（见 check_password）。
     """
     c = db()
-    username = body.username
+    username = body.login_identifier()
     attempt = c.execute("SELECT * FROM login_attempts WHERE username=?", (username,)).fetchone()
 
     # 1) 锁定窗口检查（先于密码校验，避免锁定期间仍消耗哈希算力）
@@ -1247,20 +1296,35 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
     upper = raw.upper()
     typ = "UNKNOWN"
     resource_id: str | None = None
-    if re.match(r"^MTR-[A-Z0-9-]+$", upper):
+    c = db()
+    try:
+        order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (upper,)).fetchone()
+        material = c.execute("SELECT id FROM materials WHERE code=?", (upper,)).fetchone()
+        location = c.execute("SELECT id FROM locations WHERE code=?", (upper,)).fetchone()
+        device = c.execute("SELECT id FROM order_devices WHERE device_no=?", (upper,)).fetchone()
+    finally:
+        c.close()
+    if order:
+        typ, resource_id = "PRODUCTION_ORDER", order["id"]
+    elif device:
+        typ, resource_id = "MACHINE", device["id"]
+    elif material:
+        typ, resource_id = "MATERIAL_CODE", material["id"]
+    elif location:
+        typ, resource_id = "LOCATION_CODE", location["id"]
+    elif re.match(r"^MTR-[A-Z0-9-]+$", upper):
         typ = "MATERIAL_CODE"
     elif re.match(r"^(SO|PO)\d+$", upper):
         # 早期订单号格式：SO202609120001
-        typ = "PRODUCTION_ORDER"
+        raise ApiError(404, CODE_ORDER_NOT_FOUND, "订单不存在")
     elif re.match(r"^\d{2}[A-Z]-\d{3}$", upper):
         # 现行订单号格式：26B-013（年份+线别-序号）。
-        # 若不识别，现场扫订单码会落到 UNKNOWN，无法进入物料状态页。
-        typ = "PRODUCTION_ORDER"
+        raise ApiError(404, CODE_ORDER_NOT_FOUND, "订单不存在")
     elif re.match(r"^[A-Z]-\d{2}-\d{2}$", upper):
         typ = "LOCATION_CODE"
     elif re.match(r"^FL\d+$", upper):
         typ = "FLOW_NO"
-    if typ != "UNKNOWN":
+    if typ != "UNKNOWN" and resource_id is None:
         resource_id = upper
     return {"type": typ, "normalizedValue": upper, "resourceId": resource_id}
 
@@ -3733,7 +3797,13 @@ def confirm_stocktake(sid: str, user: sqlite3.Row = Depends(current_user)) -> di
 def create_exception(body: dict[str, Any], user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
     actual = body.get("actualQuantity", 0); book = body.get("bookQuantity", 0)
     if not all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in (actual, book)): raise HTTPException(400, "数量必须是非负整数")
-    eid = "ex_" + uuid.uuid4().hex; c = db(); c.execute("INSERT INTO exceptions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (eid, body.get("materialId"), body.get("type", "OTHER"), book, actual, actual - book, "PENDING", body.get("description"), json.dumps(body.get("evidenceIds", [])), user["id"], now(), None, None)); audit(c, user["id"], user["role"], "CREATE", "EXCEPTION", eid); c.commit(); c.close(); return {"exceptionId": eid, "status": "PENDING", "difference": actual - book, "serverTime": now()}
+    eid = "ex_" + uuid.uuid4().hex; c = db()
+    order_no, device_id, material_id = body.get("orderNo"), body.get("deviceId"), body.get("materialId")
+    if not order_no or not device_id or not material_id:
+        c.close(); raise HTTPException(400, "异常必须关联 orderNo、deviceId、materialId")
+    if not c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (order_no,)).fetchone() or not c.execute("SELECT 1 FROM order_devices WHERE id=?", (device_id,)).fetchone() or not c.execute("SELECT 1 FROM materials WHERE id=?", (material_id,)).fetchone():
+        c.close(); raise HTTPException(400, "异常关联资源不存在")
+    c.execute("INSERT INTO exceptions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (eid, material_id, body.get("type", "OTHER"), book, actual, actual - book, "PENDING", body.get("description"), json.dumps(body.get("evidenceIds", [])), user["id"], now(), None, None, order_no, device_id)); audit(c, user["id"], user["role"], "CREATE", "EXCEPTION", eid); c.commit(); c.close(); return {"exceptionId": eid, "status": "PENDING", "difference": actual - book, "serverTime": now()}
 
 
 @app.get("/api/v1/exceptions")
