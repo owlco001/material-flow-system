@@ -53,7 +53,8 @@ HEALTH_TABLES = frozenset({
     "handover_operations", "material_work_items", "material_work_item_projections",
     "material_handovers", "exceptions", "location_bindings", "stocktakes",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
-})
+    "assembly_tasks", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
+ })
 
 # 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
 _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
@@ -73,7 +74,8 @@ FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
 
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
-ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN")
+ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER")
+ASSEMBLY_STATUSES = ("WAITING_MATERIAL", "MATERIAL_ACCEPTED", "IN_PROGRESS", "PAUSED_FOR_TEMPORARY_TRANSFER", "COMPLETED")
 HANDOVER_STATES = ("PENDING", "CONFIRMED", "REJECTED", "CANCELLED")
 TRANSFER_STATES = frozenset({
     "PENDING_APPROVAL", "APPROVED", "REJECTED", "EXECUTED",
@@ -528,6 +530,14 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL, view_role TEXT, action TEXT);
     CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assembly_tasks(id TEXT PRIMARY KEY, order_no TEXT NOT NULL, device_id TEXT NOT NULL, device_no TEXT NOT NULL, assigned_assembler_id TEXT REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('WAITING_MATERIAL','MATERIAL_ACCEPTED','IN_PROGRESS','PAUSED_FOR_TEMPORARY_TRANSFER','COMPLETED')), progress_stage INTEGER NOT NULL DEFAULT 0 CHECK(progress_stage BETWEEN 0 AND 3), task_version INTEGER NOT NULL DEFAULT 1, material_accepted_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS labor_records(id TEXT PRIMARY KEY, task_id TEXT REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), type TEXT NOT NULL CHECK(type IN ('ASSEMBLY','TEMPORARY_TRANSFER')), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), started_at TEXT NOT NULL, ended_at TEXT, duration_minutes INTEGER CHECK(duration_minutes IS NULL OR duration_minutes >= 0), remark TEXT, client_operation_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS progress_events(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), from_stage INTEGER NOT NULL, to_stage INTEGER NOT NULL CHECK(to_stage BETWEEN 1 AND 3), task_version INTEGER NOT NULL, server_time TEXT NOT NULL, client_operation_id TEXT NOT NULL UNIQUE);
+    CREATE TABLE IF NOT EXISTS temporary_transfers(id TEXT PRIMARY KEY, worker_user_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT REFERENCES assembly_tasks(id), labor_record_id TEXT NOT NULL UNIQUE REFERENCES labor_records(id), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), remark TEXT NOT NULL CHECK(length(remark) BETWEEN 1 AND 500), started_at TEXT NOT NULL, ended_at TEXT, client_operation_id TEXT NOT NULL UNIQUE);
+    CREATE TABLE IF NOT EXISTS assembly_operations(client_operation_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_labor_worker ON labor_records(worker_user_id) WHERE status='ACTIVE';
+    CREATE INDEX IF NOT EXISTS idx_assembly_tasks_assembler ON assembly_tasks(assigned_assembler_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_labor_records_task ON labor_records(task_id, status);
     CREATE TABLE IF NOT EXISTS material_work_items(id TEXT PRIMARY KEY, requirement_id TEXT, material_id TEXT NOT NULL, device_id TEXT, assigned_user_id TEXT, quantity INTEGER NOT NULL CHECK(quantity > 0));
     -- 工作台状态投影只保存状态、责任和最后交接引用，不复制订单需求数量事实。
     CREATE TABLE IF NOT EXISTS material_work_item_projections(work_item_id TEXT PRIMARY KEY, status_code TEXT NOT NULL CHECK(status_code IN ('PENDING','PICKED_UP','AT_STATION','REJECTED','CANCELLED')), current_owner_user_id TEXT, last_handover_id TEXT, target_device_id TEXT, status_updated_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -3580,6 +3590,14 @@ def review_exception(eid: str, body: Decision, user: sqlite3.Row = Depends(curre
     status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"; c = db(); cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING'", (status, user["id"], now(), eid))
     if cur.rowcount != 1: c.close(); raise HTTPException(409, "异常状态不允许审批")
     audit(c, user["id"], user["role"], "REVIEW", "EXCEPTION", eid); c.commit(); c.close(); return {"exceptionId": eid, "status": status}
+
+
+# Workshop assembly vertical slice routes
+try:
+    from .assembly_routes import register as _register_assembly_routes
+except ImportError:
+    from assembly_routes import register as _register_assembly_routes
+_register_assembly_routes(app, db, now, current_user, _audit_event, ApiError)
 
 
 @app.post("/api/v1/files")
