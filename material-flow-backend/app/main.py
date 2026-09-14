@@ -154,6 +154,7 @@ CODE_ROLE_PREVIEW_DISABLED = "ROLE_PREVIEW_DISABLED"
 CODE_INVALID_VIEW_ROLE = "INVALID_VIEW_ROLE"
 CODE_ROLE_PREVIEW_READ_ONLY = "ROLE_PREVIEW_READ_ONLY"
 CODE_INVALID_CLIENT_OPERATION_ID = "INVALID_CLIENT_OPERATION_ID"
+CODE_SETUP_ALREADY_INITIALIZED = "SETUP_ALREADY_INITIALIZED"
 
 
 class ApiError(HTTPException):
@@ -554,6 +555,8 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS order_material_requirements(id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES production_orders(id) ON DELETE CASCADE, device_id TEXT REFERENCES order_devices(id) ON DELETE CASCADE, material_id TEXT NOT NULL REFERENCES materials(id), required_quantity INTEGER NOT NULL CHECK(required_quantity > 0), arrived_quantity INTEGER NOT NULL DEFAULT 0 CHECK(arrived_quantity >= 0), in_stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK(in_stock_quantity >= 0), status_code TEXT NOT NULL CHECK(status_code IN ('OUT_OF_STOCK','ARRIVED','IN_STOCK')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK(arrived_quantity <= required_quantity), CHECK(in_stock_quantity <= arrived_quantity), UNIQUE(order_id, device_id, material_id));
     CREATE TABLE IF NOT EXISTS order_devices(id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES production_orders(id) ON DELETE CASCADE, device_type TEXT NOT NULL, device_no TEXT UNIQUE NOT NULL, sequence_no INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(order_id, device_type, sequence_no));
     CREATE TABLE IF NOT EXISTS login_attempts(username TEXT PRIMARY KEY, failed_count INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL, locked_until INTEGER);
+    CREATE TABLE IF NOT EXISTS setup_state(id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('UNINITIALIZED','INITIALIZED')), admin_username TEXT NOT NULL, initialized_at TEXT, initialized_by TEXT, version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS setup_operations(client_operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
@@ -563,6 +566,12 @@ def _init_db(c: sqlite3.Connection) -> None:
             raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
         # 环境注入的初始密码同样是临时凭据，首次登录必须完成改密。
         c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
+    setup_state = c.execute("SELECT 1 FROM setup_state WHERE id='default'").fetchone()
+    if not setup_state:
+        initialized = c.execute("SELECT 1 FROM users WHERE username='owlco' AND role='ADMIN'").fetchone() is not None
+        c.execute("INSERT INTO setup_state(id,state,admin_username,initialized_at,initialized_by,version) VALUES(?,?,?,?,?,1)",
+                  ('default', 'INITIALIZED' if initialized else 'UNINITIALIZED', 'owlco', now() if initialized else None,
+                   'environment' if initialized else None))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
@@ -1028,6 +1037,98 @@ class EmployeeCreate(BaseModel):
     role: str
     password: str = Field(min_length=8, max_length=256)
     managerId: str | None = Field(default=None, max_length=128)
+
+
+class InitializeAdminRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
+    confirmPassword: str = Field(min_length=8, max_length=256)
+    clientOperationId: uuid.UUID
+
+
+def _setup_payload_digest(body: InitializeAdminRequest) -> str:
+    # Store only a non-reversible comparison digest; never persist the password.
+    return hashlib.sha256(
+        json.dumps({"password": body.password, "confirmPassword": body.confirmPassword},
+                   ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+@app.get("/api/v1/setup/status")
+def setup_status() -> dict[str, Any]:
+    c = db()
+    try:
+        state = c.execute("SELECT * FROM setup_state WHERE id='default'").fetchone()
+        if state is None:
+            initialized = c.execute("SELECT 1 FROM users WHERE username='owlco' AND role='ADMIN'").fetchone() is not None
+            return {"initialized": initialized, "adminUsername": "owlco", "mustChangePassword": True, "serverTime": now()}
+        admin = c.execute("SELECT must_change_password FROM users WHERE username=?", (state["admin_username"],)).fetchone()
+        return {
+            "initialized": state["state"] == "INITIALIZED",
+            "adminUsername": state["admin_username"],
+            "mustChangePassword": bool(admin["must_change_password"]) if admin else True,
+            "serverTime": now(),
+        }
+    finally:
+        c.close()
+
+
+@app.post("/api/v1/setup/initialize-admin")
+def initialize_admin(
+    body: InitializeAdminRequest,
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id)
+    if body.password != body.confirmPassword:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "两次密码不一致", trace_id=trace_id)
+    try:
+        key = str(uuid.UUID(idempotency_key or ""))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "Idempotency-Key 必须是合法 UUID", trace_id=trace_id) from None
+    if key != str(body.clientOperationId):
+        raise ApiError(400, CODE_IDEMPOTENCY_KEY_MISMATCH, "Idempotency-Key 与 clientOperationId 不一致", trace_id=trace_id)
+
+    digest = _setup_payload_digest(body)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        previous = c.execute("SELECT * FROM setup_operations WHERE client_operation_id=?", (key,)).fetchone()
+        if previous:
+            if previous["payload_digest"] != digest:
+                c.rollback()
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求参数不一致", trace_id=trace_id)
+            result = json.loads(previous["result_json"])
+            c.commit()
+            return result
+        state = c.execute("SELECT * FROM setup_state WHERE id='default'").fetchone()
+        if state is None:
+            c.execute("INSERT INTO setup_state(id,state,admin_username,version) VALUES('default','UNINITIALIZED','owlco',1)")
+            state = c.execute("SELECT * FROM setup_state WHERE id='default'").fetchone()
+        if state and state["state"] == "INITIALIZED":
+            c.rollback()
+            raise ApiError(409, CODE_SETUP_ALREADY_INITIALIZED, "管理员已初始化，不可覆盖", trace_id=trace_id)
+        user = c.execute("SELECT id FROM users WHERE username='owlco'").fetchone()
+        if user:
+            c.execute("UPDATE users SET password_hash=?, role='ADMIN', must_change_password=1, active=1 WHERE id=?",
+                      (hash_password(body.password), user["id"]))
+            uid = user["id"]
+        else:
+            uid = "u_admin"
+            c.execute("INSERT INTO users(id,username,display_name,role,password_hash,must_change_password,active,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                      (uid, "owlco", "系统管理员", "ADMIN", hash_password(body.password), 1, 1, now()))
+        ts = now()
+        c.execute("UPDATE setup_state SET state='INITIALIZED', initialized_at=?, initialized_by=?, version=version+1 WHERE id='default'",
+                  (ts, "setup",))
+        result = {"initialized": True, "username": "owlco", "mustChangePassword": True, "serverTime": ts, "traceId": trace_id}
+        c.execute("INSERT INTO setup_operations(client_operation_id,payload_digest,result_json,created_at) VALUES(?,?,?,?)",
+                  (key, digest, json.dumps(result, ensure_ascii=False, sort_keys=True), ts))
+        audit(c, None, None, "INITIALIZE_ADMIN", "SETUP", "default", "SUCCESS", trace_id)
+        c.commit()
+        return result
+    except ApiError:
+        raise
+    finally:
+        c.close()
 
 
 @app.post("/api/v1/admin/users")
