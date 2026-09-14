@@ -4,6 +4,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.platform.LocalContext
+import com.company.logistics.data.EndpointStore
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -48,5 +50,20 @@ class LoginScreenTest {
 
         composeRule.onNodeWithText("后端设置").assertIsDisplayed().performClick()
         assertEquals(true, opened)
+    }
+
+    @Test
+    fun endpointConfigBackReturnsToUnauthenticatedLoginRoute() {
+        var returned = false
+        composeRule.setContent {
+            EndpointConfigScreen(
+                store = EndpointStore.get(LocalContext.current),
+                onEndpointChanged = {},
+                onBack = { returned = true },
+            )
+        }
+
+        composeRule.onNodeWithText("返回").performClick()
+        assertEquals(true, returned)
     }
 }
