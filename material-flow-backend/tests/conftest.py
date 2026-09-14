@@ -17,6 +17,27 @@ collect_ignore = [
 
 
 @pytest.fixture(autouse=True)
+def isolated_backend_database(request, monkeypatch, tmp_path):
+    """Give every backend test module invocation a private database and upload root."""
+    backend = getattr(request.module, "backend", None)
+    if backend is None:
+        yield
+        return
+    data_dir = tmp_path / "data"
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(backend, "DATA_DIR", data_dir)
+    monkeypatch.setattr(backend, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(backend, "DB_PATH", data_dir / "material_flow.db")
+    # This module shares ``app.main`` with other legacy modules during collection;
+    # keep the policy fixture's injected credential aligned with its contract.
+    if request.node.fspath.basename == "test_password_change_policy.py":
+        monkeypatch.setattr(backend, "INITIAL_ADMIN_PASSWORD", "Admin@2026")
+    if request.node.fspath.basename != "test_deployment_readiness.py":
+        backend.init_db()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def legacy_admin_fixture_state(request, monkeypatch):
     """Legacy business tests use a pre-enrolled admin; policy tests cover first login."""
     if request.node.fspath.basename == "test_password_change_policy.py":
