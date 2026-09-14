@@ -133,6 +133,7 @@ CODE_ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 CODE_INVALID_REFRESH_TOKEN = "INVALID_REFRESH_TOKEN"
 CODE_OLD_PASSWORD_MISMATCH = "OLD_PASSWORD_MISMATCH"
 CODE_PASSWORD_UNCHANGED = "PASSWORD_UNCHANGED"
+CODE_PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
 CODE_ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
 
 # 令牌时效（契约 A03）
@@ -560,7 +561,8 @@ def _init_db(c: sqlite3.Connection) -> None:
         password = INITIAL_ADMIN_PASSWORD
         if not password or not password.strip():
             raise RuntimeError("INITIAL_ADMIN_PASSWORD is required on first startup")
-        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 1, 1, now()))
+        # 由部署环境显式提供的初始管理员凭据不是员工临时密码，允许直接管理用户。
+        c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(password), 0, 1, now()))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
@@ -805,7 +807,10 @@ def startup() -> None:
     init_db()
 
 
-def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> sqlite3.Row:
+def current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> sqlite3.Row:
     if not credentials:
         raise HTTPException(401, "未登录")
     c = db()
@@ -822,6 +827,14 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(401, "会话已失效")
     if row["role"] not in ROLES:
         raise HTTPException(403, "账号角色无效")
+    # 首次登录的临时密码只能用于完成改密；服务端不能依赖客户端隐藏业务入口。
+    # 登出不依赖此依赖项，健康检查也不需要认证，因此这里仅放行改密端点。
+    if row["must_change_password"] and request.url.path != "/api/v1/auth/change-password":
+        raise ApiError(
+            403,
+            CODE_PASSWORD_CHANGE_REQUIRED,
+            "请先修改初始密码",
+        )
     return row
 
 
@@ -1166,6 +1179,7 @@ def login(body: Login, x_request_id: str | None = Header(default=None)) -> dict[
         "user": {
             "id": user["id"], "username": user["username"],
             "displayName": user["display_name"], "role": user["role"],
+            "mustChangePassword": bool(user["must_change_password"]),
         },
     }
 
@@ -1217,6 +1231,9 @@ def refresh(body: RefreshRequest, x_request_id: str | None = Header(default=None
     if not user:
         c.close()
         raise ApiError(401, CODE_INVALID_REFRESH_TOKEN, "账号不可用")
+    if user["must_change_password"]:
+        c.close()
+        raise ApiError(403, CODE_PASSWORD_CHANGE_REQUIRED, "请先修改初始密码")
 
     uid, device = row["user_id"], (row["device_id"] or body.deviceId)
 
@@ -1243,6 +1260,7 @@ def refresh(body: RefreshRequest, x_request_id: str | None = Header(default=None
         "refreshExpiresAt": datetime.fromtimestamp(
             now_ts + REFRESH_TOKEN_SECONDS, timezone.utc
         ).isoformat(),
+        "mustChangePassword": bool(user["must_change_password"]),
     }
 
 

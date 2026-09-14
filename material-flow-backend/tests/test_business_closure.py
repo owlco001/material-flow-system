@@ -43,7 +43,10 @@ def test_exception_requires_order_device_material_and_direct_manager_review():
     with TestClient(backend.app) as client:
         admin = auth(client, "owlco", "Admin@2026")
         client.post("/api/v1/admin/users", json={"employeeNo":"E-200","displayName":"申请人","role":"OPERATOR","password":"Temp@2026","managerId":"u_admin"}, headers=admin)
-        submit = auth(client, "E-200", "Temp@2026")
+        temporary = auth(client, "E-200", "Temp@2026")
+        changed = client.post("/api/v1/auth/change-password", json={"oldPassword":"Temp@2026", "newPassword":"Worker@2026"}, headers=temporary)
+        assert changed.status_code == 200
+        submit = auth(client, "E-200", "Worker@2026")
         r = client.post("/api/v1/exceptions", json={"orderNo":"26B-013","deviceId":"dev_demo_HZ01","materialId":"mat_ctl_cabinet","type":"SHORTAGE","bookQuantity":1,"actualQuantity":0}, headers=submit)
         assert r.status_code == 200
         eid = r.json()["exceptionId"]
