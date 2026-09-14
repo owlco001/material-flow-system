@@ -182,10 +182,11 @@ open class LogisticsRepository(
     }
 
     open suspend fun createException(
+        clientOperationId: String,
         orderNo: String, deviceId: String, materialId: String, type: String,
         bookQuantity: Int, actualQuantity: Int, description: String? = null,
     ): Result<ExceptionSubmissionResult> = resultOf {
-        api.createException(orderNo, deviceId, materialId, type, bookQuantity, actualQuantity, description)
+        api.createException(clientOperationId, orderNo, deviceId, materialId, type, bookQuantity, actualQuantity, description)
     }
 
     /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */

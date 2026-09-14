@@ -1948,7 +1948,7 @@ class LogisticsViewModel(
         val bookQuantity = item.requiredQuantity ?: 0
         operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            repo.createException(item.orderNo, item.deviceId.orEmpty(), item.materialId, type, bookQuantity, actualQuantity, description)
+            repo.createException(UUID.randomUUID().toString(), item.orderNo, item.deviceId.orEmpty(), item.materialId, type, bookQuantity, actualQuantity, description)
                 .onSuccess { result ->
                     _state.update { it.copy(loading = false, message = "异常已提交，状态：${result.status}") }
                     refreshOrderAfterMutation()

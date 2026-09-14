@@ -215,6 +215,7 @@ open class MaterialFlowApi(
 
     /** POST /api/v1/exceptions；服务端创建待审批异常，不在客户端伪造成功。 */
     suspend fun createException(
+        clientOperationId: String,
         orderNo: String,
         deviceId: String,
         materialId: String,
@@ -224,15 +225,17 @@ open class MaterialFlowApi(
         description: String? = null,
         evidenceIds: List<String> = emptyList(),
     ): ExceptionSubmissionResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId")
         require(orderNo.isNotBlank() && deviceId.isNotBlank() && materialId.isNotBlank()) { "异常必须关联订单、机台和物料" }
         require(bookQuantity >= 0 && actualQuantity >= 0) { "数量必须是非负整数" }
         val body = JSONObject().apply {
             put("orderNo", orderNo); put("deviceId", deviceId); put("materialId", materialId)
             put("type", type); put("bookQuantity", bookQuantity); put("actualQuantity", actualQuantity)
+            put("clientOperationId", clientOperationId)
             description?.let { put("description", it) }
             put("evidenceIds", JSONArray(evidenceIds))
         }
-        ApiParser.parseExceptionSubmission(request("POST", "/api/v1/exceptions", body.toString()))
+        ApiParser.parseExceptionSubmission(request("POST", "/api/v1/exceptions", body.toString(), idempotencyKey = clientOperationId))
     }
 
     // ==================== 4.3 生产订单物料状态 ====================
@@ -472,13 +475,16 @@ open class MaterialFlowApi(
     ): TransferRequestResult = withContext(Dispatchers.IO) {
         val itemArray = JSONArray()
         items.forEach { item ->
+            require(item.expectedInventoryVersion != null && item.expectedInventoryVersion >= 1) {
+                "expectedInventoryVersion 必须为不小于 1 的整数"
+            }
             itemArray.put(JSONObject().apply {
                 put("materialId", item.materialId)
                 put("quantity", item.quantity)
                 item.batchNo?.let { put("batchNo", it) }
                 item.sourceLocationCode?.let { put("sourceLocationCode", it) }
                 item.targetLocationCode?.let { put("targetLocationCode", it) }
-                item.expectedInventoryVersion?.let { put("expectedInventoryVersion", it) }
+                put("expectedInventoryVersion", item.expectedInventoryVersion)
             })
         }
         val body = JSONObject().apply {

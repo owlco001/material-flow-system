@@ -22,9 +22,47 @@ class MaterialFlowApiContractTest {
     @Test
     fun exceptionRequiresAllServerAssociationFieldsBeforeNetworkAccess() = runBlocking {
         val error = runCatching {
-            MaterialFlowApi().createException("WO-1", "", "mat-1", "OTHER", 1, 0)
+            MaterialFlowApi().createException(UUID.randomUUID().toString(), "WO-1", "", "mat-1", "OTHER", 1, 0)
         }.exceptionOrNull()
         assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun transferRejectsMissingOrInvalidInventoryVersionBeforeNetworkAccess() = runBlocking {
+        listOf(null, 0).forEach { version ->
+            val error = runCatching {
+                MaterialFlowApi().createTransferRequest(
+                    clientOperationId = UUID.randomUUID().toString(), type = "INBOUND", documentNo = null,
+                    items = listOf(TransferItem("mat-1", 1, expectedInventoryVersion = version)),
+                )
+            }.exceptionOrNull()
+            assertTrue(error is IllegalArgumentException)
+            assertTrue(error?.message?.contains("expectedInventoryVersion") == true)
+        }
+    }
+
+    @Test
+    fun exceptionUsesClientOperationIdInBodyAndIdempotencyHeader() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureOneRequest("""{"exceptionId":"ex-1","status":"PENDING","difference":0,"serverTime":"now"}""") { port ->
+            val previous = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().createException(operationId, "WO-1", "device-1", "mat-1", "OTHER", 1, 0)
+            } finally { ApiConfig.baseUrl = previous }
+        }
+        assertEquals(operationId, captured.headers["Idempotency-Key"])
+        assertTrue(captured.body.contains("\"clientOperationId\":\"$operationId\""))
+    }
+
+    @Test
+    fun exceptionRejectsInvalidClientOperationIdBeforeNetworkAccess() = runBlocking {
+        val error = runCatching {
+            MaterialFlowApi().createException("not-a-uuid", "WO-1", "device-1", "mat-1", "OTHER", 1, 0)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message?.contains("clientOperationId") == true)
     }
 
     @Test
