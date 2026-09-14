@@ -372,7 +372,7 @@ fun LogisticsApp(
                             loading = state.managedUsersLoading,
                             error = state.managedUsersError,
                             onRefresh = { viewModel.loadManagedUsers() },
-                            onBack = { viewModel.navigate(Screen.PROFILE) },
+                            onBack = { viewModel.navigate(Screen.WORKSPACE) },
                         ) { no, name, role, pw, manager -> viewModel.addManagedUser(no, name, role, pw, manager) }
                     }
 
