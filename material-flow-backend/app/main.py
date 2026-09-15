@@ -53,7 +53,7 @@ HEALTH_TABLES = frozenset({
     "handover_operations", "material_work_items", "material_work_item_projections",
     "material_handovers", "exceptions", "location_bindings", "stocktakes", "employee_managers",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
-    "assembly_tasks", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
+    "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
     "admin_user_delete_operations",
  })
 
@@ -541,6 +541,8 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS progress_events(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), from_stage INTEGER NOT NULL, to_stage INTEGER NOT NULL CHECK(to_stage BETWEEN 1 AND 3), task_version INTEGER NOT NULL, server_time TEXT NOT NULL, client_operation_id TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS temporary_transfers(id TEXT PRIMARY KEY, worker_user_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT REFERENCES assembly_tasks(id), labor_record_id TEXT NOT NULL UNIQUE REFERENCES labor_records(id), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), remark TEXT NOT NULL CHECK(length(remark) BETWEEN 1 AND 500), started_at TEXT NOT NULL, ended_at TEXT, client_operation_id TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS assembly_operations(client_operation_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assembly_task_stages(task_id TEXT NOT NULL REFERENCES assembly_tasks(id) ON DELETE CASCADE, stage_no INTEGER NOT NULL CHECK(stage_no BETWEEN 1 AND 3), status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','COMPLETED','REWORK_REQUIRED')), version INTEGER NOT NULL DEFAULT 1, started_at TEXT, completed_at TEXT, rework_reason TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(task_id, stage_no));
+    CREATE TABLE IF NOT EXISTS assembly_stage_operations(client_operation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, stage_no INTEGER NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_labor_worker ON labor_records(worker_user_id) WHERE status='ACTIVE';
     CREATE INDEX IF NOT EXISTS idx_assembly_tasks_assembler ON assembly_tasks(assigned_assembler_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_labor_records_task ON labor_records(task_id, status);

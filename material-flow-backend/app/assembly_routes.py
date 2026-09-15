@@ -27,6 +27,69 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         c.execute("UPDATE labor_records SET status='COMPLETED',ended_at=?,duration_minutes=? WHERE id=?",(t,secs//60,rid))
     def bodycheck(b):
         if not isinstance(b,dict): raise HTTPException(422,'请求参数无效')
+    def stage_conflict(code, message, trace_id):
+        if api_error: raise api_error(409, code, message, trace_id=trace_id)
+        raise HTTPException(409, message)
+    def stage_operation(body, key, request):
+        client = body.get('clientOperationId')
+        if not isinstance(client, str): raise HTTPException(400, 'clientOperationId 必须是 UUID')
+        try: uuid.UUID(client)
+        except ValueError: raise HTTPException(400, 'clientOperationId 必须是 UUID') from None
+        if not isinstance(key, str) or not key.strip() or key.strip().lower() != client.lower():
+            if api_error: raise api_error(400, 'IDEMPOTENCY_KEY_MISMATCH', 'Idempotency-Key 与 clientOperationId 不一致')
+            raise HTTPException(400, 'Idempotency-Key 与 clientOperationId 不一致')
+        request_id = request.headers.get('X-Request-Id')
+        try: uuid.UUID(request_id or '')
+        except ValueError:
+            if api_error: raise api_error(400, 'INVALID_REQUEST_ID', 'X-Request-Id 必须是合法 UUID')
+            raise HTTPException(400, 'X-Request-Id 必须是合法 UUID')
+        return client, request_id
+    def stage_result(r):
+        return {'taskId': r['task_id'], 'stageNo': r['stage_no'], 'status': r['status'], 'version': r['version'], 'startedAt': r['started_at'], 'completedAt': r['completed_at'], 'reworkReason': r['rework_reason'], 'serverTime': now()}
+    def mutate_stage(tid, stage_no, body, request, user, key, action):
+        actor(user); bodycheck(body)
+        if stage_no not in (1, 2, 3): raise HTTPException(422, 'stage_no 必须为 1..3')
+        opid, request_id = stage_operation(body, key, request)
+        c=db()
+        try:
+            c.execute('BEGIN IMMEDIATE')
+            r=task(c, tid, user)
+            existing=c.execute('SELECT * FROM assembly_task_stages WHERE task_id=? AND stage_no=?',(tid,stage_no)).fetchone()
+            if not existing:
+                t=now(); c.execute("INSERT INTO assembly_task_stages(task_id,stage_no,status,version,updated_at) VALUES(?,?, 'NOT_STARTED',1,?)",(tid,stage_no,t)); existing=c.execute('SELECT * FROM assembly_task_stages WHERE task_id=? AND stage_no=?',(tid,stage_no)).fetchone()
+            prior=c.execute('SELECT * FROM assembly_stage_operations WHERE client_operation_id=?',(opid,)).fetchone()
+            payload=json.dumps(body,ensure_ascii=False,sort_keys=True)
+            if prior:
+                if prior['task_id'] != tid or prior['stage_no'] != stage_no or prior['action'] != action or prior['payload_json'] != payload:
+                    stage_conflict('IDEMPOTENCY_PAYLOAD_MISMATCH', '相同幂等键的请求体不一致', request_id)
+                out=json.loads(prior['result_json']); out['idempotent']=True; c.rollback(); return out
+            expected=body.get('expectedVersion')
+            if not isinstance(expected,int) or expected != existing['version']:
+                stage_conflict('ASSEMBLY_STAGE_VERSION_CONFLICT', '阶段版本冲突', request_id)
+            reason=body.get('reworkReason')
+            valid={'start': existing['status'] in ('NOT_STARTED','REWORK_REQUIRED'), 'complete': existing['status']=='IN_PROGRESS', 'rework': existing['status'] in ('IN_PROGRESS','COMPLETED')}
+            if not valid[action]: stage_conflict('ASSEMBLY_STAGE_STATE_CONFLICT', '阶段状态不允许此操作', request_id)
+            if action=='rework' and (not isinstance(reason,str) or not 1 <= len(reason) <= 500): raise HTTPException(422, 'reworkReason 必填且长度为 1..500')
+            t=now(); version=existing['version']+1
+            status={'start':'IN_PROGRESS','complete':'COMPLETED','rework':'REWORK_REQUIRED'}[action]
+            started=t if action=='start' else existing['started_at']; completed=t if action=='complete' else None
+            c.execute('UPDATE assembly_task_stages SET status=?,version=?,started_at=?,completed_at=?,rework_reason=?,updated_at=? WHERE task_id=? AND stage_no=?',(status,version,started,completed,reason if action=='rework' else None,t,tid,stage_no))
+            out=stage_result(c.execute('SELECT * FROM assembly_task_stages WHERE task_id=? AND stage_no=?',(tid,stage_no)).fetchone()); out['traceId']=request_id
+            _event={'start':'ASSEMBLY_STAGE_STARTED','complete':'ASSEMBLY_STAGE_COMPLETED','rework':'ASSEMBLY_STAGE_REWORK_REQUIRED'}[action]
+            audit_event(c, _event, tid, user, request_id, opid, stage_result(existing), out, request, entity_type='ASSEMBLY_TASK_STAGE')
+            c.execute('INSERT INTO assembly_stage_operations VALUES(?,?,?,?,?,?,?)',(opid,tid,stage_no,action,payload,json.dumps(out,ensure_ascii=False),t)); c.commit(); return out
+        except Exception:
+            c.rollback(); raise
+        finally: c.close()
+    @app.post('/api/v1/assembly/tasks/{tid}/stages/{stage_no}/start')
+    def stage_start(tid:str, stage_no:int, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
+        return mutate_stage(tid,stage_no,body,request,user,idempotency_key,'start')
+    @app.post('/api/v1/assembly/tasks/{tid}/stages/{stage_no}/complete')
+    def stage_complete(tid:str, stage_no:int, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
+        return mutate_stage(tid,stage_no,body,request,user,idempotency_key,'complete')
+    @app.post('/api/v1/assembly/tasks/{tid}/stages/{stage_no}/rework')
+    def stage_rework(tid:str, stage_no:int, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
+        return mutate_stage(tid,stage_no,body,request,user,idempotency_key,'rework')
     @app.get('/api/v1/assembly/tasks')
     def list_tasks(page:int=Query(1,ge=1), pageSize:int=Query(20,ge=1,le=100), user=Depends(current_user)):
         c=db(); where='assigned_assembler_id=?' if user['role']=='ASSEMBLER' else '1=1'; args=[user['id']] if user['role']=='ASSEMBLER' else []
