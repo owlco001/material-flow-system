@@ -94,12 +94,20 @@ r = client.post("/api/v1/scan/resolve",
                 headers=H)
 check("UNKNOWN 兜底", r.status_code == 200 and r.json()["type"] == "UNKNOWN", r.text[:150])
 
+r = client.post("/api/v1/scan/resolve",
+                json={"rawValue": "26B-013-HZ01", "clientOperationId": str(uuid.uuid4())},
+                headers=H)
+check("设备码不返回未冻结类型", r.status_code == 200 and r.json()["type"] == "UNKNOWN",
+      r.text[:150])
+
 check("不存在 FLOW_RECORD 枚举",
       "FLOW_RECORD" not in open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "main.py"), encoding="utf-8").read())
+check("扫码枚举严格冻结",
+      set(backend.SCAN_TYPES) == {"PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "UNKNOWN"})
 
 # ---------- 7.1 订单物料状态 ----------
-# 依据《订单物料状态-后端模型对齐规格》：
-#   - documentType 过渡期同时接受 PRODUCTION_ORDER 与 ORDER_NO；
+# 依据冻结契约：
+#   - documentType 仅接受 PRODUCTION_ORDER；
 #   - 订单不存在返回 404 ORDER_NOT_FOUND（不再是 200 空清单）。
 print("\n[订单物料状态]")
 r = client.post("/api/v1/orders/material-status",
@@ -111,14 +119,13 @@ ok = (r.status_code == 200
       and len(r.json()["items"]) == 75)
 check("PRODUCTION_ORDER 查询成功且按订单过滤", ok, r.text[:200])
 
-# 新规格文档的取值，过渡期必须同样放行
+# 已废弃的 ORDER_NO 必须拒绝
 r = client.post("/api/v1/orders/material-status",
                 json={"documentType": "ORDER_NO", "documentNo": DEMO_ORDER_NO},
                 headers=H)
-check("ORDER_NO 过渡期兼容并返回同样结果",
-      r.status_code == 200
-      and r.json()["documentType"] == "ORDER_NO"
-      and len(r.json()["items"]) == 75,
+check("ORDER_NO 已废弃并返回统一 400 错误",
+      r.status_code == 400
+      and r.json().get("error", {}).get("code") == "INVALID_SCAN_TYPE",
       r.text[:200])
 
 r = client.post("/api/v1/orders/material-status",

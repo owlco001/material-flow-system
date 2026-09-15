@@ -62,16 +62,11 @@ _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32,
 # ==================== 契约常量 ====================
 # 依据《物料流转系统-V1-API契约冻结补遗》，本文件覆盖旧文档中的冲突定义。
 
-SCAN_TYPES = ("PRODUCTION_ORDER", "MACHINE", "MATERIAL_CODE", "LOCATION_CODE", "FLOW_NO", "UNKNOWN")
+SCAN_TYPES = ("PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "UNKNOWN")
 # 禁止使用的历史枚举，收到即拒绝
 FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 
-# 订单物料状态的 documentType 过渡期兼容取值。
-# 历史契约（V1 冻结补遗）用 PRODUCTION_ORDER；新模型规格文档用 ORDER_NO。
-# 两者语义相同，过渡期同时接受，避免任一调用方被硬拒。
-# 注意：ORDER_NO 同时出现在 FORBIDDEN_SCAN_TYPES 里，但那个常量仅用于
-# /orders/material-status 的作废判定，扫码解析端点用的是独立正则，互不影响。
-ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER", "ORDER_NO")
+ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER",)
 
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
 ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER")
@@ -1426,8 +1421,8 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
         c.close()
     if order:
         typ, resource_id = "PRODUCTION_ORDER", order["id"]
-    elif device:
-        typ, resource_id = "MACHINE", device["id"]
+    # 设备码没有冻结的扫码枚举；即使命中数据库，也必须保持 UNKNOWN，
+    # 不能把内部设备类型泄露成运行时契约。
     elif material:
         typ, resource_id = "MATERIAL_CODE", material["id"]
     elif location:
@@ -1516,15 +1511,13 @@ def material_status(
         多个订单时会串数据；
       - 订单不存在返回 404 ORDER_NOT_FOUND，不再回退成全量物料。
 
-    documentType 兼容说明（过渡期）：
-      历史契约要求 PRODUCTION_ORDER，新规格文档使用 ORDER_NO。
-      两者语义相同，过渡期同时接受；ORDER/LOGISTICS 等仍按契约拒绝。
+    documentType 仅接受冻结契约中的 PRODUCTION_ORDER；ORDER_NO 已废弃。
     """
     trace_id = x_request_id or ""
     document_no = (body.get("documentNo") or "").strip()
     document_type = (body.get("documentType") or "").strip().upper()
 
-    # 仅放行这两个等价取值；其余沿用契约的作废判定
+    # 仅放行冻结的生产订单枚举；ORDER_NO 等历史值必须显式拒绝。
     if document_type not in ACCEPTED_ORDER_DOC_TYPES:
         if document_type in FORBIDDEN_SCAN_TYPES:
             raise ApiError(

@@ -14,7 +14,7 @@
   2. 外键完整性：所有 material_id 可 JOIN materials，device_id 可 JOIN order_devices
   3. 三态数量约束：缺货到货数=0；已到货在库数=0；在库在库数=需求数
   4. 幂等：重复执行种子不产生重复订单/设备/需求
-  5. API：命中订单、ORDER_NO/PRODUCTION_ORDER 双取值、404、非法类型
+  5. API：命中订单、PRODUCTION_ORDER、ORDER_NO 拒绝、404、非法类型
   6. 租户隔离：不返回无关订单数据
   7. 脱敏：响应不含数据库路径、主机信息
 """
@@ -164,8 +164,8 @@ check("重复执行 init_db 后需求数仍为 75",
 # ---------- 5. API 行为 ----------
 print("\n[API 行为]")
 r = client.post("/api/v1/orders/material-status", headers=H,
-                json={"documentNo": "26B-013", "documentType": "ORDER_NO"})
-check("ORDER_NO 查询返回 200", r.status_code == 200, f"HTTP {r.status_code} {r.text[:160]}")
+                json={"documentNo": "26B-013", "documentType": "PRODUCTION_ORDER"})
+check("PRODUCTION_ORDER 查询返回 200", r.status_code == 200, f"HTTP {r.status_code} {r.text[:160]}")
 if r.status_code == 200:
     d = r.json()
     check("documentNo 回显 26B-013", d.get("documentNo") == "26B-013", repr(d.get("documentNo")))
@@ -221,7 +221,13 @@ check("PRODUCTION_ORDER 同样放行（过渡期兼容）",
       f"HTTP {r.status_code}")
 
 r = client.post("/api/v1/orders/material-status", headers=H,
-                json={"documentNo": "NO-SUCH-ORDER", "documentType": "ORDER_NO"})
+                json={"documentNo": "26B-013", "documentType": "ORDER_NO"})
+check("ORDER_NO 已废弃并返回 400",
+      r.status_code == 400 and r.json().get("error", {}).get("code") == "INVALID_SCAN_TYPE",
+      f"HTTP {r.status_code} {r.text[:160]}")
+
+r = client.post("/api/v1/orders/material-status", headers=H,
+                json={"documentNo": "NO-SUCH-ORDER", "documentType": "PRODUCTION_ORDER"})
 check("订单不存在返回 404",
       r.status_code == 404, f"HTTP {r.status_code} {r.text[:160]}")
 check("404 错误码为 ORDER_NOT_FOUND",
@@ -234,7 +240,7 @@ check("非法 documentType 返回 400",
       r.status_code == 400, f"HTTP {r.status_code} {r.text[:160]}")
 
 r = client.post("/api/v1/orders/material-status", headers=H,
-                json={"documentNo": "", "documentType": "ORDER_NO"})
+                json={"documentNo": "", "documentType": "PRODUCTION_ORDER"})
 check("空 documentNo 返回 400", r.status_code == 400, f"HTTP {r.status_code}")
 
 r = client.post("/api/v1/orders/material-status",
