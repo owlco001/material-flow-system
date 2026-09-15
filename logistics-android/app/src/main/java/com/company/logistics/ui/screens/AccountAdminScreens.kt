@@ -50,6 +50,9 @@ fun UserManagementScreen(
     error: String?,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
+    deletingUserId: String? = null,
+    success: String? = null,
+    onDelete: (String) -> Unit = {},
     onAdd: (String, String, String, String, String?) -> Unit,
 ) {
     var employeeNo by remember { mutableStateOf("") }
@@ -58,6 +61,7 @@ fun UserManagementScreen(
     var managerId by remember { mutableStateOf("") }
     var selectedRole by remember { mutableStateOf<UserRole?>(null) }
     var roleMenuExpanded by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<ManagedUser?>(null) }
     val canSubmit = AddUserFormPolicy.canSubmit(employeeNo, displayName, password, selectedRole)
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -99,7 +103,56 @@ fun UserManagementScreen(
         OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("临时密码 *") }, supportingText = { Text("必填，密码要求由后端校验") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
         OutlinedTextField(managerId, { managerId = it }, Modifier.fillMaxWidth(), label = { Text("直属领导 ID（可选）") }, singleLine = true)
         Button(onClick = { onAdd(employeeNo, displayName, selectedRole!!.code, password, managerId.ifBlank { null }) }, enabled = !loading && canSubmit, modifier = Modifier.fillMaxWidth()) { Text("添加员工") }
+        if (loading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text("正在加载用户…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        success?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) { items(users) { u -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) { Text("${u.displayName} (${u.username})"); Text("角色：${u.role.label} · 首次改密：${if (u.mustChangePassword) "是" else "否"}"); Text(if (u.active) "启用" else "停用") } } } }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(users) { u ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${u.displayName} (${u.username})")
+                            Text("角色：${u.role.label} · 首次改密：${if (u.mustChangePassword) "是" else "否"}")
+                            Text(if (u.active) "启用" else "停用")
+                        }
+                        if (u.active) {
+                            OutlinedButton(
+                                onClick = { pendingDelete = u },
+                                enabled = deletingUserId == null && !loading,
+                            ) {
+                                Text(if (deletingUserId == u.id) "停用中…" else "停用")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { if (deletingUserId == null) pendingDelete = null },
+            title = { Text("确认停用用户") },
+            text = { Text("确定停用 ${target.displayName}（${target.username}）？停用后该账号不能继续登录。") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        onDelete(target.id)
+                    },
+                    enabled = deletingUserId == null,
+                ) { Text("确认停用") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }, enabled = deletingUserId == null) { Text("取消") }
+            },
+        )
     }
 }

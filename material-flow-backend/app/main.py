@@ -54,6 +54,7 @@ HEALTH_TABLES = frozenset({
     "material_handovers", "exceptions", "location_bindings", "stocktakes", "employee_managers",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
     "assembly_tasks", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
+    "admin_user_delete_operations",
  })
 
 # 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
@@ -150,6 +151,11 @@ CODE_INVALID_VIEW_ROLE = "INVALID_VIEW_ROLE"
 CODE_ROLE_PREVIEW_READ_ONLY = "ROLE_PREVIEW_READ_ONLY"
 CODE_INVALID_CLIENT_OPERATION_ID = "INVALID_CLIENT_OPERATION_ID"
 CODE_SETUP_ALREADY_INITIALIZED = "SETUP_ALREADY_INITIALIZED"
+CODE_USER_NOT_FOUND = "USER_NOT_FOUND"
+CODE_USER_CANNOT_DELETE_SELF = "USER_CANNOT_DELETE_SELF"
+CODE_LAST_ADMIN_CANNOT_DELETE = "LAST_ADMIN_CANNOT_DELETE"
+CODE_USER_ALREADY_DELETED = "USER_ALREADY_DELETED"
+CODE_USER_HAS_ACTIVE_BUSINESS = "USER_HAS_ACTIVE_BUSINESS"
 
 
 class ApiError(HTTPException):
@@ -554,6 +560,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS login_attempts(username TEXT PRIMARY KEY, failed_count INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL, locked_until INTEGER);
     CREATE TABLE IF NOT EXISTS setup_state(id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('UNINITIALIZED','INITIALIZED')), admin_username TEXT NOT NULL, initialized_at TEXT, initialized_by TEXT, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS setup_operations(client_operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
@@ -1065,6 +1072,10 @@ class EmployeeCreate(BaseModel):
     managerId: str | None = Field(default=None, max_length=128)
 
 
+class DeleteUserRequest(BaseModel):
+    clientOperationId: uuid.UUID
+
+
 class InitializeAdminRequest(BaseModel):
     password: str = Field(min_length=8, max_length=256)
     confirmPassword: str = Field(min_length=8, max_length=256)
@@ -1180,6 +1191,152 @@ def add_employee(body: EmployeeCreate, user: sqlite3.Row = Depends(current_user)
         audit(c, user["id"], user["role"], "CREATE", "USER", uid, "SUCCESS", x_request_id or "")
         c.commit()
         return {"id": uid, "employeeNo": body.employeeNo, "displayName": body.displayName, "role": body.role, "mustChangePassword": True}
+    finally:
+        c.close()
+
+
+@app.delete("/api/v1/admin/users/{user_id}")
+def delete_employee(
+    user_id: str,
+    body: DeleteUserRequest,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    """Disable a user while preserving history and all foreign-key references."""
+    trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可删除用户", trace_id=trace_id)
+
+    operation_id = str(body.clientOperationId)
+    payload = json.dumps(
+        {"userId": user_id, "clientOperationId": operation_id},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    c = db()
+    try:
+        # The idempotency read, business gates, state change, session revocation and
+        # audit write share one lock so concurrent retries cannot split the result.
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM admin_user_delete_operations WHERE client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if (
+                prior["user_id"] != user_id
+                or _payload_digest(prior["payload_json"]) != _payload_digest(payload)
+            ):
+                raise ApiError(
+                    409,
+                    CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                    "相同幂等键的请求体不一致",
+                    trace_id=trace_id,
+                )
+            result = json.loads(prior["result_json"])
+            result.update(idempotent=True, traceId=trace_id, serverTime=now())
+            c.rollback()
+            return result
+
+        target = c.execute(
+            "SELECT id,role,active FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not target:
+            raise ApiError(404, CODE_USER_NOT_FOUND, "用户不存在", trace_id=trace_id)
+        if target["id"] == user["id"]:
+            raise ApiError(
+                409,
+                CODE_USER_CANNOT_DELETE_SELF,
+                "不能删除当前登录用户",
+                trace_id=trace_id,
+            )
+        if not target["active"]:
+            raise ApiError(
+                409,
+                CODE_USER_ALREADY_DELETED,
+                "用户已被停用",
+                trace_id=trace_id,
+            )
+        if target["role"] == "ADMIN" and c.execute(
+            "SELECT COUNT(*) FROM users WHERE role='ADMIN' AND active=1"
+        ).fetchone()[0] <= 1:
+            raise ApiError(
+                409,
+                CODE_LAST_ADMIN_CANNOT_DELETE,
+                "不能删除最后一个启用的 ADMIN",
+                trace_id=trace_id,
+            )
+
+        has_active_business = c.execute(
+            """SELECT (
+                EXISTS(
+                    SELECT 1 FROM assembly_tasks
+                     WHERE assigned_assembler_id=? AND status <> 'COMPLETED'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM labor_records
+                     WHERE worker_user_id=? AND status='ACTIVE'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM transfer_requests
+                     WHERE created_by=? AND status='PENDING_APPROVAL'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM stocktakes
+                     WHERE created_by=? AND status='PENDING_CONFIRM'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM exceptions
+                     WHERE created_by=? AND status='PENDING'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM material_handovers
+                     WHERE status='PENDING' AND (created_by=? OR receiver_user_id=?)
+                )
+            )""",
+            (user_id, user_id, user_id, user_id, user_id, user_id, user_id),
+        ).fetchone()[0]
+        if has_active_business:
+            raise ApiError(
+                409,
+                CODE_USER_HAS_ACTIVE_BUSINESS,
+                "用户存在未完成的装配任务、待审批单据或交接",
+                trace_id=trace_id,
+            )
+
+        changed_at = now()
+        c.execute("UPDATE users SET active=0 WHERE id=? AND active=1", (user_id,))
+        revoke_all_sessions(c, user_id)
+        audit(c, user["id"], user["role"], "DELETE", "USER", user_id, "SUCCESS", trace_id)
+        result = {
+            "userId": user_id,
+            "status": "DELETED",
+            "serverTime": changed_at,
+            "traceId": trace_id,
+            "idempotent": False,
+        }
+        c.execute(
+            """INSERT INTO admin_user_delete_operations
+               (client_operation_id,user_id,payload_json,result_json,created_at)
+               VALUES(?,?,?,?,?)""",
+            (operation_id, user_id, payload, json.dumps(result, ensure_ascii=False), changed_at),
+        )
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise ApiError(
+            500,
+            CODE_RETRYABLE_UPSTREAM_ERROR,
+            "用户删除失败",
+            retryable=True,
+            trace_id=trace_id,
+        ) from None
     finally:
         c.close()
 

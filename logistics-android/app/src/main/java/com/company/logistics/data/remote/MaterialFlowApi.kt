@@ -242,6 +242,19 @@ open class MaterialFlowApi(
         }.toString())
     }
 
+    suspend fun deleteUser(userId: String, clientOperationId: String): DeleteUserResult = withContext(Dispatchers.IO) {
+        require(userId.isNotBlank()) { "userId 不能为空" }
+        requireUuid(clientOperationId, "clientOperationId")
+        ApiParser.parseDeleteUser(
+            request(
+                "DELETE",
+                "/api/v1/admin/users/$userId",
+                JSONObject().apply { put("clientOperationId", clientOperationId) }.toString(),
+                idempotencyKey = clientOperationId,
+            )
+        )
+    }
+
     /** 登出：吊销当前设备的 access 与 refresh 令牌 */
     suspend fun logout(): Unit = withContext(Dispatchers.IO) {
         runCatching { request("POST", "/api/v1/auth/logout", "{}") }

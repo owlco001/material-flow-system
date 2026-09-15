@@ -207,7 +207,9 @@ data class LogisticsUiState(
     val exceptionSubmitting: Boolean = false,
     val managedUsers: List<com.company.logistics.model.ManagedUser> = emptyList(),
     val managedUsersLoading: Boolean = false,
-    val managedUsersError: String? = null
+    val managedUsersError: String? = null,
+    val managedUsersSuccess: String? = null,
+    val managedUserDeletingId: String? = null,
 ) {
     val loggedIn: Boolean get() = authState is AuthState.Authenticated
     val currentUser: String
@@ -372,10 +374,16 @@ class LogisticsViewModel(
         }
     }
 
-    fun loadManagedUsers() {
+    fun loadManagedUsers(clearMessage: Boolean = true) {
         if (_state.value.role != UserRole.ADMIN || _state.value.preview) return
         operationScope.launch {
-            _state.update { it.copy(managedUsersLoading = true, managedUsersError = null) }
+            _state.update {
+                it.copy(
+                    managedUsersLoading = true,
+                    managedUsersError = null,
+                    managedUsersSuccess = if (clearMessage) null else it.managedUsersSuccess,
+                )
+            }
             repo.listUsers().onSuccess { users -> _state.update { it.copy(managedUsers = users, managedUsersLoading = false) } }
                 .onFailure { e -> _state.update { it.copy(managedUsersLoading = false, managedUsersError = (e as? ApiException)?.safeMessage("加载用户失败") ?: e.message) } }
         }
@@ -383,7 +391,56 @@ class LogisticsViewModel(
 
     fun addManagedUser(employeeNo: String, displayName: String, role: String, password: String, managerId: String?) {
         if (_state.value.role != UserRole.ADMIN || _state.value.preview) return
-        operationScope.launch { repo.addUser(employeeNo, displayName, role, password, managerId).onSuccess { loadManagedUsers() }.onFailure { e -> _state.update { it.copy(managedUsersError = (e as? ApiException)?.safeMessage("添加员工失败") ?: e.message) } } }
+        operationScope.launch {
+            _state.update { it.copy(managedUsersError = null, managedUsersSuccess = null) }
+            repo.addUser(employeeNo, displayName, role, password, managerId)
+                .onSuccess { loadManagedUsers() }
+                .onFailure { e -> _state.update { it.copy(managedUsersError = (e as? ApiException)?.safeMessage("添加员工失败") ?: e.message) } }
+        }
+    }
+
+    fun deleteManagedUser(userId: String) {
+        if (_state.value.role != UserRole.ADMIN || _state.value.preview || userId.isBlank()) return
+        val operationId = UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    managedUserDeletingId = userId,
+                    managedUsersError = null,
+                    managedUsersSuccess = null,
+                )
+            }
+            repo.deleteUser(userId, operationId)
+                .onSuccess {
+                    _state.update {
+                        it.copy(
+                            managedUserDeletingId = null,
+                            managedUsersSuccess = "用户已停用",
+                        )
+                    }
+                    loadManagedUsers(clearMessage = false)
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            managedUserDeletingId = null,
+                            managedUsersError = managedUserErrorMessage(e),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun managedUserErrorMessage(error: Throwable): String = when (error) {
+        is ApiException -> when (error.code) {
+            "USER_CANNOT_DELETE_SELF" -> "不能停用当前登录用户"
+            "LAST_ADMIN_CANNOT_DELETE" -> "不能停用最后一个启用管理员"
+            "USER_HAS_ACTIVE_BUSINESS" -> "用户存在未完成业务，无法停用"
+            "USER_ALREADY_DELETED" -> "用户已被停用"
+            "USER_NOT_FOUND" -> "用户不存在，请刷新后重试"
+            else -> error.safeMessage("停用用户失败")
+        }
+        else -> error.message ?: "停用用户失败"
     }
 
     fun logout() {

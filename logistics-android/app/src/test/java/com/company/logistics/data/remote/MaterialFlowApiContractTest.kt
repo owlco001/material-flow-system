@@ -59,6 +59,31 @@ class MaterialFlowApiContractTest {
     }
 
     @Test
+    fun deleteUserUsesDeletePathAndStableIdempotencyHeaders() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureOneRequest("""{"userId":"u-1","status":"DELETED","serverTime":"now"}""") { port ->
+            val previousBaseUrl = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    val result = api.deleteUser("u-1", operationId)
+                    assertEquals("u-1", result.userId)
+                    assertEquals("DELETED", result.status)
+                }
+            } finally {
+                ApiConfig.baseUrl = previousBaseUrl
+            }
+        }
+
+        assertEquals("DELETE /api/v1/admin/users/u-1 HTTP/1.1", captured.requestLine)
+        assertEquals("Bearer access-token", captured.headers["Authorization"])
+        assertEquals(operationId, captured.headers["Idempotency-Key"])
+        UUID.fromString(captured.headers["X-Request-Id"] ?: error("X-Request-Id missing"))
+        assertTrue(captured.body.contains("\"clientOperationId\":\"$operationId\""))
+    }
+
+    @Test
     fun exceptionRejectsInvalidClientOperationIdBeforeNetworkAccess() = runBlocking {
         val error = runCatching {
             MaterialFlowApi().createException("not-a-uuid", "WO-1", "device-1", "mat-1", "OTHER", 1, 0)

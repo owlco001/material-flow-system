@@ -129,6 +129,10 @@ open class LogisticsRepository(
         Unit
     }
 
+    open suspend fun deleteUser(userId: String, clientOperationId: String): Result<com.company.logistics.data.remote.DeleteUserResult> = resultOf {
+        api.deleteUser(userId, clientOperationId)
+    }
+
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
         try {

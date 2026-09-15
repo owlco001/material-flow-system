@@ -378,6 +378,9 @@ fun LogisticsApp(
                             error = state.managedUsersError,
                             onRefresh = { viewModel.loadManagedUsers() },
                             onBack = { viewModel.navigate(Screen.WORKSPACE) },
+                            deletingUserId = state.managedUserDeletingId,
+                            success = state.managedUsersSuccess,
+                            onDelete = { viewModel.deleteManagedUser(it) },
                         ) { no, name, role, pw, manager -> viewModel.addManagedUser(no, name, role, pw, manager) }
                     }
 
