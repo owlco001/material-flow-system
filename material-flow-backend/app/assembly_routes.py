@@ -7,10 +7,13 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         raise HTTPException(403, message)
     def actor(u):
         if u['role'] != 'ASSEMBLER': forbidden()
+    def active_member(c, tid, uid):
+        return c.execute("""SELECT 1 FROM assembly_task_members WHERE task_id=? AND assembler_id=? AND removed_at IS NULL
+                           UNION ALL SELECT 1 FROM assembly_tasks WHERE id=? AND assigned_assembler_id=?""", (tid, uid, tid, uid)).fetchone()
     def task(c, tid, u):
         r=c.execute('SELECT * FROM assembly_tasks WHERE id=?',(tid,)).fetchone()
         if not r: raise HTTPException(404,'任务不存在')
-        if r['assigned_assembler_id'] != u['id']: forbidden('只能操作本人任务')
+        if u['role'] == 'ASSEMBLER' and not active_member(c, tid, u['id']): forbidden('只能操作本人任务')
         return r
     def op(body, key):
         client = str(body.get('clientOperationId', '')).strip()
@@ -21,7 +24,14 @@ def register(app, db, now, current_user, audit_event, api_error=None):
             raise HTTPException(400, 'Idempotency-Key 与 clientOperationId 不一致')
         return key or client
     def result_task(r):
-        return {'id':r['id'],'orderNo':r['order_no'],'deviceId':r['device_id'],'deviceNo':r['device_no'],'assignedAssemblerId':r['assigned_assembler_id'],'status':r['status'],'progressStage':r['progress_stage'],'taskVersion':r['task_version'],'serverTime':now()}
+        return {'id':r['id'],'orderNo':r['order_no'],'deviceId':r['device_id'],'deviceNo':r['device_no'],'assignedAssemblerId':r['assigned_assembler_id'],'status':r['status'],'progressStage':r['progress_stage'],'taskVersion':r['task_version'],'members':(r['members'] if isinstance(r, dict) and 'members' in r else []),'serverTime':now()}
+    def task_members(c, tid):
+        rows=c.execute("SELECT assembler_id,assignment_role,assigned_by,assigned_at,removed_at FROM assembly_task_members WHERE task_id=? AND removed_at IS NULL ORDER BY assigned_at,assembler_id",(tid,)).fetchall()
+        out=[dict(r) for r in rows]
+        legacy=c.execute("SELECT assigned_assembler_id FROM assembly_tasks WHERE id=? AND assigned_assembler_id IS NOT NULL",(tid,)).fetchone()
+        if legacy and not any(x['assembler_id']==legacy['assigned_assembler_id'] for x in out):
+            out.insert(0, {'assembler_id':legacy['assigned_assembler_id'],'assignment_role':'LEAD','assigned_by':None,'assigned_at':None,'removed_at':None})
+        return out
     def finish(c, rid):
         t=now(); r=c.execute('SELECT started_at FROM labor_records WHERE id=?',(rid,)).fetchone(); secs=max(0, int(__import__('datetime').datetime.fromisoformat(t).timestamp()-__import__('datetime').datetime.fromisoformat(r['started_at']).timestamp()))
         c.execute("UPDATE labor_records SET status='COMPLETED',ended_at=?,duration_minutes=? WHERE id=?",(t,secs//60,rid))
@@ -91,10 +101,65 @@ def register(app, db, now, current_user, audit_event, api_error=None):
     def stage_rework(tid:str, stage_no:int, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
         return mutate_stage(tid,stage_no,body,request,user,idempotency_key,'rework')
     @app.get('/api/v1/assembly/tasks')
-    def list_tasks(page:int=Query(1,ge=1), pageSize:int=Query(20,ge=1,le=100), user=Depends(current_user)):
-        c=db(); where='assigned_assembler_id=?' if user['role']=='ASSEMBLER' else '1=1'; args=[user['id']] if user['role']=='ASSEMBLER' else []
-        total=c.execute(f'SELECT count(*) n FROM assembly_tasks WHERE {where}',args).fetchone()['n']; rows=c.execute(f'SELECT * FROM assembly_tasks WHERE {where} ORDER BY created_at LIMIT ? OFFSET ?',args+[pageSize,(page-1)*pageSize]).fetchall(); c.close()
-        return {'items':[result_task(r) for r in rows],'page':page,'pageSize':pageSize,'total':total,'totalPages':(total+pageSize-1)//pageSize}
+    def list_tasks(page:int=Query(1,ge=1), pageSize:int=Query(20,ge=1,le=100), deviceId:str|None=None, user=Depends(current_user)):
+        c=db(); clauses=[]; args=[]
+        if user['role']=='ASSEMBLER':
+            clauses.append("(EXISTS (SELECT 1 FROM assembly_task_members m WHERE m.task_id=assembly_tasks.id AND m.assembler_id=? AND m.removed_at IS NULL) OR assigned_assembler_id=?)")
+            args += [user['id'], user['id']]
+        if deviceId: clauses.append('device_id=?'); args.append(deviceId)
+        where=' AND '.join(clauses) or '1=1'
+        total=c.execute(f'SELECT count(*) n FROM assembly_tasks WHERE {where}',args).fetchone()['n']; rows=c.execute(f'SELECT * FROM assembly_tasks WHERE {where} ORDER BY created_at LIMIT ? OFFSET ?',args+[pageSize,(page-1)*pageSize]).fetchall()
+        items=[]
+        for r in rows:
+            x=result_task(r); x['members']=task_members(c,r['id']); items.append(x)
+        c.close(); return {'items':items,'page':page,'pageSize':pageSize,'total':total,'totalPages':(total+pageSize-1)//pageSize}
+
+    def assignment_operation(body, key, request):
+        client=body.get('clientOperationId')
+        try: uuid.UUID(str(client))
+        except (ValueError, TypeError): raise HTTPException(422,'clientOperationId 必须是 UUID')
+        if key and key.lower()!=str(client).lower(): raise HTTPException(400,'Idempotency-Key 与 clientOperationId 不一致')
+        rid=request.headers.get('X-Request-Id')
+        try: uuid.UUID(rid or '')
+        except ValueError: raise HTTPException(400,'X-Request-Id 必须是合法 UUID')
+        return str(client),rid
+    def assignment_result(c, tid, rid, idem=False):
+        return {'taskId':tid,'members':task_members(c,tid),'traceId':rid,'idempotent':idem,'serverTime':now()}
+    @app.post('/api/v1/assembly/tasks/{tid}/assignments')
+    def assign(tid:str, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
+        if user['role'] not in ('ADMIN','WORKSHOP_SUPERVISOR'): raise HTTPException(403,'无任务分配权限')
+        ids=body.get('assemblerIds')
+        if not isinstance(ids,list) or not 1<=len(ids)<=20 or len(set(ids))!=len(ids): raise HTTPException(422,'assemblerIds 必须为 1..20 个不同成员')
+        opid,rid=assignment_operation(body,idempotency_key,request); c=db()
+        try:
+            c.execute('BEGIN IMMEDIATE'); t=c.execute('SELECT id FROM assembly_tasks WHERE id=?',(tid,)).fetchone()
+            if not t: raise HTTPException(404,'任务不存在')
+            prior=c.execute('SELECT * FROM assembly_assignment_operations WHERE client_operation_id=?',(opid,)).fetchone(); payload=json.dumps(body,ensure_ascii=False,sort_keys=True)
+            if prior:
+                if prior['payload_json']!=payload: raise HTTPException(409,'相同幂等键的请求体不一致')
+                out=json.loads(prior['result_json']); out['idempotent']=True; c.rollback(); return out
+            for aid in ids:
+                if not c.execute("SELECT 1 FROM users WHERE id=? AND role='ASSEMBLER' AND active=1",(aid,)).fetchone(): raise HTTPException(422,'成员必须是启用的 ASSEMBLER')
+            for aid in ids:
+                c.execute("INSERT INTO assembly_task_members(task_id,assembler_id,assignment_role,assigned_by,assigned_at,removed_at) VALUES(?,?,?,?,?,NULL) ON CONFLICT(task_id,assembler_id) DO UPDATE SET assignment_role=excluded.assignment_role,assigned_by=excluded.assigned_by,assigned_at=excluded.assigned_at,removed_at=NULL",(tid,aid,'LEAD' if aid==ids[0] else 'MEMBER',user['id'],now()))
+            out=assignment_result(c,tid,rid); audit_event(c,'ASSEMBLY_TASK_ASSIGNED',tid,user,rid,opid,{},out,request,entity_type='ASSEMBLY_TASK'); c.execute('INSERT INTO assembly_assignment_operations VALUES(?,?,?,?,?,?)',(opid,tid,'ASSIGN',payload,json.dumps(out,ensure_ascii=False),now())); c.commit(); return out
+        except Exception: c.rollback(); raise
+        finally: c.close()
+    @app.delete('/api/v1/assembly/tasks/{tid}/assignments/{assembler_id}')
+    def unassign(tid:str, assembler_id:str, request:Request, body:dict, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
+        if user['role'] not in ('ADMIN','WORKSHOP_SUPERVISOR'): raise HTTPException(403,'无任务分配权限')
+        opid,rid=assignment_operation(body,idempotency_key,request); c=db()
+        try:
+            c.execute('BEGIN IMMEDIATE'); payload=json.dumps(body,ensure_ascii=False,sort_keys=True); prior=c.execute('SELECT * FROM assembly_assignment_operations WHERE client_operation_id=?',(opid,)).fetchone()
+            if prior:
+                if prior['payload_json']!=payload: raise HTTPException(409,'相同幂等键的请求体不一致')
+                out=json.loads(prior['result_json']); out['idempotent']=True; c.rollback(); return out
+            if not c.execute('SELECT 1 FROM assembly_tasks WHERE id=?',(tid,)).fetchone(): raise HTTPException(404,'任务不存在')
+            c.execute('UPDATE assembly_task_members SET removed_at=? WHERE task_id=? AND assembler_id=? AND removed_at IS NULL',(now(),tid,assembler_id))
+            c.execute('UPDATE assembly_tasks SET assigned_assembler_id=NULL WHERE id=? AND assigned_assembler_id=?',(tid,assembler_id))
+            out=assignment_result(c,tid,rid); audit_event(c,'ASSEMBLY_TASK_MEMBER_REMOVED',tid,user,rid,opid,{},out,request,entity_type='ASSEMBLY_TASK'); c.execute('INSERT INTO assembly_assignment_operations VALUES(?,?,?,?,?,?)',(opid,tid,'REMOVE',payload,json.dumps(out,ensure_ascii=False),now())); c.commit(); return out
+        except Exception: c.rollback(); raise
+        finally: c.close()
     def conflict(code):
         if api_error: raise api_error(409, code, code)
         raise HTTPException(409, code)

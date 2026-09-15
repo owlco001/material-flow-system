@@ -543,8 +543,12 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS assembly_operations(client_operation_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_task_stages(task_id TEXT NOT NULL REFERENCES assembly_tasks(id) ON DELETE CASCADE, stage_no INTEGER NOT NULL CHECK(stage_no BETWEEN 1 AND 3), status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','COMPLETED','REWORK_REQUIRED')), version INTEGER NOT NULL DEFAULT 1, started_at TEXT, completed_at TEXT, rework_reason TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(task_id, stage_no));
     CREATE TABLE IF NOT EXISTS assembly_stage_operations(client_operation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, stage_no INTEGER NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assembly_task_members(task_id TEXT NOT NULL REFERENCES assembly_tasks(id) ON DELETE CASCADE, assembler_id TEXT NOT NULL REFERENCES users(id), assignment_role TEXT NOT NULL CHECK(assignment_role IN ('LEAD','MEMBER')), assigned_by TEXT NOT NULL REFERENCES users(id), assigned_at TEXT NOT NULL, removed_at TEXT, PRIMARY KEY(task_id, assembler_id));
+    CREATE TABLE IF NOT EXISTS assembly_assignment_operations(client_operation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_labor_worker ON labor_records(worker_user_id) WHERE status='ACTIVE';
     CREATE INDEX IF NOT EXISTS idx_assembly_tasks_assembler ON assembly_tasks(assigned_assembler_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_assembly_task_members_active ON assembly_task_members(assembler_id, removed_at, task_id);
+    CREATE INDEX IF NOT EXISTS idx_assembly_task_members_task ON assembly_task_members(task_id, removed_at, assignment_role);
     CREATE INDEX IF NOT EXISTS idx_labor_records_task ON labor_records(task_id, status);
     CREATE TABLE IF NOT EXISTS material_work_items(id TEXT PRIMARY KEY, requirement_id TEXT, material_id TEXT NOT NULL, device_id TEXT, assigned_user_id TEXT, quantity INTEGER NOT NULL CHECK(quantity > 0));
     -- 工作台状态投影只保存状态、责任和最后交接引用，不复制订单需求数量事实。
