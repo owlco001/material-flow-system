@@ -25,7 +25,7 @@ def test_detail_roles_pagination_and_sensitive_fields():
         admin=login(client,"owlco","Admin@2026"); asm=login(client,"asm-detail"); other=login(client,"asm-other"); sup=login(client,"sup-detail")
         for token in (admin,sup,asm):
             r=client.get("/api/v1/orders/OD-1/detail?page=1&pageSize=1",headers={"Authorization":f"Bearer {token}"}); assert r.status_code==200,r.text
-            body=r.json(); assert set(body)=={"orderId","orderNo","productName","orderStatus","materials","assemblyTasks","laborSummary","timeline","page","pageSize","total"}; assert body["total"]==1
+            body=r.json(); assert set(body)=={"orderId","orderNo","productName","orderStatus","materials","materialSummary","assemblyTasks","laborSummary","timeline","page","pageSize","total"}; assert body["total"]==1
             assert "source_ip" not in r.text and "before_json" not in r.text and "password_hash" not in r.text
         denied=client.get("/api/v1/orders/OD-1/detail",headers={"Authorization":f"Bearer {other}"}); assert denied.status_code==403
         missing=client.get("/api/v1/orders/NOPE/detail",headers={"Authorization":f"Bearer {admin}"}); assert missing.status_code==404

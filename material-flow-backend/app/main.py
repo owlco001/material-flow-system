@@ -1686,6 +1686,51 @@ def inventory(code: str, user: sqlite3.Row = Depends(current_user)) -> dict[str,
     return {"material": {"id": m["id"], "code": m["code"], "name": m["name"], "specification": m["specification"], "unit": m["unit"], "batchNo": m["batch_no"], "expiryDate": m["expiry_date"]}, "inventory": {"totalQuantity": m["total_quantity"], "availableQuantity": m["available_quantity"], "reservedQuantity": 0, "locations": [dict(r) for r in rows]}, "version": m["version"]}
 
 
+def _material_summary(rows: list[sqlite3.Row] | list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate exactly the material requirement rows returned by an endpoint."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        material_id = row["material_id"] if "material_id" in row.keys() else row["materialId"]
+        item = grouped.setdefault(material_id, {
+            "materialId": material_id,
+            "materialCode": row["material_code"] if "material_code" in row.keys() else row["materialCode"],
+            "materialName": row["material_name"] if "material_name" in row.keys() else row["materialName"],
+            "unit": row["unit"],
+            "requiredQuantity": 0,
+            "arrivedQuantity": 0,
+            "inStockQuantity": 0,
+        })
+        item["requiredQuantity"] += row["required_quantity"] if "required_quantity" in row.keys() else row["requiredQuantity"]
+        item["arrivedQuantity"] += row["arrived_quantity"] if "arrived_quantity" in row.keys() else row["arrivedQuantity"]
+        item["inStockQuantity"] += row["in_stock_quantity"] if "in_stock_quantity" in row.keys() else row["inStockQuantity"]
+
+    items: list[dict[str, Any]] = []
+    for item in grouped.values():
+        required = item["requiredQuantity"]
+        arrived = item["arrivedQuantity"]
+        in_stock = item["inStockQuantity"]
+        if in_stock >= required:
+            status_code = "IN_STOCK"
+        elif arrived >= required:
+            status_code = "ARRIVED"
+        else:
+            status_code = "OUT_OF_STOCK"
+        item.update({
+            "shortageQuantity": max(required - in_stock, 0),
+            "statusCode": status_code,
+            "statusLabel": WORKSPACE_STATUS_LABELS[status_code],
+        })
+        items.append(item)
+    return {
+        "items": items,
+        "totalMaterialTypes": len(items),
+        "totalRequiredQuantity": sum(item["requiredQuantity"] for item in items),
+        "totalArrivedQuantity": sum(item["arrivedQuantity"] for item in items),
+        "totalInStockQuantity": sum(item["inStockQuantity"] for item in items),
+        "totalShortageQuantity": sum(item["shortageQuantity"] for item in items),
+    }
+
+
 @app.post("/api/v1/orders/material-status")
 def material_status(
     body: dict[str, str],
@@ -1788,6 +1833,7 @@ def material_status(
         "productName": order["product_name"],
         "orderStatus": order["status"],
         "items": items,
+        "materialSummary": _material_summary(rows),
         "serverTime": now(),
         "traceId": trace_id,
     }
@@ -1913,6 +1959,7 @@ def order_detail(
         "orderId": order["id"], "orderNo": order["order_no"],
         "productName": order["product_name"], "orderStatus": order["status"],
         "materials": materials,
+        "materialSummary": _material_summary(scoped),
         "assemblyTasks": [{
             "taskId": r["id"], "deviceId": r["device_id"], "deviceNo": r["device_no"],
             "status": r["status"], "progressStage": r["progress_stage"],
