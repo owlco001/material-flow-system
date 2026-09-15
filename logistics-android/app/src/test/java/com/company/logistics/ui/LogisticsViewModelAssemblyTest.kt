@@ -34,6 +34,7 @@ class LogisticsViewModelAssemblyTest {
         )
         assertEquals(listOf("a"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, " NO-1 ").map { it.id })
         assertEquals(listOf("b"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, "id-2").map { it.id })
+        assertTrue(LogisticsViewModel.filterAssemblyTasksByDevice(tasks, "missing").isEmpty())
     }
 
     @Test

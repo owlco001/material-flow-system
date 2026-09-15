@@ -234,6 +234,7 @@ fun LogisticsApp(
                         assemblyTaskPageSize = state.assemblyTaskPageSize,
                         assemblyTaskTotal = state.assemblyTaskTotal,
                         assemblyTaskTotalPages = state.assemblyTaskTotalPages,
+                        assemblyDeviceFilter = state.assemblyDeviceFilter,
                         assemblySubmittingTaskId = state.assemblySubmittingTaskId,
                         assemblySubmittingAction = state.assemblySubmittingAction,
                         assemblyActiveLabor = state.assemblyActiveLabor,

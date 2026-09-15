@@ -867,15 +867,25 @@ class LogisticsViewModel(
                 .onSuccess { result ->
                     if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
                     _state.update {
+                        val deviceId = it.pendingAssemblyDeviceId?.trim().orEmpty().ifBlank { null }
+                        val deviceNo = it.pendingAssemblyDeviceNo?.trim().orEmpty().ifBlank { null }
+                        val tasks = if (deviceId == null && deviceNo == null) {
+                            result.items
+                        } else {
+                            result.items.filter { task ->
+                                (deviceId != null && task.deviceId == deviceId) ||
+                                    (deviceNo != null && task.deviceNo == deviceNo)
+                            }
+                        }
                         it.copy(
-                            assemblyTasks = result.items,
-                            assemblyTaskState = if (result.items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                            assemblyTasks = tasks,
+                            assemblyTaskState = if (tasks.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
                             assemblyTaskError = null,
                             assemblyTaskUnavailable = false,
                             assemblyTaskPage = result.page,
                             assemblyTaskPageSize = result.pageSize,
-                            assemblyTaskTotal = result.total,
-                            assemblyTaskTotalPages = result.totalPages,
+                            assemblyTaskTotal = tasks.size,
+                            assemblyTaskTotalPages = if (tasks.isEmpty()) 0 else 1,
                             workspaceServerTime = result.serverTime ?: it.workspaceServerTime,
                         )
                     }
@@ -1964,9 +1974,7 @@ class LogisticsViewModel(
         _state.update { it.copy(loading = true, assemblyDeviceFilter = value, error = null) }
         repo.assemblyTaskPage(1, LogisticsUiState.WORKSPACE_PAGE_SIZE)
             .onSuccess { result ->
-                val matched = result.items.filter {
-                    (id != null && it.deviceId == id) || (no != null && it.deviceNo == no)
-                }
+                val matched = filterAssemblyTasks(result.items, id, no)
                 _state.update { it.copy(
                     loading = false, screen = Screen.WORKSPACE, assemblyTasks = matched,
                     assemblyTaskState = if (matched.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
@@ -2228,6 +2236,12 @@ class LogisticsViewModel(
             val value = deviceValue.trim()
             return tasks.filter { it.deviceNo == value || it.deviceId == value }
         }
+
+        private fun filterAssemblyTasks(tasks: List<AssemblyTask>, deviceId: String?, deviceNo: String?): List<AssemblyTask> =
+            tasks.filter { task ->
+                (deviceId != null && task.deviceId == deviceId) ||
+                    (deviceNo != null && task.deviceNo == deviceNo)
+            }
 
         val WORKSPACE_PAGE_SIZES: Set<Int> = setOf(20, 50)
 

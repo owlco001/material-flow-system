@@ -58,6 +58,7 @@ fun AssemblerWorkspaceScreen(
     pageSize: Int,
     total: Int,
     totalPages: Int,
+    deviceFilter: String?,
     submittingTaskId: String?,
     submittingAction: AssemblyAction?,
     activeLabor: Map<String, LaborRecord>,
@@ -140,8 +141,16 @@ fun AssemblerWorkspaceScreen(
             )
             WorkspaceLoadState.EMPTY -> {
                 EmptyState(
-                    title = "当前没有装配任务",
-                    description = "服务端当前没有返回分配给本人的任务。",
+                    title = if (deviceFilter != null) {
+                        "未匹配到该机台的装配任务"
+                    } else {
+                        "当前没有装配任务"
+                    },
+                    description = if (deviceFilter != null) {
+                        "当前机台没有匹配任务，请确认机台编号后重新扫码或刷新。"
+                    } else {
+                        "服务端当前没有返回分配给本人的任务。"
+                    },
                     action = { SecondaryButton(text = "刷新任务", onClick = onRefresh) },
                 )
             }
