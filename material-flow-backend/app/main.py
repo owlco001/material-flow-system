@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 DATA_DIR = Path(os.environ.get("MATERIAL_FLOW_DATA", "/srv/material-flow/data"))
@@ -54,7 +54,7 @@ HEALTH_TABLES = frozenset({
     "material_handovers", "exceptions", "location_bindings", "stocktakes", "employee_managers",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
     "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
-    "admin_user_delete_operations",
+    "admin_user_delete_operations", "admin_user_edit_operations", "admin_user_password_reset_operations",
  })
 
 # 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
@@ -156,6 +156,7 @@ CODE_USER_CANNOT_DELETE_SELF = "USER_CANNOT_DELETE_SELF"
 CODE_LAST_ADMIN_CANNOT_DELETE = "LAST_ADMIN_CANNOT_DELETE"
 CODE_USER_ALREADY_DELETED = "USER_ALREADY_DELETED"
 CODE_USER_HAS_ACTIVE_BUSINESS = "USER_HAS_ACTIVE_BUSINESS"
+CODE_USER_CANNOT_DISABLE_SELF = "USER_CANNOT_DISABLE_SELF"
 
 
 class ApiError(HTTPException):
@@ -567,6 +568,8 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS setup_state(id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('UNINITIALIZED','INITIALIZED')), admin_username TEXT NOT NULL, initialized_at TEXT, initialized_by TEXT, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS setup_operations(client_operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
@@ -1082,6 +1085,20 @@ class DeleteUserRequest(BaseModel):
     clientOperationId: uuid.UUID
 
 
+class EditUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    clientOperationId: uuid.UUID
+    displayName: str | None = Field(default=None, min_length=1, max_length=128)
+    role: str | None = None
+    active: bool | None = None
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    newPassword: str = Field(min_length=8, max_length=256)
+    clientOperationId: uuid.UUID
+
+
 class InitializeAdminRequest(BaseModel):
     password: str = Field(min_length=8, max_length=256)
     confirmPassword: str = Field(min_length=8, max_length=256)
@@ -1199,6 +1216,96 @@ def add_employee(body: EmployeeCreate, user: sqlite3.Row = Depends(current_user)
         return {"id": uid, "employeeNo": body.employeeNo, "displayName": body.displayName, "role": body.role, "mustChangePassword": True}
     finally:
         c.close()
+
+
+def _user_has_active_business(c: sqlite3.Connection, user_id: str) -> bool:
+    return bool(c.execute("""SELECT (
+        EXISTS(SELECT 1 FROM assembly_tasks WHERE assigned_assembler_id=? AND status <> 'COMPLETED')
+        OR EXISTS(SELECT 1 FROM labor_records WHERE worker_user_id=? AND status='ACTIVE')
+        OR EXISTS(SELECT 1 FROM transfer_requests WHERE created_by=? AND status='PENDING_APPROVAL')
+        OR EXISTS(SELECT 1 FROM stocktakes WHERE created_by=? AND status='PENDING_CONFIRM')
+        OR EXISTS(SELECT 1 FROM exceptions WHERE created_by=? AND status='PENDING')
+        OR EXISTS(SELECT 1 FROM material_handovers WHERE status='PENDING' AND (created_by=? OR receiver_user_id=?))
+    )""", (user_id, user_id, user_id, user_id, user_id, user_id, user_id)).fetchone()[0])
+
+
+def _redacted_user(row: sqlite3.Row) -> dict[str, Any]:
+    return {"id": row["id"], "displayName": row["display_name"], "role": row["role"], "active": bool(row["active"])}
+
+
+@app.patch("/api/v1/admin/users/{user_id}")
+def edit_employee(user_id: str, body: EditUserRequest, user: sqlite3.Row = Depends(current_user),
+                  x_request_id: str | None = Header(default=None),
+                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可编辑用户", trace_id=trace_id)
+    changes = body.model_dump(exclude_none=True)
+    changes.pop("clientOperationId", None)
+    if not changes:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "至少提供一个可编辑字段", trace_id=trace_id)
+    if "role" in changes and changes["role"] not in ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER"):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "角色无效", trace_id=trace_id)
+    operation_id = str(body.clientOperationId)
+    payload = json.dumps({"userId": user_id, **changes}, ensure_ascii=False, sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM admin_user_edit_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
+        if prior:
+            if prior["user_id"] != user_id or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"]); result.update(traceId=trace_id, idempotent=True)
+            c.rollback(); return result
+        target = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise ApiError(404, CODE_USER_NOT_FOUND, "用户不存在", trace_id=trace_id)
+        if target["id"] == user["id"] and changes.get("active") is False:
+            raise ApiError(409, CODE_USER_CANNOT_DISABLE_SELF, "不能停用当前登录用户", trace_id=trace_id)
+        new_role = changes.get("role", target["role"]); new_active = changes.get("active", bool(target["active"]))
+        if target["role"] == "ADMIN" and (new_role != "ADMIN" or not new_active) and c.execute("SELECT COUNT(*) FROM users WHERE role='ADMIN' AND active=1").fetchone()[0] <= 1:
+            raise ApiError(409, CODE_LAST_ADMIN_CANNOT_DELETE, "不能停用或降级最后一个启用的 ADMIN", trace_id=trace_id)
+        if not new_active and target["active"] and _user_has_active_business(c, user_id):
+            raise ApiError(409, CODE_USER_HAS_ACTIVE_BUSINESS, "用户存在未完成业务责任", trace_id=trace_id)
+        before = _redacted_user(target)
+        sets, values = [], []
+        for field, column in (("displayName", "display_name"), ("role", "role"), ("active", "active")):
+            if field in changes: sets.append(f"{column}=?"); values.append(changes[field])
+        values.append(user_id); c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", values)
+        updated = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone(); after = _redacted_user(updated)
+        if "active" in changes and not changes["active"]: revoke_all_sessions(c, user_id)
+        audit(c, user["id"], user["role"], "UPDATE", "USER", user_id, "SUCCESS", trace_id)
+        ts = now(); result = {"userId": user_id, **after, "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  ("ADMIN_USER_EDIT", "USER", user_id, user["id"], user["role"], trace_id, operation_id, json.dumps(before), json.dumps(after), ts, None, None, "SUCCESS"))
+        c.execute("INSERT INTO admin_user_edit_operations VALUES(?,?,?,?,?)", (operation_id, user_id, payload, json.dumps(result), ts)); c.commit(); return result
+    except ApiError:
+        c.rollback(); raise
+    finally: c.close()
+
+
+@app.post("/api/v1/admin/users/{user_id}/password-reset")
+def reset_employee_password(user_id: str, body: PasswordResetRequest, user: sqlite3.Row = Depends(current_user),
+                            x_request_id: str | None = Header(default=None),
+                            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    if user["role"] != "ADMIN": raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可重置密码", trace_id=trace_id)
+    operation_id = str(body.clientOperationId); digest = hashlib.sha256(body.newPassword.encode()).hexdigest()
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE"); prior = c.execute("SELECT * FROM admin_user_password_reset_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
+        if prior:
+            if prior["user_id"] != user_id or prior["payload_digest"] != digest: raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"]); result.update(traceId=trace_id, idempotent=True); c.rollback(); return result
+        target = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target: raise ApiError(404, CODE_USER_NOT_FOUND, "用户不存在", trace_id=trace_id)
+        before = _redacted_user(target); c.execute("UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?", (hash_password(body.newPassword), user_id)); revoke_all_sessions(c, user_id)
+        after = {**before, "mustChangePassword": True}; ts = now(); result = {"userId": user_id, "mustChangePassword": True, "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("ADMIN_PASSWORD_RESET", "USER", user_id, user["id"], user["role"], trace_id, operation_id, json.dumps(before), json.dumps(after), ts, None, None, "SUCCESS"))
+        c.execute("INSERT INTO admin_user_password_reset_operations VALUES(?,?,?,?,?)", (operation_id, user_id, digest, json.dumps(result), ts)); c.commit(); return result
+    except ApiError: c.rollback(); raise
+    finally: c.close()
 
 
 @app.delete("/api/v1/admin/users/{user_id}")
