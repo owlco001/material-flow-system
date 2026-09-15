@@ -1,6 +1,8 @@
 package com.company.logistics.ui
 
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.ScanResult
+import com.company.logistics.model.ScanType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -29,5 +31,17 @@ class LogisticsViewModelRoutingTest {
     fun initialUiStateIsExplicitlyRestoring() {
         assertTrue(LogisticsUiState().authState is AuthState.Restoring)
         assertFalse(LogisticsUiState().loggedIn)
+    }
+
+    @Test
+    fun unknownScanKeepsResourceIdAndNormalizedValueForAssemblyRouting() {
+        val route = assemblyDeviceRoute(ScanResult(ScanType.UNKNOWN, " MACHINE-07 ", " device-7 "))
+
+        assertEquals(AssemblyDeviceRoute("device-7", "MACHINE-07"), route)
+    }
+
+    @Test
+    fun knownScanDoesNotEnterAssemblyRouting() {
+        assertEquals(null, assemblyDeviceRoute(ScanResult(ScanType.MATERIAL_CODE, "MAT-1", "device-1")))
     }
 }

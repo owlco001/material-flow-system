@@ -99,6 +99,19 @@ enum class WorkspaceLoadState {
     ERROR
 }
 
+/** UNKNOWN 扫码结果可用于装配机台路由的候选标识。 */
+internal data class AssemblyDeviceRoute(
+    val deviceId: String?,
+    val deviceNo: String?,
+)
+
+internal fun assemblyDeviceRoute(scan: ScanResult): AssemblyDeviceRoute? {
+    if (scan.type != ScanType.UNKNOWN) return null
+    val deviceId = scan.resourceId?.trim().orEmpty().ifBlank { null }
+    val deviceNo = scan.normalizedValue.trim().ifBlank { null }
+    return if (deviceId == null && deviceNo == null) null else AssemblyDeviceRoute(deviceId, deviceNo)
+}
+
 /**
  * 全局 UI 状态。
  */
@@ -142,6 +155,9 @@ data class LogisticsUiState(
     val assemblyTaskTotal: Int = 0,
     val assemblyTaskTotalPages: Int = 0,
     val assemblyDeviceFilter: String? = null,
+    /** UNKNOWN 扫码命中机台时，切换工作台前暂存服务端返回的机台标识。 */
+    val pendingAssemblyDeviceId: String? = null,
+    val pendingAssemblyDeviceNo: String? = null,
     val assemblySubmittingTaskId: String? = null,
     val assemblySubmittingAction: AssemblyAction? = null,
     val assemblyPendingOperationKey: String? = null,
@@ -1887,7 +1903,19 @@ class LogisticsViewModel(
                     _state.update { it.copy(lastScan = scan) }
                     if (!scan.type.isKnown) {
                         if (_state.value.workspaceRole == UserRole.ASSEMBLER) {
-                            loadAssemblyTasksForDevice(scan.normalizedValue)
+                            val route = assemblyDeviceRoute(scan)
+                            if (route != null) {
+                                _state.update {
+                                    it.copy(
+                                        screen = Screen.WORKSPACE,
+                                        pendingAssemblyDeviceId = route.deviceId,
+                                        pendingAssemblyDeviceNo = route.deviceNo,
+                                    )
+                                }
+                                loadAssemblyTasksForDevice(route.deviceId, route.deviceNo)
+                            } else {
+                                _state.update { it.copy(loading = false, error = "无法识别该条码，请手动输入或重新扫码") }
+                            }
                             return@onSuccess
                         }
                         _state.update { it.copy(loading = false, error = "无法识别该条码，请手动输入或重新扫码") }
@@ -1929,12 +1957,16 @@ class LogisticsViewModel(
         }
     }
 
-    private suspend fun loadAssemblyTasksForDevice(rawValue: String) {
-        val value = rawValue.trim()
+    private suspend fun loadAssemblyTasksForDevice(deviceId: String?, deviceNo: String?) {
+        val id = deviceId?.trim().orEmpty().ifBlank { null }
+        val no = deviceNo?.trim().orEmpty().ifBlank { null }
+        val value = no ?: id ?: return
         _state.update { it.copy(loading = true, assemblyDeviceFilter = value, error = null) }
         repo.assemblyTaskPage(1, LogisticsUiState.WORKSPACE_PAGE_SIZE)
             .onSuccess { result ->
-                val matched = result.items.filter { it.deviceNo == value || it.deviceId == value }
+                val matched = result.items.filter {
+                    (id != null && it.deviceId == id) || (no != null && it.deviceNo == no)
+                }
                 _state.update { it.copy(
                     loading = false, screen = Screen.WORKSPACE, assemblyTasks = matched,
                     assemblyTaskState = if (matched.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
