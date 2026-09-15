@@ -96,6 +96,7 @@ fun ScannerScreen(
     syncing: Boolean,
     onResolved: (ScanResult) -> Unit,
     onOpenQueue: () -> Unit,
+    onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -201,6 +202,7 @@ fun ScannerScreen(
             .padding(horizontal = Dimens.PagePadding),
     ) {
         Spacer(Modifier.height(Spacing.sm))
+        TextButton(onClick = onBack) { Text("返回工作台") }
 
         // ---------- 取景区 ----------
         val state = uiState

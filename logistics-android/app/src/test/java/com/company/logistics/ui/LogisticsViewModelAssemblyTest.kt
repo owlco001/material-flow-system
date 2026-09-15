@@ -26,6 +26,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LogisticsViewModelAssemblyTest {
+    @Test
+    fun assemblyDeviceFilterMatchesDeviceNumberOrIdOnly() {
+        val tasks = listOf(
+            AssemblyTask("a", "o", "id-1", "NO-1", "m", AssemblyTaskStatus.WAITING_MATERIAL, 0, 1, null, null, 0, null, null),
+            AssemblyTask("b", "o", "id-2", "NO-2", "m", AssemblyTaskStatus.COMPLETED, 3, 1, null, null, 0, null, null),
+        )
+        assertEquals(listOf("a"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, " NO-1 ").map { it.id })
+        assertEquals(listOf("b"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, "id-2").map { it.id })
+    }
 
     @Test
     fun assemblerLifecyclePassesExpectedVersionAndStableOperationId() {

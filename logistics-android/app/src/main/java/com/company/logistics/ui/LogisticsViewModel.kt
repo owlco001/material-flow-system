@@ -141,6 +141,7 @@ data class LogisticsUiState(
     val assemblyTaskPageSize: Int = WORKSPACE_PAGE_SIZE,
     val assemblyTaskTotal: Int = 0,
     val assemblyTaskTotalPages: Int = 0,
+    val assemblyDeviceFilter: String? = null,
     val assemblySubmittingTaskId: String? = null,
     val assemblySubmittingAction: AssemblyAction? = null,
     val assemblyPendingOperationKey: String? = null,
@@ -201,6 +202,9 @@ data class LogisticsUiState(
     // 提交表单
     val formQuantity: Int = 0,
     val formLocation: String? = null,
+    val transferSubmitting: Boolean = false,
+    val transferClientOperationId: String? = null,
+    val exceptionSubmitting: Boolean = false,
     val managedUsers: List<com.company.logistics.model.ManagedUser> = emptyList(),
     val managedUsersLoading: Boolean = false,
     val managedUsersError: String? = null
@@ -1825,10 +1829,11 @@ class LogisticsViewModel(
                 .onSuccess { scan ->
                     _state.update { it.copy(lastScan = scan) }
                     if (!scan.type.isKnown) {
-                        _state.update {
-                            it.copy(loading = false, error = "无法识别该条码，请手动输入或重新扫码")
+                        if (_state.value.workspaceRole == UserRole.ASSEMBLER) {
+                            loadAssemblyTasksForDevice(scan.normalizedValue)
+                            return@onSuccess
                         }
-                        return@onSuccess
+                        _state.update { it.copy(loading = false, error = "无法识别该条码，请手动输入或重新扫码") }
                     }
                     when (scan.type) {
                         ScanType.MATERIAL_CODE -> loadMaterial(scan.normalizedValue)
@@ -1865,6 +1870,28 @@ class LogisticsViewModel(
                     }
                 }
         }
+    }
+
+    private suspend fun loadAssemblyTasksForDevice(rawValue: String) {
+        val value = rawValue.trim()
+        _state.update { it.copy(loading = true, assemblyDeviceFilter = value, error = null) }
+        repo.assemblyTaskPage(1, LogisticsUiState.WORKSPACE_PAGE_SIZE)
+            .onSuccess { result ->
+                val matched = result.items.filter { it.deviceNo == value || it.deviceId == value }
+                _state.update { it.copy(
+                    loading = false, screen = Screen.WORKSPACE, assemblyTasks = matched,
+                    assemblyTaskState = if (matched.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                    assemblyTaskError = null, assemblyTaskUnavailable = false,
+                    assemblyTaskPage = result.page, assemblyTaskPageSize = result.pageSize,
+                    assemblyTaskTotal = matched.size, assemblyTaskTotalPages = if (matched.isEmpty()) 0 else 1,
+                    message = if (matched.isEmpty()) "未找到机台 $value 的装配任务" else "已匹配机台 $value",
+                ) }
+            }
+            .onFailure { error -> _state.update { it.copy(
+                loading = false, assemblyTaskState = WorkspaceLoadState.ERROR,
+                assemblyTaskError = assemblyErrorMessage(error), assemblyTaskUnavailable = isWorkspaceUnavailable(error),
+                error = "机台任务加载失败，请重试",
+            ) } }
     }
 
     private suspend fun loadMaterial(code: String) {
@@ -1987,14 +2014,19 @@ class LogisticsViewModel(
             return
         }
         val bookQuantity = item.requiredQuantity ?: 0
+        if (item.orderNo.isBlank() || item.deviceId.isNullOrBlank() || item.materialId.isBlank() || actualQuantity < 0 || description.isNullOrBlank()) {
+            _state.update { it.copy(error = "订单、机台、物料、非负整数数量和描述均为必填") }
+            return
+        }
+        if (_state.value.exceptionSubmitting) return
         operationScope.launch {
-            _state.update { it.copy(loading = true, error = null) }
+            _state.update { it.copy(loading = true, exceptionSubmitting = true, error = null) }
             repo.createException(UUID.randomUUID().toString(), item.orderNo, item.deviceId.orEmpty(), item.materialId, type, bookQuantity, actualQuantity, description)
                 .onSuccess { result ->
-                    _state.update { it.copy(loading = false, message = "异常已提交，状态：${result.status}") }
+                    _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交，状态：${result.status}") }
                     refreshOrderAfterMutation()
                 }
-                .onFailure { e -> _state.update { it.copy(loading = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
+                .onFailure { e -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
         }
     }
 
@@ -2020,11 +2052,14 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "流转数量必须大于 0") }
             return
         }
+        if (_state.value.transferSubmitting) return
+        val operationId = _state.value.transferClientOperationId ?: UUID.randomUUID().toString()
+        _state.update { it.copy(transferClientOperationId = operationId) }
         operationScope.launch {
-            _state.update { it.copy(loading = true, error = null) }
-            when (val r = repo.submitInbound(inv, qty, _state.value.formLocation, null)) {
+            _state.update { it.copy(loading = true, transferSubmitting = true, error = null) }
+            when (val r = repo.submitInbound(inv, qty, _state.value.formLocation, null, operationId)) {
                 is SubmitResult.Success -> _state.update {
-                    it.copy(loading = false, screen = Screen.QUEUE, message = "已提交，等待审批")
+                    it.copy(loading = false, transferSubmitting = false, transferClientOperationId = null, screen = Screen.QUEUE, message = "已提交，状态：PENDING_APPROVAL")
                 }
                 is SubmitResult.Queued -> _state.update {
                     it.copy(loading = false, screen = Screen.QUEUE, message = "网络不可用，已暂存本地队列")
@@ -2100,6 +2135,11 @@ class LogisticsViewModel(
     }
 
     companion object {
+        fun filterAssemblyTasksByDevice(tasks: List<AssemblyTask>, deviceValue: String): List<AssemblyTask> {
+            val value = deviceValue.trim()
+            return tasks.filter { it.deviceNo == value || it.deviceId == value }
+        }
+
         val WORKSPACE_PAGE_SIZES: Set<Int> = setOf(20, 50)
 
         fun canLoadNextWorkspacePage(page: Int, totalPages: Int): Boolean =

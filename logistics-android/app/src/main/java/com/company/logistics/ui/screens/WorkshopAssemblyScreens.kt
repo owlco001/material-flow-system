@@ -75,6 +75,7 @@ fun AssemblerWorkspaceScreen(
     onCompleteTemporaryTransfer: (String) -> Unit,
     onEnterPreview: (WorkspaceViewRole) -> Unit,
     onExitPreview: () -> Unit,
+    onScanDevice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectorVisible by remember { mutableStateOf(false) }
@@ -107,6 +108,7 @@ fun AssemblerWorkspaceScreen(
             onRefresh = onRefresh,
             onShowPreviewSelector = { selectorVisible = true },
             onExitPreview = onExitPreview,
+            onScanDevice = onScanDevice,
         )
 
         VSpace(Spacing.md)
@@ -347,6 +349,7 @@ private fun RoleWorkspaceHeader(
     onRefresh: () -> Unit,
     onShowPreviewSelector: () -> Unit,
     onExitPreview: () -> Unit,
+    onScanDevice: () -> Unit = {},
 ) {
     AppCard(accentColor = MaterialTheme.colorScheme.primary) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -369,6 +372,10 @@ private fun RoleWorkspaceHeader(
             containerColor = LogisticsTheme.colors.primaryContainer,
             symbol = "●",
         )
+        if (role == UserRole.ASSEMBLER) {
+            VSpace(Spacing.sm)
+            PrimaryButton(text = "扫码机台码", onClick = onScanDevice)
+        }
         if (AdminRolePreviewUiPolicy.canShowEntry(authenticatedRole)) {
             VSpace(Spacing.sm)
             if (previewRole == null) {

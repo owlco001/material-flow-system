@@ -258,7 +258,9 @@ fun LogisticsApp(
                         onCompleteAssemblyWork = { viewModel.completeAssemblyWork(it) },
                         onStartTemporaryTransfer = { taskId, remark -> viewModel.startTemporaryTransfer(taskId, remark) },
                         onCompleteTemporaryTransfer = { remark -> viewModel.completeTemporaryTransfer(remark) },
+                        onScanAssemblyDevice = { viewModel.navigate(Screen.SCANNER) },
                         onSubmitException = { item, type, actual, description -> viewModel.submitException(item, type, actual, description) },
+                        exceptionSubmitting = state.exceptionSubmitting,
                     )
 
                     Screen.SCANNER -> ScannerScreen(
@@ -268,7 +270,8 @@ fun LogisticsApp(
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
                         onResolved = { viewModel.onScanned(it.normalizedValue) },
-                        onOpenQueue = { viewModel.navigate(Screen.QUEUE) }
+                        onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
+                        onBack = { viewModel.navigate(Screen.WORKSPACE) }
                     )
 
                     Screen.MATERIAL_DETAIL -> {

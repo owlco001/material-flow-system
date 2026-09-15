@@ -156,7 +156,9 @@ fun WorkspaceScreen(
     onCompleteAssemblyWork: (AssemblyTask) -> Unit = {},
     onStartTemporaryTransfer: (String?, String) -> Unit = { _, _ -> },
     onCompleteTemporaryTransfer: (String) -> Unit = {},
+    onScanAssemblyDevice: () -> Unit = {},
     onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit = { _, _, _, _ -> },
+    exceptionSubmitting: Boolean = false,
 ) {
     val entries = entriesFor(role)
     var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
@@ -200,6 +202,7 @@ fun WorkspaceScreen(
             onCompleteTemporaryTransfer = onCompleteTemporaryTransfer,
             onEnterPreview = onEnterPreview,
             onExitPreview = onExitPreview,
+            onScanDevice = onScanAssemblyDevice,
             modifier = modifier,
         )
         return
@@ -406,6 +409,7 @@ fun WorkspaceScreen(
                             },
                             onCreateHandover = { createItem = item },
                             onSubmitException = { exceptionItem = item },
+                            exceptionSubmitting = exceptionSubmitting,
                         )
                         VSpace(Spacing.sm)
                     }
@@ -444,9 +448,9 @@ fun WorkspaceScreen(
             item = item,
             onDismiss = { exceptionItem = null },
             onSubmit = { type, actual, description ->
-                exceptionItem = null
                 onSubmitException(item, type, actual, description)
             },
+            submitting = exceptionSubmitting,
         )
     }
 
@@ -598,6 +602,7 @@ private fun ExceptionReportDialog(
     item: WorkspaceMaterialItem,
     onDismiss: () -> Unit,
     onSubmit: (String, Int, String?) -> Unit,
+    submitting: Boolean = false,
 ) {
     var actual by remember(item.id) { mutableStateOf("") }
     var description by remember(item.id) { mutableStateOf("") }
@@ -611,11 +616,11 @@ private fun ExceptionReportDialog(
                 VSpace(Spacing.sm)
                 OutlinedTextField(actual, { if (it.all(Char::isDigit)) actual = it }, label = { Text("实际数量") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 VSpace(Spacing.sm)
-                OutlinedTextField(description, { if (it.length <= 500) description = it }, label = { Text("说明（可选）") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(description, { if (it.length <= 500) description = it }, label = { Text("说明（必填）") }, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { TextButton(onClick = { onSubmit("OTHER", actualValue ?: 0, description.trim().ifBlank { null }) }, enabled = actualValue != null && actualValue >= 0) { Text("提交") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = { onSubmit("OTHER", actualValue ?: 0, description.trim()) }, enabled = !submitting && actualValue != null && actualValue >= 0 && description.isNotBlank()) { Text(if (submitting) "提交中…" else "提交") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !submitting) { Text("取消") } },
     )
 }
 
@@ -640,6 +645,7 @@ private fun WorkspaceItemCard(
     onHandoverAction: (HandoverAction) -> Unit,
     onCreateHandover: () -> Unit,
     onSubmitException: () -> Unit,
+    exceptionSubmitting: Boolean = false,
 ) {
     AppCard(accentColor = LogisticsTheme.colors.border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -735,7 +741,7 @@ private fun WorkspaceItemCard(
                     )
                 }
                 if (canReportException) {
-                    SecondaryButton(text = "提报异常", onClick = onSubmitException, modifier = Modifier.weight(1f))
+                    SecondaryButton(text = "提报异常", onClick = onSubmitException, enabled = !exceptionSubmitting, modifier = Modifier.weight(1f))
                 }
                 if (!item.lastHandoverId.isNullOrBlank()) {
                     SecondaryButton(
