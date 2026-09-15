@@ -19,12 +19,29 @@ enum class AssemblyAction(val label: String) {
     COMPLETE_WORK("完工"),
 }
 
+enum class AssemblyStageStatus(val code: String, val label: String) {
+    NOT_STARTED("NOT_STARTED", "未开始"), IN_PROGRESS("IN_PROGRESS", "进行中"),
+    COMPLETED("COMPLETED", "已完成"), REWORK_REQUIRED("REWORK_REQUIRED", "待返工");
+    companion object { fun from(value: String?) = entries.firstOrNull { it.code.equals(value, true) } ?: NOT_STARTED }
+}
+
+data class AssemblyStage(
+    val stageNo: Int, val status: AssemblyStageStatus, val version: Int = 1,
+    val startedAt: String? = null, val completedAt: String? = null, val reworkReason: String? = null,
+)
+
+data class AssemblyStageOperationResult(
+    val taskId: String, val stageNo: Int, val status: AssemblyStageStatus, val version: Int,
+    val startedAt: String?, val completedAt: String?, val reworkReason: String?,
+    val serverTime: String?, val traceId: String?, val idempotent: Boolean = false,
+)
+
 data class AssemblyTask(
     val id: String, val orderNo: String = "", val deviceId: String, val deviceNo: String,
     val materialSummary: String = "", val status: AssemblyTaskStatus, val progressStage: Int,
     val taskVersion: Int, val currentLaborRecordId: String? = null, val currentLaborStartedAt: String? = null,
     val accumulatedLaborMinutes: Int? = null, val assignedAssemblerId: String? = null, val assignedAssemblerName: String? = null,
-    val serverTime: String? = null,
+    val serverTime: String? = null, val stages: List<AssemblyStage> = listOf(1, 2, 3).map { AssemblyStage(it, AssemblyStageStatus.NOT_STARTED) },
 )
 
 data class AssemblyTaskPage(

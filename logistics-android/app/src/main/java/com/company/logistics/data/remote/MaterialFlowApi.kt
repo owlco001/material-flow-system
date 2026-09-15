@@ -458,6 +458,17 @@ open class MaterialFlowApi(
     suspend fun submitAssemblyProgress(taskId: String, stage: Int, expectedVersion: Int, clientOperationId: String): AssemblyTask = assemblyTaskAction(taskId, "progress", clientOperationId, expectedVersion, stage)
     suspend fun completeAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): AssemblyTask = assemblyTaskAction(taskId, "complete", clientOperationId, expectedVersion)
 
+    suspend fun startAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "start")
+    suspend fun completeAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "complete")
+    suspend fun reworkAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, reason: String, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "rework", reason)
+
+    private suspend fun stageOperation(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String, action: String, reason: String? = null): com.company.logistics.model.AssemblyStageOperationResult = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()); require(stageNo in 1..3); requireUuid(clientOperationId, "clientOperationId")
+        if (action == "rework") require(!reason.isNullOrBlank() && reason.length <= 500)
+        val body = JSONObject().apply { put("expectedVersion", expectedVersion); put("clientOperationId", clientOperationId); if (reason != null) put("reworkReason", reason) }
+        ApiParser.parseAssemblyStageOperation(request("POST", "/api/v1/assembly/tasks/$taskId/stages/$stageNo/$action", body.toString(), idempotencyKey = clientOperationId))
+    }
+
     suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
         requireUuid(clientOperationId, "clientOperationId")
         require(remark.length in 1..500) { "临时调拨备注长度必须为 1~500 字符" }

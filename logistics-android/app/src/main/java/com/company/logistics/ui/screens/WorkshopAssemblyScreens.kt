@@ -520,7 +520,7 @@ private fun AssemblyTaskCard(
         VSpace(Spacing.sm)
         Text("任务版本 ${task.taskVersion}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
         VSpace(Spacing.sm)
-        ProgressStages(task.progressStage)
+        ProgressStages(task.stages)
         VSpace(Spacing.sm)
         Text(
             when {
@@ -576,16 +576,16 @@ private fun AssemblyTaskCard(
 }
 
 @Composable
-private fun ProgressStages(stage: Int) {
+private fun ProgressStages(stages: List<com.company.logistics.model.AssemblyStage>) {
     Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
-        (1..3).forEach { item ->
-            val done = item <= stage
-            StatusTag(
-                label = "阶段 $item",
-                color = if (done) LogisticsTheme.colors.success else LogisticsTheme.colors.textTertiary,
-                containerColor = if (done) LogisticsTheme.colors.success.copy(alpha = 0.12f) else LogisticsTheme.colors.pageBackground,
-                symbol = if (done) "✓" else "○",
-            )
+        stages.sortedBy { it.stageNo }.forEach { stage ->
+            val color = when (stage.status) {
+                com.company.logistics.model.AssemblyStageStatus.COMPLETED -> LogisticsTheme.colors.success
+                com.company.logistics.model.AssemblyStageStatus.IN_PROGRESS -> LogisticsTheme.colors.info
+                com.company.logistics.model.AssemblyStageStatus.REWORK_REQUIRED -> LogisticsTheme.colors.warning
+                else -> LogisticsTheme.colors.textTertiary
+            }
+            StatusTag(label = "阶段 ${stage.stageNo} · ${stage.status.label}", color = color, containerColor = color.copy(alpha = 0.12f), symbol = if (stage.status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "✓" else "○")
         }
     }
 }

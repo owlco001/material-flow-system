@@ -35,6 +35,9 @@ import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskStatus
+import com.company.logistics.model.AssemblyStage
+import com.company.logistics.model.AssemblyStageStatus
+import com.company.logistics.model.AssemblyStageOperationResult
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
 import com.company.logistics.model.OrderDetail
@@ -665,7 +668,18 @@ object ApiParser {
         currentLaborStartedAt = nullableStringAny(o, "currentLaborStartedAt", "current_labor_started_at"), accumulatedLaborMinutes = nullableIntAny(o, "accumulatedLaborMinutes", "accumulated_labor_minutes"),
         assignedAssemblerId = nullableStringAny(o, "assignedAssemblerId", "assigned_assembler_id"), assignedAssemblerName = nullableStringAny(o, "assignedAssemblerName", "assigned_assembler_name"),
         serverTime = nullableStringAny(o, "serverTime", "updatedAt", "updated_at"),
+        stages = parseStages(o),
     )
+
+    private fun parseStages(o: JSONObject): List<AssemblyStage> {
+        val array = o.optJSONArray("stages") ?: return (1..3).map { AssemblyStage(it, AssemblyStageStatus.NOT_STARTED) }
+        return (0 until array.length()).mapNotNull { i -> array.optJSONObject(i)?.let { s -> AssemblyStage(s.optInt("stageNo", s.optInt("stage_no")), AssemblyStageStatus.from(s.optString("status")), s.optInt("version", 1), nullableStringAny(s, "startedAt", "started_at"), nullableStringAny(s, "completedAt", "completed_at"), nullableStringAny(s, "reworkReason", "rework_reason")) } }.ifEmpty { (1..3).map { AssemblyStage(it, AssemblyStageStatus.NOT_STARTED) } }
+    }
+
+    fun parseAssemblyStageOperation(json: String): AssemblyStageOperationResult {
+        val o = JSONObject(json)
+        return AssemblyStageOperationResult(o.optString("taskId"), o.optInt("stageNo"), AssemblyStageStatus.from(o.optString("status")), o.optInt("version"), nullableStringAny(o, "startedAt", "started_at"), nullableStringAny(o, "completedAt", "completed_at"), nullableStringAny(o, "reworkReason", "rework_reason"), nullableStringAny(o, "serverTime", "server_time"), nullableStringAny(o, "traceId", "trace_id"), o.optBoolean("idempotent", false))
+    }
 
     fun parseLaborRecord(json: String): LaborRecord = parseLaborRecord(JSONObject(json), LaborType.ASSEMBLY)
 
