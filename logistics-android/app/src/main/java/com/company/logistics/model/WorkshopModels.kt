@@ -68,11 +68,34 @@ data class OrderDetailLaborSummary(
     val assemblyLaborMinutes: Int, val temporaryTransferLaborMinutes: Int, val totalLaborMinutes: Int
 )
 
+data class OrderDetailMaterialSummaryItem(
+    val materialId: String,
+    val materialCode: String,
+    val materialName: String,
+    val unit: String,
+    val requiredQuantity: Int,
+    val arrivedQuantity: Int,
+    val inStockQuantity: Int,
+    val shortageQuantity: Int,
+    val statusCode: String,
+    val statusLabel: String,
+)
+
+data class OrderDetailMaterialSummary(
+    val items: List<OrderDetailMaterialSummaryItem> = emptyList(),
+    val totalMaterialTypes: Int = 0,
+    val totalRequiredQuantity: Int = 0,
+    val totalArrivedQuantity: Int = 0,
+    val totalInStockQuantity: Int = 0,
+    val totalShortageQuantity: Int = 0,
+)
+
 data class OrderDetail(
     val orderId: String, val orderNo: String, val productName: String?, val orderStatus: String?,
     val materials: List<OrderMaterialItem>, val assemblyTasks: List<AssemblyTask>,
     val laborSummary: OrderDetailLaborSummary, val timeline: List<OrderDetailTimelineEvent>,
-    val page: Int, val pageSize: Int, val total: Int
+    val page: Int, val pageSize: Int, val total: Int,
+    val materialSummary: OrderDetailMaterialSummary = OrderDetailMaterialSummary(),
 )
 
 data class AssemblyActionRequest(val clientOperationId: String, val expectedVersion: Int? = null, val stage: Int? = null, val remark: String? = null)

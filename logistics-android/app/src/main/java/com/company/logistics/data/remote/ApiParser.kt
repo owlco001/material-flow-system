@@ -39,6 +39,8 @@ import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
 import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.OrderDetailLaborSummary
+import com.company.logistics.model.OrderDetailMaterialSummary
+import com.company.logistics.model.OrderDetailMaterialSummaryItem
 import com.company.logistics.model.OrderDetailTimelineEvent
 import com.company.logistics.model.ExceptionSubmissionResult
 import org.json.JSONArray
@@ -100,12 +102,41 @@ object ApiParser {
         }
         val tasks = root.optJSONArray("assemblyTasks")?.let { arr -> buildList { for (i in 0 until arr.length()) add(parseOrderDetailTask(arr.getJSONObject(i))) } }.orEmpty()
         val labor = root.optJSONObject("laborSummary") ?: JSONObject()
+        val materialSummary = root.optJSONObject("materialSummary")?.let { summary ->
+            val items = buildList {
+                val array = summary.optJSONArray("items") ?: JSONArray()
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    add(OrderDetailMaterialSummaryItem(
+                        materialId = item.optString("materialId"),
+                        materialCode = item.optString("materialCode"),
+                        materialName = item.optString("materialName"),
+                        unit = item.optString("unit"),
+                        requiredQuantity = item.optInt("requiredQuantity"),
+                        arrivedQuantity = item.optInt("arrivedQuantity"),
+                        inStockQuantity = item.optInt("inStockQuantity"),
+                        shortageQuantity = item.optInt("shortageQuantity"),
+                        statusCode = item.optString("statusCode"),
+                        statusLabel = item.optString("statusLabel"),
+                    ))
+                }
+            }
+            OrderDetailMaterialSummary(
+                items = items,
+                totalMaterialTypes = summary.optInt("totalMaterialTypes"),
+                totalRequiredQuantity = summary.optInt("totalRequiredQuantity"),
+                totalArrivedQuantity = summary.optInt("totalArrivedQuantity"),
+                totalInStockQuantity = summary.optInt("totalInStockQuantity"),
+                totalShortageQuantity = summary.optInt("totalShortageQuantity"),
+            )
+        } ?: OrderDetailMaterialSummary()
         val timeline = root.optJSONArray("timeline")?.let { arr -> buildList { for (i in 0 until arr.length()) { val e = arr.getJSONObject(i); add(OrderDetailTimelineEvent(e.optString("type"), e.optString("entityId"), nullableString(e, "status"), nullableString(e, "serverTime"), nullableString(e, "actorId"))) } } }.orEmpty()
         return OrderDetail(
             orderId = root.optString("orderId"), orderNo = root.optString("orderNo"), productName = nullableString(root, "productName"), orderStatus = nullableString(root, "orderStatus"),
             materials = materials, assemblyTasks = tasks,
             laborSummary = OrderDetailLaborSummary(labor.optInt("assemblyLaborMinutes"), labor.optInt("temporaryTransferLaborMinutes"), labor.optInt("totalLaborMinutes")),
-            timeline = timeline, page = root.optInt("page", 1), pageSize = root.optInt("pageSize", 20), total = root.optInt("total", tasks.size)
+            timeline = timeline, page = root.optInt("page", 1), pageSize = root.optInt("pageSize", 20), total = root.optInt("total", tasks.size),
+            materialSummary = materialSummary
         )
     }
 

@@ -11,4 +11,19 @@ class OrderDetailApiParserTest {
         assertEquals(13, detail.laborSummary.totalLaborMinutes)
         assertEquals("ASSEMBLY_STARTED", detail.timeline.single().type)
     }
+
+    @Test fun parsesMaterialSummaryAndPreservesServerStatus() {
+        val detail = ApiParser.parseOrderDetail("""{"orderId":"o1","orderNo":"PO-1","materials":[],"materialSummary":{"items":[{"materialId":"m1","materialCode":"M-1","materialName":"螺栓","unit":"件","requiredQuantity":4,"arrivedQuantity":3,"inStockQuantity":2,"shortageQuantity":2,"statusCode":"CUSTOM","statusLabel":"服务端状态"}],"totalMaterialTypes":1,"totalRequiredQuantity":4,"totalArrivedQuantity":3,"totalInStockQuantity":2,"totalShortageQuantity":2}}""")
+        val summary = detail.materialSummary
+        assertEquals(1, summary.totalMaterialTypes)
+        assertEquals(2, summary.totalShortageQuantity)
+        assertEquals("CUSTOM", summary.items.single().statusCode)
+        assertEquals("服务端状态", summary.items.single().statusLabel)
+    }
+
+    @Test fun missingMaterialSummaryDefaultsToEmptySummary() {
+        val detail = ApiParser.parseOrderDetail("""{"orderId":"o1","orderNo":"PO-1","materials":[]}""")
+        assertEquals(emptyList<Any>(), detail.materialSummary.items)
+        assertEquals(0, detail.materialSummary.totalRequiredQuantity)
+    }
 }
