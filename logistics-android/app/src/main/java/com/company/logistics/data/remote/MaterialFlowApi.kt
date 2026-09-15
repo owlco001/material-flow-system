@@ -519,8 +519,13 @@ open class MaterialFlowApi(
         remark: String? = null,
         evidenceIds: List<String> = emptyList()
     ): TransferRequestResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId")
+        require(type == "INBOUND" || type == "OUTBOUND") { "流转类型无效" }
+        require(items.isNotEmpty()) { "流转申请至少包含一个物料" }
         val itemArray = JSONArray()
         items.forEach { item ->
+            require(item.materialId.isNotBlank()) { "物料不能为空" }
+            require(item.quantity > 0) { "流转数量必须为正整数" }
             require(item.expectedInventoryVersion != null && item.expectedInventoryVersion >= 1) {
                 "expectedInventoryVersion 必须为不小于 1 的整数"
             }

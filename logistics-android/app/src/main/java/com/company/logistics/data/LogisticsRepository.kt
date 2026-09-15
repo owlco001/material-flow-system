@@ -388,7 +388,8 @@ open class LogisticsRepository(
         material: MaterialInventory,
         quantity: Int,
         targetLocation: String?,
-        remark: String?
+        remark: String?,
+        clientOperationId: String? = null
     ): SubmitResult = submit(
         opType = OfflineOpType.INBOUND,
         materialCode = material.material.code,
@@ -397,6 +398,7 @@ open class LogisticsRepository(
         targetLocation = targetLocation ?: material.primaryLocation,
         expectedInventoryVersion = material.version,
         remark = remark,
+        clientOperationId = clientOperationId,
         remoteCall = { clientOpId ->
             api.createTransferRequest(
                 clientOperationId = clientOpId,
@@ -444,9 +446,10 @@ open class LogisticsRepository(
         targetLocation: String?,
         expectedInventoryVersion: Int?,
         remark: String?,
+        clientOperationId: String? = null,
         remoteCall: suspend (String) -> Any
     ): SubmitResult {
-        val clientOpId = UUID.randomUUID().toString()
+        val clientOpId = clientOperationId ?: UUID.randomUUID().toString()
 
         // 数量校验（契约：非负整数）
         if (quantity < 0) {
