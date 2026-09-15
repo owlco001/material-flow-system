@@ -88,6 +88,27 @@ data class OrderDetailLaborSummary(
     val assemblyLaborMinutes: Int, val temporaryTransferLaborMinutes: Int, val totalLaborMinutes: Int
 )
 
+/** C14 server-provided labor facts. Nullable minutes preserve missing optional fields. */
+data class LaborSummaryItem(
+    val taskId: String?,
+    val orderNo: String?,
+    val deviceId: String?,
+    val deviceNo: String?,
+    val assemblerId: String?,
+    val assemblerName: String?,
+    val assemblyLaborMinutes: Int?,
+    val temporaryTransferLaborMinutes: Int?,
+    val totalLaborMinutes: Int?,
+)
+
+data class LaborSummaryPage(
+    val items: List<LaborSummaryItem>,
+    val page: Int = 1,
+    val pageSize: Int = 20,
+    val total: Int? = null,
+    val task: LaborSummaryItem? = null,
+)
+
 data class OrderDetailMaterialSummaryItem(
     val materialId: String,
     val materialCode: String,

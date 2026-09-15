@@ -14,6 +14,7 @@ import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.OrderDetail
@@ -442,7 +443,28 @@ open class MaterialFlowApi(
         )
     }
 
-    /** Assembly task list. The server applies the assembler assignment scope. */
+    /** C14 task labor snapshot; server owns all minute values. */
+    suspend fun assemblyTaskLaborSummary(taskId: String, assemblerId: String? = null): LaborSummaryPage = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()) { "taskId 不能为空" }
+        val query = assemblerId?.takeIf { it.isNotBlank() }?.let { "?assemblerId=${encodeQuery(it)}" }.orEmpty()
+        ApiParser.parseTaskLaborSummary(request("GET", "/api/v1/assembly/tasks/${encodeQuery(taskId)}/labor-summary$query", null))
+    }
+
+    /** C14 workshop labor snapshot; filters are sent to the server, never applied locally. */
+    suspend fun workshopLaborSummary(
+        page: Int = 1, pageSize: Int = 20, deviceId: String? = null,
+        orderNo: String? = null, assemblerId: String? = null,
+    ): LaborSummaryPage = withContext(Dispatchers.IO) {
+        require(page >= 1 && pageSize == 20) { "pageSize 固定为 20" }
+        val query = buildList {
+            add("page=$page"); add("pageSize=$pageSize")
+            deviceId?.takeIf { it.isNotBlank() }?.let { add("deviceId=${encodeQuery(it)}") }
+            orderNo?.takeIf { it.isNotBlank() }?.let { add("orderNo=${encodeQuery(it)}") }
+            assemblerId?.takeIf { it.isNotBlank() }?.let { add("assemblerId=${encodeQuery(it)}") }
+        }.joinToString("&")
+        ApiParser.parseLaborSummary(request("GET", "/api/v1/workshop/labor-summary?$query", null))
+    }
+
     suspend fun assemblyTasks(page: Int = 1, pageSize: Int = 20): List<AssemblyTask> =
         assemblyTaskPage(page, pageSize).items
 

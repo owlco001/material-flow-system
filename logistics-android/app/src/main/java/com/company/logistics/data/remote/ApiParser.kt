@@ -40,6 +40,8 @@ import com.company.logistics.model.AssemblyStageStatus
 import com.company.logistics.model.AssemblyStageOperationResult
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
+import com.company.logistics.model.LaborSummaryItem
+import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.OrderDetailLaborSummary
 import com.company.logistics.model.OrderDetailMaterialSummary
@@ -641,7 +643,27 @@ object ApiParser {
         )
     }
 
-    fun parseAssemblyTasks(json: String): List<AssemblyTask> = parseAssemblyTaskPage(json).items
+    /** C14 GET labor summary endpoints. Exact camelCase contract fields; absent minutes stay null. */
+    fun parseLaborSummary(json: String): LaborSummaryPage {
+        val root = JSONObject(json)
+        fun item(o: JSONObject): LaborSummaryItem = LaborSummaryItem(
+            taskId = nullableString(o, "taskId"), orderNo = nullableString(o, "orderNo"),
+            deviceId = nullableString(o, "deviceId"), deviceNo = nullableString(o, "deviceNo"),
+            assemblerId = nullableString(o, "assemblerId"), assemblerName = nullableString(o, "assemblerName"),
+            assemblyLaborMinutes = nullableInt(o, "assemblyLaborMinutes"),
+            temporaryTransferLaborMinutes = nullableInt(o, "temporaryTransferLaborMinutes"),
+            totalLaborMinutes = nullableInt(o, "totalLaborMinutes"),
+        )
+        val items = buildList {
+            val array = root.optJSONArray("items") ?: JSONArray()
+            for (i in 0 until array.length()) array.optJSONObject(i)?.let { add(item(it)) }
+        }
+        val task = root.optJSONObject("task")?.let(::item)
+        return LaborSummaryPage(items, root.optInt("page", 1), root.optInt("pageSize", 20), nullableInt(root, "total"), task)
+    }
+
+    fun parseTaskLaborSummary(json: String): LaborSummaryPage = parseLaborSummary(json)
+
 
     fun parseAssemblyTaskPage(json: String): AssemblyTaskPage {
         val root = JSONObject(json)

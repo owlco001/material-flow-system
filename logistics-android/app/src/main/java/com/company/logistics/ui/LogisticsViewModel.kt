@@ -14,6 +14,8 @@ import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
 import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.LaborSummaryItem
+import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.MachineProgress
 import com.company.logistics.model.OfflineOperation
@@ -166,6 +168,13 @@ data class LogisticsUiState(
     val assemblyPendingOperationKey: String? = null,
     val assemblyClientOperationId: String? = null,
     val assemblyActiveLabor: Map<String, LaborRecord> = emptyMap(),
+    val assemblyLaborSummary: Map<String, LaborSummaryItem> = emptyMap(),
+    val assemblyLaborState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val assemblyLaborError: String? = null,
+    val workshopLaborSummary: LaborSummaryPage? = null,
+    val workshopLaborState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val workshopLaborError: String? = null,
+    val workshopLaborDeviceFilter: String? = null,
     val temporaryTransfer: LaborRecord? = null,
     val lastCompletedTemporaryTransfer: LaborRecord? = null,
     val temporaryTransferSourceTaskId: String? = null,
@@ -486,7 +495,30 @@ class LogisticsViewModel(
         )
     }
 
-    // ==================== 路由 ====================
+    fun refreshAssemblyLabor(task: AssemblyTask) {
+        if (task.id.isBlank() || task.deviceId.isBlank()) {
+            _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.EMPTY, assemblyLaborSummary = emptyMap()) }
+            return
+        }
+        operationScope.launch {
+            _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.LOADING, assemblyLaborError = null) }
+            repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
+                val items = page.items.filter { it.taskId == null || it.taskId == task.id }
+                _state.update { it.copy(assemblyLaborSummary = items.mapNotNull { i -> i.taskId?.let { id -> id to i } }.toMap(), assemblyLaborState = if (items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT) }
+            }.onFailure { e -> _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.ERROR, assemblyLaborError = e.message ?: "工时加载失败") } }
+        }
+    }
+
+    fun refreshWorkshopLabor(deviceId: String? = _state.value.workshopLaborDeviceFilter) {
+        if (_state.value.preview) return
+        operationScope.launch {
+            _state.update { it.copy(workshopLaborState = WorkspaceLoadState.LOADING, workshopLaborError = null, workshopLaborDeviceFilter = deviceId) }
+            repo.workshopLaborSummary(deviceId = deviceId).onSuccess { page ->
+                _state.update { it.copy(workshopLaborSummary = page, workshopLaborState = if (page.items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT) }
+            }.onFailure { e -> _state.update { it.copy(workshopLaborState = WorkspaceLoadState.ERROR, workshopLaborError = e.message ?: "车间工时加载失败") } }
+        }
+    }
+
 
     fun navigate(screen: Screen) = _state.update {
         if (it.mustChangePassword && screen != Screen.CHANGE_PASSWORD) {
@@ -630,6 +662,7 @@ class LogisticsViewModel(
     /** 刷新服务端摘要与第一页工作项；服务端分页是唯一数据来源。 */
     fun refreshWorkspace() {
         loadWorkspacePage(resetToFirstPage = true)
+        if (_state.value.workspaceRole == UserRole.WORKSHOP_SUPERVISOR || _state.value.workspaceRole == UserRole.ADMIN) refreshWorkshopLabor()
     }
 
     /** 切换服务端分页大小；仅支持内存约束规定的 20/50。 */
@@ -891,6 +924,14 @@ class LogisticsViewModel(
                             assemblyTaskTotalPages = if (tasks.isEmpty()) 0 else 1,
                             workspaceServerTime = result.serverTime ?: it.workspaceServerTime,
                         )
+                    }
+                    result.items.filter { it.id.isNotBlank() && it.deviceId.isNotBlank() }.forEach { task ->
+                        operationScope.launch {
+                            repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
+                                val facts = page.items.filter { it.taskId == null || it.taskId == task.id }
+                                _state.update { state -> state.copy(assemblyLaborSummary = state.assemblyLaborSummary + facts.mapNotNull { fact -> fact.taskId?.let { it to fact } }.toMap(), assemblyLaborState = if (facts.isEmpty()) state.assemblyLaborState else WorkspaceLoadState.CONTENT) }
+                            }.onFailure { error -> _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.ERROR, assemblyLaborError = error.message ?: "工时加载失败") } }
+                        }
                     }
                 }
                 .onFailure { error ->

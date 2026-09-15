@@ -12,6 +12,7 @@ import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.LaborRecord
+import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OfflineOpType
@@ -228,6 +229,12 @@ open class LogisticsRepository(
     open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
     open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
     open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }
+    open suspend fun assemblyTaskLaborSummary(taskId: String, assemblerId: String? = null): Result<LaborSummaryPage> = resultOf {
+        api.assemblyTaskLaborSummary(taskId, assemblerId)
+    }
+    open suspend fun workshopLaborSummary(page: Int = 1, pageSize: Int = 20, deviceId: String? = null, orderNo: String? = null, assemblerId: String? = null): Result<LaborSummaryPage> = resultOf {
+        api.workshopLaborSummary(page, pageSize, deviceId, orderNo, assemblerId)
+    }
     open suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20): Result<MachineProgressPage> = resultOf { api.workshopMachineProgress(page, pageSize) }
 
 

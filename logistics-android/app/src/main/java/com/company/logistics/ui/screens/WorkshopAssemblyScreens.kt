@@ -68,6 +68,7 @@ fun AssemblerWorkspaceScreen(
     submittingTaskId: String?,
     submittingAction: AssemblyAction?,
     activeLabor: Map<String, LaborRecord>,
+    laborSummary: Map<String, com.company.logistics.model.LaborSummaryItem>,
     temporaryTransfer: LaborRecord?,
     temporaryTransferSourceTaskId: String?,
     temporaryTransferSubmitting: Boolean,
@@ -177,6 +178,7 @@ fun AssemblerWorkspaceScreen(
                     AssemblyTaskCard(
                         task = task,
                         activeLabor = activeLabor[task.id],
+                        laborSummary = laborSummary[task.id] ?: laborSummary.values.firstOrNull { it.taskId == task.id },
                         temporaryTransfer = temporaryTransfer,
                         submitting = submittingTaskId == task.id,
                         submittingAction = submittingAction,
@@ -279,6 +281,11 @@ fun WorkshopSupervisorScreen(
     onNextPage: () -> Unit,
     onEnterPreview: (WorkspaceViewRole) -> Unit,
     onExitPreview: () -> Unit,
+    laborSummary: com.company.logistics.model.LaborSummaryPage?,
+    laborState: WorkspaceLoadState,
+    laborError: String?,
+    laborDeviceFilter: String?,
+    onRefreshLabor: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectorVisible by remember { mutableStateOf(false) }
@@ -313,6 +320,8 @@ fun WorkshopSupervisorScreen(
             generatedAt = summary?.generatedAt,
             onRefresh = onRefresh,
         )
+
+        WorkshopLaborSummarySection(laborSummary, laborState, laborError, laborDeviceFilter, onRefreshLabor, previewRole != null)
 
         when (summaryState) {
             WorkspaceLoadState.LOADING -> LoadingRow("正在加载服务端工时统计…")
@@ -366,6 +375,45 @@ fun WorkshopSupervisorScreen(
                 onEnterPreview(it)
             },
         )
+    }
+}
+
+@Composable
+private fun WorkshopLaborSummarySection(
+    summary: com.company.logistics.model.LaborSummaryPage?,
+    state: WorkspaceLoadState,
+    error: String?,
+    deviceFilter: String?,
+    onRefresh: (String?) -> Unit,
+    readOnly: Boolean,
+) {
+    var deviceId by remember(deviceFilter) { mutableStateOf(deviceFilter.orEmpty()) }
+    VSpace(Spacing.md)
+    SectionTitle("工时汇总 / 机台筛选", trailing = "服务端明细")
+    OutlinedTextField(value = deviceId, onValueChange = { deviceId = it }, label = { Text("机台 deviceId") }, singleLine = true, enabled = !readOnly && state != WorkspaceLoadState.LOADING, modifier = Modifier.fillMaxWidth())
+    VSpace(Spacing.sm)
+    PrimaryButton(text = if (state == WorkspaceLoadState.LOADING) "加载中…" else "加载工时汇总", onClick = { onRefresh(deviceId.trim().ifBlank { null }) }, enabled = !readOnly && state != WorkspaceLoadState.LOADING)
+    if (readOnly) Text("预览态只读", color = LogisticsTheme.colors.warning, fontSize = 12.sp)
+    when (state) {
+        WorkspaceLoadState.LOADING -> LoadingRow("正在加载服务端人员/任务工时…")
+        WorkspaceLoadState.ERROR -> EmptyState("工时汇总加载失败", error ?: "请检查网络后重试", action = { PrimaryButton(text = "重试", onClick = { onRefresh(deviceId.trim().ifBlank { null }) }) })
+        WorkspaceLoadState.IDLE -> EmptyState("等待工时汇总", "输入 deviceId 或直接加载服务端明细")
+        WorkspaceLoadState.EMPTY -> EmptyState("暂无工时明细", "服务端没有返回符合机台筛选条件的记录")
+        WorkspaceLoadState.CONTENT -> {
+            Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                Column(Modifier.width(860.dp)) {
+                    LaborSummaryRow("人员", "任务", "机台", "装配分钟", "临时调拨分钟", "总分钟", true)
+                    summary?.items.orEmpty().forEach { item -> LaborSummaryRow(item.assemblerName ?: item.assemblerId ?: "—", item.taskId ?: item.orderNo ?: "—", item.deviceNo ?: item.deviceId ?: "—", item.assemblyLaborMinutes?.toString() ?: "—", item.temporaryTransferLaborMinutes?.toString() ?: "—", item.totalLaborMinutes?.toString() ?: "—") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LaborSummaryRow(person: String, task: String, device: String, assembly: String, transfer: String, total: String, header: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 8.dp)) {
+        listOf(person to 150.dp, task to 170.dp, device to 130.dp, assembly to 120.dp, transfer to 150.dp, total to 100.dp).forEach { (value, width) -> Text(value, Modifier.width(width), fontSize = if (header) 11.sp else 12.sp, fontWeight = if (header) FontWeight.Bold else FontWeight.Normal, color = if (header) LogisticsTheme.colors.textSecondary else LogisticsTheme.colors.textPrimary) }
     }
 }
 
@@ -499,6 +547,7 @@ private fun AssemblyDataNotice(
 private fun AssemblyTaskCard(
     task: AssemblyTask,
     activeLabor: LaborRecord?,
+    laborSummary: com.company.logistics.model.LaborSummaryItem?,
     temporaryTransfer: LaborRecord?,
     submitting: Boolean,
     submittingAction: AssemblyAction?,
@@ -555,18 +604,14 @@ private fun AssemblyTaskCard(
             }
         }
         Text(
-            when {
-                activeLabor != null -> "装配工时：${laborMinutesText(activeLabor)}"
-                task.accumulatedLaborMinutes != null -> "装配工时：已累计 ${task.accumulatedLaborMinutes} 分钟"
-                task.status == AssemblyTaskStatus.COMPLETED -> "装配工时：服务端已结束并记录"
-                else -> "装配工时：服务端任务响应未提供分钟数"
+            if (laborSummary != null) {
+                "装配工时：${laborSummary.assemblyLaborMinutes?.let { "$it 分钟" } ?: "无数据"} · 临时调拨工时：${laborSummary.temporaryTransferLaborMinutes?.let { "$it 分钟" } ?: "无数据"} · 总工时：${laborSummary.totalLaborMinutes?.let { "$it 分钟" } ?: "无数据"}"
+            } else {
+                "工时汇总：无数据"
             },
             fontSize = 12.sp,
             color = LogisticsTheme.colors.textSecondary,
         )
-        if (activeLabor != null && activeLabor.startedAt.isNotBlank()) {
-            Text("服务端开始时间：${activeLabor.startedAt}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
-        }
 
         if (!readOnly && task.status != AssemblyTaskStatus.COMPLETED) {
             VSpace(Spacing.sm)

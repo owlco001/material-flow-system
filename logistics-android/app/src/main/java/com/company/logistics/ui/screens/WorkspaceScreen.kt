@@ -139,6 +139,7 @@ fun WorkspaceScreen(
     assemblySubmittingTaskId: String? = null,
     assemblySubmittingAction: AssemblyAction? = null,
     assemblyActiveLabor: Map<String, LaborRecord> = emptyMap(),
+    assemblyLaborSummary: Map<String, com.company.logistics.model.LaborSummaryItem> = emptyMap(),
     temporaryTransfer: LaborRecord? = null,
     lastCompletedTemporaryTransfer: LaborRecord? = null,
     temporaryTransferSourceTaskId: String? = null,
@@ -154,6 +155,11 @@ fun WorkspaceScreen(
     workshopMachinePage: Int = 1,
     workshopMachinePageSize: Int = 20,
     workshopMachineHasNext: Boolean = false,
+    workshopLaborSummary: com.company.logistics.model.LaborSummaryPage? = null,
+    workshopLaborState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    workshopLaborError: String? = null,
+    workshopLaborDeviceFilter: String? = null,
+    onRefreshWorkshopLabor: (String?) -> Unit = {},
     onAcceptAssemblyMaterial: (AssemblyTask) -> Unit = {},
     onStartAssemblyWork: (AssemblyTask) -> Unit = {},
     onSubmitAssemblyProgress: (AssemblyTask, Int) -> Unit = { _, _ -> },
@@ -199,6 +205,7 @@ fun WorkspaceScreen(
             submittingTaskId = assemblySubmittingTaskId,
             submittingAction = assemblySubmittingAction,
             activeLabor = assemblyActiveLabor,
+            laborSummary = assemblyLaborSummary,
             temporaryTransfer = temporaryTransfer ?: lastCompletedTemporaryTransfer,
             temporaryTransferSourceTaskId = temporaryTransferSourceTaskId,
             temporaryTransferSubmitting = temporaryTransferSubmitting,
@@ -222,7 +229,7 @@ fun WorkspaceScreen(
         return
     }
 
-    if (role == UserRole.WORKSHOP_SUPERVISOR) {
+    if (role == UserRole.WORKSHOP_SUPERVISOR || role == UserRole.ADMIN) {
         WorkshopSupervisorScreen(
             authenticatedRole = authenticatedRole,
             previewRole = previewRole,
@@ -242,6 +249,11 @@ fun WorkspaceScreen(
             onNextPage = onNextPage,
             onEnterPreview = onEnterPreview,
             onExitPreview = onExitPreview,
+            laborSummary = workshopLaborSummary,
+            laborState = workshopLaborState,
+            laborError = workshopLaborError,
+            laborDeviceFilter = workshopLaborDeviceFilter,
+            onRefreshLabor = onRefreshWorkshopLabor,
             modifier = modifier,
         )
         return

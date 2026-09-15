@@ -12,6 +12,8 @@ import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.MaterialStatusCode
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
+import com.company.logistics.model.LaborSummaryItem
+import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MachineProgress
 import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.User
@@ -147,6 +149,18 @@ class LogisticsViewModelAssemblyTest {
         scope.cancel()
     }
 
+    @Test
+    fun supervisorLaborSummaryUsesServerMinutesAndDeviceFilter() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.WORKSHOP_SUPERVISOR)
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("supervisor", "password", "device", remember = false)
+        viewModel.refreshWorkshopLabor("machine-1")
+        assertEquals("machine-1", repository.laborDeviceId)
+        assertEquals(17, viewModel.state.value.workshopLaborSummary?.items?.single()?.totalLaborMinutes)
+        assertEquals(WorkspaceLoadState.CONTENT, viewModel.state.value.workshopLaborState)
+        scope.cancel()
+    }
     private class FakeAssemblyRepository(
         private val loginRole: UserRole,
     ) : LogisticsRepository(MaterialFlowApi(), NoOpDao()) {
@@ -170,6 +184,7 @@ class LogisticsViewModelAssemblyTest {
         val operationIds = mutableListOf<String>()
         var workshopSummaryCalls = 0
         var workshopMachineCalls = 0
+        var laborDeviceId: String? = null
 
         override suspend fun login(
             username: String,
@@ -316,6 +331,11 @@ class LogisticsViewModelAssemblyTest {
                     pageSize = pageSize,
                 )
             )
+        }
+
+        override suspend fun workshopLaborSummary(page: Int, pageSize: Int, deviceId: String?, orderNo: String?, assemblerId: String?): Result<LaborSummaryPage> {
+            laborDeviceId = deviceId
+            return Result.success(LaborSummaryPage(listOf(LaborSummaryItem("task-1", "WO-1", deviceId, "M-01", "u-1", "装配工", 11, 6, 17))))
         }
     }
 
