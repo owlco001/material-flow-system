@@ -195,11 +195,10 @@ enum class ApprovalStatus(val code: String, val label: String) {
  * 扫码类型。
  * 严格对齐《物料流转系统-V1-API契约冻结补遗》第 1.1 节，只允许 5 个值：
  * PRODUCTION_ORDER / FLOW_NO / MATERIAL_CODE / LOCATION_CODE / UNKNOWN。
- * 禁止出现 ORDER_NO、LOGISTICS_NO、ORDER、LOGISTICS（后两者为外部物流语义，已作废）。
+ * 设备码以及其他未知/历史类型统一归 UNKNOWN。
  */
 enum class ScanType(val code: String, val label: String) {
     PRODUCTION_ORDER("PRODUCTION_ORDER", "生产订单号"),
-    MACHINE("MACHINE", "机台码"),
     MATERIAL_CODE("MATERIAL_CODE", "料号"),
     LOCATION_CODE("LOCATION_CODE", "库位码"),
     FLOW_NO("FLOW_NO", "流转单号"),

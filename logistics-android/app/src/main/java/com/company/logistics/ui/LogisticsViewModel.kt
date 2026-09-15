@@ -1846,9 +1846,6 @@ class LogisticsViewModel(
                                 it.copy(loading = false, message = "流转单 ${scan.normalizedValue} 暂未接入详情查询，请使用订单或物料码")
                             }
                         }
-                        ScanType.MACHINE -> _state.update {
-                            it.copy(loading = false, message = "已识别机台 ${scan.normalizedValue}，请从订单详情查看关联物料")
-                        }
                         ScanType.UNKNOWN -> _state.update {
                             it.copy(loading = false, error = "无法识别该条码")
                         }

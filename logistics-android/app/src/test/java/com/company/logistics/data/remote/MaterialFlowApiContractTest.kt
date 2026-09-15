@@ -80,8 +80,22 @@ class MaterialFlowApiContractTest {
     }
 
     @Test
-    fun scanMachineTypeIsPreserved() {
-        assertEquals(com.company.logistics.model.ScanType.MACHINE, ApiParser.parseScanResolve("""{"type":"MACHINE","normalizedValue":"M-01","resourceId":"d1"}""").type)
+    fun scanContractTypesParseAndLegacyTypesAreUnknown() {
+        val expected = mapOf(
+            "PRODUCTION_ORDER" to com.company.logistics.model.ScanType.PRODUCTION_ORDER,
+            "FLOW_NO" to com.company.logistics.model.ScanType.FLOW_NO,
+            "MATERIAL_CODE" to com.company.logistics.model.ScanType.MATERIAL_CODE,
+            "LOCATION_CODE" to com.company.logistics.model.ScanType.LOCATION_CODE,
+        )
+        expected.forEach { (wireType, scanType) ->
+            assertEquals(scanType, ApiParser.parseScanResolve("""{"type":"$wireType","normalizedValue":"value"}""").type)
+        }
+        listOf("MACHINE", "ORDER_NO", "LOGISTICS_NO", "FUTURE_TYPE").forEach { wireType ->
+            assertEquals(
+                com.company.logistics.model.ScanType.UNKNOWN,
+                ApiParser.parseScanResolve("""{"type":"$wireType","normalizedValue":"legacy"}""").type,
+            )
+        }
     }
 
     @Test
