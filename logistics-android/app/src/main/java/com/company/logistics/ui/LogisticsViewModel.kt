@@ -117,6 +117,7 @@ data class LogisticsUiState(
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
     val orderDetail: OrderDetail? = null,
+    val orderResourceId: String? = null,
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
@@ -1831,7 +1832,7 @@ class LogisticsViewModel(
                     }
                     when (scan.type) {
                         ScanType.MATERIAL_CODE -> loadMaterial(scan.normalizedValue)
-                        ScanType.PRODUCTION_ORDER -> openOrderDetail(scan.normalizedValue)
+                        ScanType.PRODUCTION_ORDER -> openOrderDetail(scan.normalizedValue, scan.resourceId)
                         ScanType.LOCATION_CODE -> {
                             _state.update {
                                 it.copy(
@@ -1921,8 +1922,9 @@ class LogisticsViewModel(
             }
     }
 
-    fun openOrderDetail(orderNo: String) {
+    fun openOrderDetail(orderNo: String, resourceId: String? = null) {
         if (orderNo.isBlank()) return
+        _state.update { it.copy(orderResourceId = resourceId) }
         multiOrderDetails.select(orderNo)
         publishMultiOrderState()
         refreshOrderDetail(orderNo)
@@ -1948,9 +1950,19 @@ class LogisticsViewModel(
         operationScope.launch {
             repo.orderDetail(orderNo)
                 .onSuccess { detail ->
+                    // The material-status endpoint is the source of truth for the list;
+                    // order detail remains the aggregate source for tasks/timeline.
+                    repo.orderMaterialStatus(orderNo)
+                        .onSuccess { materialStatus ->
                     if (!multiOrderDetails.applySuccess(orderNo, requestId, detail)) return@onSuccess
-                    _state.update { it.copy(orderDetail = detail, orderStatus = toOrderStatus(detail), screen = Screen.ORDER_DETAIL, loading = false, message = "订单详情已更新") }
+                    _state.update { it.copy(orderDetail = detail, orderStatus = materialStatus, screen = Screen.ORDER_DETAIL, loading = false, error = null, message = "订单详情已更新") }
                     publishMultiOrderState()
+                        }
+                        .onFailure { error ->
+                            if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
+                            _state.update { it.copy(loading = false, error = orderErrorMessage(error)) }
+                            publishMultiOrderState()
+                        }
                 }
                 .onFailure { error ->
                     if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure

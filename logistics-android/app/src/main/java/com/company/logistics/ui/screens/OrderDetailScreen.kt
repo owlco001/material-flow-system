@@ -59,6 +59,8 @@ fun OrderDetailScreen(
     detail: com.company.logistics.model.OrderDetail? = null,
     loading: Boolean,
     onRefresh: () -> Unit = {},
+    error: String? = null,
+    onBack: () -> Unit = {},
     multiOrder: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     onSelectOrder: (String) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -82,6 +84,17 @@ fun OrderDetailScreen(
             .padding(horizontal = Dimens.PagePadding)
     ) {
         Spacer(Modifier.height(Spacing.sm))
+
+        androidx.compose.material3.TextButton(onClick = onBack) { Text("返回扫码") }
+
+        if (loading && status == null) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text("正在加载订单详情…", color = LogisticsTheme.colors.textSecondary)
+        }
+        if (error != null) {
+            Text("订单读取失败：$error", color = MaterialTheme.colorScheme.error)
+            androidx.compose.material3.TextButton(onClick = onRefresh, enabled = !loading) { Text("重试") }
+        }
 
         if (status == null) {
             EmptyState(

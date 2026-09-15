@@ -99,6 +99,16 @@ class MaterialFlowApiContractTest {
     }
 
     @Test
+    fun productionOrderScanPreservesServerResourceId() {
+        val result = ApiParser.parseScanResolve(
+            """{"type":"PRODUCTION_ORDER","normalizedValue":"PO-1","resourceId":"order-1"}"""
+        )
+        assertEquals(com.company.logistics.model.ScanType.PRODUCTION_ORDER, result.type)
+        assertEquals("PO-1", result.normalizedValue)
+        assertEquals("order-1", result.resourceId)
+    }
+
+    @Test
     fun timelineRejectsPageSizeAboveMemoryBoundBeforeNetworkAccess() = runBlocking {
         val error = runCatching {
             MaterialFlowApi().handoverTimeline("work-item", pageSize = 50)

@@ -291,6 +291,8 @@ fun LogisticsApp(
                         status = state.orderStatus,
                         detail = state.orderDetail,
                         loading = state.loading,
+                        error = state.error,
+                        onBack = { viewModel.navigate(Screen.SCANNER) },
                         onRefresh = { viewModel.refreshOrderDetail() },
                         multiOrder = state.multiOrderSnapshot,
                         onSelectOrder = { viewModel.selectOrder(it) },
@@ -377,9 +379,9 @@ fun LogisticsApp(
                     }
 
                     Screen.LOCATION_BIND, Screen.SUBMIT, Screen.LOGIN, Screen.CHANGE_PASSWORD ->
-                        ScanPlaceholder(
+                        com.company.logistics.ui.components.PlaceholderScreen(
                             title = state.screen.title,
-                            onBack = { viewModel.navigate(Screen.MATERIAL_DETAIL) }
+                            description = "该流程界面接入中"
                         )
                 }
             }
@@ -412,36 +414,6 @@ private fun RestoringSessionScreen() {
     }
 }
 
-/** 未完全接入的页面占位（保留路由，避免导航断链） */
-@Composable
-private fun ScanPlaceholder(title: String, onBack: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(Dimens.PagePadding),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            title,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = LogisticsTheme.colors.textPrimary
-        )
-        Spacer(Modifier.height(Spacing.sm))
-        Text(
-            "该流程界面接入中，当前可通过详情页提交流转申请",
-            fontSize = 14.sp,
-            color = LogisticsTheme.colors.textSecondary
-        )
-        Spacer(Modifier.height(Spacing.xl))
-        Text(
-            "返回",
-            modifier = Modifier.clickable { onBack() },
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
-        )
-    }
-}
 
 /**
  * 底部导航栏 —— 按角色动态渲染。
