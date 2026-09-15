@@ -49,7 +49,7 @@ interface OfflineOperationDao {
     @Query("SELECT * FROM offline_operations ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<OfflineOperationEntity>>
 
-    @Query("SELECT * FROM offline_operations WHERE status IN ('PENDING','FAILED') ORDER BY createdAt ASC")
+    @Query("SELECT * FROM offline_operations WHERE status IN ('PENDING','FAILED') ORDER BY createdAt ASC LIMIT 20")
     suspend fun pending(): List<OfflineOperationEntity>
 
     @Query("SELECT COUNT(*) FROM offline_operations WHERE status IN ('PENDING','FAILED','SYNCING')")

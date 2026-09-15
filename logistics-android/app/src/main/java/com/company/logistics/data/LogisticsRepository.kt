@@ -29,6 +29,10 @@ import com.company.logistics.model.RoleWorkspaceRepository
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
@@ -521,65 +525,53 @@ open class LogisticsRepository(
      * 逐条重放，成功标记 SYNCED，失败标记 FAILED 并记录原因；
      * 冲突（409）标记 CONFLICT，交由用户决定。
      */
-    suspend fun syncPending(): SyncReport {
+    suspend fun syncPending(): SyncReport = coroutineScope {
         val pending = dao.pending()
-        var success = 0
-        var failed = 0
-        var conflict = 0
+        val permits = kotlinx.coroutines.sync.Semaphore(MAX_CONCURRENT_OPERATIONS)
+        val outcomes = pending.map { item -> async(Dispatchers.IO) {
+            permits.acquire()
+            try { syncOne(item) } finally { permits.release() }
+        } }.awaitAll()
+        SyncReport(outcomes.count { it == SyncOutcome.SUCCESS }, outcomes.count { it == SyncOutcome.FAILED }, outcomes.count { it == SyncOutcome.CONFLICT })
+    }
 
-        for (item in pending) {
-            dao.updateStatus(item.id, SyncStatus.SYNCING.name)
-            try {
-                when (OfflineOpType.valueOf(item.operationType)) {
-                    OfflineOpType.INBOUND, OfflineOpType.OUTBOUND -> {
-                        if (item.materialId == null) {
-                            dao.updateStatus(item.id, SyncStatus.FAILED.name, "缺少物料 ID，无法重放")
-                            failed++
-                            continue
-                        }
-                        api.createTransferRequest(
-                            clientOperationId = item.clientOperationId,
-                            type = if (item.operationType == OfflineOpType.INBOUND.name) "INBOUND" else "OUTBOUND",
-                            documentNo = null,
-                            items = listOf(
-                                TransferItem(
-                                    materialId = item.materialId,
-                                    quantity = item.quantity,
-                                    targetLocationCode = item.targetLocation,
-                                    expectedInventoryVersion = item.expectedInventoryVersion
-                                )
-                            ),
-                            remark = item.remark
-                        )
+    private suspend fun syncOne(item: OfflineOperationEntity): SyncOutcome {
+        dao.updateStatus(item.id, SyncStatus.SYNCING.name)
+        try {
+            when (OfflineOpType.valueOf(item.operationType)) {
+                OfflineOpType.INBOUND, OfflineOpType.OUTBOUND -> {
+                    if (item.materialId == null) {
+                        dao.updateStatus(item.id, SyncStatus.FAILED.name, "缺少物料 ID，无法重放")
+                        return SyncOutcome.FAILED
                     }
-                    OfflineOpType.LOCATION_BIND -> {
-                        api.bindLocation(
-                            materialCode = item.materialCode,
-                            locationCode = item.targetLocation ?: "",
-                            quantity = item.quantity
-                        )
-                    }
-                    else -> {
-                        // 调拨 / 盘点 / 异常：V1 API 已就绪但 UI 尚未接入，标记待处理
-                        dao.updateStatus(item.id, SyncStatus.FAILED.name, "该操作类型暂未接入同步")
-                        failed++
-                        continue
-                    }
+                    api.createTransferRequest(
+                        clientOperationId = item.clientOperationId,
+                        type = if (item.operationType == OfflineOpType.INBOUND.name) "INBOUND" else "OUTBOUND",
+                        documentNo = null,
+                        items = listOf(TransferItem(materialId = item.materialId, quantity = item.quantity,
+                            targetLocationCode = item.targetLocation,
+                            expectedInventoryVersion = item.expectedInventoryVersion)),
+                        remark = item.remark,
+                    )
                 }
-                dao.markSynced(item.id, SyncStatus.SYNCED.name, serverTime = null)
-                success++
-            } catch (e: ApiException) {
-                val status = if (e.isConflict) SyncStatus.CONFLICT else SyncStatus.FAILED
-                dao.updateStatus(item.id, status.name, e.safeMessage("同步失败，请重试"))
-                if (e.isConflict) conflict++ else failed++
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                dao.updateStatus(item.id, SyncStatus.FAILED.name, "网络不可用，请重试")
-                failed++
+                OfflineOpType.LOCATION_BIND -> api.bindLocation(item.materialCode, item.targetLocation ?: "", item.quantity)
+                else -> {
+                    dao.updateStatus(item.id, SyncStatus.FAILED.name, "该操作类型暂未接入同步")
+                    return SyncOutcome.FAILED
+                }
             }
+            dao.markSynced(item.id, SyncStatus.SYNCED.name, null)
+            return SyncOutcome.SUCCESS
+        } catch (e: ApiException) {
+            val status = if (e.isConflict) SyncStatus.CONFLICT else SyncStatus.FAILED
+            dao.updateStatus(item.id, status.name, e.safeMessage("同步失败，请重试"))
+            return if (e.isConflict) SyncOutcome.CONFLICT else SyncOutcome.FAILED
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            dao.updateStatus(item.id, SyncStatus.FAILED.name, "网络不可用，请重试")
+            return SyncOutcome.FAILED
         }
-        return SyncReport(success = success, failed = failed, conflict = conflict)
     }
 
     /** 清理已同步记录 */
@@ -595,6 +587,8 @@ open class LogisticsRepository(
     }
 
     companion object {
+        const val MAX_BATCH_SIZE = 20
+        const val MAX_CONCURRENT_OPERATIONS = 2
         /** 契约 4.1 请求中的 clientVersion 字段 */
         const val CLIENT_VERSION = "0.3.0"
 
@@ -629,6 +623,8 @@ sealed interface SubmitResult {
 data class SyncReport(val success: Int, val failed: Int, val conflict: Int) {
     val hasIssue: Boolean get() = failed > 0 || conflict > 0
 }
+
+private enum class SyncOutcome { SUCCESS, FAILED, CONFLICT }
 
 /** 本地实体 → 领域模型 */
 private fun OfflineOperationEntity.toDomain(): OfflineOperation = OfflineOperation(
