@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -227,35 +228,112 @@ fun OrderDetailScreen(
 
         VSpace(Spacing.lg)
 
-        SectionTitle("物料需求（${status.items.size}）", trailing = "需求 / 到料 / 在库")
-
-        VSpace(Spacing.sm)
-
-        if (status.items.isEmpty()) {
-            EmptyState(
-                title = "该订单暂无物料需求",
-                description = "请确认订单号是否正确，或联系仓库管理员维护物料需求"
-            )
+        if (detail != null) {
+            MaterialSummarySection(detail.materialSummary)
         } else {
-            status.items.groupBy { it.deviceId ?: "__ungrouped__" }.values.forEach { deviceItems ->
-                val first = deviceItems.first()
-                if (first.deviceId != null) {
-                    DeviceCard(
-                        deviceType = first.deviceType.orEmpty(),
-                        deviceNo = first.deviceNo.orEmpty(),
-                        items = deviceItems,
-                        onClick = { selectedDeviceId = first.deviceId },
-                    )
-                } else {
-                    deviceItems.forEach { item -> OrderMaterialRow(item) }
+            SectionTitle("物料需求（${status.items.size}）", trailing = "需求 / 到料 / 在库")
+            VSpace(Spacing.sm)
+            if (status.items.isEmpty()) {
+                EmptyState(
+                    title = "该订单暂无物料需求",
+                    description = "请确认订单号是否正确，或联系仓库管理员维护物料需求"
+                )
+            } else {
+                status.items.groupBy { it.deviceId ?: "__ungrouped__" }.values.forEach { deviceItems ->
+                    val first = deviceItems.first()
+                    if (first.deviceId != null) {
+                        DeviceCard(
+                            deviceType = first.deviceType.orEmpty(),
+                            deviceNo = first.deviceNo.orEmpty(),
+                            items = deviceItems,
+                            onClick = { selectedDeviceId = first.deviceId },
+                        )
+                    } else {
+                        deviceItems.forEach { item -> OrderMaterialRow(item) }
+                    }
+                    VSpace(Spacing.sm)
                 }
-                VSpace(Spacing.sm)
             }
         }
 
         VSpace(Spacing.xxl)
     }
 }
+
+@Composable
+private fun MaterialSummarySection(summary: com.company.logistics.model.OrderDetailMaterialSummary) {
+    SectionTitle("物料汇总（${summary.totalMaterialTypes}）", trailing = "服务端汇总")
+    VSpace(Spacing.sm)
+    AppCard {
+    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+        SummaryMetric("需求", summary.totalRequiredQuantity)
+        SummaryMetric("已到货", summary.totalArrivedQuantity)
+        SummaryMetric("已入库", summary.totalInStockQuantity)
+        SummaryMetric("缺口", summary.totalShortageQuantity)
+    }
+    }
+    VSpace(Spacing.sm)
+    if (summary.items.isEmpty()) {
+        EmptyState("该订单暂无物料汇总", "服务端未返回物料汇总明细")
+        return
+    }
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Column(Modifier.width(760.dp)) {
+            MaterialSummaryRow(
+                code = "物料编码", name = "物料名称", unit = "单位", required = "需求",
+                arrived = "已到货", inStock = "已入库", shortage = "缺口", status = "状态", header = true
+            )
+            summary.items.forEach { item ->
+                MaterialSummaryRow(
+                    code = item.materialCode, name = item.materialName, unit = item.unit,
+                    required = item.requiredQuantity.toString(), arrived = item.arrivedQuantity.toString(),
+                    inStock = item.inStockQuantity.toString(), shortage = item.shortageQuantity.toString(),
+                    status = "${item.statusCode} · ${item.statusLabel}",
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryMetric(label: String, value: Int) {
+    Column {
+        Text(label, fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+        Text(value.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun MaterialSummaryRow(
+    code: String, name: String, unit: String, required: String, arrived: String,
+    inStock: String, shortage: String, status: String, header: Boolean = false,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SummaryCell(code, Modifier.width(120.dp), header)
+        SummaryCell(name, Modifier.width(150.dp), header)
+        SummaryCell(unit, Modifier.width(60.dp), header)
+        SummaryCell(required, Modifier.width(60.dp), header)
+        SummaryCell(arrived, Modifier.width(70.dp), header)
+        SummaryCell(inStock, Modifier.width(70.dp), header)
+        SummaryCell(shortage, Modifier.width(60.dp), header)
+        SummaryCell(status, Modifier.width(170.dp), header)
+    }
+}
+
+@Composable
+private fun SummaryCell(value: String, modifier: Modifier, header: Boolean) {
+    Text(
+        value,
+        modifier = modifier,
+        fontSize = if (header) 11.sp else 12.sp,
+        fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
+        color = if (header) LogisticsTheme.colors.textSecondary else LogisticsTheme.colors.textPrimary,
+    )
+}
+
 
 private fun deviceDisplayName(type: String): String = when (type) {
     "HORIZONTAL_CONVEYOR", "横向输送机" -> "横向输送机"
