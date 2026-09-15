@@ -78,6 +78,9 @@ fun AssemblerWorkspaceScreen(
     onStartWork: (AssemblyTask) -> Unit,
     onProgress: (AssemblyTask, Int) -> Unit,
     onCompleteWork: (AssemblyTask) -> Unit,
+    onStartStage: (AssemblyTask, Int) -> Unit,
+    onCompleteStage: (AssemblyTask, Int) -> Unit,
+    onReworkStage: (AssemblyTask, Int, String) -> Unit,
     onStartTemporaryTransfer: (String?, String) -> Unit,
     onCompleteTemporaryTransfer: (String) -> Unit,
     onEnterPreview: (WorkspaceViewRole) -> Unit,
@@ -89,6 +92,7 @@ fun AssemblerWorkspaceScreen(
     var temporaryTransferTaskId by remember { mutableStateOf<String?>(null) }
     var startTransferDialog by remember { mutableStateOf(false) }
     var completeTransferDialog by remember { mutableStateOf(false) }
+    var reworkStage by remember { mutableStateOf<Pair<AssemblyTask, Int>?>(null) }
 
     LaunchedEffect(previewRole) {
         if (previewRole != null) {
@@ -181,6 +185,9 @@ fun AssemblerWorkspaceScreen(
                         onStartWork = { onStartWork(task) },
                         onProgress = { stage -> onProgress(task, stage) },
                         onCompleteWork = { onCompleteWork(task) },
+                        onStartStage = { stage -> onStartStage(task, stage) },
+                        onCompleteStage = { stage -> onCompleteStage(task, stage) },
+                        onReworkStage = { stage -> reworkStage = task to stage },
                         onStartTemporaryTransfer = {
                             temporaryTransferTaskId = task.id
                             startTransferDialog = true
@@ -241,6 +248,13 @@ fun AssemblerWorkspaceScreen(
                 completeTransferDialog = false
                 onCompleteTemporaryTransfer(remark)
             },
+        )
+    }
+    reworkStage?.let { (task, stage) ->
+        AssemblyReworkDialog(
+            submitting = submittingTaskId == task.id,
+            onDismiss = { if (submittingTaskId != task.id) reworkStage = null },
+            onSubmit = { reason -> reworkStage = null; onReworkStage(task, stage, reason) },
         )
     }
 }
@@ -493,6 +507,9 @@ private fun AssemblyTaskCard(
     onStartWork: () -> Unit,
     onProgress: (Int) -> Unit,
     onCompleteWork: () -> Unit,
+    onStartStage: (Int) -> Unit,
+    onCompleteStage: (Int) -> Unit,
+    onReworkStage: (Int) -> Unit,
     onStartTemporaryTransfer: () -> Unit,
 ) {
     val statusColor = when (task.status) {
@@ -521,7 +538,22 @@ private fun AssemblyTaskCard(
         Text("任务版本 ${task.taskVersion}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
         VSpace(Spacing.sm)
         ProgressStages(task.stages)
-        VSpace(Spacing.sm)
+        if (!readOnly && task.status != AssemblyTaskStatus.COMPLETED) {
+            task.stages.sortedBy { it.stageNo }.forEach { stage ->
+                VSpace(4.dp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("阶段 ${stage.stageNo}：${stage.status.label}", modifier = Modifier.weight(1f), fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+                    when (stage.status) {
+                        com.company.logistics.model.AssemblyStageStatus.NOT_STARTED,
+                        com.company.logistics.model.AssemblyStageStatus.REWORK_REQUIRED -> SecondaryButton(text = "开工", onClick = { onStartStage(stage.stageNo) }, enabled = !submitting, modifier = Modifier.width(84.dp))
+                        com.company.logistics.model.AssemblyStageStatus.IN_PROGRESS -> SecondaryButton(text = "完工", onClick = { onCompleteStage(stage.stageNo) }, enabled = !submitting, modifier = Modifier.width(84.dp))
+                        else -> Unit
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    if (stage.status != com.company.logistics.model.AssemblyStageStatus.COMPLETED) TextButton(onClick = { onReworkStage(stage.stageNo) }, enabled = !submitting) { Text("返工") }
+                }
+            }
+        }
         Text(
             when {
                 activeLabor != null -> "装配工时：${laborMinutesText(activeLabor)}"
@@ -573,6 +605,25 @@ private fun AssemblyTaskCard(
             }
         }
     }
+}
+
+@Composable
+private fun AssemblyReworkDialog(
+    submitting: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    var reason by remember { mutableStateOf("") }
+    val valid = reason.trim().length in 1..500
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("提交返工") },
+        text = {
+            OutlinedTextField(value = reason, onValueChange = { if (it.length <= 500) reason = it }, label = { Text("返工原因（必填）") }, supportingText = { Text("${reason.length}/500") }, modifier = Modifier.fillMaxWidth(), singleLine = false)
+        },
+        confirmButton = { TextButton(onClick = { onSubmit(reason.trim()) }, enabled = valid && !submitting) { Text(if (submitting) "提交中…" else "提交") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !submitting) { Text("返回") } },
+    )
 }
 
 @Composable

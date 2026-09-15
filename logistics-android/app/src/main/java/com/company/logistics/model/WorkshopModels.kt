@@ -17,6 +17,9 @@ enum class AssemblyAction(val label: String) {
     START_WORK("开工"),
     PROGRESS("提交进度"),
     COMPLETE_WORK("完工"),
+    START_STAGE("阶段开工"),
+    COMPLETE_STAGE("阶段完工"),
+    REWORK_STAGE("返工"),
 }
 
 enum class AssemblyStageStatus(val code: String, val label: String) {

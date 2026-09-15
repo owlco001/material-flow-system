@@ -1077,6 +1077,68 @@ class LogisticsViewModel(
 
     fun completeAssemblyWork(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.COMPLETE_WORK)
 
+    fun startAssemblyStage(task: AssemblyTask, stageNo: Int) =
+        submitAssemblyStageAction(task, stageNo, AssemblyAction.START_STAGE)
+
+    fun completeAssemblyStage(task: AssemblyTask, stageNo: Int) =
+        submitAssemblyStageAction(task, stageNo, AssemblyAction.COMPLETE_STAGE)
+
+    fun reworkAssemblyStage(task: AssemblyTask, stageNo: Int, reason: String) {
+        val trimmed = reason.trim()
+        if (stageNo !in 1..3) {
+            _state.update { it.copy(error = "阶段必须为 1、2 或 3") }
+            return
+        }
+        if (trimmed.length !in 1..500) {
+            _state.update { it.copy(error = "返工原因必填，长度为 1~500 字符") }
+            return
+        }
+        submitAssemblyStageAction(task, stageNo, AssemblyAction.REWORK_STAGE, trimmed)
+    }
+
+    private fun submitAssemblyStageAction(task: AssemblyTask, stageNo: Int, action: AssemblyAction, reason: String? = null) {
+        if (stageNo !in 1..3) {
+            _state.update { it.copy(error = "阶段必须为 1、2 或 3") }
+            return
+        }
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能执行装配操作") }
+            return
+        }
+        if (current.role != UserRole.ASSEMBLER || current.assemblySubmittingTaskId != null) return
+        val operationKey = listOf(action.name, task.id, stageNo, task.taskVersion, reason.orEmpty()).joinToString("|")
+        val operationId = if (current.assemblyPendingOperationKey == operationKey) {
+            current.assemblyClientOperationId ?: UUID.randomUUID().toString()
+        } else UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update { it.copy(assemblySubmittingTaskId = task.id, assemblySubmittingAction = action, assemblyPendingOperationKey = operationKey, assemblyClientOperationId = operationId, error = null, message = null) }
+            repo.run {
+                when (action) {
+                    AssemblyAction.START_STAGE -> startAssemblyStage(task.id, stageNo, task.taskVersion, operationId)
+                    AssemblyAction.COMPLETE_STAGE -> completeAssemblyStage(task.id, stageNo, task.taskVersion, operationId)
+                    AssemblyAction.REWORK_STAGE -> reworkAssemblyStage(task.id, stageNo, task.taskVersion, reason.orEmpty(), operationId)
+                    else -> error("unsupported assembly stage action")
+                }
+            }.onSuccess { response ->
+                _state.update { state ->
+                    val updated = state.assemblyTasks.map { candidate ->
+                        if (candidate.id != task.id) candidate else candidate.copy(
+                            taskVersion = response.version,
+                            stages = candidate.stages.map { stage ->
+                                if (stage.stageNo != stageNo) stage else stage.copy(status = response.status, version = response.version, reworkReason = response.reworkReason, startedAt = response.startedAt, completedAt = response.completedAt)
+                            },
+                        )
+                    }
+                    state.copy(assemblyTasks = updated, assemblySubmittingTaskId = null, assemblySubmittingAction = null, assemblyPendingOperationKey = null, assemblyClientOperationId = null, message = "${action.label}成功")
+                }
+            }.onFailure { error ->
+                _state.update { state -> state.copy(assemblySubmittingTaskId = null, assemblySubmittingAction = null, assemblyPendingOperationKey = if (canRetryAssembly(error)) operationKey else null, assemblyClientOperationId = if (canRetryAssembly(error)) operationId else null, error = assemblyActionErrorMessage(error)) }
+                if (error is ApiException && error.isConflict) loadAssemblyTaskPage(true, 1)
+            }
+        }
+    }
+
     private fun submitAssemblyAction(task: AssemblyTask, action: AssemblyAction, stage: Int? = null) {
         val current = _state.value
         if (current.preview) {
@@ -1104,6 +1166,7 @@ class LogisticsViewModel(
                 AssemblyAction.START_WORK -> repo.startAssemblyWork(task.id, task.taskVersion, operationId)
                 AssemblyAction.PROGRESS -> repo.submitAssemblyProgress(task.id, stage ?: 0, task.taskVersion, operationId)
                 AssemblyAction.COMPLETE_WORK -> repo.completeAssemblyWork(task.id, task.taskVersion, operationId)
+                else -> error("unsupported assembly action")
             }
             result.onSuccess { response ->
                 _state.update {

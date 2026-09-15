@@ -79,6 +79,24 @@ class LogisticsViewModelAssemblyTest {
     }
 
     @Test
+    fun assemblyStageActionsPassVersionAndValidateReworkReason() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ASSEMBLER)
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("assembler", "password", "device", remember = false)
+        val task = viewModel.state.value.assemblyTasks.single()
+        viewModel.startAssemblyStage(task, 1)
+        viewModel.completeAssemblyStage(task, 2)
+        viewModel.reworkAssemblyStage(task, 3, "  尺寸不符  ")
+        assertEquals(listOf("stage-start:1", "stage-complete:2", "stage-rework:3:尺寸不符"), repository.actions)
+        assertEquals(listOf(1, 1, 1), repository.expectedVersions)
+        assertEquals(3, repository.operationIds.distinct().size)
+        viewModel.reworkAssemblyStage(task, 1, " ")
+        assertTrue(viewModel.state.value.error!!.contains("1~500"))
+        scope.cancel()
+    }
+
+    @Test
     fun adminAssemblerPreviewBlocksEveryAssemblyWrite() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val repository = FakeAssemblyRepository(UserRole.ADMIN)
@@ -213,6 +231,30 @@ class LogisticsViewModelAssemblyTest {
             task = task.copy(status = AssemblyTaskStatus.COMPLETED, taskVersion = expectedVersion + 1)
             return Result.success(task)
         }
+
+        override suspend fun startAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyStageOperationResult> {
+            actions += "stage-start:$stageNo"
+            expectedVersions += expectedVersion
+            operationIds += clientOperationId
+            return Result.success(stageResult(stageNo, com.company.logistics.model.AssemblyStageStatus.IN_PROGRESS, expectedVersion + 1))
+        }
+
+        override suspend fun completeAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyStageOperationResult> {
+            actions += "stage-complete:$stageNo"
+            expectedVersions += expectedVersion
+            operationIds += clientOperationId
+            return Result.success(stageResult(stageNo, com.company.logistics.model.AssemblyStageStatus.COMPLETED, expectedVersion + 1))
+        }
+
+        override suspend fun reworkAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, reason: String, clientOperationId: String): Result<com.company.logistics.model.AssemblyStageOperationResult> {
+            actions += "stage-rework:$stageNo:$reason"
+            expectedVersions += expectedVersion
+            operationIds += clientOperationId
+            return Result.success(stageResult(stageNo, com.company.logistics.model.AssemblyStageStatus.REWORK_REQUIRED, expectedVersion + 1, reason))
+        }
+
+        private fun stageResult(stageNo: Int, status: com.company.logistics.model.AssemblyStageStatus, version: Int, reason: String? = null) =
+            com.company.logistics.model.AssemblyStageOperationResult(task.id, stageNo, status, version, null, if (status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "done" else null, reason, "now", "trace")
 
         override suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> {
             actions += "temporary-start"
