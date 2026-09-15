@@ -1553,12 +1553,12 @@ def material_status(
         if document_type in FORBIDDEN_SCAN_TYPES:
             raise ApiError(
                 400, CODE_INVALID_SCAN_TYPE,
-                "该 documentType 已作废，请使用 PRODUCTION_ORDER 或 ORDER_NO",
+                "该 documentType 已作废，请使用 PRODUCTION_ORDER",
                 trace_id=trace_id,
             )
         raise ApiError(
             400, CODE_VALIDATION_ERROR,
-            "documentType 必须为 PRODUCTION_ORDER 或 ORDER_NO", trace_id=trace_id,
+            "documentType 必须为 PRODUCTION_ORDER", trace_id=trace_id,
         )
     if not document_no:
         raise ApiError(400, CODE_VALIDATION_ERROR, "documentNo 不能为空", trace_id=trace_id)

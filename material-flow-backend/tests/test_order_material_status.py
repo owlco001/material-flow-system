@@ -14,7 +14,7 @@
   2. 外键完整性：所有 material_id 可 JOIN materials，device_id 可 JOIN order_devices
   3. 三态数量约束：缺货到货数=0；已到货在库数=0；在库在库数=需求数
   4. 幂等：重复执行种子不产生重复订单/设备/需求
-  5. API：命中订单、PRODUCTION_ORDER、ORDER_NO 拒绝、404、非法类型
+  5. API：命中订单、PRODUCTION_ORDER、ORDER_NO 拒绝且文案正确、404、非法类型
   6. 租户隔离：不返回无关订单数据
   7. 脱敏：响应不含数据库路径、主机信息
 """
@@ -223,7 +223,10 @@ check("PRODUCTION_ORDER 同样放行（过渡期兼容）",
 r = client.post("/api/v1/orders/material-status", headers=H,
                 json={"documentNo": "26B-013", "documentType": "ORDER_NO"})
 check("ORDER_NO 已废弃并返回 400",
-      r.status_code == 400 and r.json().get("error", {}).get("code") == "INVALID_SCAN_TYPE",
+      r.status_code == 400
+      and r.json().get("error", {}).get("code") == "INVALID_SCAN_TYPE"
+      and r.json().get("error", {}).get("message") == "该 documentType 已作废，请使用 PRODUCTION_ORDER"
+      and "ORDER_NO" not in r.json().get("error", {}).get("message", ""),
       f"HTTP {r.status_code} {r.text[:160]}")
 
 r = client.post("/api/v1/orders/material-status", headers=H,
