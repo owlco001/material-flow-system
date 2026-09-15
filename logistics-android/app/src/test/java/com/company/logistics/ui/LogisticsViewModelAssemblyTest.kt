@@ -7,6 +7,9 @@ import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.AssemblyTaskStatus
+import com.company.logistics.model.OrderMaterialItem
+import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.MaterialStatusCode
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborType
 import com.company.logistics.model.MachineProgress
@@ -35,6 +38,16 @@ class LogisticsViewModelAssemblyTest {
         assertEquals(listOf("a"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, " NO-1 ").map { it.id })
         assertEquals(listOf("b"), LogisticsViewModel.filterAssemblyTasksByDevice(tasks, "id-2").map { it.id })
         assertTrue(LogisticsViewModel.filterAssemblyTasksByDevice(tasks, "missing").isEmpty())
+    }
+
+    @Test
+    fun orderMaterialsAreFilteredByMachineAndOrder() {
+        val status = OrderMaterialStatus("PO-1", "PRODUCTION_ORDER", listOf(
+            OrderMaterialItem("d1", null, "D-1", "m1", "M-1", "螺栓", null, 2, 1, 0, MaterialStatusCode.OUT_OF_STOCK, "缺货", ""),
+            OrderMaterialItem("d2", null, "D-2", "m2", "M-2", "螺母", null, 1, 1, 1, MaterialStatusCode.IN_STOCK, "在库", ""),
+        ), null)
+        assertEquals(listOf("M-1"), LogisticsViewModel.filterOrderMaterialsForDevice(status, "PO-1", "D-1").map { it.materialCode })
+        assertTrue(LogisticsViewModel.filterOrderMaterialsForDevice(status, "PO-2", "D-1").isEmpty())
     }
 
     @Test

@@ -155,6 +155,9 @@ data class LogisticsUiState(
     val assemblyTaskTotal: Int = 0,
     val assemblyTaskTotalPages: Int = 0,
     val assemblyDeviceFilter: String? = null,
+    val assemblyMaterialStatus: OrderMaterialStatus? = null,
+    val assemblyMaterialState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val assemblyMaterialError: String? = null,
     /** UNKNOWN 扫码命中机台时，切换工作台前暂存服务端返回的机台标识。 */
     val pendingAssemblyDeviceId: String? = null,
     val pendingAssemblyDeviceNo: String? = null,
@@ -1982,7 +1985,20 @@ class LogisticsViewModel(
                     assemblyTaskPage = result.page, assemblyTaskPageSize = result.pageSize,
                     assemblyTaskTotal = matched.size, assemblyTaskTotalPages = if (matched.isEmpty()) 0 else 1,
                     message = if (matched.isEmpty()) "未找到机台 $value 的装配任务" else "已匹配机台 $value",
+                    assemblyMaterialState = WorkspaceLoadState.LOADING,
+                    assemblyMaterialError = null,
                 ) }
+                val task = matched.firstOrNull()
+                if (task?.orderNo.isNullOrBlank()) {
+                    _state.update { it.copy(assemblyMaterialState = WorkspaceLoadState.EMPTY) }
+                } else {
+                    repo.orderMaterialStatus(task!!.orderNo)
+                        .onSuccess { status ->
+                            val items = filterOrderMaterialsForDevice(status, task.orderNo, value)
+                            _state.update { it.copy(assemblyMaterialStatus = status.copy(items = items), assemblyMaterialState = if (items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT) }
+                        }
+                        .onFailure { e -> _state.update { it.copy(assemblyMaterialState = WorkspaceLoadState.ERROR, assemblyMaterialError = orderErrorMessage(e)) } }
+                }
             }
             .onFailure { error -> _state.update { it.copy(
                 loading = false, assemblyTaskState = WorkspaceLoadState.ERROR,
@@ -2235,6 +2251,12 @@ class LogisticsViewModel(
         fun filterAssemblyTasksByDevice(tasks: List<AssemblyTask>, deviceValue: String): List<AssemblyTask> {
             val value = deviceValue.trim()
             return tasks.filter { it.deviceNo == value || it.deviceId == value }
+        }
+
+        fun filterOrderMaterialsForDevice(status: OrderMaterialStatus, orderNo: String, deviceValue: String?): List<com.company.logistics.model.OrderMaterialItem> {
+            if (status.documentNo != orderNo) return emptyList()
+            val value = deviceValue?.trim().orEmpty()
+            return if (value.isBlank()) status.items else status.items.filter { it.deviceId == value || it.deviceNo == value }
         }
 
         private fun filterAssemblyTasks(tasks: List<AssemblyTask>, deviceId: String?, deviceNo: String?): List<AssemblyTask> =

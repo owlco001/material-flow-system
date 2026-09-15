@@ -2,7 +2,9 @@ package com.company.logistics.ui.screens
 
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -59,6 +61,9 @@ fun AssemblerWorkspaceScreen(
     total: Int,
     totalPages: Int,
     deviceFilter: String?,
+    materialStatus: com.company.logistics.model.OrderMaterialStatus?,
+    materialState: WorkspaceLoadState,
+    materialError: String?,
     submittingTaskId: String?,
     submittingAction: AssemblyAction?,
     activeLabor: Map<String, LaborRecord>,
@@ -121,6 +126,8 @@ fun AssemblerWorkspaceScreen(
             total = total,
             onRefresh = onRefresh,
         )
+
+        MaterialStatusTable(materialStatus, materialState, materialError, onRefresh)
 
         temporaryTransfer?.let { transfer ->
             VSpace(Spacing.md)
@@ -344,6 +351,39 @@ fun WorkshopSupervisorScreen(
                 onEnterPreview(it)
             },
         )
+    }
+}
+
+@Composable
+private fun MaterialStatusTable(
+    status: com.company.logistics.model.OrderMaterialStatus?,
+    state: WorkspaceLoadState,
+    error: String?,
+    onRetry: () -> Unit,
+) {
+    VSpace(Spacing.md)
+    SectionTitle("机台物料情况", trailing = "服务端状态")
+    when (state) {
+        WorkspaceLoadState.LOADING -> LoadingRow("正在加载机台物料…")
+        WorkspaceLoadState.ERROR -> EmptyState("物料加载失败", error ?: "请检查网络后重试", action = { PrimaryButton(text = "重试", onClick = onRetry) })
+        WorkspaceLoadState.EMPTY, WorkspaceLoadState.IDLE -> EmptyState("暂无物料数据", "服务端未返回当前机台物料")
+        WorkspaceLoadState.CONTENT -> {
+            val items = status?.items.orEmpty()
+            Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                Column(Modifier.width(760.dp)) {
+                    AssemblyMaterialRow("物料编码", "物料名称", "单位", "需求", "已到货", "已入库", "缺口", "状态", true)
+                    items.forEach { item -> AssemblyMaterialRow(item.materialCode, item.name, item.unit, item.requiredQuantity.toString(), item.arrivedQuantity.toString(), item.inStockQuantity.toString(), item.shortageQuantity.toString(), "${item.effectiveStatusCode} · ${item.effectiveStatusLabel}") }
+                }
+            }
+        }
+    }
+}
+@Composable
+private fun AssemblyMaterialRow(code: String, name: String, unit: String, required: String, arrived: String, inStock: String, shortage: String, status: String, header: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf(code to 120.dp, name to 150.dp, unit to 60.dp, required to 60.dp, arrived to 70.dp, inStock to 70.dp, shortage to 60.dp, status to 170.dp).forEach { (value, width) ->
+            Text(value, Modifier.width(width), fontSize = if (header) 11.sp else 12.sp, fontWeight = if (header) FontWeight.Bold else FontWeight.Normal, color = if (header) LogisticsTheme.colors.textSecondary else LogisticsTheme.colors.textPrimary)
+        }
     }
 }
 

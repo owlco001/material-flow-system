@@ -314,7 +314,8 @@ data class OrderMaterialItem(
     val lastHandoverId: String? = null,
     val currentOwnerUserId: String? = null,
     val currentOwnerName: String? = null,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    val unit: String = "件"
 ) {
     /** 缺口数量 */
     val shortageQuantity: Int get() = (requiredQuantity - inStockQuantity).coerceAtLeast(0)

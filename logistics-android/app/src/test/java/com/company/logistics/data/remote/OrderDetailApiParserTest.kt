@@ -26,4 +26,14 @@ class OrderDetailApiParserTest {
         assertEquals(emptyList<Any>(), detail.materialSummary.items)
         assertEquals(0, detail.materialSummary.totalRequiredQuantity)
     }
+
+    @Test fun parsesMachineOrderMaterialStatusAndPreservesUnknownServerStatus() {
+        val status = ApiParser.parseOrderMaterialStatus("""{"documentNo":"PO-9","documentType":"PRODUCTION_ORDER","items":[{"deviceId":"device-7","materialId":"m1","materialCode":"M-1","materialName":"螺栓","requiredQuantity":4,"arrivedQuantity":3,"inStockQuantity":2,"statusCode":"CUSTOM","statusLabel":"服务端自定义"}]}""")
+        val item = status.items.single()
+        assertEquals("PO-9", status.documentNo)
+        assertEquals("device-7", item.deviceId)
+        assertEquals("CUSTOM", item.effectiveStatusCode)
+        assertEquals("服务端自定义", item.effectiveStatusLabel)
+        assertEquals(2, item.shortageQuantity)
+    }
 }

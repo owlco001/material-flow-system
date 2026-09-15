@@ -248,6 +248,7 @@ object ApiParser {
                 label = label,
                 colorToken = o.optString("colorToken"),
                 serverStatusCode = serverStatusCode,
+                unit = o.optString("unit").ifBlank { "件" },
                 workflowStatusCode = nullableString(o, "workflowStatusCode")
                     ?: nullableString(o, "workStatusCode"),
                 workflowStatusLabel = nullableString(o, "workflowStatusLabel")
