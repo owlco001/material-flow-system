@@ -528,6 +528,8 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, actor_role TEXT NOT NULL, request_id TEXT NOT NULL, client_operation_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, server_time TEXT NOT NULL, device_id TEXT, source_ip TEXT, result TEXT NOT NULL, view_role TEXT, action TEXT);
     CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS stocktake_operations(client_operation_id TEXT PRIMARY KEY, stocktake_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS exception_operations(client_operation_id TEXT PRIMARY KEY, exception_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_tasks(id TEXT PRIMARY KEY, order_no TEXT NOT NULL, device_id TEXT NOT NULL, device_no TEXT NOT NULL, assigned_assembler_id TEXT REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('WAITING_MATERIAL','MATERIAL_ACCEPTED','IN_PROGRESS','PAUSED_FOR_TEMPORARY_TRANSFER','COMPLETED')), progress_stage INTEGER NOT NULL DEFAULT 0 CHECK(progress_stage BETWEEN 0 AND 3), task_version INTEGER NOT NULL DEFAULT 1, material_accepted_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS labor_records(id TEXT PRIMARY KEY, task_id TEXT REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), type TEXT NOT NULL CHECK(type IN ('ASSEMBLY','TEMPORARY_TRANSFER')), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), started_at TEXT NOT NULL, ended_at TEXT, duration_minutes INTEGER CHECK(duration_minutes IS NULL OR duration_minutes >= 0), remark TEXT, client_operation_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS progress_events(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), from_stage INTEGER NOT NULL, to_stage INTEGER NOT NULL CHECK(to_stage BETWEEN 1 AND 3), task_version INTEGER NOT NULL, server_time TEXT NOT NULL, client_operation_id TEXT NOT NULL UNIQUE);
@@ -1021,6 +1023,7 @@ class HandoverDecision(BaseModel):
 class Decision(BaseModel):
     decision: str
     comment: str = ""
+    clientOperationId: uuid.UUID | None = None
 
 
 class LocationBindingCreate(BaseModel):
@@ -3990,14 +3993,40 @@ def list_stocktakes(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]
 @app.post("/api/v1/stocktakes/{sid}/confirm")
 def confirm_stocktake(
     sid: str,
+    body: Decision = Decision(decision="CONFIRM"),
     user: sqlite3.Row = Depends(current_user),
     x_request_id: str | None = Header(default=None),
-) -> dict[str, str]:
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}: raise HTTPException(403, "无盘点确认权限")
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id) if x_request_id is not None else str(uuid.uuid4())
-    c = db(); row = c.execute("SELECT * FROM stocktakes WHERE id=? AND status='PENDING_CONFIRM'", (sid,)).fetchone()
-    if not row: c.close(); raise HTTPException(404, "待确认盘点不存在")
-    c.execute("UPDATE stocktakes SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE id=?", (user["id"], now(), sid)); audit(c, user["id"], user["role"], "CONFIRM", "STOCKTAKE", sid, request_id=trace_id); c.commit(); c.close(); return {"stocktakeId": sid, "status": "CONFIRMED"}
+    operation = str(body.clientOperationId or uuid.uuid4())
+    if idempotency_key is not None:
+        require_idempotency_key(idempotency_key, body.clientOperationId or uuid.UUID(operation), trace_id)
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无盘点确认权限", trace_id=trace_id)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM stocktake_operations WHERE client_operation_id=?", (operation,)).fetchone()
+        payload = body.model_dump_json()
+        if prior:
+            if prior["stocktake_id"] != sid or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id)
+            c.rollback(); c.close(); return result
+        row = c.execute("SELECT * FROM stocktakes WHERE id=? AND status='PENDING_CONFIRM'", (sid,)).fetchone()
+        if not row:
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "待确认盘点不存在或已处理", trace_id=trace_id)
+        confirmed_at = now()
+        c.execute("UPDATE stocktakes SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE id=?", (user["id"], confirmed_at, sid))
+        audit(c, user["id"], user["role"], "CONFIRM", "STOCKTAKE", sid, request_id=trace_id)
+        result = {"stocktakeId": sid, "status": "CONFIRMED", "traceId": trace_id}
+        c.execute("INSERT INTO stocktake_operations VALUES(?,?,?,?,?,?)", (operation, sid, "CONFIRM", payload, json.dumps(result, ensure_ascii=False), confirmed_at))
+        c.commit(); c.close(); return result
+    except ApiError:
+        c.rollback(); c.close(); raise
+    except Exception:
+        c.rollback(); c.close(); raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "盘点确认失败", retryable=True, trace_id=trace_id) from None
 
 
 @app.post("/api/v1/exceptions")
@@ -4030,12 +4059,43 @@ def list_exceptions(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]
 
 
 @app.post("/api/v1/exceptions/{eid}/review")
-def review_exception(eid: str, body: Decision, user: sqlite3.Row = Depends(current_user)) -> dict[str, str]:
-    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}: raise HTTPException(403, "无异常审批权限")
-    if body.decision not in {"APPROVE", "REJECT"}: raise HTTPException(400, "decision 无效")
-    status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"; c = db(); cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING'", (status, user["id"], now(), eid))
-    if cur.rowcount != 1: c.close(); raise HTTPException(409, "异常状态不允许审批")
-    audit(c, user["id"], user["role"], "REVIEW", "EXCEPTION", eid); c.commit(); c.close(); return {"exceptionId": eid, "status": status}
+def review_exception(
+    eid: str, body: Decision, request: Request,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id) if x_request_id is not None else str(uuid.uuid4())
+    operation = str(body.clientOperationId or uuid.uuid4())
+    if idempotency_key is not None:
+        require_idempotency_key(idempotency_key, body.clientOperationId or uuid.UUID(operation), trace_id)
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无异常审批权限", trace_id=trace_id)
+    if body.decision not in {"APPROVE", "REJECT"}:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "decision 无效", trace_id=trace_id)
+    status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        payload = body.model_dump_json()
+        prior = c.execute("SELECT * FROM exception_operations WHERE client_operation_id=?", (operation,)).fetchone()
+        if prior:
+            if prior["exception_id"] != eid or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id)
+            c.rollback(); c.close(); return result
+        reviewed_at = now()
+        cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING'", (status, user["id"], reviewed_at, eid))
+        if cur.rowcount != 1:
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "异常状态不允许审批", trace_id=trace_id)
+        audit(c, user["id"], user["role"], "REVIEW", "EXCEPTION", eid, request_id=trace_id)
+        result = {"exceptionId": eid, "status": status, "traceId": trace_id}
+        c.execute("INSERT INTO exception_operations VALUES(?,?,?,?,?,?)", (operation, eid, "REVIEW", payload, json.dumps(result, ensure_ascii=False), reviewed_at))
+        c.commit(); c.close(); return result
+    except ApiError:
+        c.rollback(); c.close(); raise
+    except Exception:
+        c.rollback(); c.close(); raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "异常审批失败", retryable=True, trace_id=trace_id) from None
 
 
 # Workshop assembly vertical slice routes

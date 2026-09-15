@@ -106,3 +106,43 @@ def test_r02_stocktake_and_exception_repeat_writes_keep_audit_request_id():
             "SELECT request_id FROM audit_logs WHERE resource_type IN ('LOCATION', 'STOCKTAKE', 'EXCEPTION')"
         ).fetchall()
         assert audit_rows and all(row["request_id"] for row in audit_rows)
+
+
+def test_exception_review_and_stocktake_confirm_gate_trace_id_and_idempotency():
+    with TestClient(backend.app) as client:
+        admin = _login(client)
+        exception_op = str(uuid.uuid4())
+        created = client.post(
+            "/api/v1/exceptions",
+            json={"orderNo": "26B-013", "deviceId": "dev_demo_HZ01", "materialId": "mat_ctl_cabinet",
+                  "bookQuantity": 2, "actualQuantity": 1, "clientOperationId": exception_op},
+            headers=_headers(admin, exception_op),
+        )
+        assert created.status_code == 200, created.text
+        eid = created.json()["exceptionId"]
+        review_op = str(uuid.uuid4())
+        review_headers = _headers(admin, review_op)
+        review_headers["X-Request-Id"] = "not-a-uuid"
+        invalid = client.post(f"/api/v1/exceptions/{eid}/review",
+                              json={"decision": "APPROVE", "clientOperationId": review_op},
+                              headers=review_headers)
+        assert invalid.status_code == 400
+        assert invalid.json()["error"]["code"] == "INVALID_REQUEST_ID"
+        review_headers["X-Request-Id"] = str(uuid.uuid4())
+        first = client.post(f"/api/v1/exceptions/{eid}/review",
+                            json={"decision": "APPROVE", "clientOperationId": review_op},
+                            headers=review_headers)
+        assert first.status_code == 200, first.text
+        repeated = client.post(f"/api/v1/exceptions/{eid}/review",
+                               json={"decision": "APPROVE", "clientOperationId": review_op},
+                               headers=review_headers)
+        assert repeated.status_code == 200 and repeated.json()["idempotent"] is True
+        conflict = client.post(f"/api/v1/exceptions/{eid}/review",
+                               json={"decision": "REJECT", "clientOperationId": review_op},
+                               headers=review_headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "IDEMPOTENCY_PAYLOAD_MISMATCH"
+        audit_row = backend.db().execute(
+            "SELECT request_id FROM audit_logs WHERE resource_type='EXCEPTION' AND resource_id=? ORDER BY id DESC LIMIT 1", (eid,)
+        ).fetchone()
+        assert audit_row["request_id"] == review_headers["X-Request-Id"]
