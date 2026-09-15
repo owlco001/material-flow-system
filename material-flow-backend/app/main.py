@@ -1023,6 +1023,37 @@ class Decision(BaseModel):
     comment: str = ""
 
 
+class LocationBindingCreate(BaseModel):
+    """库位绑定写入契约；保留既有 camelCase 字段名。"""
+    materialCode: str = Field(min_length=1, max_length=64)
+    locationCode: str = Field(min_length=1, max_length=64)
+    quantity: int = Field(default=0, ge=0)
+    evidenceIds: list[str] = Field(default_factory=list, max_length=20)
+    clientOperationId: uuid.UUID | None = None
+
+
+class StocktakeCreate(BaseModel):
+    """盘点创建契约。bookQuantity 缺省时沿用服务端账面数量。"""
+    materialCode: str = Field(min_length=1, max_length=64)
+    locationCode: str | None = Field(default=None, max_length=64)
+    actualQuantity: int = Field(ge=0)
+    bookQuantity: int | None = Field(default=None, ge=0)
+    clientOperationId: uuid.UUID | None = None
+
+
+class ExceptionCreate(BaseModel):
+    """异常创建契约，关联资源必须完整且为真实主数据。"""
+    orderNo: str | None = Field(default=None, max_length=64)
+    deviceId: str | None = Field(default=None, max_length=128)
+    materialId: str | None = Field(default=None, max_length=64)
+    type: str = Field(default="OTHER", min_length=1, max_length=32)
+    bookQuantity: int = Field(default=0, ge=0)
+    actualQuantity: int = Field(default=0, ge=0)
+    description: str | None = Field(default=None, max_length=500)
+    evidenceIds: list[str] = Field(default_factory=list, max_length=20)
+    clientOperationId: uuid.UUID | None = None
+
+
 class EmployeeCreate(BaseModel):
     employeeNo: str = Field(min_length=1, max_length=64)
     displayName: str = Field(min_length=1, max_length=128)
@@ -3890,22 +3921,65 @@ def audit_logs(
     }
 
 
+def _write_trace_and_operation(x_request_id: str | None, idempotency_key: str | None, client_operation_id: uuid.UUID | None) -> tuple[str, str]:
+    """统一校验写接口的可选幂等上下文，兼容旧客户端缺省请求头。"""
+    trace_id = require_request_id(x_request_id) if x_request_id is not None else str(uuid.uuid4())
+    operation = str(client_operation_id or uuid.uuid4())
+    if idempotency_key is not None:
+        require_idempotency_key(idempotency_key, operation, trace_id)
+    return trace_id, operation
+
+
 @app.post("/api/v1/location-bindings")
-def bind_location(body: dict[str, Any], user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    quantity = body.get("quantity", 0)
-    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 0: raise HTTPException(400, "数量必须是非负整数")
-    c = db(); material = c.execute("SELECT id FROM materials WHERE code=?", (body.get("materialCode"),)).fetchone(); location = c.execute("SELECT id FROM locations WHERE code=?", (body.get("locationCode"),)).fetchone()
-    if not material or not location: c.close(); raise HTTPException(404, "物料或库位不存在")
-    bid = "lb_" + uuid.uuid4().hex; evidence = json.dumps(body.get("evidenceIds", []), ensure_ascii=False); c.execute("INSERT INTO location_bindings VALUES(?,?,?,?,?,?,?,?)", (bid, material["id"], location["id"], quantity, evidence, user["id"], now())); audit(c, user["id"], user["role"], "BIND", "LOCATION", bid); c.commit(); c.close(); return {"bindingId": bid, "status": "BOUND", "serverTime": now()}
+def bind_location(
+    body: LocationBindingCreate,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    if user["role"] not in {"MATERIAL", "WAREHOUSE_ADMIN", "ADMIN"}:
+        raise HTTPException(403, "无库位绑定权限")
+    trace_id, operation = _write_trace_and_operation(x_request_id, idempotency_key, body.clientOperationId)
+    bid = "lb_" + uuid.UUID(operation).hex
+    c = db()
+    existing = c.execute("SELECT * FROM location_bindings WHERE id=?", (bid,)).fetchone()
+    if existing:
+        c.close()
+        return {"bindingId": bid, "status": "BOUND", "idempotent": True, "serverTime": now()}
+    material = c.execute("SELECT id FROM materials WHERE code=?", (body.materialCode,)).fetchone()
+    location = c.execute("SELECT id FROM locations WHERE code=?", (body.locationCode,)).fetchone()
+    if not material or not location:
+        c.close(); raise HTTPException(404, "物料或库位不存在")
+    evidence = json.dumps(body.evidenceIds, ensure_ascii=False)
+    c.execute("INSERT INTO location_bindings VALUES(?,?,?,?,?,?,?)", (bid, material["id"], location["id"], body.quantity, evidence, user["id"], now()))
+    audit(c, user["id"], user["role"], "BIND", "LOCATION", bid, request_id=trace_id)
+    c.commit(); c.close()
+    return {"bindingId": bid, "status": "BOUND", "serverTime": now()}
 
 
 @app.post("/api/v1/stocktakes")
-def create_stocktake(body: dict[str, Any], user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    actual = body.get("actualQuantity")
-    if not isinstance(actual, int) or isinstance(actual, bool) or actual < 0: raise HTTPException(400, "实盘数量必须是非负整数")
-    c = db(); material = c.execute("SELECT id,total_quantity FROM materials WHERE code=?", (body.get("materialCode"),)).fetchone()
-    if not material: c.close(); raise HTTPException(404, "物料不存在")
-    book = body.get("bookQuantity", material["total_quantity"]); sid = "st_" + uuid.uuid4().hex; c.execute("INSERT INTO stocktakes VALUES(?,?,?,?,?,?,?,?,?,?,?)", (sid, material["id"], body.get("locationCode"), book, actual, actual - book, "PENDING_CONFIRM", user["id"], now(), None, None)); audit(c, user["id"], user["role"], "CREATE", "STOCKTAKE", sid); c.commit(); c.close(); return {"stocktakeId": sid, "status": "PENDING_CONFIRM", "difference": actual - book, "serverTime": now()}
+def create_stocktake(
+    body: StocktakeCreate,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    if user["role"] not in {"MATERIAL", "WAREHOUSE_ADMIN", "ADMIN"}:
+        raise HTTPException(403, "无盘点创建权限")
+    trace_id, operation = _write_trace_and_operation(x_request_id, idempotency_key, body.clientOperationId)
+    sid = "st_" + uuid.UUID(operation).hex
+    c = db()
+    existing = c.execute("SELECT * FROM stocktakes WHERE id=?", (sid,)).fetchone()
+    if existing:
+        c.close(); return {"stocktakeId": sid, "status": existing["status"], "difference": existing["difference"], "idempotent": True, "serverTime": now()}
+    material = c.execute("SELECT id,total_quantity FROM materials WHERE code=?", (body.materialCode,)).fetchone()
+    if not material:
+        c.close(); raise HTTPException(404, "物料不存在")
+    book = material["total_quantity"] if body.bookQuantity is None else body.bookQuantity
+    c.execute("INSERT INTO stocktakes VALUES(?,?,?,?,?,?,?,?,?,?,?)", (sid, material["id"], body.locationCode, book, body.actualQuantity, body.actualQuantity - book, "PENDING_CONFIRM", user["id"], now(), None, None))
+    audit(c, user["id"], user["role"], "CREATE", "STOCKTAKE", sid, request_id=trace_id)
+    c.commit(); c.close()
+    return {"stocktakeId": sid, "status": "PENDING_CONFIRM", "difference": body.actualQuantity - book, "serverTime": now()}
 
 
 @app.get("/api/v1/stocktakes")
@@ -3914,24 +3988,40 @@ def list_stocktakes(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]
 
 
 @app.post("/api/v1/stocktakes/{sid}/confirm")
-def confirm_stocktake(sid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, str]:
+def confirm_stocktake(
+    sid: str,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, str]:
     if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}: raise HTTPException(403, "无盘点确认权限")
+    trace_id = require_request_id(x_request_id) if x_request_id is not None else str(uuid.uuid4())
     c = db(); row = c.execute("SELECT * FROM stocktakes WHERE id=? AND status='PENDING_CONFIRM'", (sid,)).fetchone()
     if not row: c.close(); raise HTTPException(404, "待确认盘点不存在")
-    c.execute("UPDATE stocktakes SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE id=?", (user["id"], now(), sid)); audit(c, user["id"], user["role"], "CONFIRM", "STOCKTAKE", sid); c.commit(); c.close(); return {"stocktakeId": sid, "status": "CONFIRMED"}
+    c.execute("UPDATE stocktakes SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE id=?", (user["id"], now(), sid)); audit(c, user["id"], user["role"], "CONFIRM", "STOCKTAKE", sid, request_id=trace_id); c.commit(); c.close(); return {"stocktakeId": sid, "status": "CONFIRMED"}
 
 
 @app.post("/api/v1/exceptions")
-def create_exception(body: dict[str, Any], user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    actual = body.get("actualQuantity", 0); book = body.get("bookQuantity", 0)
-    if not all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in (actual, book)): raise HTTPException(400, "数量必须是非负整数")
-    eid = "ex_" + uuid.uuid4().hex; c = db()
-    order_no, device_id, material_id = body.get("orderNo"), body.get("deviceId"), body.get("materialId")
-    if not order_no or not device_id or not material_id:
+def create_exception(
+    body: ExceptionCreate,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    if user["role"] not in {"OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "WORKSHOP_SUPERVISOR"}:
+        raise HTTPException(403, "无异常创建权限")
+    trace_id, operation = _write_trace_and_operation(x_request_id, idempotency_key, body.clientOperationId)
+    eid = "ex_" + uuid.UUID(operation).hex; c = db()
+    existing = c.execute("SELECT * FROM exceptions WHERE id=?", (eid,)).fetchone()
+    if existing:
+        c.close(); return {"exceptionId": eid, "status": existing["status"], "difference": existing["difference"], "idempotent": True, "serverTime": now()}
+    if not body.orderNo or not body.deviceId or not body.materialId:
         c.close(); raise HTTPException(400, "异常必须关联 orderNo、deviceId、materialId")
-    if not c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (order_no,)).fetchone() or not c.execute("SELECT 1 FROM order_devices WHERE id=?", (device_id,)).fetchone() or not c.execute("SELECT 1 FROM materials WHERE id=?", (material_id,)).fetchone():
+    if not c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (body.orderNo,)).fetchone() or not c.execute("SELECT 1 FROM order_devices WHERE id=?", (body.deviceId,)).fetchone() or not c.execute("SELECT 1 FROM materials WHERE id=?", (body.materialId,)).fetchone():
         c.close(); raise HTTPException(400, "异常关联资源不存在")
-    c.execute("INSERT INTO exceptions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (eid, material_id, body.get("type", "OTHER"), book, actual, actual - book, "PENDING", body.get("description"), json.dumps(body.get("evidenceIds", [])), user["id"], now(), None, None, order_no, device_id)); audit(c, user["id"], user["role"], "CREATE", "EXCEPTION", eid); c.commit(); c.close(); return {"exceptionId": eid, "status": "PENDING", "difference": actual - book, "serverTime": now()}
+    difference = body.actualQuantity - body.bookQuantity
+    c.execute("INSERT INTO exceptions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (eid, body.materialId, body.type, body.bookQuantity, body.actualQuantity, difference, "PENDING", body.description, json.dumps(body.evidenceIds), user["id"], now(), None, None, body.orderNo, body.deviceId))
+    audit(c, user["id"], user["role"], "CREATE", "EXCEPTION", eid, request_id=trace_id); c.commit(); c.close()
+    return {"exceptionId": eid, "status": "PENDING", "difference": difference, "serverTime": now()}
 
 
 @app.get("/api/v1/exceptions")
