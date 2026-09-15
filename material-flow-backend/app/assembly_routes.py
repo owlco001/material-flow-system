@@ -214,7 +214,7 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         if active:
             if active['task_id']: finish(c,active['id']); c.execute("UPDATE assembly_tasks SET status='PAUSED_FOR_TEMPORARY_TRANSFER',updated_at=? WHERE id=?",(now(),active['task_id']))
             else: c.close(); raise HTTPException(409,'ACTIVE_TRANSFER_EXISTS')
-        t=now(); rid='lr_'+uuid.uuid4().hex; xid='tt_'+uuid.uuid4().hex; c.execute("INSERT INTO labor_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rid,None,user['id'],'TEMPORARY_TRANSFER','ACTIVE',t,None,None,remark,o,t)); c.execute('INSERT INTO temporary_transfers VALUES(?,?,?,?,?,?,?,?,?)',(xid,user['id'],tid,rid,'ACTIVE',remark,t,None,o)); c.commit(); c.close(); return {'temporaryTransferId':xid,'laborRecordId':rid,'type':'TEMPORARY_TRANSFER','status':'ACTIVE','startedAt':t,'serverTime':t}
+        t=now(); rid='lr_'+uuid.uuid4().hex; xid='tt_'+uuid.uuid4().hex; c.execute("INSERT INTO labor_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rid,None,user['id'],'TEMPORARY_TRANSFER','ACTIVE',t,None,None,remark,o,t)); c.execute('INSERT INTO temporary_transfers (id,worker_user_id,source_task_id,labor_record_id,status,remark,started_at,ended_at,client_operation_id,device_id) VALUES(?,?,?,?,?,?,?,?,?,?)',(xid,user['id'],tid,rid,'ACTIVE',remark,t,None,o,source['device_id'] if source else None)); c.commit(); c.close(); return {'temporaryTransferId':xid,'laborRecordId':rid,'type':'TEMPORARY_TRANSFER','status':'ACTIVE','startedAt':t,'serverTime':t}
     @app.post('/api/v1/assembly/temporary-transfers/{xid}/complete')
     def transfer_complete(xid:str,body:dict,request:Request,user=Depends(current_user),idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
         actor(user); bodycheck(body); o=op(body,idempotency_key); c=db(); tr=c.execute('SELECT * FROM temporary_transfers WHERE id=? AND worker_user_id=?',(xid,user['id'])).fetchone()
@@ -231,3 +231,61 @@ def register(app, db, now, current_user, audit_event, api_error=None):
     def machine(user=Depends(current_user),page:int=1,pageSize:int=20):
         if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
         c=db(); rows=c.execute('SELECT device_id,device_no,count(*) taskCount,sum(status="COMPLETED") completedTaskCount,round(sum(progress_stage)*100.0/(count(*)*3)) progressPercent FROM assembly_tasks GROUP BY device_id,device_no LIMIT ? OFFSET ?',(pageSize,(page-1)*pageSize)).fetchall(); c.close(); return {'items':[dict(r) for r in rows],'page':page,'pageSize':pageSize}
+
+    def labor_minutes_expr(alias='l'):
+        # ACTIVE rows are projected from server time only; they are never updated here.
+        return f"CASE WHEN {alias}.status='COMPLETED' THEN COALESCE({alias}.duration_minutes,0) ELSE MAX(0, CAST((julianday(?) - julianday({alias}.started_at))*1440 AS INTEGER)) END"
+
+    def labor_snapshot(c, tid, assembler_filter=None):
+        args=[now(), tid]
+        where='(l.task_id=? OR (l.type=\'TEMPORARY_TRANSFER\' AND tt.source_task_id=?))'
+        args.insert(1, tid)
+        if assembler_filter:
+            where += ' AND l.worker_user_id=?'; args.append(assembler_filter)
+        rows=c.execute(f"""SELECT l.worker_user_id assembler_id, u.display_name assembler_name,
+            SUM(CASE WHEN l.type='ASSEMBLY' THEN {labor_minutes_expr()} ELSE 0 END) assembly_minutes,
+            SUM(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN {labor_minutes_expr()} ELSE 0 END) transfer_minutes
+            FROM labor_records l JOIN users u ON u.id=l.worker_user_id
+            LEFT JOIN temporary_transfers tt ON tt.labor_record_id=l.id
+            WHERE {where} GROUP BY l.worker_user_id,u.display_name ORDER BY l.worker_user_id""", [args[0], args[0], args[1], args[1]] + args[3:]).fetchall()
+        return rows
+
+    def labor_item(task_row, row):
+        a=int(row['assembly_minutes'] or 0); x=int(row['transfer_minutes'] or 0)
+        return {'taskId':task_row['id'],'orderNo':task_row['order_no'],'deviceId':task_row['device_id'],'deviceNo':task_row['device_no'],
+                'assemblerId':row['assembler_id'],'assemblerName':row['assembler_name'],'assemblyLaborMinutes':a,
+                'temporaryTransferLaborMinutes':x,'totalLaborMinutes':a+x}
+
+    @app.get('/api/v1/assembly/tasks/{tid}/labor-summary')
+    def task_labor_summary(tid: str, user=Depends(current_user), assemblerId: str|None=None):
+        c=db()
+        r=c.execute('SELECT * FROM assembly_tasks WHERE id=?',(tid,)).fetchone()
+        if not r: c.close(); raise HTTPException(404,'任务不存在')
+        if user['role']=='ASSEMBLER' and not active_member(c,tid,user['id']):
+            c.close(); forbidden('只能查看本人任务工时')
+        if user['role'] not in ('ASSEMBLER','WORKSHOP_SUPERVISOR','ADMIN'):
+            c.close(); raise HTTPException(403,'无统计权限')
+        rows=labor_snapshot(c,tid,assemblerId if user['role']!='ASSEMBLER' else user['id']); items=[labor_item(r,x) for x in rows]
+        c.close(); return {'items':items,'task':{'taskId':r['id'],'orderNo':r['order_no'],'deviceId':r['device_id'],'deviceNo':r['device_no']}}
+
+    @app.get('/api/v1/workshop/labor-summary')
+    def workshop_labor_summary(page:int=Query(1,ge=1), pageSize:int=Query(20), deviceId:str|None=None, orderNo:str|None=None, assemblerId:str|None=None, user=Depends(current_user)):
+        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
+        if pageSize != 20: raise HTTPException(422,'pageSize 固定为 20')
+        c=db(); clauses=[]; args=[]
+        if deviceId: clauses.append('t.device_id=?'); args.append(deviceId)
+        if orderNo: clauses.append('t.order_no=?'); args.append(orderNo)
+        if assemblerId: clauses.append('l.worker_user_id=?'); args.append(assemblerId)
+        where=(' AND '.join(clauses)+' AND ') if clauses else ''
+        base=f"""FROM assembly_tasks t JOIN labor_records l ON (l.task_id=t.id OR (l.type='TEMPORARY_TRANSFER' AND EXISTS (SELECT 1 FROM temporary_transfers z WHERE z.labor_record_id=l.id AND z.source_task_id=t.id)))
+                 JOIN users u ON u.id=l.worker_user_id LEFT JOIN temporary_transfers tt ON tt.labor_record_id=l.id WHERE {where}1=1"""
+        grouped=f"""SELECT t.id task_id,t.order_no,t.device_id,t.device_no,l.worker_user_id assembler_id,u.display_name assembler_name,
+          SUM(CASE WHEN l.type='ASSEMBLY' THEN {labor_minutes_expr()} ELSE 0 END) assembly_minutes,
+          SUM(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN {labor_minutes_expr()} ELSE 0 END) transfer_minutes {base}
+          GROUP BY t.id,t.order_no,t.device_id,t.device_no,l.worker_user_id,u.display_name ORDER BY t.id,l.worker_user_id"""
+        query_args=[now(),now()]+args
+        rows=c.execute(grouped+' LIMIT ? OFFSET ?',query_args+[20,(page-1)*20]).fetchall()
+        total=c.execute('SELECT COUNT(*) n FROM ('+grouped+')',query_args).fetchone()['n']
+        items=[labor_item({'id':x['task_id'],'order_no':x['order_no'],'device_id':x['device_id'],'device_no':x['device_no']},x) for x in rows]
+        total_minutes=sum(x['totalLaborMinutes'] for x in items)
+        c.close(); return {'items':items,'page':page,'pageSize':20,'total':total,'totalLaborMinutes':total_minutes,'totalPages':(total+19)//20}

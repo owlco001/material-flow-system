@@ -540,7 +540,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS assembly_tasks(id TEXT PRIMARY KEY, order_no TEXT NOT NULL, device_id TEXT NOT NULL, device_no TEXT NOT NULL, assigned_assembler_id TEXT REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('WAITING_MATERIAL','MATERIAL_ACCEPTED','IN_PROGRESS','PAUSED_FOR_TEMPORARY_TRANSFER','COMPLETED')), progress_stage INTEGER NOT NULL DEFAULT 0 CHECK(progress_stage BETWEEN 0 AND 3), task_version INTEGER NOT NULL DEFAULT 1, material_accepted_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS labor_records(id TEXT PRIMARY KEY, task_id TEXT REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), type TEXT NOT NULL CHECK(type IN ('ASSEMBLY','TEMPORARY_TRANSFER')), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), started_at TEXT NOT NULL, ended_at TEXT, duration_minutes INTEGER CHECK(duration_minutes IS NULL OR duration_minutes >= 0), remark TEXT, client_operation_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS progress_events(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), from_stage INTEGER NOT NULL, to_stage INTEGER NOT NULL CHECK(to_stage BETWEEN 1 AND 3), task_version INTEGER NOT NULL, server_time TEXT NOT NULL, client_operation_id TEXT NOT NULL UNIQUE);
-    CREATE TABLE IF NOT EXISTS temporary_transfers(id TEXT PRIMARY KEY, worker_user_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT REFERENCES assembly_tasks(id), labor_record_id TEXT NOT NULL UNIQUE REFERENCES labor_records(id), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), remark TEXT NOT NULL CHECK(length(remark) BETWEEN 1 AND 500), started_at TEXT NOT NULL, ended_at TEXT, client_operation_id TEXT NOT NULL UNIQUE);
+    CREATE TABLE IF NOT EXISTS temporary_transfers(id TEXT PRIMARY KEY, worker_user_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT REFERENCES assembly_tasks(id), labor_record_id TEXT NOT NULL UNIQUE REFERENCES labor_records(id), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), remark TEXT NOT NULL CHECK(length(remark) BETWEEN 1 AND 500), started_at TEXT NOT NULL, ended_at TEXT, client_operation_id TEXT NOT NULL UNIQUE, device_id TEXT);
     CREATE TABLE IF NOT EXISTS assembly_operations(client_operation_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_task_stages(task_id TEXT NOT NULL REFERENCES assembly_tasks(id) ON DELETE CASCADE, stage_no INTEGER NOT NULL CHECK(stage_no BETWEEN 1 AND 3), status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','COMPLETED','REWORK_REQUIRED')), version INTEGER NOT NULL DEFAULT 1, started_at TEXT, completed_at TEXT, rework_reason TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(task_id, stage_no));
     CREATE TABLE IF NOT EXISTS assembly_stage_operations(client_operation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, stage_no INTEGER NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -701,6 +701,12 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     结构，并把历史需求保留为未入库的按订单级需求。
     """
     c.execute("UPDATE users SET role='MATERIAL' WHERE role='MATERIAL_CLERK'")
+
+    temporary_transfer_columns = {r["name"] for r in c.execute("PRAGMA table_info(temporary_transfers)").fetchall()}
+    if "device_id" not in temporary_transfer_columns:
+        c.execute("ALTER TABLE temporary_transfers ADD COLUMN device_id TEXT")
+    c.execute("""UPDATE temporary_transfers SET device_id=(SELECT device_id FROM assembly_tasks t
+                 WHERE t.id=temporary_transfers.source_task_id) WHERE device_id IS NULL""")
 
     transfer_cols = {r["name"] for r in c.execute("PRAGMA table_info(transfer_requests)").fetchall()}
     if "rejection_reason" not in transfer_cols:
