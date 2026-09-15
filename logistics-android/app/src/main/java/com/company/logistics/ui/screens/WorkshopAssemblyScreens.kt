@@ -42,6 +42,7 @@ import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
+import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
