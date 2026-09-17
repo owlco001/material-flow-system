@@ -1104,6 +1104,48 @@ class LogisticsViewModel(
     }
 
     // Assembly writes stay online because the server owns timestamps and task versions.
+    fun assignAssemblyMembers(task: AssemblyTask, assemblerIdsText: String) {
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能分配装配成员") }
+            return
+        }
+        if (current.role != UserRole.ADMIN && current.role != UserRole.WORKSHOP_SUPERVISOR) {
+            _state.update { it.copy(error = "当前角色无权分配装配成员") }
+            return
+        }
+        val assemblerIds = assemblerIdsText.split(",").map(String::trim).filter(String::isNotEmpty)
+        if (assemblerIds.size !in 1..20) {
+            _state.update { it.copy(error = "装配成员必须为 1~20 人") }
+            return
+        }
+        val operationId = UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null, message = null) }
+            repo.assignAssemblyMembers(task.id, assemblerIds, operationId)
+                .onSuccess { response ->
+                    _state.update { state ->
+                        state.copy(
+                            loading = false,
+                            assemblyTasks = state.assemblyTasks.map { candidate ->
+                                if (candidate.id == task.id) candidate.copy(members = response.members) else candidate
+                            },
+                            error = null,
+                            message = "装配成员分配成功",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is ApiException && error.isUnauthorized) {
+                        expireSession()
+                        return@onFailure
+                    }
+                    _state.update { it.copy(loading = false, error = assemblyActionErrorMessage(error)) }
+                    if (error is ApiException && error.isConflict) loadAssemblyTaskPage(true, 1)
+                }
+        }
+    }
+
     fun acceptAssemblyMaterial(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.ACCEPT_MATERIAL)
 
     fun startAssemblyWork(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.START_WORK)
