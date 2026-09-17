@@ -1146,6 +1146,50 @@ class LogisticsViewModel(
         }
     }
 
+    fun removeAssemblyMember(task: AssemblyTask, assemblerId: String) {
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能移除装配成员") }
+            return
+        }
+        if (current.role != UserRole.ADMIN && current.role != UserRole.WORKSHOP_SUPERVISOR) {
+            _state.update { it.copy(error = "当前角色无权移除装配成员") }
+            return
+        }
+        if (assemblerId.isBlank()) {
+            _state.update { it.copy(error = "装配成员不能为空") }
+            return
+        }
+        val operationId = UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null, message = null) }
+            repo.removeAssemblyMember(task.id, assemblerId, operationId)
+                .onSuccess {
+                    _state.update { state ->
+                        state.copy(
+                            loading = false,
+                            assemblyTasks = state.assemblyTasks.map { candidate ->
+                                if (candidate.id == task.id) {
+                                    candidate.copy(members = candidate.members.filterNot { it.assemblerId == assemblerId })
+                                } else candidate
+                            },
+                            error = null,
+                            message = "装配成员移除成功",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is ApiException && error.isUnauthorized) {
+                        _state.update { it.copy(loading = false, error = assemblyActionErrorMessage(error)) }
+                        expireSession()
+                        return@onFailure
+                    }
+                    _state.update { it.copy(loading = false, error = assemblyActionErrorMessage(error)) }
+                    if (error is ApiException && error.isConflict) loadAssemblyTaskPage(true, 1)
+                }
+        }
+    }
+
     fun acceptAssemblyMaterial(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.ACCEPT_MATERIAL)
 
     fun startAssemblyWork(task: AssemblyTask) = submitAssemblyAction(task, AssemblyAction.START_WORK)
