@@ -170,6 +170,8 @@ fun WorkspaceScreen(
     onStartTemporaryTransfer: (String?, String) -> Unit = { _, _ -> },
     onCompleteTemporaryTransfer: (String) -> Unit = {},
     onScanAssemblyDevice: () -> Unit = {},
+    onAssignAssemblyMembers: (AssemblyTask, String) -> Unit = { _, _ -> },
+    onRemoveAssemblyMember: (AssemblyTask, String) -> Unit = { _, _ -> },
     onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit = { _, _, _, _ -> },
     exceptionSubmitting: Boolean = false,
 ) {
@@ -224,6 +226,8 @@ fun WorkspaceScreen(
             onEnterPreview = onEnterPreview,
             onExitPreview = onExitPreview,
             onScanDevice = onScanAssemblyDevice,
+            onAssignMembers = onAssignAssemblyMembers,
+            onRemoveMember = onRemoveAssemblyMember,
             modifier = modifier,
         )
         return
@@ -254,6 +258,11 @@ fun WorkspaceScreen(
             laborError = workshopLaborError,
             laborDeviceFilter = workshopLaborDeviceFilter,
             onRefreshLabor = onRefreshWorkshopLabor,
+            assemblyTasks = assemblyTasks,
+            assemblyTaskState = assemblyTaskState,
+            assemblySubmitting = assemblySubmittingTaskId != null,
+            onAssignMembers = onAssignAssemblyMembers,
+            onRemoveMember = onRemoveAssemblyMember,
             modifier = modifier,
         )
         return

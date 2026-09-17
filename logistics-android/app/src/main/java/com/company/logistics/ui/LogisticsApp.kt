@@ -272,6 +272,8 @@ fun LogisticsApp(
                         onStartTemporaryTransfer = { taskId, remark -> viewModel.startTemporaryTransfer(taskId, remark) },
                         onCompleteTemporaryTransfer = { remark -> viewModel.completeTemporaryTransfer(remark) },
                         onScanAssemblyDevice = { viewModel.navigate(Screen.SCANNER) },
+                        onAssignAssemblyMembers = { task, ids -> viewModel.assignAssemblyMembers(task, ids) },
+                        onRemoveAssemblyMember = { task, assemblerId -> viewModel.removeAssemblyMember(task, assemblerId) },
                         onSubmitException = { item, type, actual, description -> viewModel.submitException(item, type, actual, description) },
                         exceptionSubmitting = state.exceptionSubmitting,
                     )

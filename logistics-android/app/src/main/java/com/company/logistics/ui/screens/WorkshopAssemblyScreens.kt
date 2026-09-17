@@ -87,6 +87,8 @@ fun AssemblerWorkspaceScreen(
     onEnterPreview: (WorkspaceViewRole) -> Unit,
     onExitPreview: () -> Unit,
     onScanDevice: () -> Unit,
+    onAssignMembers: (AssemblyTask, String) -> Unit = { _, _ -> },
+    onRemoveMember: (AssemblyTask, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     var selectorVisible by remember { mutableStateOf(false) }
@@ -183,6 +185,7 @@ fun AssemblerWorkspaceScreen(
                         submitting = submittingTaskId == task.id,
                         submittingAction = submittingAction,
                         readOnly = previewRole != null,
+                        canManageMembers = authenticatedRole == UserRole.ADMIN || authenticatedRole == UserRole.WORKSHOP_SUPERVISOR,
                         onAcceptMaterial = { onAcceptMaterial(task) },
                         onStartWork = { onStartWork(task) },
                         onProgress = { stage -> onProgress(task, stage) },
@@ -194,6 +197,8 @@ fun AssemblerWorkspaceScreen(
                             temporaryTransferTaskId = task.id
                             startTransferDialog = true
                         },
+                        onAssignMembers = { text -> onAssignMembers(task, text) },
+                        onRemoveMember = { id -> onRemoveMember(task, id) },
                     )
                 }
                 if (tasks.isNotEmpty()) {
@@ -286,6 +291,11 @@ fun WorkshopSupervisorScreen(
     laborError: String?,
     laborDeviceFilter: String?,
     onRefreshLabor: (String?) -> Unit,
+    assemblyTasks: List<AssemblyTask> = emptyList(),
+    assemblyTaskState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    assemblySubmitting: Boolean = false,
+    onAssignMembers: (AssemblyTask, String) -> Unit = { _, _ -> },
+    onRemoveMember: (AssemblyTask, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     var selectorVisible by remember { mutableStateOf(false) }
@@ -322,6 +332,23 @@ fun WorkshopSupervisorScreen(
         )
 
         WorkshopLaborSummarySection(laborSummary, laborState, laborError, laborDeviceFilter, onRefreshLabor, previewRole != null)
+
+        if (authenticatedRole == UserRole.ADMIN || authenticatedRole == UserRole.WORKSHOP_SUPERVISOR) {
+            VSpace(Spacing.lg)
+            SectionTitle("任务分配 / 协作成员", trailing = "服务端成员")
+            if (assemblyTaskState == WorkspaceLoadState.LOADING) LoadingRow("正在加载装配任务…")
+            if (assemblyTasks.isEmpty() && assemblyTaskState != WorkspaceLoadState.LOADING) {
+                Text("暂无可分配的装配任务", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+            }
+            assemblyTasks.forEach { task ->
+                VSpace(Spacing.sm)
+                AssemblyTaskCard(task, null, null, null, assemblySubmitting, null, previewRole != null,
+                    canManageMembers = previewRole == null,
+                    onAcceptMaterial = {}, onStartWork = {}, onProgress = {}, onCompleteWork = {},
+                    onStartStage = {}, onCompleteStage = {}, onReworkStage = {}, onStartTemporaryTransfer = {},
+                    onAssignMembers = { onAssignMembers(task, it) }, onRemoveMember = { onRemoveMember(task, it) })
+            }
+        }
 
         when (summaryState) {
             WorkspaceLoadState.LOADING -> LoadingRow("正在加载服务端工时统计…")
@@ -552,6 +579,7 @@ private fun AssemblyTaskCard(
     submitting: Boolean,
     submittingAction: AssemblyAction?,
     readOnly: Boolean,
+    canManageMembers: Boolean = false,
     onAcceptMaterial: () -> Unit,
     onStartWork: () -> Unit,
     onProgress: (Int) -> Unit,
@@ -560,6 +588,8 @@ private fun AssemblyTaskCard(
     onCompleteStage: (Int) -> Unit,
     onReworkStage: (Int) -> Unit,
     onStartTemporaryTransfer: () -> Unit,
+    onAssignMembers: (String) -> Unit = {},
+    onRemoveMember: (String) -> Unit = {},
 ) {
     val statusColor = when (task.status) {
         AssemblyTaskStatus.WAITING_MATERIAL -> LogisticsTheme.colors.warning
@@ -585,6 +615,7 @@ private fun AssemblyTaskCard(
         }
         VSpace(Spacing.sm)
         Text("任务版本 ${task.taskVersion}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+        AssemblyMembersSection(task, canManageMembers && !readOnly, submitting, onAssignMembers, onRemoveMember)
         VSpace(Spacing.sm)
         ProgressStages(task.stages)
         if (!readOnly && task.status != AssemblyTaskStatus.COMPLETED) {
@@ -649,6 +680,33 @@ private fun AssemblyTaskCard(
                 SecondaryButton(text = "开始临时调拨", onClick = onStartTemporaryTransfer, enabled = !submitting)
             }
         }
+    }
+}
+
+@Composable
+private fun AssemblyMembersSection(
+    task: AssemblyTask,
+    canManage: Boolean,
+    submitting: Boolean,
+    onAssign: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    var ids by remember(task.id) { mutableStateOf("") }
+    VSpace(Spacing.sm)
+    Text("协作成员", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+    if (task.members.isEmpty()) {
+        Text("暂无协作成员", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+    } else task.members.forEach { member ->
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            val name = task.assignedAssemblerName?.takeIf { task.assignedAssemblerId == member.assemblerId }
+            Text("${name ?: "装配成员"} · ID ${member.assemblerId}", Modifier.weight(1f), fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+            if (canManage) TextButton(onClick = { onRemove(member.assemblerId) }, enabled = !submitting) { Text("移除") }
+        }
+    }
+    if (canManage) {
+        OutlinedTextField(ids, { ids = it }, label = { Text("装配成员 ID（逗号分隔）") }, singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth())
+        VSpace(4.dp)
+        PrimaryButton(text = if (submitting) "提交中…" else "提交任务分配", onClick = { onAssign(ids.trim()) }, enabled = !submitting && ids.split(",").any { it.trim().isNotEmpty() })
     }
 }
 
