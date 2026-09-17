@@ -35,6 +35,8 @@ import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskStatus
+import com.company.logistics.model.AssemblyMember
+import com.company.logistics.model.AssemblyAssignmentResponse
 import com.company.logistics.model.AssemblyStage
 import com.company.logistics.model.AssemblyStageStatus
 import com.company.logistics.model.AssemblyStageOperationResult
@@ -681,6 +683,15 @@ object ApiParser {
 
     fun parseAssemblyTask(json: String): AssemblyTask = parseAssemblyTask(JSONObject(json))
 
+    fun parseAssemblyAssignmentResponse(json: String): AssemblyAssignmentResponse {
+        val root = JSONObject(json)
+        val array = root.optJSONArray("members") ?: JSONArray()
+        val members = (0 until array.length()).mapNotNull { i -> array.optJSONObject(i)?.let { member ->
+            AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
+        } }
+        return AssemblyAssignmentResponse(nullableStringAny(root, "taskId", "task_id").orEmpty(), members, nullableStringAny(root, "traceId", "trace_id"), root.optBoolean("idempotent", false), nullableStringAny(root, "serverTime", "server_time"))
+    }
+
     private fun parseAssemblyTask(o: JSONObject): AssemblyTask = AssemblyTask(
         id = o.optString("id"), orderNo = o.optString("orderNo", o.optString("order_no")),
         deviceId = o.optString("deviceId", o.optString("device_id")), deviceNo = o.optString("deviceNo", o.optString("device_no")),
@@ -690,8 +701,12 @@ object ApiParser {
         currentLaborStartedAt = nullableStringAny(o, "currentLaborStartedAt", "current_labor_started_at"), accumulatedLaborMinutes = nullableIntAny(o, "accumulatedLaborMinutes", "accumulated_labor_minutes"),
         assignedAssemblerId = nullableStringAny(o, "assignedAssemblerId", "assigned_assembler_id"), assignedAssemblerName = nullableStringAny(o, "assignedAssemblerName", "assigned_assembler_name"),
         serverTime = nullableStringAny(o, "serverTime", "updatedAt", "updated_at"),
-        stages = parseStages(o),
+        stages = parseStages(o), members = parseAssemblyMembers(o.optJSONArray("members")),
     )
+
+    private fun parseAssemblyMembers(array: JSONArray?): List<AssemblyMember> = (0 until (array?.length() ?: 0)).mapNotNull { i -> array?.optJSONObject(i)?.let { member ->
+        AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
+    } }
 
     private fun parseStages(o: JSONObject): List<AssemblyStage> {
         val array = o.optJSONArray("stages") ?: return (1..3).map { AssemblyStage(it, AssemblyStageStatus.NOT_STARTED) }

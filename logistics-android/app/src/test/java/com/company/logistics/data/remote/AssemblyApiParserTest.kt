@@ -53,6 +53,22 @@ class AssemblyApiParserTest {
     }
 
     @Test
+    fun parsesAssemblyMembersInBothNamingStyles() {
+        val camel = ApiParser.parseAssemblyTask("""{"id":"t","deviceId":"d","deviceNo":"D","status":"IN_PROGRESS","members":[{"assemblerId":"a1","assignmentRole":"LEAD","assignedAt":"now"}]}""")
+        val snake = ApiParser.parseAssemblyTask("""{"id":"t","device_id":"d","device_no":"D","status":"IN_PROGRESS","members":[{"assembler_id":"a2","assignment_role":"MEMBER","assigned_at":"later"}]}""")
+        assertEquals("a1", camel.members.single().assemblerId)
+        assertEquals("a2", snake.members.single().assemblerId)
+        assertEquals("MEMBER", snake.members.single().assignmentRole)
+    }
+
+    @Test
+    fun parsesAssignmentResponse() {
+        val response = ApiParser.parseAssemblyAssignmentResponse("""{"task_id":"t1","trace_id":"r1","members":[{"assembler_id":"a1","assignment_role":"LEAD"}]}""")
+        assertEquals("t1", response.taskId)
+        assertEquals("r1", response.traceId)
+        assertEquals("a1", response.members.single().assemblerId)
+    }
+    @Test
     fun parsesBackendAssemblyStartAndTemporaryTransferSummariesWithoutInventingDuration() {
         val assembly = ApiParser.parseLaborRecord(
             """

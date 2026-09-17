@@ -13,6 +13,7 @@ import com.company.logistics.model.TransferRequestPage
 import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskPage
+import com.company.logistics.model.AssemblyAssignmentResponse
 import com.company.logistics.model.LaborRecord
 import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MachineProgressPage
@@ -483,6 +484,17 @@ open class MaterialFlowApi(
     suspend fun startAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "start")
     suspend fun completeAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "complete")
     suspend fun reworkAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, reason: String, clientOperationId: String) = stageOperation(taskId, stageNo, expectedVersion, clientOperationId, "rework", reason)
+
+    suspend fun assignAssemblyMembers(taskId: String, assemblerIds: List<String>, clientOperationId: String): AssemblyAssignmentResponse = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()); require(assemblerIds.isNotEmpty() && assemblerIds.size <= 20 && assemblerIds.distinct().size == assemblerIds.size); require(assemblerIds.all { it.isNotBlank() }); requireUuid(clientOperationId, "clientOperationId")
+        val body = JSONObject().apply { put("assemblerIds", JSONArray(assemblerIds)); put("clientOperationId", clientOperationId) }
+        ApiParser.parseAssemblyAssignmentResponse(request("POST", "/api/v1/assembly/tasks/$taskId/assignments", body.toString(), idempotencyKey = clientOperationId))
+    }
+
+    suspend fun removeAssemblyMember(taskId: String, assemblerId: String, clientOperationId: String): AssemblyAssignmentResponse = withContext(Dispatchers.IO) {
+        require(taskId.isNotBlank()); require(assemblerId.isNotBlank()); requireUuid(clientOperationId, "clientOperationId")
+        ApiParser.parseAssemblyAssignmentResponse(request("DELETE", "/api/v1/assembly/tasks/$taskId/assignments/$assemblerId", JSONObject().put("clientOperationId", clientOperationId).toString(), idempotencyKey = clientOperationId))
+    }
 
     private suspend fun stageOperation(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String, action: String, reason: String? = null): com.company.logistics.model.AssemblyStageOperationResult = withContext(Dispatchers.IO) {
         require(taskId.isNotBlank()); require(stageNo in 1..3); requireUuid(clientOperationId, "clientOperationId")

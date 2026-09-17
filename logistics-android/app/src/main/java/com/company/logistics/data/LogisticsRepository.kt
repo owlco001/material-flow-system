@@ -8,6 +8,7 @@ import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.LoginResult
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.AssemblyTaskPage
+import com.company.logistics.model.AssemblyAssignmentResponse
 import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionResult
 import com.company.logistics.model.HandoverTimeline
@@ -226,6 +227,8 @@ open class LogisticsRepository(
     open suspend fun startAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = resultOf { api.startAssemblyStage(taskId, stageNo, expectedVersion, clientOperationId) }
     open suspend fun completeAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String) = resultOf { api.completeAssemblyStage(taskId, stageNo, expectedVersion, clientOperationId) }
     open suspend fun reworkAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, reason: String, clientOperationId: String) = resultOf { api.reworkAssemblyStage(taskId, stageNo, expectedVersion, reason, clientOperationId) }
+    open suspend fun assignAssemblyMembers(taskId: String, assemblerIds: List<String>, clientOperationId: String): Result<AssemblyAssignmentResponse> = resultOf { api.assignAssemblyMembers(taskId, assemblerIds, clientOperationId) }
+    open suspend fun removeAssemblyMember(taskId: String, assemblerId: String, clientOperationId: String): Result<AssemblyAssignmentResponse> = resultOf { api.removeAssemblyMember(taskId, assemblerId, clientOperationId) }
     open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
     open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
     open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }

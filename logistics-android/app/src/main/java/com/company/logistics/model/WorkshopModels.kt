@@ -45,6 +45,23 @@ data class AssemblyTask(
     val taskVersion: Int, val currentLaborRecordId: String? = null, val currentLaborStartedAt: String? = null,
     val accumulatedLaborMinutes: Int? = null, val assignedAssemblerId: String? = null, val assignedAssemblerName: String? = null,
     val serverTime: String? = null, val stages: List<AssemblyStage> = listOf(1, 2, 3).map { AssemblyStage(it, AssemblyStageStatus.NOT_STARTED) },
+    val members: List<AssemblyMember> = emptyList(),
+)
+
+data class AssemblyMember(
+    val assemblerId: String,
+    val assignmentRole: String,
+    val assignedBy: String? = null,
+    val assignedAt: String? = null,
+    val removedAt: String? = null,
+)
+
+data class AssemblyAssignmentResponse(
+    val taskId: String,
+    val members: List<AssemblyMember>,
+    val traceId: String? = null,
+    val idempotent: Boolean = false,
+    val serverTime: String? = null,
 )
 
 data class AssemblyTaskPage(
