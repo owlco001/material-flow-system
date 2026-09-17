@@ -4,9 +4,12 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.OfflineOperationDao
 import com.company.logistics.data.OfflineOperationEntity
 import com.company.logistics.data.remote.MaterialFlowApi
+import com.company.logistics.data.remote.ApiException
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.AssemblyTaskStatus
+import com.company.logistics.model.AssemblyAssignmentResponse
+import com.company.logistics.model.AssemblyMember
 import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.MaterialStatusCode
@@ -86,7 +89,7 @@ class LogisticsViewModelAssemblyTest {
         val repository = FakeAssemblyRepository(UserRole.ASSEMBLER)
         val viewModel = LogisticsViewModel(repository, scope)
         viewModel.login("assembler", "password", "device", remember = false)
-        val task = viewModel.state.value.assemblyTasks.single()
+        val task = repository.fixtureTask
         viewModel.startAssemblyStage(task, 1)
         viewModel.completeAssemblyStage(task, 2)
         viewModel.reworkAssemblyStage(task, 3, "  尺寸不符  ")
@@ -106,7 +109,7 @@ class LogisticsViewModelAssemblyTest {
 
         viewModel.login("admin", "password", "device", remember = false)
         viewModel.enterRolePreview(WorkspaceViewRole.ASSEMBLER)
-        val task = viewModel.state.value.assemblyTasks.single()
+        val task = repository.fixtureTask
         viewModel.acceptAssemblyMaterial(task)
         viewModel.startTemporaryTransfer(task.id, "预览备注")
 
@@ -161,10 +164,94 @@ class LogisticsViewModelAssemblyTest {
         assertEquals(WorkspaceLoadState.CONTENT, viewModel.state.value.workshopLaborState)
         scope.cancel()
     }
+    @Test
+    fun adminAndSupervisorCanAssignAssemblyMembersAndUpdateState() {
+        listOf(UserRole.ADMIN, UserRole.WORKSHOP_SUPERVISOR).forEach { role ->
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val repository = FakeAssemblyRepository(role)
+            val viewModel = LogisticsViewModel(repository, scope)
+            viewModel.login("user", "password", "device", remember = false)
+            val task = repository.fixtureTask
+            viewModel.assignAssemblyMembers(task, " a-1, a-2 ")
+            assertEquals(listOf("a-1", "a-2"), repository.assignedIds)
+            assertEquals(listOf("a-1", "a-2"), repository.fixtureTask.members.map { it.assemblerId })
+            assertEquals(false, viewModel.state.value.loading)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun previewAndAssemblerCannotAssignOrRemoveAssemblyMembers() {
+        listOf(UserRole.ADMIN to true, UserRole.ASSEMBLER to false).forEach { (role, preview) ->
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val repository = FakeAssemblyRepository(role)
+            val viewModel = LogisticsViewModel(repository, scope)
+            viewModel.login("user", "password", "device", remember = false)
+            if (preview) viewModel.enterRolePreview(WorkspaceViewRole.ASSEMBLER)
+            val task = repository.fixtureTask
+            viewModel.assignAssemblyMembers(task, "a-1")
+            viewModel.removeAssemblyMember(task, "a-1")
+            assertTrue(viewModel.state.value.error!!.contains(if (preview) "只读" else "无权"))
+            assertTrue(repository.actions.isEmpty())
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun assignmentRejectsEmptyAndMoreThanTwentyIdsBeforeRepositoryCall() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ADMIN)
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("admin", "password", "device", remember = false)
+        val task = repository.fixtureTask
+        viewModel.assignAssemblyMembers(task, (1..21).joinToString(",") { "a-$it" })
+        assertTrue(viewModel.state.value.error != null)
+        viewModel.assignAssemblyMembers(task, " , ")
+        assertTrue(viewModel.state.value.error != null)
+        assertTrue(repository.actions.isEmpty())
+        scope.cancel()
+    }
+
+    @Test
+    fun removingAssemblyMemberUpdatesTaskAndReportsConflict() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ADMIN)
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("admin", "password", "device", remember = false)
+        val task = repository.fixtureTask
+        viewModel.removeAssemblyMember(task, "a-1")
+        assertTrue(repository.fixtureTask.members.none { it.assemblerId == "a-1" })
+        assertEquals("装配成员移除成功", viewModel.state.value.message)
+        val failureScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val failureRepository = FakeAssemblyRepository(UserRole.ADMIN)
+        failureRepository.removeFailure = ApiException(409, "CONFLICT", "conflict")
+        val failureViewModel = LogisticsViewModel(failureRepository, failureScope)
+        failureViewModel.login("admin", "password", "device", remember = false)
+        failureViewModel.removeAssemblyMember(failureRepository.fixtureTask, "a-2")
+        assertTrue(failureViewModel.state.value.error != null)
+        assertEquals(false, failureViewModel.state.value.loading)
+        failureScope.cancel()
+        assertEquals(false, viewModel.state.value.loading)
+        scope.cancel()
+    }
+
+    @Test
+    fun assignmentFailureClearsLoadingAndExposesRetryMessage() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ADMIN)
+        repository.assignFailure = ApiException(503, "UNAVAILABLE", "unavailable")
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("admin", "password", "device", remember = false)
+        viewModel.assignAssemblyMembers(repository.fixtureTask, "a-1")
+        assertTrue(viewModel.state.value.error!!.contains("重试"))
+        assertEquals(false, viewModel.state.value.loading)
+        scope.cancel()
+    }
+
     private class FakeAssemblyRepository(
         private val loginRole: UserRole,
     ) : LogisticsRepository(MaterialFlowApi(), NoOpDao()) {
-        private var task = AssemblyTask(
+        var fixtureTask = AssemblyTask(
             id = "task-1",
             orderNo = "WO-1",
             deviceId = "machine-1",
@@ -178,13 +265,32 @@ class LogisticsViewModelAssemblyTest {
             accumulatedLaborMinutes = 0,
             assignedAssemblerId = "assembler-1",
             assignedAssemblerName = "装配工",
+            members = listOf(AssemblyMember("a-1", "ASSEMBLER"), AssemblyMember("a-2", "ASSEMBLER")),
         )
         val actions = mutableListOf<String>()
+        val assignedIds = mutableListOf<String>()
         val expectedVersions = mutableListOf<Int>()
         val operationIds = mutableListOf<String>()
+        var assignFailure: Throwable? = null
+        var removeFailure: Throwable? = null
         var workshopSummaryCalls = 0
         var workshopMachineCalls = 0
         var laborDeviceId: String? = null
+
+        override suspend fun assignAssemblyMembers(taskId: String, assemblerIds: List<String>, clientOperationId: String): Result<AssemblyAssignmentResponse> {
+            actions += "assign"
+            assignedIds += assemblerIds
+            assignFailure?.let { return Result.failure(it) }
+            fixtureTask = fixtureTask.copy(members = assemblerIds.map { AssemblyMember(it, "ASSEMBLER") })
+            return Result.success(AssemblyAssignmentResponse(taskId, fixtureTask.members))
+        }
+
+        override suspend fun removeAssemblyMember(taskId: String, assemblerId: String, clientOperationId: String): Result<AssemblyAssignmentResponse> {
+            actions += "remove"
+            removeFailure?.let { return Result.failure(it) }
+            fixtureTask = fixtureTask.copy(members = fixtureTask.members.filterNot { it.assemblerId == assemblerId })
+            return Result.success(AssemblyAssignmentResponse(taskId, fixtureTask.members))
+        }
 
         override suspend fun login(
             username: String,
@@ -200,21 +306,21 @@ class LogisticsViewModelAssemblyTest {
         )
 
         override suspend fun assemblyTaskPage(page: Int, pageSize: Int): Result<AssemblyTaskPage> = Result.success(
-            AssemblyTaskPage(listOf(task), page, pageSize, 1, 1, "server-time")
+            AssemblyTaskPage(listOf(fixtureTask), page, pageSize, 1, 1, "server-time")
         )
 
         override suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): Result<AssemblyTask> {
             actions += "accept"
             operationIds += clientOperationId
-            task = task.copy(status = AssemblyTaskStatus.MATERIAL_ACCEPTED, taskVersion = 2)
-            return Result.success(task)
+            fixtureTask = fixtureTask.copy(status = AssemblyTaskStatus.MATERIAL_ACCEPTED, taskVersion = 2)
+            return Result.success(fixtureTask)
         }
 
         override suspend fun startAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<LaborRecord> {
             actions += "start"
             expectedVersions += expectedVersion
             operationIds += clientOperationId
-            task = task.copy(status = AssemblyTaskStatus.IN_PROGRESS, taskVersion = 3)
+            fixtureTask = fixtureTask.copy(status = AssemblyTaskStatus.IN_PROGRESS, taskVersion = 3)
             return Result.success(
                 LaborRecord(
                     id = "lr-1",
@@ -235,16 +341,16 @@ class LogisticsViewModelAssemblyTest {
             actions += "progress:$stage"
             expectedVersions += expectedVersion
             operationIds += clientOperationId
-            task = task.copy(progressStage = stage, taskVersion = expectedVersion + 1)
-            return Result.success(task)
+            fixtureTask = fixtureTask.copy(progressStage = stage, taskVersion = expectedVersion + 1)
+            return Result.success(fixtureTask)
         }
 
         override suspend fun completeAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<AssemblyTask> {
             actions += "complete"
             expectedVersions += expectedVersion
             operationIds += clientOperationId
-            task = task.copy(status = AssemblyTaskStatus.COMPLETED, taskVersion = expectedVersion + 1)
-            return Result.success(task)
+            fixtureTask = fixtureTask.copy(status = AssemblyTaskStatus.COMPLETED, taskVersion = expectedVersion + 1)
+            return Result.success(fixtureTask)
         }
 
         override suspend fun startAssemblyStage(taskId: String, stageNo: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyStageOperationResult> {
@@ -269,7 +375,7 @@ class LogisticsViewModelAssemblyTest {
         }
 
         private fun stageResult(stageNo: Int, status: com.company.logistics.model.AssemblyStageStatus, version: Int, reason: String? = null) =
-            com.company.logistics.model.AssemblyStageOperationResult(task.id, stageNo, status, version, null, if (status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "done" else null, reason, "now", "trace")
+            com.company.logistics.model.AssemblyStageOperationResult(fixtureTask.id, stageNo, status, version, null, if (status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "done" else null, reason, "now", "trace")
 
         override suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> {
             actions += "temporary-start"
