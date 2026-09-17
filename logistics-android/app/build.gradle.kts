@@ -90,5 +90,6 @@ dependencies {
 
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.09.03"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
