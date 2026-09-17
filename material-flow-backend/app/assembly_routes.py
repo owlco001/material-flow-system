@@ -56,6 +56,29 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         return client, request_id
     def stage_result(r):
         return {'taskId': r['task_id'], 'stageNo': r['stage_no'], 'status': r['status'], 'version': r['version'], 'startedAt': r['started_at'], 'completedAt': r['completed_at'], 'reworkReason': r['rework_reason'], 'serverTime': now()}
+    def transfer_operation(body, key, request):
+        """Validate the same UUID trio used by the other assembly writes."""
+        client = body.get('clientOperationId')
+        try: client = str(uuid.UUID(str(client)))
+        except (ValueError, TypeError): raise HTTPException(400, 'clientOperationId 必须是 UUID')
+        if not isinstance(key, str) or key.lower() != client.lower():
+            if api_error: raise api_error(400, 'IDEMPOTENCY_KEY_MISMATCH', 'Idempotency-Key 与 clientOperationId 不一致')
+            raise HTTPException(400, 'Idempotency-Key 与 clientOperationId 不一致')
+        try: request_id = str(uuid.UUID(request.headers.get('X-Request-Id') or ''))
+        except ValueError:
+            if api_error: raise api_error(400, 'INVALID_REQUEST_ID', 'X-Request-Id 必须是合法 UUID')
+            raise HTTPException(400, 'X-Request-Id 必须是合法 UUID')
+        return client, request_id
+    def transfer_snapshot(c, tr, labor):
+        task_row = c.execute('SELECT * FROM assembly_tasks WHERE id=?', (tr['source_task_id'],)).fetchone() if tr['source_task_id'] else None
+        return {
+            'temporaryTransferId': tr['id'], 'taskId': task_row['id'] if task_row else None,
+            'orderNo': task_row['order_no'] if task_row else None,
+            'deviceId': tr['device_id'], 'deviceNo': task_row['device_no'] if task_row else None,
+            'laborRecordId': labor['id'], 'type': 'TEMPORARY_TRANSFER', 'status': tr['status'],
+            'startedAt': labor['started_at'], 'endedAt': labor['ended_at'],
+            'durationMinutes': labor['duration_minutes'], 'serverTime': now(),
+        }
     def mutate_stage(tid, stage_no, body, request, user, key, action):
         actor(user); bodycheck(body)
         if stage_no not in (1, 2, 3): raise HTTPException(422, 'stage_no 必须为 1..3')
@@ -206,31 +229,71 @@ def register(app, db, now, current_user, audit_event, api_error=None):
     def transfer_start(body:dict,request:Request,user=Depends(current_user),idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
         actor(user); bodycheck(body); remark=body.get('remark','')
         if not isinstance(remark,str) or not 1<=len(remark)<=500: raise HTTPException(422,'remark 必填')
-        o=op(body,idempotency_key)
-        c=db(); prior=c.execute('SELECT id FROM temporary_transfers WHERE client_operation_id=?',(o,)).fetchone()
-        if prior: r=c.execute('SELECT l.* FROM labor_records l JOIN temporary_transfers t ON t.labor_record_id=l.id WHERE t.id=?',(prior['id'],)).fetchone(); c.close(); return {'temporaryTransferId':prior['id'],'type':'TEMPORARY_TRANSFER','status':r['status'],'serverTime':now()}
-        tid=body.get('taskId'); source=task(c,tid,user) if tid else None
-        active=c.execute("SELECT id,task_id FROM labor_records WHERE worker_user_id=? AND status='ACTIVE'",(user['id'],)).fetchone()
-        if active:
-            if active['task_id']: finish(c,active['id']); c.execute("UPDATE assembly_tasks SET status='PAUSED_FOR_TEMPORARY_TRANSFER',updated_at=? WHERE id=?",(now(),active['task_id']))
-            else: c.close(); raise HTTPException(409,'ACTIVE_TRANSFER_EXISTS')
-        t=now(); rid='lr_'+uuid.uuid4().hex; xid='tt_'+uuid.uuid4().hex; c.execute("INSERT INTO labor_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rid,None,user['id'],'TEMPORARY_TRANSFER','ACTIVE',t,None,None,remark,o,t)); c.execute('INSERT INTO temporary_transfers (id,worker_user_id,source_task_id,labor_record_id,status,remark,started_at,ended_at,client_operation_id,device_id) VALUES(?,?,?,?,?,?,?,?,?,?)',(xid,user['id'],tid,rid,'ACTIVE',remark,t,None,o,source['device_id'] if source else None)); c.commit(); c.close(); return {'temporaryTransferId':xid,'laborRecordId':rid,'type':'TEMPORARY_TRANSFER','status':'ACTIVE','startedAt':t,'serverTime':t}
+        o, request_id = transfer_operation(body, idempotency_key, request)
+        c=db()
+        try:
+            c.execute('BEGIN IMMEDIATE')
+            task_id=body.get('taskId'); device_id=body.get('deviceId')
+            if bool(task_id) != bool(device_id):
+                if api_error: raise api_error(409, 'DEVICE_TASK_MISMATCH', 'taskId 与 deviceId 必须成对提供', trace_id=request_id)
+                raise HTTPException(409, 'taskId 与 deviceId 必须成对提供')
+            source=task(c,task_id,user) if task_id else None
+            if source and source['device_id'] != device_id:
+                if api_error: raise api_error(409, 'DEVICE_TASK_MISMATCH', '任务与机台不一致', trace_id=request_id)
+                raise HTTPException(409, '任务与机台不一致')
+            prior=c.execute('SELECT id FROM temporary_transfers WHERE client_operation_id=?',(o,)).fetchone()
+            if prior:
+                labor=c.execute('SELECT l.* FROM labor_records l JOIN temporary_transfers t ON t.labor_record_id=l.id WHERE t.id=?',(prior['id'],)).fetchone()
+                out=transfer_snapshot(c,c.execute('SELECT * FROM temporary_transfers WHERE id=?',(prior['id'],)).fetchone(),labor); out['idempotent']=True
+                c.rollback(); return out
+            active=c.execute("SELECT id,task_id FROM labor_records WHERE worker_user_id=? AND status='ACTIVE'",(user['id'],)).fetchone()
+            if active:
+                if active['task_id']: finish(c,active['id']); c.execute("UPDATE assembly_tasks SET status='PAUSED_FOR_TEMPORARY_TRANSFER',updated_at=? WHERE id=?",(now(),active['task_id']))
+                else: raise HTTPException(409,'ACTIVE_TRANSFER_EXISTS')
+            t=now(); rid='lr_'+uuid.uuid4().hex; xid='tt_'+uuid.uuid4().hex
+            c.execute("INSERT INTO labor_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rid,None,user['id'],'TEMPORARY_TRANSFER','ACTIVE',t,None,None,remark,o,t))
+            c.execute('INSERT INTO temporary_transfers (id,worker_user_id,source_task_id,labor_record_id,status,remark,started_at,ended_at,client_operation_id,device_id) VALUES(?,?,?,?,?,?,?,?,?,?)',(xid,user['id'],task_id,rid,'ACTIVE',remark,t,None,o,device_id))
+            tr=c.execute('SELECT * FROM temporary_transfers WHERE id=?',(xid,)).fetchone(); labor=c.execute('SELECT * FROM labor_records WHERE id=?',(rid,)).fetchone()
+            out=transfer_snapshot(c,tr,labor); out['traceId']=request_id; out['idempotent']=False
+            audit_event(c,'TEMPORARY_TRANSFER_STARTED',xid,user,request_id,o,{},out,request,entity_type='TEMPORARY_TRANSFER')
+            c.commit(); return out
+        except Exception:
+            c.rollback(); raise
+        finally: c.close()
     @app.post('/api/v1/assembly/temporary-transfers/{xid}/complete')
     def transfer_complete(xid:str,body:dict,request:Request,user=Depends(current_user),idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
-        actor(user); bodycheck(body); o=op(body,idempotency_key); c=db(); tr=c.execute('SELECT * FROM temporary_transfers WHERE id=? AND worker_user_id=?',(xid,user['id'])).fetchone()
-        if not tr: c.close(); raise HTTPException(404,'调拨不存在')
-        if tr['status']=='COMPLETED': c.close(); return {'temporaryTransferId':xid,'status':'COMPLETED'}
-        remark=body.get('remark','');
-        if not 1<=len(remark)<=500: c.close(); raise HTTPException(422,'remark 必填')
-        finish(c,tr['labor_record_id']); t=now(); c.execute("UPDATE temporary_transfers SET status='COMPLETED',ended_at=?,remark=? WHERE id=?",(t,remark,xid)); c.execute("UPDATE labor_records SET remark=? WHERE id=?",(remark,tr['labor_record_id'])); c.commit(); c.close(); return {'temporaryTransferId':xid,'status':'COMPLETED','serverTime':t}
+        actor(user); bodycheck(body); o, request_id=transfer_operation(body,idempotency_key,request); c=db()
+        try:
+            c.execute('BEGIN IMMEDIATE'); tr=c.execute('SELECT * FROM temporary_transfers WHERE id=? AND worker_user_id=?',(xid,user['id'])).fetchone()
+            if not tr: raise HTTPException(404,'调拨不存在')
+            labor=c.execute('SELECT * FROM labor_records WHERE id=?',(tr['labor_record_id'],)).fetchone()
+            if tr['status']=='COMPLETED': out=transfer_snapshot(c,tr,labor); out['idempotent']=True; c.rollback(); return out
+            remark=body.get('remark','')
+            if not isinstance(remark,str) or not 1<=len(remark)<=500: raise HTTPException(422,'remark 必填')
+            finish(c,tr['labor_record_id']); t=now(); c.execute("UPDATE temporary_transfers SET status='COMPLETED',ended_at=?,remark=? WHERE id=?",(t,remark,xid)); c.execute("UPDATE labor_records SET remark=? WHERE id=?",(remark,tr['labor_record_id']))
+            tr=c.execute('SELECT * FROM temporary_transfers WHERE id=?',(xid,)).fetchone(); labor=c.execute('SELECT * FROM labor_records WHERE id=?',(tr['labor_record_id'],)).fetchone(); out=transfer_snapshot(c,tr,labor); out['traceId']=request_id; out['idempotent']=False
+            audit_event(c,'TEMPORARY_TRANSFER_COMPLETED',xid,user,request_id,o,{},out,request,entity_type='TEMPORARY_TRANSFER'); c.commit(); return out
+        except Exception: c.rollback(); raise
+        finally: c.close()
     @app.get('/api/v1/workshop/summary')
     def summary(user=Depends(current_user)):
         if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
         c=db(); t=c.execute('SELECT count(*) n, sum(status="COMPLETED") done, coalesce(sum(progress_stage),0) p FROM assembly_tasks').fetchone(); a=c.execute("SELECT coalesce(sum(duration_minutes),0) n FROM labor_records WHERE type='ASSEMBLY'").fetchone(); x=c.execute("SELECT coalesce(sum(duration_minutes),0) n FROM labor_records WHERE type='TEMPORARY_TRANSFER'").fetchone(); c.close(); total=t['n']; return {'totalTasks':total,'completedTasks':t['done'] or 0,'overallProgressPercent':round((t['p'] or 0)*100/(total*3)) if total else 0,'assemblyLaborMinutes':a['n'],'temporaryTransferLaborMinutes':x['n'],'totalLaborMinutes':a['n']+x['n'],'generatedAt':now()}
     @app.get('/api/v1/workshop/machine-progress')
-    def machine(user=Depends(current_user),page:int=1,pageSize:int=20):
+    def machine(user=Depends(current_user),page:int=1,pageSize:int=20,deviceId:str|None=None):
         if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
-        c=db(); rows=c.execute('SELECT device_id,device_no,count(*) taskCount,sum(status="COMPLETED") completedTaskCount,round(sum(progress_stage)*100.0/(count(*)*3)) progressPercent FROM assembly_tasks GROUP BY device_id,device_no LIMIT ? OFFSET ?',(pageSize,(page-1)*pageSize)).fetchall(); c.close(); return {'items':[dict(r) for r in rows],'page':page,'pageSize':pageSize}
+        c=db(); args=[]; where=''
+        if deviceId: where='WHERE t.device_id=?'; args.append(deviceId)
+        rows=c.execute(f'''SELECT t.device_id,t.device_no,count(*) taskCount,sum(t.status="COMPLETED") completedTaskCount,
+          round(sum(t.progress_stage)*100.0/(count(*)*3)) progressPercent,
+          coalesce(sum(CASE WHEN l.type='ASSEMBLY' THEN l.duration_minutes ELSE 0 END),0) assemblyLaborMinutes,
+          coalesce(sum(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN l.duration_minutes ELSE 0 END),0) temporaryTransferLaborMinutes
+          FROM assembly_tasks t LEFT JOIN labor_records l ON (l.task_id=t.id OR EXISTS (SELECT 1 FROM temporary_transfers x WHERE x.labor_record_id=l.id AND x.source_task_id=t.id))
+          {where} GROUP BY t.device_id,t.device_no LIMIT ? OFFSET ?''',args+[pageSize,(page-1)*pageSize]).fetchall(); c.close()
+        items=[]
+        for r in rows:
+            x=dict(r); x['totalLaborMinutes']=x['assemblyLaborMinutes']+x['temporaryTransferLaborMinutes']; items.append(x)
+        return {'items':items,'page':page,'pageSize':pageSize}
 
     def labor_minutes_expr(alias='l'):
         # ACTIVE rows are projected from server time only; they are never updated here.

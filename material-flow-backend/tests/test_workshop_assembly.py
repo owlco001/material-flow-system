@@ -100,7 +100,7 @@ def test_temporary_transfer_is_separate_and_requires_remark():
         bad = client.post("/api/v1/assembly/temporary-transfers/start", json={"clientOperationId": str(uuid.uuid4()), "taskId": "task-3", "remark": ""}, headers=headers(token))
         assert bad.status_code == 422
         op2 = str(uuid.uuid4())
-        transfer = client.post("/api/v1/assembly/temporary-transfers/start", json={"clientOperationId": op2, "taskId": "task-3", "remark": "搬运工装"}, headers=headers(token, op2))
+        transfer = client.post("/api/v1/assembly/temporary-transfers/start", json={"clientOperationId": op2, "taskId": "task-3", "deviceId": "machine-3", "remark": "搬运工装"}, headers=headers(token, op2))
         assert transfer.status_code == 200 and transfer.json()["type"] == "TEMPORARY_TRANSFER"
         tid = transfer.json()["temporaryTransferId"]
         op3 = str(uuid.uuid4())
