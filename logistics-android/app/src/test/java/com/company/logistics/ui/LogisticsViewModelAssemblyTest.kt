@@ -138,6 +138,42 @@ class LogisticsViewModelAssemblyTest {
     }
 
     @Test
+    fun temporaryTransferBindsTaskAndDeviceAndRejectsMissingContext() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ASSEMBLER)
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("assembler", "password", "device", remember = false)
+
+        viewModel.startTemporaryTransfer("task-1", "绑定机台")
+        assertEquals("task-1", repository.temporaryTaskId)
+        assertEquals("machine-1", repository.temporaryDeviceId)
+
+        viewModel.startTemporaryTransfer("missing", "不存在任务")
+        assertTrue(viewModel.state.value.error!!.contains("任务不存在"))
+        assertEquals(1, repository.temporaryStartCalls)
+
+        repository.fixtureTask = repository.fixtureTask.copy(deviceId = "")
+        viewModel.refreshWorkspace()
+        viewModel.startTemporaryTransfer("task-1", "缺少机台")
+        assertTrue(viewModel.state.value.error!!.contains("未绑定机台"))
+        assertEquals(1, repository.temporaryStartCalls)
+        scope.cancel()
+    }
+
+    @Test
+    fun temporaryTransferFailureClearsSubmittingAndExposesError() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val repository = FakeAssemblyRepository(UserRole.ASSEMBLER)
+        repository.temporaryFailure = ApiException(409, "CONFLICT", "conflict")
+        val viewModel = LogisticsViewModel(repository, scope)
+        viewModel.login("assembler", "password", "device", remember = false)
+        viewModel.startTemporaryTransfer("task-1", "失败")
+        assertEquals(false, viewModel.state.value.temporaryTransferSubmitting)
+        assertTrue(viewModel.state.value.error!!.contains("状态已变化"))
+        scope.cancel()
+    }
+
+    @Test
     fun supervisorLoadsServerSummaryAndMachineProgressSeparately() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val repository = FakeAssemblyRepository(UserRole.WORKSHOP_SUPERVISOR)
@@ -276,6 +312,10 @@ class LogisticsViewModelAssemblyTest {
         var workshopSummaryCalls = 0
         var workshopMachineCalls = 0
         var laborDeviceId: String? = null
+        var temporaryTaskId: String? = null
+        var temporaryDeviceId: String? = null
+        var temporaryStartCalls = 0
+        var temporaryFailure: Throwable? = null
 
         override suspend fun assignAssemblyMembers(taskId: String, assemblerIds: List<String>, clientOperationId: String): Result<AssemblyAssignmentResponse> {
             actions += "assign"
@@ -377,8 +417,12 @@ class LogisticsViewModelAssemblyTest {
         private fun stageResult(stageNo: Int, status: com.company.logistics.model.AssemblyStageStatus, version: Int, reason: String? = null) =
             com.company.logistics.model.AssemblyStageOperationResult(fixtureTask.id, stageNo, status, version, null, if (status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "done" else null, reason, "now", "trace")
 
-        override suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> {
+        override suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String, deviceId: String?): Result<LaborRecord> {
             actions += "temporary-start"
+            temporaryStartCalls++
+            temporaryTaskId = taskId
+            temporaryDeviceId = deviceId
+            temporaryFailure?.let { return Result.failure(it) }
             return Result.success(
                 LaborRecord(
                     id = "lr-tt-1",

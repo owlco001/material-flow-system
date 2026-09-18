@@ -1358,7 +1358,22 @@ class LogisticsViewModel(
             return
         }
         if (current.temporaryTransferSubmitting) return
-        val operationKey = listOf("START", taskId.orEmpty(), trimmed).joinToString("|")
+        val selectedTask = taskId?.let { requestedId ->
+            current.assemblyTasks.firstOrNull { it.id == requestedId }
+        }
+        val deviceId = when {
+            taskId == null -> null
+            selectedTask == null -> {
+                _state.update { it.copy(error = "当前任务不存在，请刷新后重试") }
+                return
+            }
+            selectedTask.deviceId.isBlank() -> {
+                _state.update { it.copy(error = "当前任务未绑定机台，无法开始临时调拨") }
+                return
+            }
+            else -> selectedTask.deviceId.trim()
+        }
+        val operationKey = listOf("START", taskId.orEmpty(), deviceId.orEmpty(), trimmed).joinToString("|")
         val operationId = if (current.temporaryTransferPendingOperationKey == operationKey) {
             current.temporaryTransferClientOperationId ?: UUID.randomUUID().toString()
         } else UUID.randomUUID().toString()
@@ -1371,7 +1386,7 @@ class LogisticsViewModel(
                     error = null,
                 )
             }
-            repo.startTemporaryTransfer(taskId, trimmed, operationId)
+            repo.startTemporaryTransfer(taskId, trimmed, operationId, deviceId)
                 .onSuccess { result ->
                     _state.update {
                         it.copy(
