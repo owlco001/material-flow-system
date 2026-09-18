@@ -182,6 +182,52 @@ class MaterialFlowApiContractTest {
     }
 
     @Test
+    fun temporaryTransferStartSendsTaskDeviceAndIdempotencyContract() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureOneRequest(
+            """{"id":"tt-1","taskId":"task-1","deviceId":"device-1","laborRecordId":"lr-1","status":"ACTIVE","startedAt":"now"}"""
+        ) { port ->
+            val previous = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    api.startTemporaryTransfer("task-1", "device-1", "move", operationId)
+                }
+            } finally { ApiConfig.baseUrl = previous }
+        }
+        assertEquals("POST /api/v1/assembly/temporary-transfers/start HTTP/1.1", captured.requestLine)
+        assertEquals(operationId, captured.headers["Idempotency-Key"])
+        assertTrue(captured.body.contains("\"taskId\":\"task-1\""))
+        assertTrue(captured.body.contains("\"deviceId\":\"device-1\""))
+        assertTrue(captured.body.contains("\"clientOperationId\":\"$operationId\""))
+    }
+
+    @Test
+    fun machineProgressSupportsOptionalDeviceQueryAndCompleteSnapshotParsing() = runBlocking {
+        val transfer = ApiParser.parseTemporaryTransfer(
+            """{"labor_record_id":"lr-1","task_id":"task-1","order_no":"WO-1","device_id":"d-1","device_no":"D-1","duration_minutes":12,"ended_at":"done"}"""
+        )
+        assertEquals("WO-1", transfer.orderNo)
+        assertEquals("d-1", transfer.deviceId)
+        assertEquals("D-1", transfer.deviceNo)
+        assertEquals(12, transfer.durationMinutes)
+        assertEquals("done", transfer.endedAt)
+
+        val captured = captureOneRequest("""{"items":[]}""") { port ->
+            val previous = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    api.workshopMachineProgress(deviceId = "device 1")
+                }
+            } finally { ApiConfig.baseUrl = previous }
+        }
+        assertEquals("GET /api/v1/workshop/machine-progress?page=1&pageSize=20&deviceId=device+1 HTTP/1.1", captured.requestLine)
+    }
+
+    @Test
     fun workshopSummaryDoesNotAcceptUndeclaredDateQueryParameters() = runBlocking {
         val error = runCatching {
             MaterialFlowApi().workshopSummary(from = "2026-09-14T00:00:00Z")

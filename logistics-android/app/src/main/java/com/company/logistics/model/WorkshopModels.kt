@@ -76,6 +76,9 @@ data class AssemblyTaskPage(
 data class LaborRecord(
     val id: String, val taskId: String?, val type: LaborType, val startedAt: String,
     val endedAt: String?, val durationMinutes: Int?, val remark: String?,
+    val orderNo: String? = null,
+    val deviceId: String? = null,
+    val deviceNo: String? = null,
     val laborRecordId: String? = null,
     val temporaryTransferId: String? = null,
     val status: String? = null,
@@ -83,7 +86,13 @@ data class LaborRecord(
     val serverTime: String? = null,
 )
 
-data class MachineProgress(val deviceId: String, val deviceNo: String, val taskCount: Int, val completedTaskCount: Int, val progressPercent: Int, val laborMinutes: Int?)
+data class MachineProgress(
+    val deviceId: String, val deviceNo: String, val taskCount: Int, val completedTaskCount: Int,
+    val progressPercent: Int, val laborMinutes: Int?,
+    val assemblyLaborMinutes: Int? = null,
+    val temporaryTransferLaborMinutes: Int? = null,
+    val totalLaborMinutes: Int? = null,
+)
 
 data class MachineProgressPage(
     val items: List<MachineProgress>,

@@ -733,6 +733,9 @@ object ApiParser {
             endedAt = nullableStringAny(o, "endedAt", "ended_at"),
             durationMinutes = nullableIntAny(o, "durationMinutes", "duration_minutes"),
             remark = nullableString(o, "remark"),
+            orderNo = nullableStringAny(o, "orderNo", "order_no"),
+            deviceId = nullableStringAny(o, "deviceId", "device_id"),
+            deviceNo = nullableStringAny(o, "deviceNo", "device_no"),
             laborRecordId = laborRecordId,
             temporaryTransferId = temporaryTransferId,
             status = nullableString(o, "status"),
@@ -770,7 +773,11 @@ object ApiParser {
                             taskCount = item.optInt("taskCount", item.optInt("task_count")),
                             completedTaskCount = item.optInt("completedTaskCount", item.optInt("completed_task_count")),
                             progressPercent = item.optInt("progressPercent", item.optInt("progress_percent")),
-                            laborMinutes = nullableIntAny(item, "laborMinutes", "labor_minutes"),
+                            laborMinutes = nullableIntAny(item, "laborMinutes", "labor_minutes")
+                                ?: nullableIntAny(item, "totalLaborMinutes", "total_labor_minutes"),
+                            assemblyLaborMinutes = nullableIntAny(item, "assemblyLaborMinutes", "assembly_labor_minutes"),
+                            temporaryTransferLaborMinutes = nullableIntAny(item, "temporaryTransferLaborMinutes", "temporary_transfer_labor_minutes"),
+                            totalLaborMinutes = nullableIntAny(item, "totalLaborMinutes", "total_labor_minutes"),
                         )
                     )
                 }

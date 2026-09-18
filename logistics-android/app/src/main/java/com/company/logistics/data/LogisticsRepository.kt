@@ -230,6 +230,7 @@ open class LogisticsRepository(
     open suspend fun assignAssemblyMembers(taskId: String, assemblerIds: List<String>, clientOperationId: String): Result<AssemblyAssignmentResponse> = resultOf { api.assignAssemblyMembers(taskId, assemblerIds, clientOperationId) }
     open suspend fun removeAssemblyMember(taskId: String, assemblerId: String, clientOperationId: String): Result<AssemblyAssignmentResponse> = resultOf { api.removeAssemblyMember(taskId, assemblerId, clientOperationId) }
     open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, remark, clientOperationId) }
+    open suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String, deviceId: String?): Result<LaborRecord> = resultOf { api.startTemporaryTransfer(taskId, deviceId, remark, clientOperationId) }
     open suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): Result<LaborRecord> = resultOf { api.completeTemporaryTransfer(transferId, remark, clientOperationId) }
     open suspend fun workshopProgressSummary(from: String? = null, to: String? = null): Result<WorkshopProgressSummary> = resultOf { api.workshopSummary(from, to) }
     open suspend fun assemblyTaskLaborSummary(taskId: String, assemblerId: String? = null): Result<LaborSummaryPage> = resultOf {
@@ -239,6 +240,7 @@ open class LogisticsRepository(
         api.workshopLaborSummary(page, pageSize, deviceId, orderNo, assemblerId)
     }
     open suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20): Result<MachineProgressPage> = resultOf { api.workshopMachineProgress(page, pageSize) }
+    open suspend fun workshopMachineProgress(page: Int, pageSize: Int, deviceId: String?): Result<MachineProgressPage> = resultOf { api.workshopMachineProgress(page, pageSize, deviceId) }
 
 
     open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {

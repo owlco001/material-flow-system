@@ -503,13 +503,18 @@ open class MaterialFlowApi(
         ApiParser.parseAssemblyStageOperation(request("POST", "/api/v1/assembly/tasks/$taskId/stages/$stageNo/$action", body.toString(), idempotencyKey = clientOperationId))
     }
 
-    suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
+    suspend fun startTemporaryTransfer(taskId: String?, deviceId: String? = null, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
         requireUuid(clientOperationId, "clientOperationId")
         require(remark.length in 1..500) { "临时调拨备注长度必须为 1~500 字符" }
         ApiParser.parseTemporaryTransfer(request("POST", "/api/v1/assembly/temporary-transfers/start", JSONObject().apply {
-            put("taskId", taskId ?: JSONObject.NULL); put("remark", remark); put("clientOperationId", clientOperationId)
+            put("taskId", taskId ?: JSONObject.NULL); put("deviceId", deviceId ?: JSONObject.NULL)
+            put("remark", remark); put("clientOperationId", clientOperationId)
         }.toString(), idempotencyKey = clientOperationId))
     }
+
+    /** Source-compatible overload for callers that do not have a device filter yet. */
+    suspend fun startTemporaryTransfer(taskId: String?, remark: String, clientOperationId: String): LaborRecord =
+        startTemporaryTransfer(taskId, null, remark, clientOperationId)
 
     suspend fun completeTemporaryTransfer(transferId: String, remark: String, clientOperationId: String): LaborRecord = withContext(Dispatchers.IO) {
         require(transferId.isNotBlank()) { "temporaryTransferId 不能为空" }
@@ -525,10 +530,11 @@ open class MaterialFlowApi(
         ApiParser.parseWorkshopSummary(request("GET", "/api/v1/workshop/summary", null))
     }
 
-    suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20): MachineProgressPage = withContext(Dispatchers.IO) {
+    suspend fun workshopMachineProgress(page: Int = 1, pageSize: Int = 20, deviceId: String? = null): MachineProgressPage = withContext(Dispatchers.IO) {
         require(page >= 1 && pageSize == 20) { "机台进度分页固定为 20 条" }
         ApiParser.parseMachineProgressPage(
-            request("GET", "/api/v1/workshop/machine-progress?page=$page&pageSize=$pageSize", null)
+            request("GET", "/api/v1/workshop/machine-progress?page=$page&pageSize=$pageSize" +
+                (deviceId?.takeIf { it.isNotBlank() }?.let { "&deviceId=${encodeQuery(it)}" } ?: ""), null)
         )
     }
 
