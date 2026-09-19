@@ -11,6 +11,10 @@
 - [x] **P0-3 明文 HTTP 门禁**：`AndroidManifest.xml` 已移除 `usesCleartextTraffic`（随 P0-1 `f2056ed`）；正式部署时 API 走 HTTPS（CI 注入域名），构建变体未再放行明文。
 - [~] **P0-5 历史敏感扫描**：当前树 0 残留（✅）；但该 VPS 地址存在于 3 个历史源码 commit（`99c230c` 初始化、`cbbe1c2` UI 融合、`d5903a9` tmp，均在 `MaterialFlowApi.kt` 中；已随 `f2056ed` 从当前树清除）。该仓库为私有且当前树干净，是否 rewrite 历史（git filter-repo）+ 全端强推待老王决策。
 - [ ] 暂不合并到 `main`：P0 修复未全部完成。
+- [x] **P1 切片A 生产订单读接口**（commit `fad159d`，已合入）：3 张新表（production_orders / production_order_models / material_requirements）+ 幂等演示种子（SO20260919/BDX-6205→MTR-001）+ 4 个 GET 路由（列表分页过滤 / 订单详情 / 机型物料需求派生量 / 机型流转记录，数据源复用 transfer_requests）；新测试 8 项 + 既有 test_setup 全量 13 passed。契约见 `tasks/P1-切片A-生产订单读接口.md`。
+- [x] **P1 切片B Android 订单/机型详情页接入**（commit `b11c571`，已合入）：`Models.kt` 追加 9 数据类、`MaterialFlowApi.kt` 4 个 GET 方法、`ApiParser.kt` 4 个解析函数、`LogisticsRepository.kt` 4 个 Result 包装、`LogisticsViewModel.kt` 新增 `ORDER_LIST`/`MODEL_DETAIL` 导航（主 Tab ORDER 入口挂 ORDER_LIST，旧 ORDER_DETAIL 扫码链路保留）、新增 `ui/screens/OrderListScreen.kt`（列表+关键词、机型 completionRate/缺料、物料需求红黄绿 colorToken 着色、流转时间线，加载/错误/空态齐全）、`LogisticsApp.kt` 挂新分支；接收端 `assembleDebug` BUILD SUCCESSFUL；禁用词 grep 0 命中。
+- [x] **版本号 0.3.1 / versionCode 4**（commit `bd863a2`，已推送）：aapt 核验 APK 内嵌版本与包名/应用名一致。交付件 `/root/project_workspace/物料流转-v0.3.1-order-ui.apk`（SHA-256 `55a35b9b…769b0`）。
+- [ ] P1 后续切片：库位扫码页（GET /locations/{code}/materials）、审批列表页、离线队列 Room+WorkManager、图片凭证断点重试。
 - [ ] 业务源码修改由 Codex 在隔离 worktree 执行，架构 Agent 仅验收 docs/tasks 与门禁结果。
 
 ## P0 合并前修复
