@@ -561,7 +561,12 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
     CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL, updated_at TEXT);
-    CREATE TABLE IF NOT EXISTS production_order_models(id TEXT PRIMARY KEY, order_id TEXT REFERENCES production_orders(id) ON DELETE CASCADE, model_code TEXT NOT NULL UNIQUE, model_name TEXT NOT NULL DEFAULT '', bom_version_id TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS production_order_models(id TEXT PRIMARY KEY, order_id TEXT REFERENCES production_orders(id) ON DELETE CASCADE, model_code TEXT NOT NULL UNIQUE, model_name TEXT NOT NULL DEFAULT '', bom_version_id TEXT, planned_quantity INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, device_no TEXT UNIQUE NOT NULL, device_name TEXT NOT NULL, workshop TEXT NOT NULL, model_capability TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED','MAINTENANCE')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS production_model_devices(id TEXT PRIMARY KEY, order_model_id TEXT NOT NULL REFERENCES production_order_models(id) ON DELETE CASCADE, device_id TEXT NOT NULL REFERENCES devices(id), status TEXT NOT NULL CHECK(status IN ('ASSIGNED','RELEASED','CLOSED')), assigned_by TEXT NOT NULL, assigned_at TEXT NOT NULL, UNIQUE(order_model_id, device_id));
+    CREATE TABLE IF NOT EXISTS production_order_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS device_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS device_assignment_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS bom_versions(id TEXT PRIMARY KEY, model_code TEXT NOT NULL, version_no INTEGER NOT NULL CHECK(version_no > 0), status TEXT NOT NULL CHECK(status IN ('DRAFT','PUBLISHED','ARCHIVED')), source_file_sha256 TEXT NOT NULL, row_count INTEGER NOT NULL CHECK(row_count >= 0), created_by TEXT NOT NULL, created_at TEXT NOT NULL, published_by TEXT, published_at TEXT, UNIQUE(model_code, version_no));
     CREATE TABLE IF NOT EXISTS bom_items(id TEXT PRIMARY KEY, bom_version_id TEXT NOT NULL REFERENCES bom_versions(id) ON DELETE CASCADE, material_id TEXT NOT NULL REFERENCES materials(id), material_code TEXT NOT NULL, material_name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, quantity REAL NOT NULL CHECK(quantity > 0), scrap_rate REAL NOT NULL DEFAULT 0 CHECK(scrap_rate >= 0 AND scrap_rate < 1), substitute_material_codes TEXT NOT NULL DEFAULT '[]', line_no INTEGER NOT NULL, UNIQUE(bom_version_id, material_code));
     CREATE INDEX IF NOT EXISTS idx_bom_versions_model_status ON bom_versions(model_code, status, version_no);
@@ -751,6 +756,11 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         c.execute("UPDATE production_orders SET updated_at = created_at WHERE updated_at IS NULL")
 
     _migrate_legacy_order_requirements(c)
+    model_cols = {r["name"] for r in c.execute("PRAGMA table_info(production_order_models)").fetchall()}
+    if "planned_quantity" not in model_cols:
+        c.execute("ALTER TABLE production_order_models ADD COLUMN planned_quantity INTEGER NOT NULL DEFAULT 0")
+    if "version" not in model_cols:
+        c.execute("ALTER TABLE production_order_models ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
 
 
 def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
@@ -1591,6 +1601,124 @@ def list_bom_versions(modelCode: str | None = None, status: str | None = None, p
     rows = c.execute("SELECT id,model_code,version_no,status,source_file_sha256,row_count,created_by,created_at,published_by,published_at FROM bom_versions" + clause + " ORDER BY created_at DESC LIMIT ? OFFSET ?", args + [pageSize, (page - 1) * pageSize]).fetchall(); c.close()
     return {"items": [dict(r) for r in rows], "page": page, "pageSize": pageSize, "total": total, "serverTime": now()}
 
+
+
+# ==================== Production orders and devices (A2) ====================
+PRODUCTION_WRITE_ROLES = {"ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR"}
+
+class ProductionOrderModelCreate(BaseModel):
+    modelCode: str = Field(min_length=1, max_length=64)
+    modelName: str = Field(min_length=1, max_length=128)
+    plannedQuantity: int = Field(gt=0)
+    bomVersionId: str = Field(min_length=1, max_length=128)
+
+class ProductionOrderCreate(BaseModel):
+    clientOperationId: uuid.UUID
+    orderNo: str = Field(min_length=1, max_length=64)
+    productName: str = Field(min_length=1, max_length=128)
+    plannedQuantity: int = Field(gt=0)
+    plannedDeliveryDate: str | None = None
+    models: list[ProductionOrderModelCreate] = Field(min_length=1, max_length=100)
+
+class DeviceCreate(BaseModel):
+    clientOperationId: uuid.UUID
+    deviceNo: str = Field(min_length=1, max_length=64)
+    deviceName: str = Field(min_length=1, max_length=128)
+    workshop: str = Field(min_length=1, max_length=128)
+    modelCapability: str | None = Field(default=None, max_length=128)
+
+class AssignDeviceRequest(BaseModel):
+    clientOperationId: uuid.UUID
+    deviceId: str = Field(min_length=1, max_length=128)
+    expectedVersion: int = Field(gt=0)
+
+
+def _production_write_allowed(user: sqlite3.Row) -> None:
+    if user["role"] not in PRODUCTION_WRITE_ROLES:
+        raise ApiError(403, CODE_FORBIDDEN, "无订单、机台或绑定权限")
+
+
+def _operation_replay(c, table: str, operation_id: str, payload: str, trace_id: str):
+    prior = c.execute(f"SELECT payload_json,result_json FROM {table} WHERE client_operation_id=?", (operation_id,)).fetchone()
+    if not prior:
+        return None
+    if _payload_digest(prior["payload_json"]) != _payload_digest(payload):
+        raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+    result = json.loads(prior["result_json"])
+    result.update(idempotent=True, traceId=trace_id)
+    return result
+
+
+@app.post("/api/v1/production-orders")
+def create_production_order(body: ProductionOrderCreate, user: sqlite3.Row = Depends(current_user),
+                           x_request_id: str | None = Header(default=None),
+                           idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
+    if len({m.modelCode for m in body.models}) != len(body.models) or sum(m.plannedQuantity for m in body.models) > body.plannedQuantity:
+        raise ApiError(422, CODE_VALIDATION_ERROR, "订单机型数量无效", trace_id=trace_id)
+    payload = body.model_dump_json(); op = str(body.clientOperationId); c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        replay = _operation_replay(c, "production_order_operations", op, payload, trace_id)
+        if replay: c.rollback(); return replay
+        if c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (body.orderNo,)).fetchone():
+            raise ApiError(409, "ORDER_NO_CONFLICT", "订单号已存在", trace_id=trace_id)
+        for model in body.models:
+            bom = c.execute("SELECT id FROM bom_versions WHERE id=? AND model_code=? AND status='PUBLISHED'", (model.bomVersionId, model.modelCode)).fetchone()
+            if not bom: raise ApiError(422, "BOM_NOT_PUBLISHED", "订单只能引用已发布 BOM", trace_id=trace_id)
+        ts = now(); oid = "ord_" + uuid.uuid4().hex
+        c.execute("INSERT INTO production_orders(id,order_no,product_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?)", (oid, body.orderNo, body.productName, "IN_PROGRESS", ts, ts))
+        for model in body.models:
+            c.execute("INSERT INTO production_order_models(id,order_id,model_code,model_name,bom_version_id,planned_quantity,created_at) VALUES(?,?,?,?,?,?,?)", ("pom_" + uuid.uuid4().hex, oid, model.modelCode, model.modelName, model.bomVersionId, model.plannedQuantity, ts))
+        result = {"orderId": oid, "orderNo": body.orderNo, "productName": body.productName, "plannedQuantity": body.plannedQuantity, "status": "IN_PROGRESS", "models": [m.model_dump() for m in body.models], "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO production_order_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "PRODUCTION_ORDER", oid, "SUCCESS", trace_id); c.commit(); return result
+    except ApiError: c.rollback(); raise
+    finally: c.close()
+
+
+@app.post("/api/v1/devices")
+def create_device(body: DeviceCreate, user: sqlite3.Row = Depends(current_user),
+                 x_request_id: str | None = Header(default=None),
+                 idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
+    payload = body.model_dump_json(); op = str(body.clientOperationId); c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE"); replay = _operation_replay(c, "device_operations", op, payload, trace_id)
+        if replay: c.rollback(); return replay
+        if c.execute("SELECT 1 FROM devices WHERE device_no=?", (body.deviceNo,)).fetchone(): raise ApiError(409, "DEVICE_NO_CONFLICT", "机台编号已存在", trace_id=trace_id)
+        ts = now(); did = "dev_" + uuid.uuid4().hex
+        c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?)", (did, body.deviceNo, body.deviceName, body.workshop, body.modelCapability, "ACTIVE", user["id"], ts, ts))
+        result = {"deviceId": did, "deviceNo": body.deviceNo, "deviceName": body.deviceName, "workshop": body.workshop, "modelCapability": body.modelCapability, "status": "ACTIVE", "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO device_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "DEVICE", did, "SUCCESS", trace_id); c.commit(); return result
+    except ApiError: c.rollback(); raise
+    finally: c.close()
+
+
+@app.post("/api/v1/production-orders/{order_no}/models/{model_code}/assign-device")
+def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, user: sqlite3.Row = Depends(current_user),
+                  x_request_id: str | None = Header(default=None),
+                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
+    payload = json.dumps({"orderNo": order_no, "modelCode": model_code, **body.model_dump(mode="json")}, sort_keys=True); op = str(body.clientOperationId); c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE"); replay = _operation_replay(c, "device_assignment_operations", op, payload, trace_id)
+        if replay: c.rollback(); return replay
+        model = c.execute("SELECT m.*,o.status order_status FROM production_order_models m JOIN production_orders o ON o.id=m.order_id WHERE o.order_no=? AND m.model_code=?", (order_no, model_code)).fetchone()
+        if not model: raise ApiError(404, "ORDER_MODEL_NOT_FOUND", "订单机型不存在", trace_id=trace_id)
+        if model["order_status"] not in ("IN_PROGRESS", "RELEASED"): raise ApiError(409, "ORDER_STATE_CONFLICT", "订单状态不允许绑定", trace_id=trace_id)
+        if model["version"] != body.expectedVersion: raise ApiError(409, "ORDER_MODEL_VERSION_CONFLICT", "订单机型版本冲突", trace_id=trace_id)
+        device = c.execute("SELECT * FROM devices WHERE id=?", (body.deviceId,)).fetchone()
+        if not device: raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在", trace_id=trace_id)
+        if device["status"] != "ACTIVE": raise ApiError(409, "DEVICE_NOT_ACTIVE", "机台未启用", trace_id=trace_id)
+        if device["model_capability"] and device["model_capability"] != model_code: raise ApiError(409, "DEVICE_CAPABILITY_MISMATCH", "机台能力不匹配", trace_id=trace_id)
+        ts = now(); assignment_id = "pmd_" + uuid.uuid4().hex; task_id = "task_" + uuid.uuid4().hex
+        c.execute("INSERT INTO production_model_devices(id,order_model_id,device_id,status,assigned_by,assigned_at) VALUES(?,?,?,?,?,?)", (assignment_id, model["id"], device["id"], "ASSIGNED", user["id"], ts))
+        c.execute("INSERT INTO assembly_tasks(id,order_no,device_id,device_no,status,progress_stage,task_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (task_id, order_no, device["id"], device["device_no"], "WAITING_MATERIAL", 0, 1, ts, ts))
+        c.execute("UPDATE production_order_models SET version=version+1 WHERE id=? AND version=?", (model["id"], body.expectedVersion))
+        result = {"taskId": task_id, "orderNo": order_no, "modelCode": model_code, "deviceId": device["id"], "deviceNo": device["device_no"], "status": "WAITING_MATERIAL", "expectedVersion": body.expectedVersion + 1, "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO device_assignment_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "ASSIGN", "ASSEMBLY_TASK", task_id, "SUCCESS", trace_id); c.commit(); return result
+    except ApiError: c.rollback(); raise
+    finally: c.close()
 
 @app.get("/healthz")
 def health() -> dict[str, str]:
