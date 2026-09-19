@@ -1327,6 +1327,9 @@ def reset_employee_password(user_id: str, body: PasswordResetRequest, user: sqli
         c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("ADMIN_PASSWORD_RESET", "USER", user_id, user["id"], user["role"], trace_id, operation_id, json.dumps(before), json.dumps(after), ts, None, None, "SUCCESS"))
         c.execute("INSERT INTO admin_user_password_reset_operations VALUES(?,?,?,?,?)", (operation_id, user_id, digest, json.dumps(result), ts)); c.commit(); return result
     except ApiError: c.rollback(); raise
+    except Exception:
+        c.rollback()
+        raise
     finally: c.close()
 
 
@@ -1589,6 +1592,9 @@ def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(curren
         c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("BOM_IMPORT", "BOM_VERSION", vid, user["id"], user["role"], trace_id, operation_id, payload, json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"))
         c.commit(); return result
     except ApiError: c.rollback(); raise
+    except Exception:
+        c.rollback()
+        raise
     finally: c.close()
 
 
@@ -1673,6 +1679,9 @@ def create_production_order(body: ProductionOrderCreate, user: sqlite3.Row = Dep
         result = {"orderId": oid, "orderNo": body.orderNo, "productName": body.productName, "plannedQuantity": body.plannedQuantity, "status": "IN_PROGRESS", "models": [m.model_dump() for m in body.models], "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO production_order_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "PRODUCTION_ORDER", oid, "SUCCESS", trace_id); c.commit(); return result
     except ApiError: c.rollback(); raise
+    except Exception:
+        c.rollback()
+        raise
     finally: c.close()
 
 
@@ -1691,6 +1700,9 @@ def create_device(body: DeviceCreate, user: sqlite3.Row = Depends(current_user),
         result = {"deviceId": did, "deviceNo": body.deviceNo, "deviceName": body.deviceName, "workshop": body.workshop, "modelCapability": body.modelCapability, "status": "ACTIVE", "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO device_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "DEVICE", did, "SUCCESS", trace_id); c.commit(); return result
     except ApiError: c.rollback(); raise
+    except Exception:
+        c.rollback()
+        raise
     finally: c.close()
 
 
@@ -1718,6 +1730,9 @@ def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, use
         result = {"taskId": task_id, "orderNo": order_no, "modelCode": model_code, "deviceId": device["id"], "deviceNo": device["device_no"], "status": "WAITING_MATERIAL", "expectedVersion": body.expectedVersion + 1, "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO device_assignment_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "ASSIGN", "ASSEMBLY_TASK", task_id, "SUCCESS", trace_id); c.commit(); return result
     except ApiError: c.rollback(); raise
+    except Exception:
+        c.rollback()
+        raise
     finally: c.close()
 
 @app.get("/healthz")
