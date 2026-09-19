@@ -45,6 +45,10 @@ import java.util.UUID
 open class MaterialFlowApi(
     private val config: ApiConfig = ApiConfig
 ) {
+    data class BomImportError(val lineNo: Int, val field: String, val code: String, val message: String)
+    data class BomImportPreview(val previewId: String, val modelCode: String, val totalRows: Int, val validRows: Int, val invalidRows: Int, val canCommit: Boolean, val errors: List<BomImportError>)
+    data class BomVersionResult(val bomVersionId: String, val modelCode: String, val versionNo: Int, val status: String, val itemCount: Int)
+
 
     /** 会话 token，由登录写入；为空表示未登录 */
     @Volatile
@@ -255,6 +259,31 @@ open class MaterialFlowApi(
                 idempotencyKey = clientOperationId,
             )
         )
+    }
+
+    suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): BomImportPreview = withContext(Dispatchers.IO) {
+        require(fileBytes.size <= MAX_BOM_FILE_BYTES) { "BOM 文件不能超过 10 MB" }
+        val boundary = "----BomBoundary${UUID.randomUUID().toString().replace("-", "")}"
+        val conn = openConnection("/api/v1/boms/import/preview", "POST")
+        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString()); conn.doOutput = true
+        conn.outputStream.use { out ->
+            fun write(value: String) = out.write(value.toByteArray(Charsets.UTF_8))
+            write("--$boundary\\r\\nContent-Disposition: form-data; name=\\\"modelCode\\\"\\r\\n\\r\\n$modelCode\\r\\n")
+            write("--$boundary\\r\\nContent-Disposition: form-data; name=\\\"file\\\"; filename=\\\"$fileName\\\"\\r\\nContent-Type: text/csv\\r\\n\\r\\n")
+            out.write(fileBytes); write("\\r\\n--$boundary--\\r\\n")
+        }
+        val (code, text) = readResponse(conn); if (code !in 200..299) throw ApiParser.parseError(code, text)
+        val root = JSONObject(text ?: throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true))
+        val errors = root.optJSONArray("errors") ?: JSONArray()
+        BomImportPreview(root.optString("previewId"), root.optString("modelCode"), root.optInt("totalRows"), root.optInt("validRows"), root.optInt("invalidRows"), root.optBoolean("canCommit"), (0 until errors.length()).map { i -> val e = errors.getJSONObject(i); BomImportError(e.optInt("lineNo"), e.optString("field"), e.optString("code"), e.optString("message")) })
+    }
+
+    suspend fun commitBomImport(previewId: String, clientOperationId: String, publish: Boolean): BomVersionResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId")
+        val root = JSONObject(request("POST", "/api/v1/boms/import/commit", JSONObject().apply { put("previewId", previewId); put("clientOperationId", clientOperationId); put("publish", publish) }.toString(), idempotencyKey = clientOperationId))
+        BomVersionResult(root.optString("bomVersionId"), root.optString("modelCode"), root.optInt("versionNo"), root.optString("status"), root.optInt("itemCount"))
     }
 
     /** 登出：吊销当前设备的 access 与 refresh 令牌 */
@@ -729,6 +758,8 @@ open class MaterialFlowApi(
             text ?: throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true)
         )
     }
+
+    companion object { const val MAX_BOM_FILE_BYTES = 10 * 1024 * 1024 }
 
     // ==================== 内部实现 ====================
 

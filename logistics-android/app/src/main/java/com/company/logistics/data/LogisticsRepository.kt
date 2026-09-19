@@ -243,6 +243,9 @@ open class LogisticsRepository(
     open suspend fun workshopMachineProgress(page: Int, pageSize: Int, deviceId: String?): Result<MachineProgressPage> = resultOf { api.workshopMachineProgress(page, pageSize, deviceId) }
 
 
+    open suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): Result<MaterialFlowApi.BomImportPreview> = resultOf { api.previewBomImport(fileName, fileBytes, modelCode) }
+    open suspend fun commitBomImport(previewId: String, clientOperationId: String, publish: Boolean): Result<MaterialFlowApi.BomVersionResult> = resultOf { api.commitBomImport(previewId, clientOperationId, publish) }
+
     open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {
         api.workspaceSummary()
     }

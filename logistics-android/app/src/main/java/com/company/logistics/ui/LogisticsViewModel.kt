@@ -66,7 +66,8 @@ enum class Screen(val title: String) {
     PROFILE("我的"),
     ENDPOINT_CONFIG("服务端配置"),
     CHANGE_PASSWORD("首次登录改密"),
-    USER_MANAGEMENT("用户管理")
+    USER_MANAGEMENT("用户管理"),
+    BOM_IMPORT("BOM 导入")
 }
 
 /**
@@ -238,6 +239,11 @@ data class LogisticsUiState(
     val managedUsersError: String? = null,
     val managedUsersSuccess: String? = null,
     val managedUserDeletingId: String? = null,
+    val bomFileName: String? = null,
+    val bomPreview: com.company.logistics.data.remote.MaterialFlowApi.BomImportPreview? = null,
+    val bomImportState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val bomImportError: String? = null,
+    val bomClientOperationId: String? = null,
 ) {
     val loggedIn: Boolean get() = authState is AuthState.Authenticated
     val currentUser: String
@@ -519,6 +525,26 @@ class LogisticsViewModel(
         }
     }
 
+
+    fun previewBomImport(fileName: String, bytes: ByteArray, modelCode: String) {
+        val current = _state.value
+        if (current.role !in setOf(UserRole.ADMIN, UserRole.WORKSHOP_SUPERVISOR) || current.preview) return
+        if (bytes.size > com.company.logistics.data.remote.MaterialFlowApi.MAX_BOM_FILE_BYTES) { _state.update { it.copy(bomImportState = WorkspaceLoadState.ERROR, bomImportError = "BOM 文件不能超过 10 MB") }; return }
+        operationScope.launch {
+            _state.update { it.copy(bomFileName = fileName, bomImportState = WorkspaceLoadState.LOADING, bomImportError = null) }
+            repo.previewBomImport(fileName, bytes, modelCode).onSuccess { preview -> _state.update { it.copy(bomPreview = preview, bomImportState = WorkspaceLoadState.CONTENT) } }.onFailure { e -> _state.update { it.copy(bomImportState = WorkspaceLoadState.ERROR, bomImportError = (e as? ApiException)?.safeMessage("预览失败") ?: "预览失败") } }
+        }
+    }
+
+    fun commitBomImport(publish: Boolean) {
+        val current = _state.value; val preview = current.bomPreview ?: return
+        if (current.role !in setOf(UserRole.ADMIN, UserRole.WORKSHOP_SUPERVISOR) || current.preview || !preview.canCommit) return
+        val operationId = current.bomClientOperationId ?: UUID.randomUUID().toString()
+        operationScope.launch {
+            _state.update { it.copy(bomClientOperationId = operationId, bomImportState = WorkspaceLoadState.LOADING, bomImportError = null) }
+            repo.commitBomImport(preview.previewId, operationId, publish).onSuccess { _state.update { it.copy(bomImportState = WorkspaceLoadState.CONTENT, message = "BOM 导入成功") } }.onFailure { e -> _state.update { it.copy(bomImportState = WorkspaceLoadState.ERROR, bomImportError = (e as? ApiException)?.safeMessage("提交失败") ?: "提交失败") } }
+        }
+    }
 
     fun navigate(screen: Screen) = _state.update {
         if (it.mustChangePassword && screen != Screen.CHANGE_PASSWORD) {
@@ -2493,6 +2519,7 @@ class LogisticsViewModel(
         fun canNavigate(role: UserRole, screen: Screen): Boolean = when (screen) {
             Screen.APPROVAL -> role.canApprove
             Screen.AUDIT, Screen.USER_MANAGEMENT -> role.canAdmin
+            Screen.BOM_IMPORT -> role == UserRole.ADMIN || role == UserRole.WORKSHOP_SUPERVISOR
             Screen.CHANGE_PASSWORD -> true
             Screen.LOGIN -> false
             else -> true
