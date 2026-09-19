@@ -11,7 +11,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
- * 物流流转系统主题。
+ * 厂内物料流转系统主题。
  *
  * 设计目标：仓库 / 车间现场作业场景 —— 强光、戴手套、单手操作。
  * 因此：
