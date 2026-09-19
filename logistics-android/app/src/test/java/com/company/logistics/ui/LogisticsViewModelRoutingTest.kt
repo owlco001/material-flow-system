@@ -44,4 +44,13 @@ class LogisticsViewModelRoutingTest {
     fun knownScanDoesNotEnterAssemblyRouting() {
         assertEquals(null, assemblyDeviceRoute(ScanResult(ScanType.MATERIAL_CODE, "MAT-1", "device-1")))
     }
+
+    @Test
+    fun bomImportRouteIsAllowedForAllAuthorisedRolesAndDeniedForOthers() {
+        assertTrue(LogisticsViewModel.canNavigate(UserRole.ADMIN, Screen.BOM_IMPORT))
+        assertTrue(LogisticsViewModel.canNavigate(UserRole.PLANNER, Screen.BOM_IMPORT))
+        assertTrue(LogisticsViewModel.canNavigate(UserRole.WORKSHOP_SUPERVISOR, Screen.BOM_IMPORT))
+        assertFalse(LogisticsViewModel.canNavigate(UserRole.MATERIAL, Screen.BOM_IMPORT))
+        assertFalse(LogisticsViewModel.canNavigate(UserRole.ASSEMBLER, Screen.BOM_IMPORT))
+    }
 }

@@ -531,7 +531,7 @@ class LogisticsViewModel(
 
     fun previewBomImport(fileName: String, bytes: ByteArray, modelCode: String) {
         val current = _state.value
-        if (current.role !in setOf(UserRole.ADMIN, UserRole.WORKSHOP_SUPERVISOR) || current.preview) return
+        if (current.role !in setOf(UserRole.ADMIN, UserRole.PLANNER, UserRole.WORKSHOP_SUPERVISOR) || current.preview) return
         if (bytes.size > com.company.logistics.data.remote.MaterialFlowApi.MAX_BOM_FILE_BYTES) { _state.update { it.copy(bomImportState = WorkspaceLoadState.ERROR, bomImportError = "BOM 文件不能超过 10 MB") }; return }
         operationScope.launch {
             _state.update { it.copy(bomFileName = fileName, bomImportState = WorkspaceLoadState.LOADING, bomImportError = null) }
@@ -539,9 +539,13 @@ class LogisticsViewModel(
         }
     }
 
+    fun bomFileReadFailed(message: String) {
+        _state.update { it.copy(bomImportState = WorkspaceLoadState.ERROR, bomImportError = message) }
+    }
+
     fun commitBomImport(publish: Boolean) {
         val current = _state.value; val preview = current.bomPreview ?: return
-        if (current.role !in setOf(UserRole.ADMIN, UserRole.WORKSHOP_SUPERVISOR) || current.preview || !preview.canCommit) return
+        if (current.role !in setOf(UserRole.ADMIN, UserRole.PLANNER, UserRole.WORKSHOP_SUPERVISOR) || current.preview || !preview.canCommit) return
         val operationId = current.bomClientOperationId ?: UUID.randomUUID().toString()
         operationScope.launch {
             _state.update { it.copy(bomClientOperationId = operationId, bomImportState = WorkspaceLoadState.LOADING, bomImportError = null) }
@@ -2538,7 +2542,7 @@ class LogisticsViewModel(
         fun canNavigate(role: UserRole, screen: Screen): Boolean = when (screen) {
             Screen.APPROVAL -> role.canApprove
             Screen.AUDIT, Screen.USER_MANAGEMENT -> role.canAdmin
-            Screen.BOM_IMPORT -> role == UserRole.ADMIN || role == UserRole.WORKSHOP_SUPERVISOR
+            Screen.BOM_IMPORT -> role in setOf(UserRole.ADMIN, UserRole.PLANNER, UserRole.WORKSHOP_SUPERVISOR)
             Screen.PRODUCTION_MANAGEMENT -> role == UserRole.ADMIN || role == UserRole.PLANNER || role == UserRole.WORKSHOP_SUPERVISOR
             Screen.CHANGE_PASSWORD -> true
             Screen.LOGIN -> false

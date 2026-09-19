@@ -21,7 +21,7 @@ import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.ui.LogisticsUiState
 
 @Composable
-fun BomImportScreen(state: LogisticsUiState, onPick: (String, ByteArray, String) -> Unit, onCommit: () -> Unit) {
+fun BomImportScreen(state: LogisticsUiState, onPick: (String, ByteArray, String) -> Unit, onReadError: (String) -> Unit, onCommit: () -> Unit) {
     val context = LocalContext.current
     var modelCode by rememberSaveable { mutableStateOf(state.bomPreview?.modelCode.orEmpty()) }
     LaunchedEffect(state.bomPreview?.modelCode) {
@@ -30,8 +30,16 @@ fun BomImportScreen(state: LogisticsUiState, onPick: (String, ByteArray, String)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         val name = uri.lastPathSegment ?: "bom.csv"
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@rememberLauncherForActivityResult
-        onPick(name, bytes, modelCode.trim())
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use {
+                BomFileReader.readAtMost(it, MaterialFlowApi.MAX_BOM_FILE_BYTES)
+            } ?: return@rememberLauncherForActivityResult
+            onPick(name, bytes, modelCode.trim())
+        } catch (error: BomFileTooLargeException) {
+            onReadError(error.message ?: "BOM 文件超过大小限制")
+        } catch (_: Exception) {
+            onReadError("BOM 文件读取失败")
+        }
     }
     Column(Modifier.padding(24.dp)) {
         Text("BOM CSV 导入")

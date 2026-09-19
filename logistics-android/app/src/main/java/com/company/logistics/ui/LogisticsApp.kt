@@ -160,6 +160,7 @@ fun LogisticsApp(
                         }
                         if (state.role == com.company.logistics.model.UserRole.ADMIN || state.role == com.company.logistics.model.UserRole.PLANNER || state.role == com.company.logistics.model.UserRole.WORKSHOP_SUPERVISOR) {
                             androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.PRODUCTION_MANAGEMENT) }) { Text("订单/机台") }
+                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.BOM_IMPORT) }) { Text("BOM 导入") }
                         }
                     }
                 )
@@ -372,6 +373,7 @@ fun LogisticsApp(
                     Screen.BOM_IMPORT -> BomImportScreen(
                         state = state,
                         onPick = { name, bytes, model -> viewModel.previewBomImport(name, bytes, model) },
+                        onReadError = viewModel::bomFileReadFailed,
                         onCommit = { viewModel.commitBomImport(publish = true) },
                     )
 
