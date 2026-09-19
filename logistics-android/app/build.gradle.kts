@@ -12,8 +12,8 @@ android {
         applicationId = "com.company.logistics"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.3.1"
         // API 基地址注入：部署/CI 时用变量覆盖此占位值，禁止在源码中写入真实 IP
         buildConfigField("String", "MATERIAL_FLOW_API_BASE_URL", "\"http://127.0.0.1:0\"")
     }
