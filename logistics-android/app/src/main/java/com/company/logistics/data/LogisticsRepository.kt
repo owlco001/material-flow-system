@@ -245,6 +245,9 @@ open class LogisticsRepository(
 
     open suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): Result<MaterialFlowApi.BomImportPreview> = resultOf { api.previewBomImport(fileName, fileBytes, modelCode) }
     open suspend fun commitBomImport(previewId: String, clientOperationId: String, publish: Boolean): Result<MaterialFlowApi.BomVersionResult> = resultOf { api.commitBomImport(previewId, clientOperationId, publish) }
+    open suspend fun createProductionOrder(clientOperationId: String, orderNo: String, productName: String, plannedQuantity: Int, plannedDeliveryDate: String, models: org.json.JSONArray): Result<MaterialFlowApi.ProductionOrderCreateResult> = resultOf { api.createProductionOrder(clientOperationId, orderNo, productName, plannedQuantity, plannedDeliveryDate, models) }
+    open suspend fun createDevice(clientOperationId: String, deviceNo: String, deviceName: String, workshop: String, modelCapability: String?): Result<MaterialFlowApi.DeviceCreateResult> = resultOf { api.createDevice(clientOperationId, deviceNo, deviceName, workshop, modelCapability) }
+    open suspend fun assignDevice(orderNo: String, modelCode: String, clientOperationId: String, deviceId: String, expectedVersion: Int): Result<MaterialFlowApi.DeviceAssignmentResult> = resultOf { api.assignDevice(orderNo, modelCode, clientOperationId, deviceId, expectedVersion) }
 
     open suspend fun workspaceSummary(): Result<WorkspaceSummary> = resultOf {
         api.workspaceSummary()

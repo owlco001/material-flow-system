@@ -19,6 +19,7 @@ import com.company.logistics.ui.theme.MaterialStatusColors
 enum class UserRole(val code: String, val label: String) {
     OPERATOR("OPERATOR", "操作员"),
     MATERIAL("MATERIAL", "物料员"),
+    PLANNER("PLANNER", "计划员"),
     WAREHOUSE_ADMIN("WAREHOUSE_ADMIN", "仓库管理员"),
     ADMIN("ADMIN", "管理员"),
     WORKSHOP_SUPERVISOR("WORKSHOP_SUPERVISOR", "车间主管"),
@@ -687,7 +688,7 @@ object HandoverActionPolicy {
                 } else {
                     emptyList()
                 }
-                UserRole.MATERIAL -> if (isSender(userId, item)) {
+                UserRole.MATERIAL, UserRole.PLANNER -> if (isSender(userId, item)) {
                     listOf(HandoverAction.CANCEL)
                 } else {
                     emptyList()

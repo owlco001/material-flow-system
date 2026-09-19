@@ -48,6 +48,9 @@ open class MaterialFlowApi(
     data class BomImportError(val lineNo: Int, val field: String, val code: String, val message: String)
     data class BomImportPreview(val previewId: String, val modelCode: String, val totalRows: Int, val validRows: Int, val invalidRows: Int, val canCommit: Boolean, val errors: List<BomImportError>)
     data class BomVersionResult(val bomVersionId: String, val modelCode: String, val versionNo: Int, val status: String, val itemCount: Int)
+    data class ProductionOrderCreateResult(val orderNo: String, val orderId: String, val status: String)
+    data class DeviceCreateResult(val deviceId: String, val deviceNo: String, val status: String)
+    data class DeviceAssignmentResult(val taskId: String, val orderNo: String, val modelCode: String, val deviceId: String, val expectedVersion: Int)
 
 
     /** 会话 token，由登录写入；为空表示未登录 */
@@ -287,7 +290,25 @@ open class MaterialFlowApi(
         BomVersionResult(root.optString("bomVersionId"), root.optString("modelCode"), root.optInt("versionNo"), root.optString("status"), root.optInt("itemCount"))
     }
 
-    /** 登出：吊销当前设备的 access 与 refresh 令牌 */
+    suspend fun createProductionOrder(clientOperationId: String, orderNo: String, productName: String, plannedQuantity: Int, plannedDeliveryDate: String, models: JSONArray): ProductionOrderCreateResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId"); require(orderNo.isNotBlank() && productName.isNotBlank() && plannedQuantity > 0)
+        val root = JSONObject(request("POST", "/api/v1/production-orders", JSONObject().apply { put("clientOperationId", clientOperationId); put("orderNo", orderNo); put("productName", productName); put("plannedQuantity", plannedQuantity); put("plannedDeliveryDate", plannedDeliveryDate); put("models", models) }.toString(), idempotencyKey = clientOperationId))
+        ProductionOrderCreateResult(root.optString("orderNo"), root.optString("orderId"), root.optString("status"))
+    }
+
+    suspend fun createDevice(clientOperationId: String, deviceNo: String, deviceName: String, workshop: String, modelCapability: String?): DeviceCreateResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId"); require(deviceNo.isNotBlank() && deviceName.isNotBlank() && workshop.isNotBlank())
+        val root = JSONObject(request("POST", "/api/v1/devices", JSONObject().apply { put("clientOperationId", clientOperationId); put("deviceNo", deviceNo); put("deviceName", deviceName); put("workshop", workshop); put("modelCapability", modelCapability ?: JSONObject.NULL) }.toString(), idempotencyKey = clientOperationId))
+        DeviceCreateResult(root.optString("deviceId"), root.optString("deviceNo"), root.optString("status"))
+    }
+
+    suspend fun assignDevice(orderNo: String, modelCode: String, clientOperationId: String, deviceId: String, expectedVersion: Int): DeviceAssignmentResult = withContext(Dispatchers.IO) {
+        requireUuid(clientOperationId, "clientOperationId"); require(orderNo.isNotBlank() && modelCode.isNotBlank() && deviceId.isNotBlank() && expectedVersion > 0)
+        val root = JSONObject(request("POST", "/api/v1/production-orders/${encodeQuery(orderNo)}/models/${encodeQuery(modelCode)}/assign-device", JSONObject().apply { put("clientOperationId", clientOperationId); put("deviceId", deviceId); put("expectedVersion", expectedVersion) }.toString(), idempotencyKey = clientOperationId))
+        DeviceAssignmentResult(root.optString("taskId"), root.optString("orderNo"), root.optString("modelCode"), root.optString("deviceId"), root.optInt("expectedVersion"))
+    }
+
+
     suspend fun logout(): Unit = withContext(Dispatchers.IO) {
         runCatching { request("POST", "/api/v1/auth/logout", "{}") }
         accessToken = null

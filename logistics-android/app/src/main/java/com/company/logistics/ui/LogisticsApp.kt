@@ -52,6 +52,7 @@ import com.company.logistics.ui.screens.QueueScreen
 import com.company.logistics.ui.screens.ScannerScreen
 import com.company.logistics.ui.screens.WorkspaceScreen
 import com.company.logistics.ui.screens.BomImportScreen
+import com.company.logistics.ui.screens.ProductionManagementScreen
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsTypography
@@ -157,8 +158,8 @@ fun LogisticsApp(
                         if (state.role == com.company.logistics.model.UserRole.ADMIN && !state.preview && state.screen == Screen.WORKSPACE) {
                             androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.USER_MANAGEMENT) }) { Text("用户管理") }
                         }
-                        if (state.role == com.company.logistics.model.UserRole.ADMIN || state.role == com.company.logistics.model.UserRole.WORKSHOP_SUPERVISOR) {
-                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.BOM_IMPORT) }) { Text("BOM 管理") }
+                        if (state.role == com.company.logistics.model.UserRole.ADMIN || state.role == com.company.logistics.model.UserRole.PLANNER || state.role == com.company.logistics.model.UserRole.WORKSHOP_SUPERVISOR) {
+                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.PRODUCTION_MANAGEMENT) }) { Text("订单/机台") }
                         }
                     }
                 )
@@ -373,6 +374,8 @@ fun LogisticsApp(
                         onPick = { name, bytes, model -> viewModel.previewBomImport(name, bytes, model) },
                         onCommit = { viewModel.commitBomImport(publish = true) },
                     )
+
+                    Screen.PRODUCTION_MANAGEMENT -> ProductionManagementScreen(state.role, state.productionWriteLoading, state.productionWriteError, viewModel::createProductionOrder, viewModel::createDevice, viewModel::assignDevice) { viewModel.navigate(Screen.WORKSPACE) }
 
                     Screen.INVENTORY -> InventoryScreen(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }

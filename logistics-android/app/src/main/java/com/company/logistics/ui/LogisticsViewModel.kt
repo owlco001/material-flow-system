@@ -67,7 +67,8 @@ enum class Screen(val title: String) {
     ENDPOINT_CONFIG("服务端配置"),
     CHANGE_PASSWORD("首次登录改密"),
     USER_MANAGEMENT("用户管理"),
-    BOM_IMPORT("BOM 导入")
+    BOM_IMPORT("BOM 导入"),
+    PRODUCTION_MANAGEMENT("订单与机台")
 }
 
 /**
@@ -244,6 +245,8 @@ data class LogisticsUiState(
     val bomImportState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val bomImportError: String? = null,
     val bomClientOperationId: String? = null,
+    val productionWriteLoading: Boolean = false,
+    val productionWriteError: String? = null,
 ) {
     val loggedIn: Boolean get() = authState is AuthState.Authenticated
     val currentUser: String
@@ -2374,7 +2377,23 @@ class LogisticsViewModel(
         }
     }
 
-    // ==================== 表单 ====================
+    fun createProductionOrder(orderNo: String, productName: String, quantity: Int, deliveryDate: String, modelCode: String, modelName: String, modelQuantity: Int, bomVersionId: String) {
+        if (_state.value.role != UserRole.ADMIN && _state.value.role != UserRole.PLANNER) { _state.update { it.copy(productionWriteError = "当前角色无创建订单权限") }; return }
+        val op = UUID.randomUUID().toString(); val models = org.json.JSONArray().put(org.json.JSONObject().apply { put("modelCode", modelCode); put("modelName", modelName); put("plannedQuantity", modelQuantity); put("bomVersionId", bomVersionId) })
+        operationScope.launch { _state.update { it.copy(productionWriteLoading = true, productionWriteError = null) }; repo.createProductionOrder(op, orderNo, productName, quantity, deliveryDate, models).onSuccess { _state.update { it.copy(productionWriteLoading = false, message = "订单已创建") }; openOrderDetail(orderNo) }.onFailure { e -> _state.update { it.copy(productionWriteLoading = false, productionWriteError = if (e is ApiException && e.statusCode == 409) "服务端冲突：${e.safeMessage("数据已变化")}" else e.message ?: "创建订单失败") }; refreshOrderDetail() } }
+    }
+
+    fun createDevice(deviceNo: String, deviceName: String, workshop: String, modelCapability: String?) {
+        if (_state.value.role != UserRole.ADMIN && _state.value.role != UserRole.WORKSHOP_SUPERVISOR) { _state.update { it.copy(productionWriteError = "当前角色无创建机台权限") }; return }
+        operationScope.launch { _state.update { it.copy(productionWriteLoading = true, productionWriteError = null) }; repo.createDevice(UUID.randomUUID().toString(), deviceNo, deviceName, workshop, modelCapability).onSuccess { _state.update { it.copy(productionWriteLoading = false, message = "机台已创建") } }.onFailure { e -> _state.update { it.copy(productionWriteLoading = false, productionWriteError = e.message ?: "创建机台失败") } } }
+    }
+
+    fun assignDevice(orderNo: String, modelCode: String, deviceId: String, expectedVersion: Int) {
+        if (_state.value.role != UserRole.ADMIN && _state.value.role != UserRole.WORKSHOP_SUPERVISOR) { _state.update { it.copy(productionWriteError = "当前角色无绑定机台权限") }; return }
+        operationScope.launch { _state.update { it.copy(productionWriteLoading = true, productionWriteError = null) }; repo.assignDevice(orderNo, modelCode, UUID.randomUUID().toString(), deviceId, expectedVersion).onSuccess { _state.update { it.copy(productionWriteLoading = false, message = "机台绑定成功") }; refreshOrderDetail() }.onFailure { e -> _state.update { it.copy(productionWriteLoading = false, productionWriteError = if (e is ApiException && e.statusCode == 409) "服务端冲突：${e.safeMessage("版本已变化")}" else e.message ?: "绑定机台失败") }; refreshOrderDetail() } }
+    }
+
+
 
     fun setQuantity(value: Int) {
         val max = _state.value.materialInventory?.inventory?.availableQuantity ?: Int.MAX_VALUE
@@ -2506,7 +2525,7 @@ class LogisticsViewModel(
         /** 按角色生成底部导航 —— 无权限入口不渲染 */
         fun tabsFor(role: UserRole): List<NavTab> = when (role) {
             UserRole.OPERATOR -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.QUEUE, NavTab.PROFILE)
-            UserRole.MATERIAL -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.QUEUE, NavTab.PROFILE)
+            UserRole.MATERIAL, UserRole.PLANNER -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.QUEUE, NavTab.PROFILE)
             UserRole.WAREHOUSE_ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.QUEUE)
             UserRole.ADMIN -> listOf(NavTab.WORKSPACE, NavTab.SCAN, NavTab.ORDER, NavTab.INVENTORY, NavTab.APPROVAL, NavTab.PROFILE)
             UserRole.WORKSHOP_SUPERVISOR, UserRole.ASSEMBLER -> listOf(NavTab.WORKSPACE, NavTab.PROFILE)
@@ -2520,6 +2539,7 @@ class LogisticsViewModel(
             Screen.APPROVAL -> role.canApprove
             Screen.AUDIT, Screen.USER_MANAGEMENT -> role.canAdmin
             Screen.BOM_IMPORT -> role == UserRole.ADMIN || role == UserRole.WORKSHOP_SUPERVISOR
+            Screen.PRODUCTION_MANAGEMENT -> role == UserRole.ADMIN || role == UserRole.PLANNER || role == UserRole.WORKSHOP_SUPERVISOR
             Screen.CHANGE_PASSWORD -> true
             Screen.LOGIN -> false
             else -> true

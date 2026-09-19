@@ -965,7 +965,7 @@ private fun WorkspacePager(
 
 private fun titleFor(role: UserRole): String = when (role) {
     UserRole.OPERATOR -> "操作员工作台"
-    UserRole.MATERIAL -> "物料员工作台"
+    UserRole.MATERIAL, UserRole.PLANNER -> "物料员工作台"
     UserRole.WAREHOUSE_ADMIN -> "仓库管理工作台"
     UserRole.ADMIN -> "管理员工作台"
     UserRole.WORKSHOP_SUPERVISOR -> "车间主管工作台"
@@ -974,7 +974,7 @@ private fun titleFor(role: UserRole): String = when (role) {
 
 private fun subtitleFor(role: UserRole): String = when (role) {
     UserRole.OPERATOR -> "只查看服务端登记的本人责任范围与交接状态"
-    UserRole.MATERIAL -> "处理服务端返回的待出库与已出库工作项"
+    UserRole.MATERIAL, UserRole.PLANNER -> "处理服务端返回的待出库与已出库工作项"
     UserRole.WAREHOUSE_ADMIN -> "查看服务端返回的待审批与待交接工作项"
     UserRole.ADMIN -> "查看服务端角色范围内的工作项与明确可用指标"
     UserRole.WORKSHOP_SUPERVISOR -> "查看车间总工时、装配工时、临时调拨工时与机台进度"
@@ -986,7 +986,7 @@ private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
         WorkspaceEntry(WorkspaceMetricKey.CLAIMED, "已领取", "服务端确认的领取记录", "刷新", true),
         WorkspaceEntry(WorkspaceMetricKey.AT_STATION, "已到机台", "服务端确认目标机台的交接", "刷新"),
     )
-    UserRole.MATERIAL -> listOf(
+    UserRole.MATERIAL, UserRole.PLANNER -> listOf(
         WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_PENDING, "待出库", "服务端返回的待出库状态", "刷新", true),
         WorkspaceEntry(WorkspaceMetricKey.OUTBOUND_CONFIRMED, "已出库", "服务端返回的已出库状态", "刷新"),
     )
