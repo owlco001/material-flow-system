@@ -5,7 +5,7 @@
 - [x] 已拉取 `origin/feat/ui-fusion`。
 - [x] 已完成变更审查。
 - [x] 规格补遗 §8/§9（技术栈取舍 + 接口一致性约束）已提交 `e5dabb6` 并推送。
-- [x] **P0-1 API 地址去敏感化**：已派发 Codex（独立 worktree）——`MaterialFlowApi.kt` 删除真实 IP `107.173.70.115:8000`，`baseUrl` 改为 BuildConfig 注入、默认无效占位；`AndroidManifest.xml` 移除 `usesCleartextTraffic`。验收门禁：全树 grep 无 IP 残留 + `:app:assembleDebug` 通过。
+- [x] **P0-1 API 地址去敏感化**（commit `f2056ed`，已合入并推送）：`MaterialFlowApi.kt` 删除真实 IP，`baseUrl` 改为 BuildConfig 注入 + 无效占位回退；`AndroidManifest.xml` 移除 `usesCleartextTraffic`；接收端重建 `:app:assembleDebug` BUILD SUCCESSFUL；全树 IP grep 0 命中。
 - [ ] P0-2/3/4/5（请求类型统一、物流文案清理、历史敏感扫描）：待 P0-1 合入后继续。
 - [ ] 暂不合并到 `main`：P0 修复未全部完成。
 - [ ] 业务源码修改由 Codex 在隔离 worktree 执行，架构 Agent 仅验收 docs/tasks 与门禁结果。
