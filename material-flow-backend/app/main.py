@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import csv
+import io
 import os
 import random
 import re
@@ -14,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile, Request
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -53,7 +55,7 @@ HEALTH_TABLES = frozenset({
     "handover_operations", "material_work_items", "material_work_item_projections",
     "material_handovers", "exceptions", "location_bindings", "stocktakes", "employee_managers",
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
-    "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations",
+    "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations", "bom_versions", "bom_items", "production_order_models",
     "admin_user_delete_operations", "admin_user_edit_operations", "admin_user_password_reset_operations",
  })
 
@@ -70,7 +72,7 @@ FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 ACCEPTED_ORDER_DOC_TYPES = ("PRODUCTION_ORDER",)
 
 TRANSFER_TYPES = ("INBOUND", "OUTBOUND", "TRANSFER", "STOCKTAKE")
-ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER")
+ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR", "ASSEMBLER")
 ASSEMBLY_STATUSES = ("WAITING_MATERIAL", "MATERIAL_ACCEPTED", "IN_PROGRESS", "PAUSED_FOR_TEMPORARY_TRANSFER", "COMPLETED")
 HANDOVER_STATES = ("PENDING", "CONFIRMED", "REJECTED", "CANCELLED")
 TRANSFER_STATES = frozenset({
@@ -559,6 +561,10 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
     CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL, updated_at TEXT);
+    CREATE TABLE IF NOT EXISTS production_order_models(id TEXT PRIMARY KEY, order_id TEXT REFERENCES production_orders(id) ON DELETE CASCADE, model_code TEXT NOT NULL UNIQUE, model_name TEXT NOT NULL DEFAULT '', bom_version_id TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS bom_versions(id TEXT PRIMARY KEY, model_code TEXT NOT NULL, version_no INTEGER NOT NULL CHECK(version_no > 0), status TEXT NOT NULL CHECK(status IN ('DRAFT','PUBLISHED','ARCHIVED')), source_file_sha256 TEXT NOT NULL, row_count INTEGER NOT NULL CHECK(row_count >= 0), created_by TEXT NOT NULL, created_at TEXT NOT NULL, published_by TEXT, published_at TEXT, UNIQUE(model_code, version_no));
+    CREATE TABLE IF NOT EXISTS bom_items(id TEXT PRIMARY KEY, bom_version_id TEXT NOT NULL REFERENCES bom_versions(id) ON DELETE CASCADE, material_id TEXT NOT NULL REFERENCES materials(id), material_code TEXT NOT NULL, material_name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, quantity REAL NOT NULL CHECK(quantity > 0), scrap_rate REAL NOT NULL DEFAULT 0 CHECK(scrap_rate >= 0 AND scrap_rate < 1), substitute_material_codes TEXT NOT NULL DEFAULT '[]', line_no INTEGER NOT NULL, UNIQUE(bom_version_id, material_code));
+    CREATE INDEX IF NOT EXISTS idx_bom_versions_model_status ON bom_versions(model_code, status, version_no);
     -- 订单物料需求：订单 × 设备 × 物料主数据的关联。
     -- material_id 必须指向 materials.id（真实主数据），不可用物料编码或设备编号冒充。
     -- device_id 允许为空，兼容不按设备拆分的订单。
@@ -1468,6 +1474,122 @@ class TransferApproval(BaseModel):
 
 class TransferAction(BaseModel):
     clientOperationId: uuid.UUID
+
+
+# ==================== BOM CSV import (A1) ====================
+BOM_COLUMNS = ("modelCode", "materialCode", "materialName", "specification", "unit", "quantity", "scrapRate", "substituteMaterialCodes")
+BOM_PREVIEWS: dict[str, dict[str, Any]] = {}
+BOM_IMPORT_ROLES = {"ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR"}
+
+
+class BomCommitRequest(BaseModel):
+    previewId: uuid.UUID
+    clientOperationId: uuid.UUID
+    publish: bool = False
+
+
+def _bom_decimal(value: str, *, positive: bool = False, rate: bool = False) -> float | None:
+    from decimal import Decimal, InvalidOperation
+    try:
+        d = Decimal(value.strip())
+    except (InvalidOperation, AttributeError):
+        return None
+    if not d.is_finite() or (positive and d <= 0) or (rate and (d < 0 or d >= 1)):
+        return None
+    if -d.as_tuple().exponent > 6:
+        return None
+    return float(d)
+
+
+def _bom_authorized(user: sqlite3.Row) -> None:
+    if user["role"] not in BOM_IMPORT_ROLES:
+        raise ApiError(403, CODE_FORBIDDEN, "无权执行 BOM 导入")
+
+
+@app.post("/api/v1/boms/import/preview")
+async def preview_bom_import(
+    file: UploadFile = File(...), modelCode: str = Form(...),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _bom_authorized(user)
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise ApiError(413, "BOM_FILE_TOO_LARGE", "文件超过 10MB", trace_id=trace_id)
+    try:
+        text = raw.decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(text, newline="")))
+    except (UnicodeDecodeError, csv.Error):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "CSV 必须为 UTF-8 格式", trace_id=trace_id) from None
+    if not rows or tuple(rows[0].keys()) != BOM_COLUMNS or len(rows) > 20000:
+        raise ApiError(422, "BOM_TEMPLATE_INVALID" if rows and tuple(rows[0].keys()) != BOM_COLUMNS else "BOM_FILE_TOO_LARGE", "CSV 模板或行数无效", trace_id=trace_id)
+    c = db(); material_cols = {r["name"] for r in c.execute("PRAGMA table_info(materials)").fetchall()}
+    code_col = "material_code" if "material_code" in material_cols else "code"
+    valid_items, errors, seen = [], [], set()
+    for line_no, row in enumerate(rows, 2):
+        item_errors = []
+        values = {k: (row.get(k) or "").strip() for k in BOM_COLUMNS}
+        for field in ("modelCode", "materialCode", "materialName", "unit"):
+            if not values[field]: item_errors.append({"lineNo": line_no, "field": field, "code": "REQUIRED", "message": "字段不能为空"})
+        if values["modelCode"] != modelCode:
+            item_errors.append({"lineNo": line_no, "field": "modelCode", "code": "MODEL_MISMATCH", "message": "机型不匹配"})
+        key = (values["modelCode"], values["materialCode"])
+        if key in seen: item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "DUPLICATE", "message": "物料重复"})
+        seen.add(key)
+        quantity = _bom_decimal(values["quantity"], positive=True)
+        scrap = _bom_decimal(values["scrapRate"] or "0", rate=True)
+        if quantity is None: item_errors.append({"lineNo": line_no, "field": "quantity", "code": "INVALID_QUANTITY", "message": "数量必须为正数且最多6位小数"})
+        if scrap is None: item_errors.append({"lineNo": line_no, "field": "scrapRate", "code": "INVALID_SCRAP_RATE", "message": "损耗率必须在[0,1)且最多6位小数"})
+        material = c.execute(f"SELECT * FROM materials WHERE {code_col}=?", (values["materialCode"],)).fetchone()
+        if not material: item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "UNKNOWN_MATERIAL", "message": "物料不存在"})
+        if item_errors: errors.extend(item_errors); continue
+        valid_items.append({"lineNo": line_no, "materialId": material["id"], "materialCode": values["materialCode"], "materialName": values["materialName"], "specification": values["specification"], "unit": values["unit"], "quantity": quantity, "scrapRate": scrap, "substituteMaterialCodes": values["substituteMaterialCodes"]})
+    c.close()
+    pid = str(uuid.uuid4()); digest = hashlib.sha256(raw).hexdigest()
+    BOM_PREVIEWS[pid] = {"userId": user["id"], "created": time.time(), "modelCode": modelCode, "sha": digest, "rows": valid_items, "errors": errors}
+    return {"previewId": pid, "fileSha256": digest, "modelCode": modelCode, "totalRows": len(rows), "validRows": len(valid_items), "invalidRows": len(rows) - len(valid_items), "canCommit": not errors and bool(valid_items), "errors": errors, "warnings": [], "items": valid_items, "traceId": trace_id, "serverTime": now()}
+
+
+@app.post("/api/v1/boms/import/commit")
+def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    _bom_authorized(user); trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    operation_id = str(body.clientOperationId); payload = json.dumps(body.model_dump(mode="json"), sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM audit_events WHERE event_type='BOM_IMPORT' AND client_operation_id=?", (operation_id,)).fetchone()
+        if prior:
+            if prior["before_json"] != payload: raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["after_json"]); result.update(idempotent=True, traceId=trace_id); c.rollback(); return result
+        preview = BOM_PREVIEWS.get(str(body.previewId))
+        if not preview or preview["userId"] != user["id"] or time.time() - preview["created"] > 1800:
+            raise ApiError(409, "BOM_PREVIEW_EXPIRED", "预览不存在、已过期或不属于当前用户", trace_id=trace_id)
+        if preview["errors"] or not preview["rows"]: raise ApiError(422, "BOM_VALIDATION_FAILED", "预览包含错误", trace_id=trace_id)
+        if not c.execute("SELECT 1 FROM production_order_models WHERE model_code=?", (preview["modelCode"],)).fetchone():
+            raise ApiError(422, "MODEL_NOT_FOUND", "机型不存在", trace_id=trace_id)
+        version = c.execute("SELECT COALESCE(MAX(version_no),0)+1 n FROM bom_versions WHERE model_code=?", (preview["modelCode"],)).fetchone()["n"]
+        vid, ts = str(uuid.uuid4()), now(); status = "PUBLISHED" if body.publish else "DRAFT"
+        c.execute("INSERT INTO bom_versions VALUES(?,?,?,?,?,?,?,?,?,?)", (vid, preview["modelCode"], version, status, preview["sha"], len(preview["rows"]), user["id"], ts, user["id"] if body.publish else None, ts if body.publish else None))
+        for item in preview["rows"]:
+            c.execute("INSERT INTO bom_items VALUES(?,?,?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), vid, item["materialId"], item["materialCode"], item["materialName"], item["specification"], item["unit"], item["quantity"], item["scrapRate"], json.dumps([x for x in item["substituteMaterialCodes"].split(';') if x]), item["lineNo"]))
+        if body.publish: c.execute("UPDATE bom_versions SET status='ARCHIVED' WHERE model_code=? AND status='PUBLISHED' AND id<>?", (preview["modelCode"], vid))
+        result = {"bomVersionId": vid, "modelCode": preview["modelCode"], "versionNo": version, "status": status, "itemCount": len(preview["rows"]), "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("BOM_IMPORT", "BOM_VERSION", vid, user["id"], user["role"], trace_id, operation_id, payload, json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"))
+        c.commit(); return result
+    except ApiError: c.rollback(); raise
+    finally: c.close()
+
+
+@app.get("/api/v1/boms/versions")
+def list_bom_versions(modelCode: str | None = None, status: str | None = None, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=100), user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    _bom_authorized(user); c = db(); where, args = [], []
+    if modelCode: where.append("model_code=?"); args.append(modelCode)
+    if status: where.append("status=?"); args.append(status)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""; total = c.execute("SELECT COUNT(*) n FROM bom_versions" + clause, args).fetchone()["n"]
+    rows = c.execute("SELECT id,model_code,version_no,status,source_file_sha256,row_count,created_by,created_at,published_by,published_at FROM bom_versions" + clause + " ORDER BY created_at DESC LIMIT ? OFFSET ?", args + [pageSize, (page - 1) * pageSize]).fetchall(); c.close()
+    return {"items": [dict(r) for r in rows], "page": page, "pageSize": pageSize, "total": total, "serverTime": now()}
 
 
 @app.get("/healthz")
