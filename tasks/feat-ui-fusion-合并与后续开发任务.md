@@ -7,7 +7,9 @@
 - [x] 规格补遗 §8/§9（技术栈取舍 + 接口一致性约束）已提交 `e5dabb6` 并推送。
 - [x] **P0-1 API 地址去敏感化**（commit `f2056ed`，已合入并推送）：`MaterialFlowApi.kt` 删除真实 IP，`baseUrl` 改为 BuildConfig 注入 + 无效占位回退；`AndroidManifest.xml` 移除 `usesCleartextTraffic`；接收端重建 `:app:assembleDebug` BUILD SUCCESSFUL；全树 IP grep 0 命中。
 - [x] P0-4 请求类型统一：已核实通过——代码中 `PRODUCTION_ORDER`/`MATERIAL_CODE`/`LOCATION_CODE`/`FLOW_RECORD` 已对齐契约，`LOGISTICS_NO` 仅存在于模型文档注释（说明已删除该语义），非运行时分支，无需改动。
-- [x] **P0-2 文案与品牌清理**：已派发 Hermes 子 Agent（独立 worktree `/tmp/mf-p0-copy`，基线 `b3b514b`）——Android 源码运行时 UI 文案中"物流/线边库/配送工位/承运商/运输中"等禁用术语清洗，保持包名与 API 契约不变。
+- [x] **P0-2 文案与品牌清理**（commit `fb8f1b7`，已合入并推送）：`Models.kt` 与 `Theme.kt` 两条注释改写为厂内物料流转中性措辞；全树禁用术语复扫 0 命中；接收端重建 BUILD SUCCESSFUL。
+- [x] **P0-3 明文 HTTP 门禁**：`AndroidManifest.xml` 已移除 `usesCleartextTraffic`（随 P0-1 `f2056ed`）；正式部署时 API 走 HTTPS（CI 注入域名），构建变体未再放行明文。
+- [~] **P0-5 历史敏感扫描**：当前树 0 残留（✅）；但 VPS 地址 `107.173.70.115` 存在于 4 个历史 commit（`99c230c`、`cbbe1c2`、`d5903a9`、`f2056ed` 修改记录）。该仓库为私有且当前树干净，是否 rewrite 历史（git filter-repo）+ 全端强推待老王决策。
 - [ ] 暂不合并到 `main`：P0 修复未全部完成。
 - [ ] 业务源码修改由 Codex 在隔离 worktree 执行，架构 Agent 仅验收 docs/tasks 与门禁结果。
 
