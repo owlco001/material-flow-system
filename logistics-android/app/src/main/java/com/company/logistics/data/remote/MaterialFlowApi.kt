@@ -1,5 +1,6 @@
 package com.company.logistics.data.remote
 
+import com.company.logistics.BuildConfig
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.ScanResult
@@ -281,14 +282,22 @@ typealias LoginResultDto = com.company.logistics.model.LoginResult
 /**
  * API 配置。
  * 契约要求：生产环境通过 HTTPS 配置，客户端不得硬编码 IP。
- * 此处提供构建期注入入口，默认指向测试环境。
+ * 正式/测试地址通过 BuildConfig.MATERIAL_FLOW_API_BASE_URL 注入，禁止在源码中写入任何真实 IP。
  */
 object ApiConfig {
+    private const val PLACEHOLDER_BASE_URL = "http://127.0.0.1:0"
+
+    /** 构建期注入的 API 地址（CI/部署用变量覆盖，默认占位值） */
+    val baseUrlFromBuildConfig: String = BuildConfig.MATERIAL_FLOW_API_BASE_URL
+
     /**
-     * 测试环境地址。正式环境应通过 BuildConfig 或远程配置下发 HTTPS 域名。
-     * TODO(部署): 替换为 HTTPS 正式域名，并移除明文流量许可（AndroidManifest）。
+     * 默认值为无效占位地址，防止误连；运行时若 UI 显式赋值则优先使用。
      */
-    var baseUrl: String = "http://107.173.70.115:8000"
+    var baseUrl: String = when {
+        baseUrlFromBuildConfig.isNotBlank() && baseUrlFromBuildConfig != PLACEHOLDER_BASE_URL ->
+            baseUrlFromBuildConfig
+        else -> PLACEHOLDER_BASE_URL
+    }
     var connectTimeoutMs: Int = 10_000
     var readTimeoutMs: Int = 15_000
 }

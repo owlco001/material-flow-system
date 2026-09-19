@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:allowBackup="false" android:usesCleartextTraffic="true" android:label="物料流转" android:supportsRtl="true" android:theme="@style/Theme.Logistics">
+    <application android:allowBackup="false" android:label="物料流转" android:supportsRtl="true" android:theme="@style/Theme.Logistics">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -14,13 +14,15 @@ android {
         targetSdk = 34
         versionCode = 3
         versionName = "0.3.0"
+        // API 基地址注入：部署/CI 时用变量覆盖此占位值，禁止在源码中写入真实 IP
+        buildConfigField("String", "MATERIAL_FLOW_API_BASE_URL", "\"http://127.0.0.1:0\"")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 dependencies {
