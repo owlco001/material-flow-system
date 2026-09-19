@@ -57,7 +57,7 @@ import kotlinx.coroutines.delay
  *    配错地址本身无提权风险，且现场常有运维代配的需求；
  *  - 保存后提供「测试连通性」，但不强制通过才允许保存 ——
  *    后端可能暂时没起来，不应因此卡住配置流程；
- *  - 明文 http 给出显式警示，但不阻止（内网部署的常态）。
+ *  - Debug 下的明文 http 给出显式警示；Release 只接受 HTTPS。
  */
 @Composable
 fun EndpointConfigScreen(
@@ -279,7 +279,7 @@ fun EndpointConfigScreen(
                         "Debug 验收版本允许受控内网使用明文 HTTP，但流量可被同网段嗅探或篡改；" +
                             "仅限受控内网使用，生产环境请改用 HTTPS。"
                     } else {
-                        "正式版不允许明文 HTTP，请改用 HTTPS 证书地址。"
+                        "正式版不允许明文 HTTP；请使用 HTTPS 证书地址。"
                     },
                     fontSize = 12.sp,
                     color = colors.textSecondary,
@@ -346,7 +346,7 @@ private object EndpointTester {
             } catch (e: java.net.SocketTimeoutException) {
                 TestResult(false, "连接超时 · 地址可能不可达，或端口未开放")
             } catch (e: javax.net.ssl.SSLException) {
-                TestResult(false, "TLS 握手失败 · 若为自签证书需改用 http 或配置信任链")
+                TestResult(false, "TLS 握手失败 · 请检查 HTTPS 证书或配置受信任的证书链")
             } catch (e: java.io.IOException) {
                 // 明文策略已放开，理论上不会被系统拦截；
                 // 保留该分支以防后续收窄为白名单时静默失败。

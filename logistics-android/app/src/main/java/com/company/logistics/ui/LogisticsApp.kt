@@ -112,7 +112,7 @@ fun LogisticsApp(
                         loading = state.loading,
                         errorMessage = state.error,
                         deviceId = remember { DeviceId.value },
-                        endpointConfigured = !endpointStore.usingBuildDefault && !endpointStore.isPlaceholder,
+                        endpointConfigured = endpointStore.isConfigured,
                         onOpenEndpointConfig = { showUnauthenticatedEndpointConfig = true },
                         onLogin = { u, p, d, remember -> viewModel.login(u, p, d, remember) }
                     )
@@ -225,7 +225,7 @@ fun LogisticsApp(
                         onEnterPreview = { viewModel.enterRolePreview(it) },
                         onExitPreview = { viewModel.exitRolePreview() },
                         onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
-                        endpointConfigured = !endpointStore.usingBuildDefault && !endpointStore.isPlaceholder,
+                        endpointConfigured = endpointStore.isConfigured,
                         assemblyTasks = state.assemblyTasks,
                         assemblyTaskState = state.assemblyTaskState,
                         assemblyTaskError = state.assemblyTaskError,
@@ -373,7 +373,7 @@ fun LogisticsApp(
                         role = state.role,
                         queue = state.offlineQueue,
                         endpointUrl = endpointStore.effectiveUrl,
-                        endpointConfigured = !endpointStore.usingBuildDefault,
+                        endpointConfigured = endpointStore.isConfigured,
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
                         onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
                         onLogout = { viewModel.logout() }

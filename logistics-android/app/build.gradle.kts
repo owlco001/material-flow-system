@@ -7,10 +7,13 @@ plugins {
 
 /**
  * API 根地址，构建期注入，源码与仓库不落真实端点。
- * 优先级：-PapiBaseUrl > gradle.properties(apiBaseUrl) > 环境变量 API_BASE_URL > 占位值
+ * 优先级：-PapiBaseUrl=...（Gradle 属性键 apiBaseUrl） > gradle.properties(apiBaseUrl)
+ * > 环境变量 API_BASE_URL > 占位值
  */
-val apiBaseUrl: String = (project.findProperty("apiBaseUrl") as String?)
-    ?: System.getenv("API_BASE_URL")
+val apiBaseUrl: String = sequenceOf(
+    project.findProperty("apiBaseUrl") as String?,
+    System.getenv("API_BASE_URL"),
+).filterNotNull().firstOrNull { it.isNotBlank() }
     ?: "https://api.example.invalid"
 
 // BuildConfig is generated Kotlin/Java source, so escape build-time input before embedding it.

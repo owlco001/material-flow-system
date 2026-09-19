@@ -79,6 +79,30 @@ class EndpointStoreTest {
         }
     }
 
+    @Test
+    fun placeholderDetectionMatchesExactHostCaseInsensitively() {
+        assertTrue(EndpointStore.isPlaceholderUrl("https://api.example.invalid"))
+        assertTrue(EndpointStore.isPlaceholderUrl("https://API.EXAMPLE.INVALID/v1"))
+        assertFalse(EndpointStore.isPlaceholderUrl("https://api.example.invalid.example.com"))
+        assertFalse(EndpointStore.isPlaceholderUrl("https://example.com/api.example.invalid"))
+    }
+
+    @Test
+    fun validBuildDefaultIsConfiguredEvenWithoutSavedOverride() {
+        assertTrue(EndpointStore.isConfiguredUrl("https://api.example.com"))
+        assertFalse(EndpointStore.isConfiguredUrl("https://api.example.invalid"))
+        assertFalse(EndpointStore.isConfiguredUrl("not a url"))
+    }
+
+    @Test
+    fun clearRemovesOverrideAndFallsBackToBuildDefault() {
+        val store = newStore()
+        assertTrue(store.save("https://api.example.com").isSuccess)
+        store.clear()
+        assertNull(store.savedUrl)
+        assertEquals(BuildConfig.API_BASE_URL, store.effectiveUrl)
+    }
+
     private val preferencesBackingStore = linkedMapOf<String, String?>()
 
     private fun newStore(): EndpointStore {

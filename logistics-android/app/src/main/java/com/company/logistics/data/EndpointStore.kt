@@ -35,9 +35,12 @@ class EndpointStore private constructor(
     /** 是否正在使用构建期默认值（未人工配置） */
     val usingBuildDefault: Boolean get() = savedUrl.isNullOrBlank()
 
+    /** 当前生效地址是否可用于登录。构建注入的合法地址也算已配置。 */
+    val isConfigured: Boolean get() = isConfiguredUrl(effectiveUrl)
+
     /** 是否命中占位符 —— 说明既没配也没注入，必然连不上 */
     val isPlaceholder: Boolean
-        get() = effectiveUrl.contains("example.invalid")
+        get() = isPlaceholderUrl(effectiveUrl)
 
     fun save(rawUrl: String): Result<String> {
         val normalized = normalize(rawUrl)
@@ -106,5 +109,14 @@ class EndpointStore private constructor(
             runCatching { URL(s) }.getOrNull() ?: return null
             return s
         }
+
+        /** Placeholder matching is deliberately host-exact, not a substring check. */
+        fun isPlaceholderUrl(url: String): Boolean {
+            val host = runCatching { URI(url).host }.getOrNull() ?: return false
+            return host.equals("api.example.invalid", ignoreCase = true)
+        }
+
+        fun isConfiguredUrl(url: String): Boolean =
+            normalize(url) != null && !isPlaceholderUrl(url)
     }
 }
