@@ -339,3 +339,98 @@ data class OfflineOperation(
     val serverTime: String? = null,
     val errorMessage: String? = null
 )
+// ==================== P1 生产订单读接口（契约 §3.1） ====================
+
+/** 生产订单摘要 —— GET /api/v1/production-orders items */
+data class ProductionOrderSummary(
+    val orderNo: String,
+    val productName: String,
+    val plannedQuantity: Int,
+    val plannedDeliveryDate: String?,
+    val status: String,
+    val modelCount: Int,
+    /** 齐套率 0-100（服务端下发） */
+    val materialCompletionRate: Int,
+    val shortageCount: Int,
+    val lastFlowAt: String?,
+    val createdAt: String,
+    val updatedAt: String
+)
+
+/** 订单详情中的机型摘要 */
+data class ProductionOrderModel(
+    val modelCode: String,
+    val modelName: String,
+    val plannedQuantity: Int,
+    val status: String,
+    val requiredMaterialCount: Int,
+    val shortageMaterialCount: Int,
+    /** 完成度 0-100（服务端下发） */
+    val completionRate: Int
+)
+
+/** GET /api/v1/production-orders/{orderNo} 响应 */
+data class ProductionOrderDetail(
+    val order: ProductionOrderSummary,
+    val models: List<ProductionOrderModel>,
+    val serverTime: String?
+)
+
+/** 机型物料需求视图 —— GET .../models/{modelCode} requirements */
+data class ModelRequirementView(
+    val materialId: String,
+    val materialCode: String,
+    val materialName: String,
+    val specification: String?,
+    val unit: String,
+    val batchNo: String?,
+    val requiredQuantity: Int,
+    val arrivedQuantity: Int,
+    val inStockQuantity: Int,
+    val issuedQuantity: Int,
+    val availableQuantity: Int,
+    val shortageQuantity: Int,
+    /** SHORTAGE / IN_PROCESS / AVAILABLE（服务端推导，客户端不自行推导） */
+    val statusCode: String,
+    val label: String,
+    val colorToken: String
+)
+
+/** GET .../models/{modelCode} 响应（机型详情 + 物料需求） */
+data class ModelDetail(
+    val model: ProductionOrderModel,
+    val requirements: List<ModelRequirementView>,
+    val serverTime: String?
+)
+
+/** 流转记录视图 —— GET .../models/{modelCode}/flow-records items */
+data class FlowRecordView(
+    val flowNo: String,
+    val documentNo: String?,
+    val type: String,
+    val quantityTotal: Int,
+    val status: String,
+    val createdBy: String,
+    val createdAt: String,
+    val approvedBy: String?,
+    val approvedAt: String?,
+    val executedAt: String?,
+    val materialCodes: List<String>
+)
+
+/** 通用分页包装（契约 §3.1：items / page / pageSize / total / serverTime） */
+data class PagedProductionOrders(
+    val items: List<ProductionOrderSummary>,
+    val page: Int,
+    val pageSize: Int,
+    val total: Int,
+    val serverTime: String?
+)
+
+data class PagedFlowRecords(
+    val items: List<FlowRecordView>,
+    val page: Int,
+    val pageSize: Int,
+    val total: Int,
+    val serverTime: String?
+)

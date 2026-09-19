@@ -3,14 +3,22 @@ package com.company.logistics.data.remote
 import com.company.logistics.model.ApprovalStatus
 import com.company.logistics.model.FlowStatus
 import com.company.logistics.model.FlowType
+import com.company.logistics.model.FlowRecordView
 import com.company.logistics.model.Inventory
 import com.company.logistics.model.LocationStock
 import com.company.logistics.model.LoginResult
 import com.company.logistics.model.Material
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.MaterialStatusCode
+import com.company.logistics.model.ModelDetail
+import com.company.logistics.model.ModelRequirementView
 import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.PagedFlowRecords
+import com.company.logistics.model.PagedProductionOrders
+import com.company.logistics.model.ProductionOrderDetail
+import com.company.logistics.model.ProductionOrderModel
+import com.company.logistics.model.ProductionOrderSummary
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.User
@@ -159,6 +167,155 @@ object ApiParser {
             sha256 = root.optString("sha256")
         )
     }
+
+    // ==================== P1 生产订单读接口（契约 §3.1） ====================
+
+    /** GET /api/v1/production-orders → PagedProductionOrders */
+    fun parseProductionOrderList(json: String): PagedProductionOrders {
+        val root = JSONObject(json)
+        val items = mutableListOf<ProductionOrderSummary>()
+        val arr = root.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            items += ProductionOrderSummary(
+                orderNo = o.optString("orderNo"),
+                productName = o.optString("productName"),
+                plannedQuantity = o.optInt("plannedQuantity"),
+                plannedDeliveryDate = o.optString("plannedDeliveryDate")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                status = o.optString("status"),
+                modelCount = o.optInt("modelCount"),
+                materialCompletionRate = o.optInt("materialCompletionRate"),
+                shortageCount = o.optInt("shortageCount"),
+                lastFlowAt = o.optString("lastFlowAt")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                createdAt = o.optString("createdAt"),
+                updatedAt = o.optString("updatedAt")
+            )
+        }
+        return PagedProductionOrders(
+            items = items,
+            page = root.optInt("page", 1),
+            pageSize = root.optInt("pageSize", 20),
+            total = root.optInt("total"),
+            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
+        )
+    }
+
+    /** GET /api/v1/production-orders/{orderNo} → ProductionOrderDetail */
+    fun parseProductionOrderDetail(json: String): ProductionOrderDetail {
+        val root = JSONObject(json)
+        val o = root.getJSONObject("order")
+        val summary = ProductionOrderSummary(
+            orderNo = o.optString("orderNo"),
+            productName = o.optString("productName"),
+            plannedQuantity = o.optInt("plannedQuantity"),
+            plannedDeliveryDate = o.optString("plannedDeliveryDate")
+                .takeIf { it.isNotBlank() && it != "null" },
+            status = o.optString("status"),
+            modelCount = 0,
+            materialCompletionRate = 0,
+            shortageCount = 0,
+            lastFlowAt = null,
+            createdAt = o.optString("createdAt"),
+            updatedAt = o.optString("updatedAt")
+        )
+        val models = mutableListOf<ProductionOrderModel>()
+        val arr = root.optJSONArray("models") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            models += parseModel(arr.getJSONObject(i))
+        }
+        return ProductionOrderDetail(
+            order = summary,
+            models = models,
+            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
+        )
+    }
+
+    /** GET .../models/{modelCode} → ModelDetail */
+    fun parseModelDetail(json: String): ModelDetail {
+        val root = JSONObject(json)
+        val model = parseModel(root.getJSONObject("model"))
+        val reqs = mutableListOf<ModelRequirementView>()
+        val arr = root.optJSONArray("requirements") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            reqs += parseRequirement(arr.getJSONObject(i))
+        }
+        return ModelDetail(
+            model = model,
+            requirements = reqs,
+            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
+        )
+    }
+
+    /** GET .../models/{modelCode}/flow-records → PagedFlowRecords */
+    fun parseModelFlowRecords(json: String): PagedFlowRecords {
+        val root = JSONObject(json)
+        val items = mutableListOf<FlowRecordView>()
+        val arr = root.optJSONArray("items") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val codes = mutableListOf<String>()
+            val codesArr = o.optJSONArray("materialCodes") ?: JSONArray()
+            for (j in 0 until codesArr.length()) {
+                val c = codesArr.optString(j)
+                if (c.isNotBlank()) codes += c
+            }
+            items += FlowRecordView(
+                flowNo = o.optString("flowNo"),
+                documentNo = o.optString("documentNo")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                type = o.optString("type"),
+                quantityTotal = o.optInt("quantityTotal"),
+                status = o.optString("status"),
+                createdBy = o.optString("createdBy"),
+                createdAt = o.optString("createdAt"),
+                approvedBy = o.optString("approvedBy")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                approvedAt = o.optString("approvedAt")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                executedAt = o.optString("executedAt")
+                    .takeIf { it.isNotBlank() && it != "null" },
+                materialCodes = codes
+            )
+        }
+        return PagedFlowRecords(
+            items = items,
+            page = root.optInt("page", 1),
+            pageSize = root.optInt("pageSize", 50),
+            total = root.optInt("total"),
+            serverTime = root.optString("serverTime").takeIf { it.isNotBlank() }
+        )
+    }
+
+    private fun parseModel(o: JSONObject): ProductionOrderModel = ProductionOrderModel(
+        modelCode = o.optString("modelCode"),
+        modelName = o.optString("modelName"),
+        plannedQuantity = o.optInt("plannedQuantity"),
+        status = o.optString("status"),
+        requiredMaterialCount = o.optInt("requiredMaterialCount"),
+        shortageMaterialCount = o.optInt("shortageMaterialCount"),
+        completionRate = o.optInt("completionRate")
+    )
+
+    private fun parseRequirement(o: JSONObject): ModelRequirementView = ModelRequirementView(
+        materialId = o.optString("materialId"),
+        materialCode = o.optString("materialCode"),
+        materialName = o.optString("materialName"),
+        specification = o.optString("specification")
+            .takeIf { it.isNotBlank() && it != "null" },
+        unit = o.optString("unit").ifBlank { "件" },
+        batchNo = o.optString("batchNo").takeIf { it.isNotBlank() && it != "null" },
+        requiredQuantity = o.optInt("requiredQuantity"),
+        arrivedQuantity = o.optInt("arrivedQuantity"),
+        inStockQuantity = o.optInt("inStockQuantity"),
+        issuedQuantity = o.optInt("issuedQuantity"),
+        availableQuantity = o.optInt("availableQuantity"),
+        shortageQuantity = o.optInt("shortageQuantity"),
+        statusCode = o.optString("statusCode"),
+        label = o.optString("label"),
+        colorToken = o.optString("colorToken")
+    )
 
     /**
      * 契约 5 统一错误结构：code / message / traceId / retryable / details

@@ -4,11 +4,16 @@ import android.content.Context
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.TransferItem
+import com.company.logistics.model.FlowRecordView
 import com.company.logistics.model.LoginResult
 import com.company.logistics.model.MaterialInventory
+import com.company.logistics.model.ModelDetail
 import com.company.logistics.model.OfflineOpType
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.PagedFlowRecords
+import com.company.logistics.model.PagedProductionOrders
+import com.company.logistics.model.ProductionOrderDetail
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.SyncStatus
 import kotlinx.coroutines.flow.Flow
@@ -52,6 +57,35 @@ class LogisticsRepository(
 
     suspend fun orderMaterialStatus(documentNo: String): Result<OrderMaterialStatus> = runCatching {
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo)
+    }
+
+    // ==================== P1 生产订单读接口（契约 §3.1） ====================
+
+    suspend fun listProductionOrders(
+        page: Int = 1,
+        pageSize: Int = 20,
+        keyword: String? = null,
+        status: String? = null
+    ): Result<PagedProductionOrders> = runCatching {
+        api.listProductionOrders(page, pageSize, keyword, status)
+    }
+
+    suspend fun getProductionOrder(orderNo: String): Result<ProductionOrderDetail> = runCatching {
+        api.getProductionOrder(orderNo)
+    }
+
+    suspend fun getModelDetail(orderNo: String, modelCode: String): Result<ModelDetail> = runCatching {
+        api.getModelDetail(orderNo, modelCode)
+    }
+
+    suspend fun listModelFlowRecords(
+        orderNo: String,
+        modelCode: String,
+        page: Int = 1,
+        pageSize: Int = 50,
+        flowType: String? = null
+    ): Result<PagedFlowRecords> = runCatching {
+        api.listModelFlowRecords(orderNo, modelCode, page, pageSize, flowType)
     }
 
     // ==================== 写操作（离线优先） ====================

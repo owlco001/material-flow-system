@@ -6,8 +6,12 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
 import com.company.logistics.model.MaterialInventory
+import com.company.logistics.model.ModelDetail
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.PagedFlowRecords
+import com.company.logistics.model.PagedProductionOrders
+import com.company.logistics.model.ProductionOrderDetail
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.UserRole
@@ -22,6 +26,8 @@ import kotlinx.coroutines.launch
  */
 enum class Screen(val title: String) {
     LOGIN("登录"),
+    ORDER_LIST("订单列表"),
+    MODEL_DETAIL("机型详情"),
     SCANNER("扫码作业"),
     MATERIAL_DETAIL("物料详情"),
     ORDER_DETAIL("订单物料状态"),
@@ -36,7 +42,7 @@ enum class Screen(val title: String) {
 /** 底部导航项 —— 图标用具名语义符号，避免引入图标库依赖 */
 enum class NavTab(val label: String, val symbol: String, val screen: Screen) {
     SCAN("扫码", "⊞", Screen.SCANNER),
-    ORDER("订单", "☰", Screen.ORDER_DETAIL),
+    ORDER("订单", "☰", Screen.ORDER_LIST),
     INVENTORY("库存", "▤", Screen.INVENTORY),
     QUEUE("记录", "↻", Screen.QUEUE),
     APPROVAL("审批", "✓", Screen.APPROVAL),
@@ -63,6 +69,20 @@ data class LogisticsUiState(
     val lastScan: ScanResult? = null,
     val materialInventory: MaterialInventory? = null,
     val orderStatus: OrderMaterialStatus? = null,
+
+    // P1 生产订单（契约 §3.1）
+    val orderList: PagedProductionOrders? = null,
+    val orderListKeyword: String = "",
+    val orderListLoading: Boolean = false,
+    val orderListError: String? = null,
+    val productionOrderDetail: ProductionOrderDetail? = null,
+    val productionOrderNo: String? = null,
+    val productionOrderLoading: Boolean = false,
+    val productionOrderError: String? = null,
+    val modelDetail: ModelDetail? = null,
+    val modelFlowRecords: PagedFlowRecords? = null,
+    val modelFlowRecordsLoading: Boolean = false,
+    val modelFlowRecordsError: String? = null,
 
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
@@ -221,6 +241,102 @@ class LogisticsViewModel(
             .onFailure { e ->
                 _state.update { it.copy(loading = false, error = e.message ?: "订单查询失败") }
             }
+    }
+
+    // ==================== P1 生产订单（契约 §3.1） ====================
+
+    /** 加载订单列表（首页 + 可选关键词） */
+    fun loadOrderList(keyword: String? = null, page: Int = 1) {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    orderListKeyword = keyword ?: "",
+                    orderListLoading = true,
+                    orderListError = null,
+                    screen = Screen.ORDER_LIST
+                )
+            }
+            repo.listProductionOrders(page = page, keyword = keyword)
+                .onSuccess { paged ->
+                    _state.update { it.copy(orderList = paged, orderListLoading = false) }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(orderListLoading = false, orderListError = e.message ?: "订单列表加载失败")
+                    }
+                }
+        }
+    }
+
+    /** 加载订单详情（订单头 + 机型列表） */
+    fun loadProductionOrder(orderNo: String) {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    productionOrderNo = orderNo,
+                    productionOrderDetail = null,
+                    productionOrderLoading = true,
+                    productionOrderError = null,
+                    modelDetail = null,
+                    modelFlowRecords = null,
+                    screen = Screen.ORDER_DETAIL
+                )
+            }
+            repo.getProductionOrder(orderNo)
+                .onSuccess { detail ->
+                    _state.update { it.copy(productionOrderDetail = detail, productionOrderLoading = false) }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            productionOrderLoading = false,
+                            productionOrderError = e.message ?: "订单详情加载失败"
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 加载机型详情（物料需求）+ 该机型流转记录 */
+    fun loadModelDetail(orderNo: String, modelCode: String) {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    productionOrderNo = orderNo,
+                    modelDetail = null,
+                    modelFlowRecords = null,
+                    modelFlowRecordsLoading = true,
+                    modelFlowRecordsError = null,
+                    productionOrderLoading = true,
+                    productionOrderError = null,
+                    screen = Screen.MODEL_DETAIL
+                )
+            }
+            repo.getModelDetail(orderNo, modelCode)
+                .onSuccess { detail ->
+                    _state.update { it.copy(modelDetail = detail, productionOrderLoading = false) }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            productionOrderLoading = false,
+                            productionOrderError = e.message ?: "机型详情加载失败"
+                        )
+                    }
+                }
+            repo.listModelFlowRecords(orderNo, modelCode)
+                .onSuccess { paged ->
+                    _state.update { it.copy(modelFlowRecords = paged, modelFlowRecordsLoading = false) }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            modelFlowRecordsLoading = false,
+                            modelFlowRecordsError = e.message ?: "流转记录加载失败"
+                        )
+                    }
+                }
+        }
     }
 
     // ==================== 表单 ====================

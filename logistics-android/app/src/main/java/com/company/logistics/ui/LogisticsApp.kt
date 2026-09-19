@@ -38,7 +38,9 @@ import com.company.logistics.ui.screens.ApprovalScreen
 import com.company.logistics.ui.screens.InventoryScreen
 import com.company.logistics.ui.screens.LoginScreen
 import com.company.logistics.ui.screens.MaterialDetailScreen
+import com.company.logistics.ui.screens.ModelDetailScreen
 import com.company.logistics.ui.screens.OrderDetailScreen
+import com.company.logistics.ui.screens.OrderListScreen
 import com.company.logistics.ui.screens.ProfileScreen
 import com.company.logistics.ui.screens.QueueScreen
 import com.company.logistics.ui.screens.ScannerScreen
@@ -46,6 +48,7 @@ import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsTypography
 import com.company.logistics.ui.theme.Spacing
+import com.company.logistics.model.ModelDetail
 import java.util.UUID
 
 /**
@@ -162,6 +165,39 @@ fun LogisticsApp(viewModel: LogisticsViewModel) {
                     Screen.ORDER_DETAIL -> OrderDetailScreen(
                         status = state.orderStatus,
                         loading = state.loading
+                    )
+
+                    Screen.ORDER_LIST -> OrderListScreen(
+                        paged = state.orderList,
+                        orderDetail = state.productionOrderDetail,
+                        orderDetailLoading = state.productionOrderLoading,
+                        orderDetailError = state.productionOrderError,
+                        loading = state.orderListLoading,
+                        error = state.orderListError,
+                        onSearch = { keyword ->
+                            viewModel.loadOrderList(keyword = keyword)
+                        },
+                        onOpenOrder = { orderNo -> viewModel.loadProductionOrder(orderNo) },
+                        onOpenModel = { modelCode ->
+                            state.productionOrderNo?.let {
+                                viewModel.loadModelDetail(it, modelCode)
+                            }
+                        },
+                        onBackFromDetail = {
+                            viewModel.navigate(Screen.ORDER_LIST)
+                        }
+                    )
+
+                    Screen.MODEL_DETAIL -> ModelDetailScreen(
+                        model = state.modelDetail?.model,
+                        detail = state.modelDetail,
+                        flowRecords = state.modelFlowRecords,
+                        loading = state.modelFlowRecordsLoading || state.productionOrderLoading,
+                        error = state.modelFlowRecordsError ?: state.productionOrderError,
+                        onBack = {
+                            state.productionOrderNo?.let { viewModel.loadProductionOrder(it) }
+                                ?: viewModel.navigate(Screen.ORDER_LIST)
+                        }
                     )
 
                     Screen.QUEUE -> QueueScreen(

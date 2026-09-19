@@ -2,7 +2,11 @@ package com.company.logistics.data.remote
 
 import com.company.logistics.BuildConfig
 import com.company.logistics.model.MaterialInventory
+import com.company.logistics.model.ModelDetail
 import com.company.logistics.model.OrderMaterialStatus
+import com.company.logistics.model.PagedFlowRecords
+import com.company.logistics.model.PagedProductionOrders
+import com.company.logistics.model.ProductionOrderDetail
 import com.company.logistics.model.ScanResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -208,6 +212,63 @@ class MaterialFlowApi(
         ApiParser.parseFileUpload(
             text ?: throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true)
         )
+    }
+
+    // ==================== P1 生产订单读接口（契约 §3.1） ====================
+
+    /** 订单列表（分页 + 可选 keyword / status 过滤） */
+    suspend fun listProductionOrders(
+        page: Int = 1,
+        pageSize: Int = 20,
+        keyword: String? = null,
+        status: String? = null
+    ): PagedProductionOrders = withContext(Dispatchers.IO) {
+        val query = buildList {
+            add("page=$page")
+            add("pageSize=$pageSize")
+            if (!keyword.isNullOrBlank()) add("keyword=${java.net.URLEncoder.encode(keyword, Charsets.UTF_8)}")
+            if (!status.isNullOrBlank()) add("status=${java.net.URLEncoder.encode(status, Charsets.UTF_8)}")
+        }.joinToString("&")
+        ApiParser.parseProductionOrderList(request("GET", "/api/v1/production-orders?$query", null))
+    }
+
+    /** 订单详情（订单头 + 机型列表） */
+    suspend fun getProductionOrder(orderNo: String): ProductionOrderDetail =
+        withContext(Dispatchers.IO) {
+            ApiParser.parseProductionOrderDetail(
+                request("GET", "/api/v1/production-orders/${java.net.URLEncoder.encode(orderNo, Charsets.UTF_8)}", null)
+            )
+        }
+
+    /** 机型详情（机型摘要 + 物料需求） */
+    suspend fun getModelDetail(orderNo: String, modelCode: String): ModelDetail =
+        withContext(Dispatchers.IO) {
+            val path = "/api/v1/production-orders/" +
+                java.net.URLEncoder.encode(orderNo, Charsets.UTF_8) +
+                "/models/" +
+                java.net.URLEncoder.encode(modelCode, Charsets.UTF_8)
+            ApiParser.parseModelDetail(request("GET", path, null))
+        }
+
+    /** 机型流转记录（分页 + 可选 flowType 过滤） */
+    suspend fun listModelFlowRecords(
+        orderNo: String,
+        modelCode: String,
+        page: Int = 1,
+        pageSize: Int = 50,
+        flowType: String? = null
+    ): PagedFlowRecords = withContext(Dispatchers.IO) {
+        val query = buildList {
+            add("page=$page")
+            add("pageSize=$pageSize")
+            if (!flowType.isNullOrBlank()) add("flowType=${java.net.URLEncoder.encode(flowType, Charsets.UTF_8)}")
+        }.joinToString("&")
+        val path = "/api/v1/production-orders/" +
+            java.net.URLEncoder.encode(orderNo, Charsets.UTF_8) +
+            "/models/" +
+            java.net.URLEncoder.encode(modelCode, Charsets.UTF_8) +
+            "/flow-records?$query"
+        ApiParser.parseModelFlowRecords(request("GET", path, null))
     }
 
     // ==================== 内部实现 ====================
