@@ -187,7 +187,7 @@ enum class ApprovalStatus(val code: String, val label: String) {
 
 /**
  * 扫码结果类型 —— 契约 3 节，并经业务模型更正。
- * 注意：已删除 LOGISTICS_NO（物流号）概念，不再支持外部物流语义。
+ * 注意：已删除 LOGISTICS_NO 概念，仅保留厂内物料流转语义。
  */
 enum class ScanType(val code: String, val label: String) {
     PRODUCTION_ORDER("PRODUCTION_ORDER", "生产订单号"),
