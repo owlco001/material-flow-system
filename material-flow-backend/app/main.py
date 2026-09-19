@@ -77,6 +77,9 @@ def init_db() -> None:
     CREATE TABLE IF NOT EXISTS exceptions(id TEXT PRIMARY KEY, material_id TEXT, type TEXT NOT NULL, book_quantity INTEGER NOT NULL DEFAULT 0, actual_quantity INTEGER NOT NULL DEFAULT 0, difference INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, description TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL, reviewed_by TEXT, reviewed_at TEXT);
     CREATE TABLE IF NOT EXISTS location_bindings(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity >= 0), evidence_ids TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
+    CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL, planned_quantity INTEGER NOT NULL CHECK(planned_quantity >= 0), planned_delivery_date TEXT, status TEXT NOT NULL DEFAULT 'RELEASED', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS production_order_models(id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES production_orders(id), model_code TEXT NOT NULL, model_name TEXT NOT NULL, planned_quantity INTEGER NOT NULL CHECK(planned_quantity >= 0), status TEXT NOT NULL DEFAULT 'INTERNAL_PROCESSING', UNIQUE(order_id, model_code));
+    CREATE TABLE IF NOT EXISTS material_requirements(id TEXT PRIMARY KEY, order_model_id TEXT NOT NULL REFERENCES production_order_models(id), material_id TEXT NOT NULL, required_quantity INTEGER NOT NULL CHECK(required_quantity > 0), arrived_quantity INTEGER NOT NULL DEFAULT 0, in_stock_quantity INTEGER NOT NULL DEFAULT 0, issued_quantity INTEGER NOT NULL DEFAULT 0);
     """)
     if c.execute("SELECT 1 FROM users WHERE username='owlco'").fetchone() is None:
         password = os.environ.get("INITIAL_ADMIN_PASSWORD")
@@ -87,7 +90,18 @@ def init_db() -> None:
         c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)", ("inv_001", "mat_001", "loc_001", 986))
+    production_order_seed(c)
     c.commit(); c.close()
+
+
+def production_order_seed(c: sqlite3.Connection) -> None:
+    """仅当 production_orders 为空时注入确定性演示数据（固定 id，幂等）。"""
+    if c.execute("SELECT 1 FROM production_orders").fetchone() is not None:
+        return
+    ts = now()
+    c.execute("INSERT INTO production_orders VALUES(?,?,?,?,?,?,?,?)", ("ord_001", "SO20260919", "工业轴承总成", 200, "2026-10-05", "RELEASED", ts, ts))
+    c.execute("INSERT INTO production_order_models VALUES(?,?,?,?,?,?)", ("pom_001", "ord_001", "BDX-6205", "6205-2RS 轴承", 200, "INTERNAL_PROCESSING"))
+    c.execute("INSERT INTO material_requirements VALUES(?,?,?,?,?,?,?)", ("mr_001", "pom_001", "mat_001", 200, 986, 986, 0))
 
 
 @app.on_event("startup")
@@ -324,6 +338,186 @@ def create_stocktake(body: dict[str, Any], user: sqlite3.Row = Depends(current_u
     c = db(); material = c.execute("SELECT id,total_quantity FROM materials WHERE code=?", (body.get("materialCode"),)).fetchone()
     if not material: c.close(); raise HTTPException(404, "物料不存在")
     book = body.get("bookQuantity", material["total_quantity"]); sid = "st_" + uuid.uuid4().hex; c.execute("INSERT INTO stocktakes VALUES(?,?,?,?,?,?,?,?,?,?,?)", (sid, material["id"], body.get("locationCode"), book, actual, actual - book, "PENDING_CONFIRM", user["id"], now(), None, None)); audit(c, user["id"], user["role"], "CREATE", "STOCKTAKE", sid); c.commit(); c.close(); return {"stocktakeId": sid, "status": "PENDING_CONFIRM", "difference": actual - book, "serverTime": now()}
+
+
+def _model_requirements(order_model_id: str, c: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = c.execute("""
+    SELECT mr.id, mr.material_id, mr.required_quantity, mr.arrived_quantity, mr.in_stock_quantity, mr.issued_quantity,
+           m.code material_code, m.name material_name, m.specification, m.unit, m.batch_no
+    FROM material_requirements mr LEFT JOIN materials m ON m.id=mr.material_id
+    WHERE mr.order_model_id=? ORDER BY mr.id
+    """, (order_model_id,)).fetchall()
+    result = []
+    for r in rows:
+        available = max(0, r["in_stock_quantity"] - r["issued_quantity"])
+        shortage = max(0, r["required_quantity"] - available)
+        if shortage > 0:
+            status_code, label, color = "SHORTAGE", "缺货", "status-red"
+        elif available < r["required_quantity"]:
+            status_code, label, color = "IN_PROCESS", "部分可用", "status-yellow"
+        else:
+            status_code, label, color = "AVAILABLE", "齐套", "status-green"
+        result.append({
+            "materialId": r["material_id"], "materialCode": r["material_code"], "materialName": r["material_name"],
+            "specification": r["specification"], "unit": r["unit"], "batchNo": r["batch_no"],
+            "requiredQuantity": r["required_quantity"], "arrivedQuantity": r["arrived_quantity"],
+            "inStockQuantity": r["in_stock_quantity"], "issuedQuantity": r["issued_quantity"],
+            "availableQuantity": available, "shortageQuantity": shortage,
+            "statusCode": status_code, "label": label, "colorToken": color,
+        })
+    return result
+
+
+@app.get("/api/v1/production-orders")
+def list_production_orders(page: int = 1, pageSize: int = 20, keyword: str | None = None, status: str | None = None, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    page = max(1, page); pageSize = min(100, max(1, pageSize))
+    c = db()
+    where: list[str] = []; args: list[Any] = []
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("(o.order_no LIKE ? OR o.product_name LIKE ?)"); args.extend([like, like])
+    if status:
+        where.append("o.status = ?"); args.append(status)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    total = c.execute(f"SELECT COUNT(*) FROM production_orders o{where_sql}", args).fetchone()[0]
+    rows = c.execute(
+        f"SELECT o.id, o.order_no, o.product_name, o.planned_quantity, o.planned_delivery_date, o.status, o.created_at, o.updated_at FROM production_orders o{where_sql} ORDER BY o.order_no LIMIT ? OFFSET ?",
+        args + [pageSize, (page - 1) * pageSize]).fetchall()
+    items = []
+    for o in rows:
+        model_count = c.execute("SELECT COUNT(*) FROM production_order_models WHERE order_id=?", (o["id"],)).fetchone()[0]
+        req_rows = c.execute("""
+            SELECT mr.required_quantity, mr.in_stock_quantity, mr.issued_quantity, m.id material_id
+            FROM material_requirements mr JOIN production_order_models m ON m.id=mr.order_model_id
+            WHERE m.order_id=?
+        """, (o["id"],)).fetchall()
+        available_map: dict[str, int] = {}
+        total_required = 0
+        for rr in req_rows:
+            total_required += rr["required_quantity"]
+        # each material contributes its available quantity toward total available; shortage when available < required
+        shortage_count = 0
+        for rr in req_rows:
+            avail = max(0, rr["in_stock_quantity"] - rr["issued_quantity"])
+            if avail < rr["required_quantity"]:
+                shortage_count += 1
+            available_map[rr["material_id"]] = avail
+        available = sum(available_map.values())
+        completion = min(100, int(available * 100 / total_required)) if total_required else 100
+        last_flow_at = c.execute("SELECT MAX(created_at) FROM transfer_requests WHERE document_no=?", (o["order_no"],)).fetchone()[0]
+        items.append({
+            "orderNo": o["order_no"], "productName": o["product_name"], "plannedQuantity": o["planned_quantity"],
+            "plannedDeliveryDate": o["planned_delivery_date"], "status": o["status"], "modelCount": model_count,
+            "materialCompletionRate": completion, "shortageCount": shortage_count, "lastFlowAt": last_flow_at,
+            "createdAt": o["created_at"], "updatedAt": o["updated_at"],
+        })
+    c.close()
+    return {"items": items, "page": page, "pageSize": pageSize, "total": total, "serverTime": now()}
+
+
+@app.get("/api/v1/production-orders/{orderNo}")
+def get_production_order_detail(orderNo: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    c = db()
+    order = c.execute("SELECT * FROM production_orders WHERE order_no=?", (orderNo,)).fetchone()
+    if not order:
+        c.close(); raise HTTPException(404, "生产订单不存在")
+    model_rows = c.execute("SELECT * FROM production_order_models WHERE order_id=? ORDER BY model_code", (order["id"],)).fetchall()
+    models = []
+    for m in model_rows:
+        reqs = c.execute("SELECT * FROM material_requirements WHERE order_model_id=?", (m["id"],)).fetchall()
+        shortage = sum(1 for r in reqs if max(0, r["in_stock_quantity"] - r["issued_quantity"]) < r["required_quantity"])
+        required_count = len(reqs)
+        available_total = sum(max(0, r["in_stock_quantity"] - r["issued_quantity"]) for r in reqs)
+        required_total = sum(r["required_quantity"] for r in reqs)
+        models.append({
+            "modelCode": m["model_code"], "modelName": m["model_name"], "plannedQuantity": m["planned_quantity"],
+            "status": m["status"], "requiredMaterialCount": required_count, "shortageMaterialCount": shortage,
+            "completionRate": min(100, int(available_total * 100 / required_total)) if required_total else 100,
+        })
+    c.close()
+    return {"order": {
+        "orderNo": order["order_no"], "productName": order["product_name"], "plannedQuantity": order["planned_quantity"],
+        "plannedDeliveryDate": order["planned_delivery_date"], "status": order["status"],
+        "createdAt": order["created_at"], "updatedAt": order["updated_at"],
+    }, "models": models, "serverTime": now()}
+
+
+@app.get("/api/v1/production-orders/{orderNo}/models/{modelCode}")
+def get_model_detail(orderNo: str, modelCode: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    c = db()
+    order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (orderNo,)).fetchone()
+    if not order:
+        c.close(); raise HTTPException(404, "生产订单不存在")
+    model = c.execute("SELECT * FROM production_order_models WHERE order_id=? AND model_code=?", (order["id"], modelCode)).fetchone()
+    if not model:
+        c.close(); raise HTTPException(404, "机型不存在")
+    reqs = _model_requirements(model["id"], c)
+    shortage = sum(1 for r in reqs if r["shortageQuantity"] > 0)
+    available_total = sum(r["availableQuantity"] for r in reqs)
+    required_total = sum(r["requiredQuantity"] for r in reqs)
+    model_summary = {
+        "modelCode": model["model_code"], "modelName": model["model_name"], "plannedQuantity": model["planned_quantity"],
+        "status": model["status"], "requiredMaterialCount": len(reqs), "shortageMaterialCount": shortage,
+        "completionRate": min(100, int(available_total * 100 / required_total)) if required_total else 100,
+    }
+    c.close()
+    return {"model": model_summary, "requirements": reqs, "serverTime": now()}
+
+
+@app.get("/api/v1/production-orders/{orderNo}/models/{modelCode}/flow-records")
+def list_model_flow_records(orderNo: str, modelCode: str, page: int = 1, pageSize: int = 50, flowType: str | None = None, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    page = max(1, page); pageSize = min(100, max(1, pageSize))
+    c = db()
+    order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (orderNo,)).fetchone()
+    if not order:
+        c.close(); raise HTTPException(404, "生产订单不存在")
+    model = c.execute("SELECT id FROM production_order_models WHERE order_id=? AND model_code=?", (order["id"], modelCode)).fetchone()
+    if not model:
+        c.close(); raise HTTPException(404, "机型不存在")
+    where = " WHERE t.document_no=?"
+    args: list[Any] = [orderNo]
+    if flowType:
+        where += " AND t.type=?"
+        args.append(flowType)
+    total = c.execute(f"SELECT COUNT(*) FROM transfer_requests t{where}", args).fetchone()[0]
+    rows = c.execute(
+        f"SELECT t.id, t.document_no, t.type, t.status, t.created_by, t.created_at, t.approved_by, t.approved_at, t.executed_at, t.payload_json FROM transfer_requests t{where} ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
+        args + [pageSize, (page - 1) * pageSize]).fetchall()
+    material_ids: list[str] = []
+    for r in rows:
+        payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        for item in payload.get("items", []):
+            mid = item.get("materialId")
+            if mid:
+                material_ids.append(mid)
+    code_map: dict[str, str] = {}
+    if material_ids:
+        placeholders = ",".join("?" for _ in material_ids)
+        mrows = c.execute(f"SELECT id, code FROM materials WHERE id IN ({placeholders})", material_ids).fetchall()
+        code_map = {r["id"]: r["code"] for r in mrows}
+    items = []
+    for r in rows:
+        payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        items_list = payload.get("items", [])
+        quantity_total = 0
+        for it in items_list:
+            q = it.get("quantity", 0)
+            if isinstance(q, int) and not isinstance(q, bool):
+                quantity_total += q
+        mcs = [code_map.get(it.get("materialId"), "") for it in items_list]
+        mcs = [x for x in mcs if x]
+        deduped: list[str] = []
+        for x in mcs:
+            if x not in deduped:
+                deduped.append(x)
+        items.append({
+            "flowNo": r["id"], "documentNo": r["document_no"], "type": r["type"], "quantityTotal": quantity_total,
+            "status": r["status"], "createdBy": r["created_by"], "createdAt": r["created_at"],
+            "approvedBy": r["approved_by"], "approvedAt": r["approved_at"], "executedAt": r["executed_at"],
+            "materialCodes": deduped,
+        })
+    c.close()
+    return {"items": items, "page": page, "pageSize": pageSize, "total": total, "serverTime": now()}
 
 
 @app.get("/api/v1/stocktakes")
