@@ -270,6 +270,74 @@ class MaterialFlowApiContractTest {
         assertTrue(captured.body.contains("\"expectedVersion\":7"))
     }
 
+    @Test
+    fun bomCommitUsesStableIdempotencyAndWireFields() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureOneRequest("""{"bomVersionId":"b1","modelCode":"M-1","versionNo":2,"status":"PUBLISHED","itemCount":1}""") { port ->
+            val old = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api -> api.updateToken("token"); api.commitBomImport("preview-1", operationId, true) }
+            } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/boms/import/commit HTTP/1.1", captured.requestLine)
+        assertEquals(operationId, captured.headers["Idempotency-Key"])
+        assertTrue(captured.body.contains("\"previewId\":\"preview-1\""))
+        assertTrue(captured.body.contains("\"publish\":true"))
+        assertTrue(captured.body.contains("\"clientOperationId\":\"$operationId\""))
+    }
+
+    @Test
+    fun orderCreateUsesStableIdempotencyAndRequiredFields() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureOneRequest("""{"orderNo":"WO-1","orderId":"o1","status":"CREATED"}""") { port ->
+            val old = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api -> api.updateToken("token"); api.createProductionOrder(operationId, "WO-1", "产品", 3, "2099-12-31", org.json.JSONArray()) }
+            } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/production-orders HTTP/1.1", captured.requestLine)
+        assertEquals(operationId, captured.headers["Idempotency-Key"])
+        assertTrue(captured.body.contains("\"plannedQuantity\":3"))
+        assertTrue(captured.body.contains("\"plannedDeliveryDate\":\"2099-12-31\""))
+    }
+
+    @Test
+    fun deviceCreateAndAssignmentUseExpectedRoutesAndVersions() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val device = captureOneRequest("""{"deviceId":"d1","deviceNo":"D-1","status":"ACTIVE"}""") { port ->
+            val old = ApiConfig.baseUrl
+            try { ApiConfig.baseUrl = "http://127.0.0.1:$port"; MaterialFlowApi().also { api -> api.updateToken("token"); api.createDevice(operationId, "D-1", "机台", "一车间", "M-1") } } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/devices HTTP/1.1", device.requestLine)
+        assertEquals(operationId, device.headers["Idempotency-Key"])
+        assertTrue(device.body.contains("\"workshop\":\"一车间\""))
+
+        val binding = captureOneRequest("""{"taskId":"t1","orderNo":"WO-1","modelCode":"M-1","deviceId":"d1","expectedVersion":2}""") { port ->
+            val old = ApiConfig.baseUrl
+            try { ApiConfig.baseUrl = "http://127.0.0.1:$port"; MaterialFlowApi().also { api -> api.updateToken("token"); api.assignDevice("WO-1", "M-1", operationId, "d1", 2) } } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/production-orders/WO-1/models/M-1/assign-device HTTP/1.1", binding.requestLine)
+        assertEquals(operationId, binding.headers["Idempotency-Key"])
+        assertTrue(binding.body.contains("\"expectedVersion\":2"))
+    }
+
+    @Test
+    fun apiErrorsPreserveUnauthorizedConflictAndNetworkFailure() = runBlocking {
+        val unauthorized = ApiParser.parseError(401, "{\"code\":\"TOKEN_EXPIRED\",\"message\":\"expired\"}")
+        assertEquals(401, unauthorized.statusCode)
+        assertEquals("TOKEN_EXPIRED", unauthorized.code)
+        val conflict = ApiParser.parseError(409, "{\"code\":\"CONFLICT\",\"message\":\"version conflict\",\"retryable\":false}")
+        assertEquals(409, conflict.statusCode)
+        assertTrue(!conflict.retryable)
+        val old = ApiConfig.baseUrl
+        try {
+            ApiConfig.baseUrl = "http://127.0.0.1:1"
+            assertTrue(runCatching { MaterialFlowApi().also { it.updateToken("token") }.createDevice("11111111-1111-1111-1111-111111111111", "D-1", "机台", "一车间", null) }.isFailure)
+        } finally { ApiConfig.baseUrl = old }
+    }
+
     private data class CapturedRequest(
         val requestLine: String,
         val headers: Map<String, String>,
@@ -352,25 +420,27 @@ class MaterialFlowApiContractTest {
     }
 
     private fun readRequest(socket: Socket): CapturedRequest {
-        val input = socket.getInputStream().bufferedReader()
-        val requestLine = input.readLine()
+        val connection = socket.getInputStream()
+        val input = java.io.BufferedInputStream(connection)
+        fun readLine(): String {
+            val bytes = java.io.ByteArrayOutputStream()
+            while (true) { val b = input.read(); if (b < 0 || b == '\n'.code) break; if (b != '\r'.code) bytes.write(b) }
+            return bytes.toString(Charsets.UTF_8.name())
+        }
+        val requestLine = readLine()
         val headers = buildMap {
             while (true) {
-                val line = input.readLine()
-                if (line.isNullOrEmpty()) break
+                val line = readLine()
+                if (line.isEmpty()) break
                 val separator = line.indexOf(':')
                 if (separator > 0) put(line.substring(0, separator), line.substring(separator + 1).trim())
             }
         }
         val length = headers["Content-Length"]?.toIntOrNull() ?: 0
-        val body = CharArray(length)
+        val body = ByteArray(length)
         var offset = 0
-        while (offset < length) {
-            val read = input.read(body, offset, length - offset)
-            if (read < 0) break
-            offset += read
-        }
-        return CapturedRequest(requestLine.orEmpty(), headers, String(body, 0, offset))
+        while (offset < length) { val read = input.read(body, offset, length - offset); if (read < 0) break; offset += read }
+        return CapturedRequest(requestLine, headers, String(body, 0, offset, Charsets.UTF_8))
     }
 
 }
