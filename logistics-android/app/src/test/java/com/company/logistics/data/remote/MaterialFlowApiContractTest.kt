@@ -319,6 +319,38 @@ class MaterialFlowApiContractTest {
         assertTrue(runCatching { MaterialFlowApi().initializeAdmin("long-enough", "different", UUID.randomUUID().toString()) }.exceptionOrNull() is IllegalArgumentException)
     }
 
+    @Test
+    fun bomPreviewRejectsBlankModelCodeBeforeNetworkAccess() = runBlocking {
+        val error = runCatching {
+            MaterialFlowApi().previewBomImport("bom.csv", "a,b\n".toByteArray(), " ")
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message?.contains("modelCode") == true)
+    }
+
+    @Test
+    fun bomPreviewMultipartUsesRealCrLfAndAcceptsExactly10MiB() = runBlocking {
+        val fileBytes = ByteArray(MaterialFlowApi.MAX_BOM_FILE_BYTES) { 'x'.code.toByte() }
+        val captured = captureOneRequest(
+            """{"previewId":"p-1","modelCode":"M-1","totalRows":1,"validRows":1,"invalidRows":0,"canCommit":true,"errors":[]}"""
+        ) { port ->
+            val previous = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    api.previewBomImport("bom.csv", fileBytes, "M-1")
+                }
+            } finally { ApiConfig.baseUrl = previous }
+        }
+
+        assertTrue(captured.body.contains("\\r\\n") == false)
+        assertTrue(captured.body.contains("\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\nM-1\r\n"))
+        assertTrue(captured.body.contains("\r\nContent-Disposition: form-data; name=\"file\"; filename=\"bom.csv\"\r\n"))
+        assertTrue(captured.body.endsWith("\r\n"))
+    }
+
     private fun readRequest(socket: Socket): CapturedRequest {
         val input = socket.getInputStream().bufferedReader()
         val requestLine = input.readLine()

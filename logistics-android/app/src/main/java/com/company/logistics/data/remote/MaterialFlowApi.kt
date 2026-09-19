@@ -263,6 +263,7 @@ open class MaterialFlowApi(
 
     suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): BomImportPreview = withContext(Dispatchers.IO) {
         require(fileBytes.size <= MAX_BOM_FILE_BYTES) { "BOM 文件不能超过 10 MB" }
+        require(modelCode.isNotBlank()) { "modelCode 不能为空" }
         val boundary = "----BomBoundary${UUID.randomUUID().toString().replace("-", "")}"
         val conn = openConnection("/api/v1/boms/import/preview", "POST")
         conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
@@ -270,9 +271,9 @@ open class MaterialFlowApi(
         conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString()); conn.doOutput = true
         conn.outputStream.use { out ->
             fun write(value: String) = out.write(value.toByteArray(Charsets.UTF_8))
-            write("--$boundary\\r\\nContent-Disposition: form-data; name=\\\"modelCode\\\"\\r\\n\\r\\n$modelCode\\r\\n")
-            write("--$boundary\\r\\nContent-Disposition: form-data; name=\\\"file\\\"; filename=\\\"$fileName\\\"\\r\\nContent-Type: text/csv\\r\\n\\r\\n")
-            out.write(fileBytes); write("\\r\\n--$boundary--\\r\\n")
+            write("--$boundary\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\n$modelCode\r\n")
+            write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: text/csv\r\n\r\n")
+            out.write(fileBytes); write("\r\n--$boundary--\r\n")
         }
         val (code, text) = readResponse(conn); if (code !in 200..299) throw ApiParser.parseError(code, text)
         val root = JSONObject(text ?: throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true))
