@@ -9,7 +9,7 @@
 - [x] P0-4 请求类型统一：已核实通过——代码中 `PRODUCTION_ORDER`/`MATERIAL_CODE`/`LOCATION_CODE`/`FLOW_RECORD` 已对齐契约，`LOGISTICS_NO` 仅存在于模型文档注释（说明已删除该语义），非运行时分支，无需改动。
 - [x] **P0-2 文案与品牌清理**（commit `fb8f1b7`，已合入并推送）：`Models.kt` 与 `Theme.kt` 两条注释改写为厂内物料流转中性措辞；全树禁用术语复扫 0 命中；接收端重建 BUILD SUCCESSFUL。
 - [x] **P0-3 明文 HTTP 门禁**：`AndroidManifest.xml` 已移除 `usesCleartextTraffic`（随 P0-1 `f2056ed`）；正式部署时 API 走 HTTPS（CI 注入域名），构建变体未再放行明文。
-- [~] **P0-5 历史敏感扫描**：当前树 0 残留（✅）；但 VPS 地址 `107.173.70.115` 存在于 4 个历史 commit（`99c230c`、`cbbe1c2`、`d5903a9`、`f2056ed` 修改记录）。该仓库为私有且当前树干净，是否 rewrite 历史（git filter-repo）+ 全端强推待老王决策。
+- [~] **P0-5 历史敏感扫描**：当前树 0 残留（✅）；但该 VPS 地址存在于 3 个历史源码 commit（`99c230c` 初始化、`cbbe1c2` UI 融合、`d5903a9` tmp，均在 `MaterialFlowApi.kt` 中；已随 `f2056ed` 从当前树清除）。该仓库为私有且当前树干净，是否 rewrite 历史（git filter-repo）+ 全端强推待老王决策。
 - [ ] 暂不合并到 `main`：P0 修复未全部完成。
 - [ ] 业务源码修改由 Codex 在隔离 worktree 执行，架构 Agent 仅验收 docs/tasks 与门禁结果。
 
