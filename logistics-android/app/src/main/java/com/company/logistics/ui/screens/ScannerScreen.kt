@@ -79,6 +79,8 @@ import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
 
+private const val CAMERA_PREVIEW_ASPECT_RATIO = 1.55f
+
 /**
  * 扫码作业页 —— 现场核心界面。
  *
@@ -267,12 +269,12 @@ fun ScannerScreen(
             }
         }
 
-        Spacer(Modifier.height(Spacing.md))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ---------- 状态条 ----------
         ScanStatusBar(state)
 
-        Spacer(Modifier.height(Spacing.md))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ---------- 操作区 ----------
         Row(
@@ -397,7 +399,7 @@ private fun CameraPreviewPanel(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(CAMERA_PREVIEW_ASPECT_RATIO)
             .clip(RoundedCornerShape(Dimens.CardCorner))
             .background(Color.Black),
     ) {
@@ -533,7 +535,7 @@ private fun CameraStartingPanel() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(CAMERA_PREVIEW_ASPECT_RATIO)
             .clip(RoundedCornerShape(Dimens.CardCorner))
             .background(Color.Black),
         contentAlignment = Alignment.Center,
@@ -575,7 +577,7 @@ private fun CameraFailedPanel(reason: String, onRetry: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(CAMERA_PREVIEW_ASPECT_RATIO)
             .clip(RoundedCornerShape(Dimens.CardCorner))
             .background(Color.Black),
         contentAlignment = Alignment.Center,
