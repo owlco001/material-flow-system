@@ -27,7 +27,7 @@ import org.junit.Test
 class LogisticsViewModelUserManagementTest {
 
     @Test
-    fun deleteUserExposesLoadingThenSuccessAndRefreshesList() {
+    fun deleteUserExposesLoadingThenSuccessAndRefreshesList() = kotlinx.coroutines.runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val repository = FakeUserRepository()
         val viewModel = LogisticsViewModel(repository, scope)
