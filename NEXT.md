@@ -1,7 +1,7 @@
 # NEXT.md — 交接看板
 
 > 给下一个对话用。**不要复述上下文，读这个文件即可。**
-> 最后更新：2026-09-13 13:40
+> 最后更新：2026-09-13 14:15
 
 ---
 
@@ -24,9 +24,9 @@
 | 技术栈 | Android Jetpack Compose + FastAPI + SQLite |
 | 仓库 | `https://gitee.com/owlco001/material-flow-system.git` |
 | 当前分支 | `feature/ui-polish-camera` |
-| 当前 HEAD | `ef85bfa`（本地领先 Gitee 1 个提交，待推） |
+| 当前 HEAD | `ed99846`（本地领先 Gitee 2 个提交，待推） |
 | 工作区 | 干净，无未提交改动 |
-| 远端 Gitee | 已同步至 `650b10b`；`ef85bfa` **待推** |
+| 远端 Gitee | 已同步至 `650b10b`；`ef85bfa` `8d0f876` `ed99846` **待推** |
 | 远端 GitHub | 停在更早的提交，**与 Gitee 分叉** |
 
 **构建方式**：
@@ -44,10 +44,17 @@ cd material-flow-backend && python3 -m pytest tests/ -q
 
 ## 2. 最近一轮已完成
 
-**最新提交 `ef85bfa`**：测试基础设施修复（Android 跨测试类顺序依赖 + 后端全量混跑污染），
+**最新提交 `ed99846`**：emoji 功能图标全量收敛为矢量图标族（P0-1）。
+新增 `LogisticsIcons` 图标族 + `fromSymbol` 翻译表；`StatusTag` 内部收口
+（签名不变，调用点零改动）；6 个屏幕直接渲染点改造；数据层契约符号刻意不动。
+新增门禁脚本 `scripts/check_emoji_icons.py`。121 测试全绿。
+
+**上一提交 `8d0f876`**：登记 emoji 欠账 + 校正 NEXT.md 过时状态。
+
+**`ef85bfa`**：测试基础设施修复（Android 跨测试类顺序依赖 + 后端全量混跑污染），
 生产代码零改动，Android 121 测试 5 轮全绿 / 后端 75 passed 10 轮稳定，3 处变异全部被捕获。
 
-**上一提交 `637e435`**：产品更名。
+**`637e435`**：产品更名。
 
 **产品更名**：对外名称统一为「智慧工厂」，App 名「博阳智造」不变。
 
@@ -183,10 +190,13 @@ python3 scripts/check_emoji_icons.py --verbose
 
 每轮任务结束前：
 
-1. `git add -A && git commit`
-2. `git push gitee feature/ui-polish-camera`
-3. **更新本文件**（NEXT.md）的「待办」与「当前 HEAD」
-4. 一句「已完成 X，下一步 Y」交代给用户
+1. **跑门禁**（涉及 UI 改动时）：
+   `python3 scripts/check_emoji_icons.py --verbose`
+2. `git add -A && git commit`
+3. `git push gitee feature/ui-polish-camera`
+4. **更新本文件**（NEXT.md）的「待办」与「当前 HEAD」
+5. 一句「已完成 X，下一步 Y」交代给用户
 
 > **教训（务必内化）**：提交前把 emoji 扫描扫**全仓**，不要只扫 `git diff` 里的文件。
-> 本次就是只扫了改动文件，差点漏掉 11 个文件的历史欠账。
+> 2026-09-13 那次就是只扫了改动文件，差点漏掉 11 个文件的历史欠账。
+> 现已固化为 `scripts/check_emoji_icons.py`，按纪律跑即可，不要再手工 grep。
