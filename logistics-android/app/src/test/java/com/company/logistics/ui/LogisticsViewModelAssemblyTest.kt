@@ -22,6 +22,8 @@ import com.company.logistics.model.MachineProgressPage
 import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.WorkshopProgressSummary
+import com.company.logistics.model.WorkspaceMaterialItemsPage
+import com.company.logistics.model.WorkspaceSummary
 import com.company.logistics.model.WorkspaceViewRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -487,6 +489,21 @@ class LogisticsViewModelAssemblyTest {
             laborDeviceId = deviceId
             return Result.success(LaborSummaryPage(listOf(LaborSummaryItem("task-1", "WO-1", deviceId, "M-01", "u-1", "装配工", 11, 6, 17))))
         }
+
+        // 必须打桩：否则 login() 后的工作台加载会回落到真实 MaterialFlowApi 网络调用，
+        // 失败时触发 expireSession() 把 authState 异步重置为 Unauthenticated，
+        // 导致依赖 ADMIN 角色的断言随机失败（跨测试类混跑时约 50%）。
+        override suspend fun workspaceSummary(): Result<WorkspaceSummary> =
+            Result.success(WorkspaceSummary(role = loginRole))
+
+        override suspend fun workspaceMaterialItems(
+            status: String?,
+            orderNo: String?,
+            page: Int,
+            pageSize: Int,
+        ): Result<WorkspaceMaterialItemsPage> = Result.success(
+            WorkspaceMaterialItemsPage(emptyList(), page, pageSize, 0, 0, "server", "trace")
+        )
     }
 
     private class NoOpDao : OfflineOperationDao {

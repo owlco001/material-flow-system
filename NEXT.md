@@ -26,7 +26,7 @@
 | 当前分支 | `feature/ui-polish-camera` |
 | 当前 HEAD | `637e435` |
 | 工作区 | 干净，无未提交改动 |
-| 远端 Gitee | 已同步至 `637e435` ✅ |
+| 远端 Gitee | 已同步至 `637e435`  |
 | 远端 GitHub | 停在更早的提交，**与 Gitee 分叉** |
 
 **构建方式**：
@@ -72,23 +72,27 @@ pytest 全量跑会因脚手架污染出现 23 个假失败，必须逐文件跑
   重建时务必在「授权仓库」里勾选 `material-flow-system`（上次 403 就是因为没勾）。
 - [ ] **`107.173.70.115` 为公网明文 HTTP**，建议上 TLS。
 
-### P1 — 测试基础设施（重要，当前测试不可信）
+### P1 — 测试基础设施（已修复，待提交）
 
-- [ ] **Android：消除跨测试类顺序依赖**
-  `LogisticsViewModel*` 系列混跑时约 50% 概率间歇失败。
-  根因：测试用 `Dispatchers.Unconfined` 且未等待 `init` 里的会话恢复协程，恢复协程后落地会覆盖 `login()` 写入的 ADMIN 登录态。
-  正确修法：改用 `StandardTestDispatcher` + `runTest`，或在同一调度器上显式等待恢复流程结束。
-  **已确认是基线既有问题，非 637e435 引入**（stash 全部改动后仍复现）。
+- [已完成] **Android：消除跨测试类顺序依赖**
+  根因（经实测修正）：测试 fake 未覆写 `workspaceMaterialItems()`，`login()` 后的工作台加载回落到真实网络调用，失败触发 `expireSession()` 异步重置 `authState`。
+  **注意**：早前「恢复协程覆盖登录态」的说法**已证伪**，勿再沿用。
+  修法：给缺失的 fake 补 `workspaceMaterialItems` / `workspaceSummary` 覆写（2 个测试文件，零新依赖，不碰生产代码）。
+  验收：混跑 20 轮全绿 + 变异测试捕获。
 
-- [ ] **后端：消除全量混跑的状态污染**
-  逐文件隔离运行 28/28 通过；全量跑 23 failed / 52 passed。
-  同样是基线既有的脚手架问题。
+- [已完成] **后端：消除全量混跑的状态污染**
+  根因：`INITIAL_ADMIN_PASSWORD` 导入期快照竞态（首个导入文件的密码胜出）。
+  修法：`conftest.py` 内按各测试文件声明的密码对齐模块常量。
+  验收：全量 75 passed，连续 10 轮稳定。
+
+- 详见 `docs/decisions/ADR-001-测试基础设施改造.md` 与 `tasks/测试修复-验收标准.md`
 
 ### P2 — 收尾
 
 - [ ] `delivery/boyang-report/index.html` 仍含旧产品名
 - [ ] 包名 `logistics` 与产品名「智慧工厂」语义不一致（技术债）
 - [ ] Gitee 与 GitHub 两远端 `main` 已分叉，若需合并先比对差异
+- [ ] 可选加固：30 处 `Dispatchers.Unconfined` 迁移到 `StandardTestDispatcher` + `runTest`（需引入 `kotlinx-coroutines-test`，当前未引入）
 
 ---
 

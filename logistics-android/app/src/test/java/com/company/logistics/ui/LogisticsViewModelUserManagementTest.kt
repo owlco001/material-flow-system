@@ -10,6 +10,7 @@ import com.company.logistics.model.LoginResult
 import com.company.logistics.model.ManagedUser
 import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.WorkspaceMaterialItemsPage
 import com.company.logistics.model.WorkspaceSummary
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -94,6 +95,18 @@ class LogisticsViewModelUserManagementTest {
         }
 
         override suspend fun workspaceSummary(): Result<WorkspaceSummary> = Result.success(WorkspaceSummary(role = UserRole.ADMIN))
+
+        // 必须打桩：否则 login() 后的工作台加载会回落到真实 MaterialFlowApi 网络调用，
+        // 失败时触发 expireSession() 把 authState 异步重置为 Unauthenticated，
+        // 角色守卫随即短路，导致 managedUserDeletingId 断言间歇失败。
+        override suspend fun workspaceMaterialItems(
+            status: String?,
+            orderNo: String?,
+            page: Int,
+            pageSize: Int,
+        ): Result<WorkspaceMaterialItemsPage> = Result.success(
+            WorkspaceMaterialItemsPage(emptyList(), page, pageSize, 0, 0, "server", "trace")
+        )
     }
 
     private class NoOpDao : OfflineOperationDao {
