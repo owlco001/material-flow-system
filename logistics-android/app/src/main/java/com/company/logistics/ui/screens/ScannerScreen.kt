@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -66,6 +68,7 @@ import com.company.logistics.model.UserRole
 import com.company.logistics.ui.CameraStatus
 import com.company.logistics.ui.ScannerViewModel
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.ScannerIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.ScannerViewfinder
@@ -583,7 +586,12 @@ private fun CameraFailedPanel(reason: String, onRetry: () -> Unit) {
                 .padding(Spacing.lg),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("⚠", fontSize = 32.sp)
+            Image(
+                imageVector = LogisticsIcons.Alert,
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(colors.danger),
+                modifier = Modifier.size(32.dp),
+            )
             Spacer(Modifier.height(Spacing.sm))
             Text(
                 "摄像头未能启动",

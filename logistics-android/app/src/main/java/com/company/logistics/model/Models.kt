@@ -70,7 +70,11 @@ enum class MaterialStatusCode(val code: String, val label: String) {
 
     /**
      * 状态图标语义 —— 契约要求客户端必须同时展示图标与文字。
-     * 返回值用于选择等宽 emoji 风格的简单符号，避免引入图标资源依赖。
+     *
+     * 本层只承载**符号语义**，不承载渲染方式：返回的字符是稳定的契约值
+     * （`WorkspaceApiParserTest` 直接断言 `"✓"`），改动会破坏数据契约。
+     * 实际展示由渲染层 `StatusTag` 经 `LogisticsIcons.fromSymbol` 翻译为
+     * 矢量图标；未命中的字符（`!` `↓` `?`）回退文本渲染。
      */
     val symbol: String
         get() = when (this) {

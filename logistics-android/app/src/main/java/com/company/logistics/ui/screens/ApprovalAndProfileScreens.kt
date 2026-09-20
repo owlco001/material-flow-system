@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,6 +41,7 @@ import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.KeyValueCell
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PlaceholderScreen
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
@@ -611,12 +614,22 @@ private fun PermissionRow(label: String, allowed: Boolean) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            if (allowed) "✓" else "—",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (allowed) LogisticsTheme.colors.success else LogisticsTheme.colors.textTertiary
-        )
+        val allowedColor = if (allowed) LogisticsTheme.colors.success else LogisticsTheme.colors.textTertiary
+        if (allowed) {
+            Image(
+                imageVector = LogisticsIcons.Check,
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(allowedColor),
+                modifier = Modifier.size(13.dp)
+            )
+        } else {
+            Text(
+                "—",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = allowedColor
+            )
+        }
         Spacer(Modifier.width(Spacing.sm))
         Text(
             label,

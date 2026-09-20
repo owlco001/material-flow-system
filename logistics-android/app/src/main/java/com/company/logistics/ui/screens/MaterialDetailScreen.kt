@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +22,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
@@ -75,7 +78,12 @@ fun MaterialDetailScreen(
                         .background(LogisticsTheme.colors.success, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Image(
+                        imageVector = LogisticsIcons.Check,
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(Color.White),
+                        modifier = Modifier.size(13.dp)
+                    )
                 }
                 Spacer(Modifier.width(Spacing.sm))
                 Text(

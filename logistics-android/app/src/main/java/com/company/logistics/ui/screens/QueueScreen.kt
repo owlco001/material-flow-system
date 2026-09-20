@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -28,6 +30,7 @@ import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.SyncStatus
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
@@ -229,7 +232,12 @@ private fun QueueItemCard(op: OfflineOperation) {
                         .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("⚠", fontSize = 12.sp, color = statusColor)
+                    Image(
+                        imageVector = LogisticsIcons.Alert,
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(statusColor),
+                        modifier = Modifier.size(12.dp)
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
                         op.errorMessage,

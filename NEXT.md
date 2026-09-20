@@ -92,45 +92,65 @@ cd material-flow-backend && python3 -m pytest tests/ -q
 
 - 详见 `docs/decisions/ADR-001-测试基础设施改造.md` 与 `tasks/测试修复-验收标准.md`
 
-### P1 — ⛔ P0-1 emoji 图标欠账（本次扫描新发现，**用户决定：只记录不动**）
+### P1 — P0-1 emoji 图标欠账（**已完成**，见下）
 
 > 扫描范围：`logistics-android/app/src/main`（`*.kt`），正则见团队 P0-1。
-> **本次不修**，仅登记。修的时候一次性收敛，不要零散改。
+> 2026-09-13 完成渲染层收口；数据层契约符号按设计保留。
 
-**选定方案（已拍板）**：在 `ui/components/ScannerComponents.kt` 的 `ScannerIcons` 旁
-**扩展一个完整 ImageVector 图标族**（如 `LogisticsIcons`），把 `Check / Circle / Play / List / Alert`
-全部矢量化为 `ImageVector`，沿用 24dp 视口 + `SolidColor` 填充 + 16/20/24px 三档取用，
-与现有 `FlashOn/FlashOff` 完全同构，**零外部依赖**。
+### P1 — emoji 图标欠账（**已完成**）
+
+> 本段保留原始清点表，作为工作量与决策依据；实际落地已收敛为下述"实现结果"。
+
+**实现结果**：
+
+| 项 | 内容 |
+|----|------|
+| 新增图标族 | `LogisticsIcons`（`ui/components/ScannerComponents.kt`）—— `Check` / `Alert` / `CircleOutline` / `Play` / `List` / `Exclamation`，24dp 视口 + `SolidColor`，与 `FlashOn/FlashOff` 同构，零外部依赖 |
+| 翻译层 | `LogisticsIcons.fromSymbol(String?): ImageVector?` —— 命中则渲染矢量图标，未命中回退文本 |
+| 渲染接缝 | `StatusTag` 内部改造（**签名 `symbol: String?` 不变**），所有经它的状态标签自动升级为图标 |
+| 直接渲染点 | 6 个屏幕文件改为 `Image + ColorFilter.tint` |
+| 导航栏 | `LogisticsApp` 底部导航走 `fromSymbol` 翻译 |
+| 数据层 | **刻意不动** —— `Models.kt` 等返回的符号字符串是服务端数据契约（`WorkspaceApiParserTest` 直接断言），改类型会破坏契约 |
+| 门禁脚本 | `scripts/check_emoji_icons.py` —— 分类判定，区分"UI 图标违规"与"合法数据契约符号"，可机械执行 |
+| 验收 | 编译 `BUILD SUCCESSFUL`；121 测试全绿；门禁 PASS；反向注入验证可抓到违规 |
+| 生产行为变更 | 无 —— 所有 `Text(symbol)` 的合法字符（`●` `!` `↓` `→` `?` 等）仍走文本渲染，仅 `✓ ⚠ ☰ ○ ▶` 改为矢量图标 |
+
+**关键约束（改之前必读）**：`Models.kt` / `WorkspaceScreen.kt` / `LogisticsViewModel.kt` /
+`ApprovalAndProfileScreens.kt` 里的符号字符串**不是 UI 图标**，是数据契约值。
+它们一律经渲染层翻译，**不要**去改这些字段的类型或字面量——
+`Models.kt` 顶部注释已写明这一点。
+
+**门禁接入**（每次涉及 UI 的提交前跑）：
+
+```bash
+python3 scripts/check_emoji_icons.py --verbose
+```
+
+<details>
+<summary>原始清点表（历史存档）</summary>
+
+**选定方案**：在 `ScannerIcons` 旁扩展 `LogisticsIcons` 图标族，与 `FlashOn/FlashOff`
+同构，零外部依赖。
 
 | 文件 | 行 | 符号 | 语义 | 承载方式 |
 |------|----|------|------|----------|
 | `ui/screens/LoginScreen.kt` | 153 | ⚠ | 登录错误提示前缀 | 行内 16px 图标 + `Text` |
-| `ui/screens/ScannerScreen.kt` | 586 | ⚠ | 摄像头启动失败 | 32px 图标（替换独占一行的 `Text`） |
-| `ui/screens/AdminActivationScreen.kt` | 111 | ⚠ | 激活失败提示 | 行内 16px 图标 + `Text` |
-| `ui/screens/QueueScreen.kt` | 232 | ⚠ | 队列项异常状态 | 状态图标（需带 `statusColor` tint） |
-| `ui/screens/MaterialDetailScreen.kt` | 78 | ✓ | 物料已完成 | 20px 白色图标 |
-| `ui/screens/OrderDetailScreen.kt` | 184 | ✓ | 工序已完成 | 交由 `StatusTag` 的 `symbol` 参数 |
-| `ui/screens/ApprovalAndProfileScreens.kt` | 615 | ✓ / — | 权限允许 / 不允许 | 权限矩阵单元格 |
+| `ui/screens/ScannerScreen.kt` | 586 | ⚠ | 摄像头启动失败 | 32px 图标 |
+| `ui/screens/AdminActivationScreen.kt` | 111 | ⚠ | 激活失败提示 | 行内 13px 图标 + `Text` |
+| `ui/screens/QueueScreen.kt` | 232 | ⚠ | 队列项异常状态 | 12px 图标 + tint |
+| `ui/screens/MaterialDetailScreen.kt` | 78 | ✓ | 物料已完成 | 13px 白色图标 |
+| `ui/screens/OrderDetailScreen.kt` | 184 | ✓ | 工序已完成 | 交由 `StatusTag` |
+| `ui/screens/ApprovalAndProfileScreens.kt` | 615 | ✓ / — | 权限允许 / 不允许 | 图标 / 文本 |
 | `ui/screens/ApprovalAndProfileScreens.kt` | 448 | ✓ | `EXECUTED` 状态标签 | `StatusTag` 映射 |
-| `ui/screens/AuditScreen.kt` | 192 | ✓ / ! | 审计成功 / 失败 | 图标 + tint |
-| `ui/screens/WorkshopAssemblyScreens.kt` | 742 | ✓ / ○ | 阶段完成 / 未完成 | `StatusTag` 的 `symbol` |
-| `ui/screens/WorkshopAssemblyScreens.kt` | 771 | ▶ / ✓ | 进行中 / 已完成 | 同上 |
-| `ui/screens/WorkspaceScreen.kt` | 70, 73 | ✓ | 任务状态映射 | **数据层映射，见下注** |
-| `model/Models.kt` | 79, 656 | ✓ | 物料/流转状态映射 | **数据层映射，见下注** |
-| `model/Models.kt` | 134 | ☰ | 盘点类型图标 | **数据层映射，见下注** |
-| `ui/LogisticsViewModel.kt` | 90, 93 | ☰ / ✓ | 底部导航「订单」「审批」 | 导航图标，改 `ImageVector` |
-| `app/src/test/.../WorkspaceApiParserTest.kt` | — | ✓ | 测试夹具字符串 | 若为纯数据断言可保留，需确认 |
+| `ui/screens/AuditScreen.kt` | 192 | ✓ / ! | 审计成功 / 失败 | `StatusTag` 映射 |
+| `ui/screens/WorkshopAssemblyScreens.kt` | 742 | ✓ / ○ | 阶段完成 / 未完成 | `StatusTag` 映射 |
+| `ui/screens/WorkshopAssemblyScreens.kt` | 771 | ▶ / ✓ | 进行中 / 已完成 | `StatusTag` 映射 |
+| `ui/screens/WorkspaceScreen.kt` | 70, 73 | ✓ | 任务状态映射 | 数据层契约（不改） |
+| `model/Models.kt` | 79, 134, 656 | ✓ / ☰ | 状态与类型映射 | 数据层契约（不改） |
+| `ui/LogisticsViewModel.kt` | 90, 93 | ☰ / ✓ | 底部导航图标 | 导航图标 |
+| `app/src/test/.../WorkspaceApiParserTest.kt` | 154 | ✓ | 数据契约断言 | 保留 |
 
-**架构注记（动手前必读）**：
-`Models.kt` / `WorkspaceScreen.kt` 里的 `symbol` 是**数据层的字符串字段**，被 UI 直接当图标渲染。
-清理时有两个选项，需架构师定夺：
-1. 把字段类型从 `String` 改为 `ImageVector`（或在 UI 层做 `String → ImageVector` 映射表）——
-   代价是动 `model` 层，测试夹具要跟着改；
-2. 保留字符串字段但在 UI 渲染处统一走映射表翻译成 `ImageVector` —— 改动面小，但数据层仍存 emoji 语义。
-**建议 2**（数据契约零破坏，且 `WorkspaceApiParserTest` 的断言可原样保留）。
-
-**回归要求**：改完必须重跑 `./gradlew :app:testDebugUnitTest`（当前 121 测试全绿为基线），
-并重跑 P0-1 emoji 正则扫描确认归零。
+</details>
 
 ### P2 — 收尾
 

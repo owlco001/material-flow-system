@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.clip
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.R
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.Spacing
@@ -149,13 +151,22 @@ fun LoginScreen(
 
         if (errorMessage != null) {
             Spacer(Modifier.height(Spacing.md))
-            Text(
-                text = "⚠ $errorMessage",
-                modifier = Modifier.fillMaxWidth(),
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.SemiBold
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    imageVector = LogisticsIcons.Alert,
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.error),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(Spacing.xs))
+                Text(
+                    text = errorMessage,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
 
         Spacer(Modifier.height(Spacing.xl))

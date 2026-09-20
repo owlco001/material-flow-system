@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -345,5 +346,175 @@ object ScannerIcons {
                 close()
             }
         }.build()
+    }
+}
+
+/**
+ * 业务状态与导航用的项目自有矢量图标族。
+ *
+ * 与 [ScannerIcons] 同构：24dp 视口、单条 [path] 填充、无外部图标依赖。
+ * 存在的意义是替掉历史上散落在各屏幕里的 emoji 与符号字符
+ * （`✓` `⚠` `☰` `○` `▶` 等）——emoji 字形随厂商 ROM 漂移、无法稳定跟随
+ * 主题着色、描边粗细不可控，作为功能图标不合格。
+ *
+ * 使用规范：
+ *  - 尺寸按 16px（行内）/ 20px（按钮内）/ 24px（独立）三档取用；
+ *  - 需要跟随语义色时用 `colorFilter = ColorFilter.tint(color)`，
+ *    图标本体以 [Color.Black] 绘制，tint 会整体替换颜色。
+ */
+object LogisticsIcons {
+
+    private fun icon(name: String, block: PathBuilder.() -> Unit): ImageVector =
+        ImageVector.Builder(
+            name = name,
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(fill = SolidColor(Color.Black)) { block() }
+        }.build()
+
+    /** 勾选：完成 / 已执行。 */
+    val Check: ImageVector by lazy {
+        icon("Check") {
+            moveTo(9.55f, 17.6f)
+            lineTo(4f, 12.05f)
+            lineTo(5.4f, 10.65f)
+            lineTo(9.55f, 14.8f)
+            lineTo(18.6f, 5.75f)
+            lineTo(20f, 7.15f)
+            close()
+        }
+    }
+
+    /** 告警：三角外框 + 感叹号。用于错误态与设备异常。 */
+    val Alert: ImageVector by lazy {
+        icon("Alert") {
+            // 三角外框
+            moveTo(12f, 2.5f)
+            lineTo(1f, 21f)
+            horizontalLineToRelative(22f)
+            close()
+            // 挖空内三角
+            moveTo(12f, 7.2f)
+            lineTo(5.6f, 18.4f)
+            horizontalLineToRelative(12.8f)
+            close()
+            // 感叹号竖条
+            moveTo(11f, 10.2f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(4.6f)
+            horizontalLineToRelative(-2f)
+            close()
+            // 感叹号圆点
+            moveTo(11f, 16.2f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(1.6f)
+            horizontalLineToRelative(-2f)
+            close()
+        }
+    }
+
+    /** 空心圆：未开始 / 未达成。 */
+    val CircleOutline: ImageVector by lazy {
+        icon("CircleOutline") {
+            // 外圆
+            moveTo(12f, 2f)
+            curveTo(6.48f, 2f, 2f, 6.48f, 2f, 12f)
+            curveToRelative(0f, 5.52f, 4.48f, 10f, 10f, 10f)
+            curveToRelative(5.52f, 0f, 10f, -4.48f, 10f, -10f)
+            curveTo(22f, 6.48f, 17.52f, 2f, 12f, 2f)
+            close()
+            // 挖空内圆（形成 2px 描边）
+            moveTo(12f, 4f)
+            curveToRelative(4.42f, 0f, 8f, 3.58f, 8f, 8f)
+            curveToRelative(0f, 4.42f, -3.58f, 8f, -8f, 8f)
+            curveToRelative(-4.42f, 0f, -8f, -3.58f, -8f, -8f)
+            curveTo(4f, 7.58f, 7.58f, 4f, 12f, 4f)
+            close()
+        }
+    }
+
+    /** 实心三角：进行中 / 播放。 */
+    val Play: ImageVector by lazy {
+        icon("Play") {
+            moveTo(7f, 4f)
+            lineTo(20f, 12f)
+            lineTo(7f, 20f)
+            close()
+        }
+    }
+
+    /** 列表：订单 / 明细入口。 */
+    val List: ImageVector by lazy {
+        icon("List") {
+            moveTo(3f, 5.5f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(-3f)
+            close()
+            moveTo(8f, 6f)
+            horizontalLineToRelative(13f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(-13f)
+            close()
+            moveTo(3f, 10.5f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(-3f)
+            close()
+            moveTo(8f, 11f)
+            horizontalLineToRelative(13f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(-13f)
+            close()
+            moveTo(3f, 15.5f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(-3f)
+            close()
+            moveTo(8f, 16f)
+            horizontalLineToRelative(13f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(-13f)
+            close()
+        }
+    }
+
+    /** 感叹号：单点异常标记（非三角告警）。 */
+    val Exclamation: ImageVector by lazy {
+        icon("Exclamation") {
+            moveTo(10.8f, 3f)
+            horizontalLineToRelative(2.4f)
+            verticalLineToRelative(11f)
+            horizontalLineToRelative(-2.4f)
+            close()
+            moveTo(10.8f, 16.5f)
+            horizontalLineToRelative(2.4f)
+            verticalLineToRelative(2.5f)
+            horizontalLineToRelative(-2.4f)
+            close()
+        }
+    }
+
+    /**
+     * 把历史遗留的符号字符串翻译成矢量图标。
+     *
+     * 存在的理由：数据层（`Models.kt` / `WorkspaceScreen.kt` 的状态映射）
+     * 把状态映射成了 `String` 符号，直接当图标渲染。为了不破坏数据契约
+     * （`WorkspaceApiParserTest` 等断言依赖这些字符串），这里在**渲染层**
+     * 做一次翻译，数据层原样不动。
+     *
+     * 返回 `null` 表示该字符串不属于图标语义（例如合规的几何字符 `●`、
+     * 普通标点 `!`），调用方应回退到文本渲染。
+     */
+    fun fromSymbol(symbol: String?): ImageVector? = when (symbol) {
+        "✓" -> Check
+        "⚠" -> Alert
+        "○" -> CircleOutline
+        "▶" -> Play
+        "☰" -> List
+        else -> null
     }
 }

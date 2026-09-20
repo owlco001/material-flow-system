@@ -1,6 +1,7 @@
 package com.company.logistics.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -180,6 +182,12 @@ fun DangerButton(
 /**
  * 状态标签。
  * 契约要求：状态不得只靠颜色区分，必须同时给出符号（图标）与文字。
+ *
+ * [symbol] 保持 [String] 类型是**刻意的**：数据层（`Models.kt` /
+ * `WorkspaceScreen.kt` 的状态映射）以字符串承载符号语义，改类型会连带
+ * 破坏数据契约与既有测试断言。因此这里在渲染层做一次翻译——
+ * 命中 [LogisticsIcons.fromSymbol] 的符号渲染为矢量图标，
+ * 未命中的合规字符（如几何字符 `●`、标点 `!`）回退为文本渲染。
  */
 @Composable
 fun StatusTag(
@@ -199,7 +207,16 @@ fun StatusTag(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            if (!symbol.isNullOrBlank()) {
+            val icon = LogisticsIcons.fromSymbol(symbol)
+            if (icon != null) {
+                Image(
+                    imageVector = icon,
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(color),
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+            } else if (!symbol.isNullOrBlank()) {
                 Text(
                     text = symbol,
                     fontSize = 12.sp,

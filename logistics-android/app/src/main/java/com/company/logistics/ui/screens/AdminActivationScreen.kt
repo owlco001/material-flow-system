@@ -1,7 +1,12 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,7 +23,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 
@@ -30,6 +37,7 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.SetupStatusDto
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.VSpace
@@ -108,7 +116,21 @@ fun AdminActivationScreen(
             )
             VSpace(Spacing.xs)
             Text("密码长度必须为 8~256 个字符，初始化成功后首次登录必须改密。", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
-            error?.let { Text("⚠ $it", modifier = Modifier.fillMaxWidth().padding(top = 12.dp), color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+            error?.let {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        imageVector = LogisticsIcons.Alert,
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.error),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+            }
             VSpace(Spacing.lg)
             PrimaryButton(
                 text = "初始化管理员",
