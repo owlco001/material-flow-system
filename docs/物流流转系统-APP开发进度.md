@@ -1,4 +1,4 @@
-# 物流流转系统 APP 开发进度
+# 智慧工厂 APP 开发进度
 
 更新时间：2026-09-13，本轮复核
 
@@ -22,7 +22,7 @@
 3. APP 任务拆分
    - `/root/project_workspace/tasks/物流流转系统-APP开发任务拆分.md`
 4. UI 交付物已解压归档
-   - `/root/project_workspace/tasks/ui_delivery_1/extracted/物流流转系统-UI设计交付/logistics-app/`
+   - `/root/project_workspace/tasks/ui_delivery_1/extracted/智慧工厂-UI设计交付/logistics-app/`
 
 ## 本轮确认结果
 

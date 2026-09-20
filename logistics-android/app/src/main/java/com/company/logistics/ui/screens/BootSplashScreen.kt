@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -193,7 +194,7 @@ fun BootSplashScreen(
 
                 Spacer(Modifier.height(24.dp))
                 Text(
-                    text = "博阳智造，构建未来",
+                    text = stringResource(R.string.brand_tagline),
                     color = Color.White,
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
@@ -206,7 +207,7 @@ fun BootSplashScreen(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "物料流转系统",
+                    text = stringResource(R.string.app_name),
                     color = Color.White.copy(alpha = 0.88f),
                     fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -219,7 +220,7 @@ fun BootSplashScreen(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "厂内物料流转 · 扫码作业平台",
+                    text = stringResource(R.string.brand_subtitle),
                     color = Color.White.copy(alpha = 0.72f),
                     fontSize = 14.sp,
                     letterSpacing = 0.5.sp,

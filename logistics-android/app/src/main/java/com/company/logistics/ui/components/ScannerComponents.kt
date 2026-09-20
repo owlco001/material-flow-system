@@ -33,8 +33,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -271,5 +274,76 @@ fun OfflineBanner(
             Spacer(Modifier.weight(1f))
             Text("查看 ›", color = Color(0xFFB8791A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
+    }
+}
+
+/**
+ * 扫码作业相关的项目自有矢量图标。
+ *
+ * 为什么不用 emoji：emoji 在不同厂商 ROM 上字形差异极大、无法跟随主题着色，
+ * 也无法保证描边粗细一致，作为功能图标不合格。此处按 Material 官方
+ * FlashOn / FlashOff 的 24dp 网格重建为 ImageVector，不引入新的图标依赖
+ * （当前仅依赖 material-icons-core，其中不含手电筒图标）。
+ *
+ * 使用规范：统一 24dp 视口，调用处按 16 / 20 / 24px 三档取用。
+ */
+object ScannerIcons {
+
+    /** 手电筒开：灯身 + 灯头 + 光锥。 */
+    val FlashOn: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "FlashOn",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(7f, 2f)
+                horizontalLineToRelative(10f)
+                verticalLineToRelative(3f)
+                horizontalLineToRelative(-10f)
+                close()
+                moveTo(8f, 6f)
+                horizontalLineToRelative(8f)
+                lineToRelative(-1f, 4f)
+                horizontalLineToRelative(-6f)
+                close()
+                moveTo(9f, 11f)
+                horizontalLineToRelative(6f)
+                lineToRelative(3f, 11f)
+                horizontalLineToRelative(-12f)
+                close()
+            }
+        }.build()
+    }
+
+    /** 手电筒关：仅灯身与灯头，无光锥。 */
+    val FlashOff: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "FlashOff",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(7f, 2f)
+                horizontalLineToRelative(10f)
+                verticalLineToRelative(3f)
+                horizontalLineToRelative(-10f)
+                close()
+                moveTo(8f, 6f)
+                horizontalLineToRelative(8f)
+                lineToRelative(-1f, 4f)
+                horizontalLineToRelative(-6f)
+                close()
+                moveTo(9f, 11f)
+                horizontalLineToRelative(6f)
+                verticalLineToRelative(4f)
+                horizontalLineToRelative(-6f)
+                close()
+            }
+        }.build()
     }
 }

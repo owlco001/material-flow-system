@@ -46,7 +46,7 @@ except OSError:
 if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", APP_VERSION):
     raise RuntimeError("VERSION file has an invalid format")
 
-app = FastAPI(title="物料流转系统 API", version=APP_VERSION)
+app = FastAPI(title="智慧工厂 API", version=APP_VERSION)
 bearer = HTTPBearer(auto_error=False)
 
 HEALTH_TABLES = frozenset({

@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -80,20 +81,20 @@ fun LoginScreen(
         // 品牌标识：复用现有公司齿轮图标，不新增或修改图标资源。
         Image(
             painter = painterResource(R.mipmap.ic_launcher_foreground),
-            contentDescription = "博阳智造 Logo",
+            contentDescription = stringResource(R.string.app_name) + " Logo",
             modifier = Modifier.size(72.dp),
         )
 
         Spacer(Modifier.height(Spacing.lg))
         Text(
-            "博阳智造",
+            stringResource(R.string.app_name),
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
             color = LogisticsTheme.colors.textPrimary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "厂内物料流转 · 扫码作业平台",
+            stringResource(R.string.brand_subtitle),
             fontSize = 13.sp,
             color = LogisticsTheme.colors.textTertiary
         )

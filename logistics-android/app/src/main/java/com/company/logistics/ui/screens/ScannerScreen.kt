@@ -32,6 +32,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -65,6 +66,7 @@ import com.company.logistics.model.UserRole
 import com.company.logistics.ui.CameraStatus
 import com.company.logistics.ui.ScannerViewModel
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.ScannerIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.ScannerViewfinder
 import com.company.logistics.ui.components.SecondaryButton
@@ -491,6 +493,12 @@ private fun TorchButton(enabled: Boolean, on: Boolean, onClick: () -> Unit) {
         on -> colors.primary
         else -> Color.White.copy(alpha = 0.85f)
     }
+    // 图标着色跟随底色深浅：亮底用深色图标，深底用白色图标，保证对比度达标。
+    val fg = when {
+        !enabled -> Color.White.copy(alpha = 0.6f)
+        on -> Color.White
+        else -> colors.textPrimary
+    }
     Box(
         modifier = Modifier
             .size(Dimens.MinTouchTarget)
@@ -499,9 +507,11 @@ private fun TorchButton(enabled: Boolean, on: Boolean, onClick: () -> Unit) {
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = if (on) "🔦" else "💡",
-            fontSize = 18.sp,
+        Icon(
+            imageVector = if (on) ScannerIcons.FlashOn else ScannerIcons.FlashOff,
+            contentDescription = if (on) "关闭手电筒" else "打开手电筒",
+            tint = fg,
+            modifier = Modifier.size(24.dp),
         )
     }
 }
