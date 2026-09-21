@@ -103,6 +103,85 @@ def test_xlsx_preview_maps_effective_rows_and_does_not_write_business_tables(tmp
         c.close()
 
 
+def test_xlsx_preview_preview_id_commits_via_existing_idempotent_path(tmp_path, monkeypatch):
+    setup_backend(tmp_path, monkeypatch)
+    c = backend.db()
+    try:
+        c.execute(
+            "INSERT INTO production_order_models(id,model_code,model_name,created_at) VALUES(?,?,?,?)",
+            ("model-1", "M-001", "测试机型", backend.now()),
+        )
+        c.commit()
+    finally:
+        c.close()
+    workbook = make_xlsx_bytes([
+        ["导出", "BOM"],
+        ["料品编码", "料品名称", "规格", "单位名称", "实际用量", "是否生效"],
+        ["MTR-001", "工业轴承", "6205-2RS", "件", "2.5", "是"],
+    ])
+
+    with TestClient(backend.app) as client:
+        auth = login(client)
+        preview_response = post_xlsx_preview(client, auth, workbook)
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["canCommit"] is True
+        assert preview["validRows"] == 1
+
+        operation_id = rid()
+        payload = {
+            "previewId": preview["previewId"],
+            "clientOperationId": operation_id,
+            "publish": True,
+        }
+        headers = {**auth, "X-Request-Id": rid(), "Idempotency-Key": operation_id}
+        first = client.post("/api/v1/boms/import/commit", json=payload, headers=headers)
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["status"] == "PUBLISHED"
+        assert first_body["itemCount"] == 1
+        assert first_body["idempotent"] is False
+
+        c = backend.db()
+        try:
+            version = c.execute(
+                "SELECT * FROM bom_versions WHERE id=?",
+                (first_body["bomVersionId"],),
+            ).fetchone()
+            assert version is not None
+            assert version["model_code"] == "M-001"
+            assert version["status"] == "PUBLISHED"
+            assert version["row_count"] == 1
+            item = c.execute(
+                "SELECT * FROM bom_items WHERE bom_version_id=?",
+                (first_body["bomVersionId"],),
+            ).fetchone()
+            assert item is not None
+            assert item["material_id"] == "mat_001"
+            assert item["material_code"] == "MTR-001"
+            assert item["quantity"] == 2.5
+            assert item["line_no"] == 3
+        finally:
+            c.close()
+
+        retry = client.post(
+            "/api/v1/boms/import/commit",
+            json=payload,
+            headers={**auth, "X-Request-Id": rid(), "Idempotency-Key": operation_id},
+        )
+        assert retry.status_code == 200, retry.text
+        retry_body = retry.json()
+        assert retry_body["idempotent"] is True
+        assert retry_body["bomVersionId"] == first_body["bomVersionId"]
+
+        conflict = client.post(
+            "/api/v1/boms/import/commit",
+            json={**payload, "publish": False},
+            headers={**auth, "X-Request-Id": rid(), "Idempotency-Key": operation_id},
+        )
+        assert conflict.status_code == 409, conflict.text
+
+
 def test_xlsx_preview_missing_header_returns_422(tmp_path, monkeypatch):
     setup_backend(tmp_path, monkeypatch)
     workbook = make_xlsx_bytes([
