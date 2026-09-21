@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
+import kotlin.system.measureTimeMillis
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -324,6 +325,104 @@ class MaterialFlowApiContractTest {
     }
 
     @Test
+    fun realUnauthorizedWritePreservesStatusAuthorizationAndPath() = runBlocking {
+        val captured = captureOneRequest(
+            response = """{"code":"TOKEN_EXPIRED","message":"expired"}""",
+            status = 401,
+        ) { port ->
+            val old = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("expired-token")
+                    val error = runCatching {
+                        api.createProductionOrder("11111111-1111-1111-1111-111111111111", "WO-1", "产品", 1, "2099-12-31", org.json.JSONArray())
+                    }.exceptionOrNull()
+                    assertTrue(error is ApiException)
+                    assertEquals(401, (error as ApiException).statusCode)
+                    assertTrue(error.isUnauthorized)
+                }
+            } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/production-orders HTTP/1.1", captured.requestLine)
+        assertEquals("Bearer expired-token", captured.headers["Authorization"])
+    }
+
+    @Test
+    fun realConflictBindingPreservesStatusAndConflictFlag() = runBlocking {
+        val captured = captureOneRequest(
+            response = """{"code":"CONFLICT","message":"version conflict"}""",
+            status = 409,
+        ) { port ->
+            val old = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("token")
+                    val error = runCatching {
+                        api.assignDevice("WO-1", "M-1", "11111111-1111-1111-1111-111111111111", "d1", 2)
+                    }.exceptionOrNull()
+                    assertTrue(error is ApiException)
+                    assertEquals(409, (error as ApiException).statusCode)
+                    assertTrue(error.isConflict)
+                }
+            } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals("POST /api/v1/production-orders/WO-1/models/M-1/assign-device HTTP/1.1", captured.requestLine)
+    }
+
+    @Test
+    fun repeatedOrderCreateKeepsOperationIdHeadersAndBodyStable() = runBlocking {
+        val operationId = "11111111-1111-1111-1111-111111111111"
+        val captured = captureRequests(2, """{"orderNo":"WO-1","orderId":"o1","status":"CREATED"}""") { port ->
+            val old = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("token")
+                    repeat(2) { api.createProductionOrder(operationId, "WO-1", "产品", 1, "2099-12-31", org.json.JSONArray()) }
+                }
+            } finally { ApiConfig.baseUrl = old }
+        }
+        assertEquals(2, captured.size)
+        captured.forEach { request ->
+            assertEquals(operationId, request.headers["Idempotency-Key"])
+            assertTrue(request.body.contains("\"clientOperationId\":\"$operationId\""))
+            UUID.fromString(request.headers["X-Request-Id"] ?: error("X-Request-Id missing"))
+        }
+    }
+
+    @Test
+    fun readTimeoutUsesConfiguredTimeoutAndFinishesPromptly() = runBlocking {
+        val oldBaseUrl = ApiConfig.baseUrl
+        val oldReadTimeout = ApiConfig.readTimeoutMs
+        ServerSocket(0).use { server ->
+            val worker = Thread {
+                server.accept().use { socket ->
+                    readRequest(socket)
+                    Thread.sleep(1_000)
+                }
+            }.apply { isDaemon = true }
+            worker.start()
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:${server.localPort}"
+                ApiConfig.readTimeoutMs = 150
+                val elapsed = measureTimeMillis {
+                    val error = runCatching {
+                        MaterialFlowApi().also { it.updateToken("token") }
+                            .createDevice("11111111-1111-1111-1111-111111111111", "D-1", "机台", "车间", null)
+                    }.exceptionOrNull()
+                    assertTrue(error != null)
+                }
+                assertTrue("read timeout took ${elapsed}ms", elapsed < 2_000)
+            } finally {
+                ApiConfig.baseUrl = oldBaseUrl
+                ApiConfig.readTimeoutMs = oldReadTimeout
+            }
+        }
+    }
+
+    @Test
     fun apiErrorsPreserveUnauthorizedConflictAndNetworkFailure() = runBlocking {
         val unauthorized = ApiParser.parseError(401, "{\"code\":\"TOKEN_EXPIRED\",\"message\":\"expired\"}")
         assertEquals(401, unauthorized.statusCode)
@@ -346,30 +445,42 @@ class MaterialFlowApiContractTest {
 
     private suspend fun captureOneRequest(
         response: String,
+        status: Int = 200,
         call: suspend (Int) -> Unit,
-    ): CapturedRequest {
+    ): CapturedRequest = captureRequests(1, response, status, call).single()
+
+    private suspend fun captureRequests(
+        count: Int,
+        response: String,
+        status: Int = 200,
+        call: suspend (Int) -> Unit,
+    ): List<CapturedRequest> {
         ServerSocket(0).use { server ->
-            var captured: CapturedRequest? = null
+            val captured = mutableListOf<CapturedRequest>()
             val worker = Thread {
-                server.accept().use { socket ->
-                    captured = readRequest(socket)
-                    val bytes = response.toByteArray(Charsets.UTF_8)
-                    val output = socket.getOutputStream()
-                    output.bufferedWriter().apply {
-                        write("HTTP/1.1 200 OK\r\n")
-                        write("Content-Type: application/json\r\n")
-                        write("Content-Length: ${bytes.size}\r\n")
-                        write("Connection: close\r\n\r\n")
-                        flush()
+                repeat(count) {
+                    server.accept().use { socket ->
+                        captured += readRequest(socket)
+                        val bytes = response.toByteArray(Charsets.UTF_8)
+                        val output = socket.getOutputStream()
+                        output.bufferedWriter().apply {
+                            write("HTTP/1.1 $status ${if (status == 200) "OK" else "ERROR"}\r\n")
+                            write("Content-Type: application/json\r\n")
+                            write("Content-Length: ${bytes.size}\r\n")
+                            write("Connection: close\r\n\r\n")
+                            flush()
+                        }
+                        output.write(bytes)
+                        output.flush()
                     }
-                    output.write(bytes)
-                    output.flush()
                 }
             }
             worker.start()
             call(server.localPort)
             worker.join(3_000)
-            return captured ?: error("HTTP request was not captured")
+            return captured.toList().also { requests ->
+                check(requests.size == count) { "Expected $count HTTP requests, captured ${requests.size}" }
+            }
         }
     }
 
