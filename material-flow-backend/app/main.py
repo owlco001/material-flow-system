@@ -16,6 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.xlsx_parser import (
+    HeaderDetectService,
+    HeaderMissingFieldsError,
+    XlsxMaxRowsExceededError,
+    XlsxParseError,
+    XlsxSheetReader,
+)
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -1489,8 +1497,9 @@ class TransferAction(BaseModel):
     clientOperationId: uuid.UUID
 
 
-# ==================== BOM CSV import (A1) ====================
+# ==================== BOM CSV/XLSX import (A1/2A) ====================
 BOM_COLUMNS = ("modelCode", "materialCode", "materialName", "specification", "unit", "quantity", "scrapRate", "substituteMaterialCodes")
+BOM_XLSX_REQUIRED_COLUMNS = ("料品编码", "料品名称", "规格", "单位名称", "实际用量", "是否生效")
 BOM_PREVIEWS: dict[str, dict[str, Any]] = {}
 BOM_IMPORT_ROLES = {"ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR"}
 
@@ -1519,6 +1528,131 @@ def _bom_authorized(user: sqlite3.Row) -> None:
         raise ApiError(403, CODE_FORBIDDEN, "无权执行 BOM 导入")
 
 
+def _is_xlsx_upload(file: UploadFile) -> bool:
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    return filename.endswith(".xlsx") or content_type in {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/xlsx",
+    }
+
+
+def _validate_bom_preview_rows(
+    raw_rows: list[dict[str, str]],
+    *,
+    model_code: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    c = db()
+    try:
+        material_cols = {r["name"] for r in c.execute("PRAGMA table_info(materials)").fetchall()}
+        code_col = "material_code" if "material_code" in material_cols else "code"
+        valid_items, errors, seen = [], [], set()
+        for row in raw_rows:
+            line_no = int(row["lineNo"])
+            item_errors = []
+            values = {k: (row.get(k) or "").strip() for k in BOM_COLUMNS}
+            for field in ("modelCode", "materialCode", "materialName", "unit"):
+                if not values[field]:
+                    item_errors.append({"lineNo": line_no, "field": field, "code": "REQUIRED", "message": "字段不能为空"})
+            if values["modelCode"] != model_code:
+                item_errors.append({"lineNo": line_no, "field": "modelCode", "code": "MODEL_MISMATCH", "message": "机型不匹配"})
+            key = (values["modelCode"], values["materialCode"])
+            if key in seen:
+                item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "DUPLICATE", "message": "物料重复"})
+            seen.add(key)
+            quantity = _bom_decimal(values["quantity"], positive=True)
+            scrap = _bom_decimal(values["scrapRate"] or "0", rate=True)
+            if quantity is None:
+                item_errors.append({"lineNo": line_no, "field": "quantity", "code": "INVALID_QUANTITY", "message": "数量必须为正数且最多6位小数"})
+            if scrap is None:
+                item_errors.append({"lineNo": line_no, "field": "scrapRate", "code": "INVALID_SCRAP_RATE", "message": "损耗率必须在[0,1)且最多6位小数"})
+            material = c.execute(f"SELECT * FROM materials WHERE {code_col}=?", (values["materialCode"],)).fetchone()
+            if not material:
+                item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "UNKNOWN_MATERIAL", "message": "物料不存在"})
+            if item_errors:
+                errors.extend(item_errors)
+                continue
+            valid_items.append({
+                "lineNo": line_no,
+                "materialId": material["id"],
+                "materialCode": values["materialCode"],
+                "materialName": values["materialName"],
+                "specification": values["specification"],
+                "unit": values["unit"],
+                "quantity": quantity,
+                "scrapRate": scrap,
+                "substituteMaterialCodes": values["substituteMaterialCodes"],
+            })
+        return valid_items, errors
+    finally:
+        c.close()
+
+
+def _csv_bom_rows(raw: bytes, *, trace_id: str) -> list[dict[str, str]]:
+    try:
+        text = raw.decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(text, newline="")))
+    except (UnicodeDecodeError, csv.Error):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "CSV 必须为 UTF-8 格式", trace_id=trace_id) from None
+    if not rows or tuple(rows[0].keys()) != BOM_COLUMNS or len(rows) > 20000:
+        raise ApiError(
+            422,
+            "BOM_TEMPLATE_INVALID" if rows and tuple(rows[0].keys()) != BOM_COLUMNS else "BOM_FILE_TOO_LARGE",
+            "CSV 模板或行数无效",
+            trace_id=trace_id,
+        )
+    return [{**row, "lineNo": str(line_no)} for line_no, row in enumerate(rows, 2)]
+
+
+def _xlsx_bom_rows(raw: bytes, *, model_code: str, trace_id: str) -> list[dict[str, str]]:
+    try:
+        rows = XlsxSheetReader.read_rows(raw, max_rows=20001)
+        header = HeaderDetectService.detect_header(rows, BOM_XLSX_REQUIRED_COLUMNS)
+    except HeaderMissingFieldsError as exc:
+        raise ApiError(
+            422,
+            "BOM_TEMPLATE_INVALID",
+            "XLSX BOM 模板缺少必要表头",
+            trace_id=trace_id,
+            details={"missingFields": list(exc.missing_fields)},
+        ) from None
+    except XlsxMaxRowsExceededError:
+        raise ApiError(422, "BOM_FILE_TOO_LARGE", "XLSX 行数超过 20000", trace_id=trace_id) from None
+    except XlsxParseError:
+        raise ApiError(422, "BOM_TEMPLATE_INVALID", "XLSX 文件无法解析", trace_id=trace_id) from None
+
+    preview_rows: list[dict[str, str]] = []
+    for row in rows:
+        if row.index <= header.header_row_index:
+            continue
+        values = {
+            field: (
+                row.values[header.column_map[field]].strip()
+                if header.column_map[field] < len(row.values)
+                else ""
+            )
+            for field in BOM_XLSX_REQUIRED_COLUMNS
+        }
+        if not any(values.values()):
+            continue
+        if values["是否生效"] != "是":
+            continue
+        preview_rows.append({
+            "lineNo": str(row.index),
+            "modelCode": model_code,
+            "materialCode": values["料品编码"],
+            "materialName": values["料品名称"],
+            "specification": values["规格"],
+            "unit": values["单位名称"],
+            "quantity": values["实际用量"],
+            "scrapRate": "0",
+            "substituteMaterialCodes": "",
+        })
+    if len(preview_rows) > 20000:
+        raise ApiError(422, "BOM_FILE_TOO_LARGE", "XLSX 行数超过 20000", trace_id=trace_id)
+    return preview_rows
+
+
 @app.post("/api/v1/boms/import/preview")
 async def preview_bom_import(
     file: UploadFile = File(...), modelCode: str = Form(...),
@@ -1530,35 +1664,12 @@ async def preview_bom_import(
     raw = await file.read(10 * 1024 * 1024 + 1)
     if len(raw) > 10 * 1024 * 1024:
         raise ApiError(413, "BOM_FILE_TOO_LARGE", "文件超过 10MB", trace_id=trace_id)
-    try:
-        text = raw.decode("utf-8-sig")
-        rows = list(csv.DictReader(io.StringIO(text, newline="")))
-    except (UnicodeDecodeError, csv.Error):
-        raise ApiError(422, CODE_VALIDATION_ERROR, "CSV 必须为 UTF-8 格式", trace_id=trace_id) from None
-    if not rows or tuple(rows[0].keys()) != BOM_COLUMNS or len(rows) > 20000:
-        raise ApiError(422, "BOM_TEMPLATE_INVALID" if rows and tuple(rows[0].keys()) != BOM_COLUMNS else "BOM_FILE_TOO_LARGE", "CSV 模板或行数无效", trace_id=trace_id)
-    c = db(); material_cols = {r["name"] for r in c.execute("PRAGMA table_info(materials)").fetchall()}
-    code_col = "material_code" if "material_code" in material_cols else "code"
-    valid_items, errors, seen = [], [], set()
-    for line_no, row in enumerate(rows, 2):
-        item_errors = []
-        values = {k: (row.get(k) or "").strip() for k in BOM_COLUMNS}
-        for field in ("modelCode", "materialCode", "materialName", "unit"):
-            if not values[field]: item_errors.append({"lineNo": line_no, "field": field, "code": "REQUIRED", "message": "字段不能为空"})
-        if values["modelCode"] != modelCode:
-            item_errors.append({"lineNo": line_no, "field": "modelCode", "code": "MODEL_MISMATCH", "message": "机型不匹配"})
-        key = (values["modelCode"], values["materialCode"])
-        if key in seen: item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "DUPLICATE", "message": "物料重复"})
-        seen.add(key)
-        quantity = _bom_decimal(values["quantity"], positive=True)
-        scrap = _bom_decimal(values["scrapRate"] or "0", rate=True)
-        if quantity is None: item_errors.append({"lineNo": line_no, "field": "quantity", "code": "INVALID_QUANTITY", "message": "数量必须为正数且最多6位小数"})
-        if scrap is None: item_errors.append({"lineNo": line_no, "field": "scrapRate", "code": "INVALID_SCRAP_RATE", "message": "损耗率必须在[0,1)且最多6位小数"})
-        material = c.execute(f"SELECT * FROM materials WHERE {code_col}=?", (values["materialCode"],)).fetchone()
-        if not material: item_errors.append({"lineNo": line_no, "field": "materialCode", "code": "UNKNOWN_MATERIAL", "message": "物料不存在"})
-        if item_errors: errors.extend(item_errors); continue
-        valid_items.append({"lineNo": line_no, "materialId": material["id"], "materialCode": values["materialCode"], "materialName": values["materialName"], "specification": values["specification"], "unit": values["unit"], "quantity": quantity, "scrapRate": scrap, "substituteMaterialCodes": values["substituteMaterialCodes"]})
-    c.close()
+    rows = (
+        _xlsx_bom_rows(raw, model_code=modelCode, trace_id=trace_id)
+        if _is_xlsx_upload(file)
+        else _csv_bom_rows(raw, trace_id=trace_id)
+    )
+    valid_items, errors = _validate_bom_preview_rows(rows, model_code=modelCode)
     pid = str(uuid.uuid4()); digest = hashlib.sha256(raw).hexdigest()
     BOM_PREVIEWS[pid] = {"userId": user["id"], "created": time.time(), "modelCode": modelCode, "sha": digest, "rows": valid_items, "errors": errors}
     return {"previewId": pid, "fileSha256": digest, "modelCode": modelCode, "totalRows": len(rows), "validRows": len(valid_items), "invalidRows": len(rows) - len(valid_items), "canCommit": not errors and bool(valid_items), "errors": errors, "warnings": [], "items": valid_items, "traceId": trace_id, "serverTime": now()}
