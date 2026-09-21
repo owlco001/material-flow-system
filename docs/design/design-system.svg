@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1180" font-family="'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <filter id="cs" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#1A1F26" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1400" height="1180" fill="#F4F6F9"/>
+
+  <g transform="translate(60,54)">
+    <rect x="0" y="4" width="6" height="34" rx="3" fill="#0E5FD8"/>
+    <text x="20" y="30" font-size="28" font-weight="700" fill="#1A1F26">物流流转系统 · 设计系统总览</text>
+    <text x="20" y="58" font-size="14" fill="#5A6472">Android ｜ Material Design 3 基线 ｜ 现场作业场景优化 ｜ v1.0</text>
+  </g>
+
+  <!-- ===== 色彩系统 ===== -->
+  <g transform="translate(60,140)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#1A1F26">01 · 色彩系统</text>
+    <text x="140" y="0" font-size="12" fill="#8A94A3">状态识别优先靠颜色 + 图标双通道，不做纯色区分</text>
+
+    <!-- 主色 -->
+    <g transform="translate(0,24)">
+      <rect width="240" height="120" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="18" y="26" font-size="12" fill="#8A94A3">品牌主色</text>
+      <rect x="18" y="36" width="204" height="44" rx="10" fill="#0E5FD8"/>
+      <text x="30" y="63" font-size="15" font-weight="700" fill="#fff">#0E5FD8</text>
+      <text x="30" y="100" class="mono" font-size="11" fill="#5A6472">primary · 白底 5.9:1 ✓AA</text>
+    </g>
+    <g transform="translate(260,24)">
+      <rect width="240" height="120" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="18" y="26" font-size="12" fill="#8A94A3">深色按压态</text>
+      <rect x="18" y="36" width="204" height="44" rx="10" fill="#0A47A3"/>
+      <text x="30" y="63" font-size="15" font-weight="700" fill="#fff">#0A47A3</text>
+      <text x="30" y="100" class="mono" font-size="11" fill="#5A6472">primary-dark · 8.4:1 ✓AAA</text>
+    </g>
+    <g transform="translate(520,24)">
+      <rect width="240" height="120" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="18" y="26" font-size="12" fill="#8A94A3">浅色填充</text>
+      <rect x="18" y="36" width="204" height="44" rx="10" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".3"/>
+      <text x="30" y="63" font-size="15" font-weight="700" fill="#0E5FD8">#E8F0FE</text>
+      <text x="30" y="100" class="mono" font-size="11" fill="#5A6472">primary-light · 选中背景</text>
+    </g>
+    <g transform="translate(780,24)">
+      <rect width="500" height="120" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="18" y="26" font-size="12" fill="#8A94A3">中性色阶</text>
+      <g transform="translate(18,38)">
+        <rect width="88" height="38" rx="8" fill="#1A1F26"/><text x="44" y="60" text-anchor="middle" font-size="9" fill="#fff">#1A1F26</text>
+        <rect x="94" width="88" height="38" rx="8" fill="#5A6472"/><text x="138" y="60" text-anchor="middle" font-size="9" fill="#fff">#5A6472</text>
+        <rect x="188" width="88" height="38" rx="8" fill="#8A94A3"/><text x="232" y="60" text-anchor="middle" font-size="9" fill="#fff">#8A94A3</text>
+        <rect x="282" width="88" height="38" rx="8" fill="#DFE3E8"/><text x="326" y="60" text-anchor="middle" font-size="9" fill="#5A6472">#DFE3E8</text>
+        <rect x="376" width="88" height="38" rx="8" fill="#F4F6F9" stroke="#DFE3E8"/><text x="420" y="60" text-anchor="middle" font-size="9" fill="#5A6472">#F4F6F9</text>
+      </g>
+      <text x="18" y="100" class="mono" font-size="11" fill="#5A6472">text-primary 16.1:1 ／ text-secondary 6.4:1</text>
+    </g>
+  </g>
+
+  <!-- ===== 语义状态色 ===== -->
+  <g transform="translate(60,300)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#1A1F26">02 · 语义状态色（流转类型编码）</text>
+    <g transform="translate(0,20)">
+      <rect width="188" height="96" rx="12" fill="#fff" filter="url(#cs)"/>
+      <rect x="0" y="0" width="188" height="4" rx="2" fill="#00A870"/>
+      <circle cx="30" cy="34" r="13" fill="#00A870" opacity=".14"/>
+      <path d="M30 45 v-16 M24 35 l6 -6 l6 6" stroke="#00A870" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="54" y="40" font-size="15" font-weight="700" fill="#1A1F26">入库</text>
+      <text x="20" y="70" class="mono" font-size="11" fill="#5A6472">#00A870 · ↑</text>
+    </g>
+    <g transform="translate(204,20)">
+      <rect width="188" height="96" rx="12" fill="#fff" filter="url(#cs)"/>
+      <rect x="0" y="0" width="188" height="4" rx="2" fill="#F5A623"/>
+      <circle cx="30" cy="34" r="13" fill="#F5A623" opacity=".16"/>
+      <path d="M30 25 v16 M24 35 l6 6 l6 -6" stroke="#F5A623" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="54" y="40" font-size="15" font-weight="700" fill="#1A1F26">出库</text>
+      <text x="20" y="70" class="mono" font-size="11" fill="#5A6472">#F5A623 · ↓</text>
+    </g>
+    <g transform="translate(408,20)">
+      <rect width="188" height="96" rx="12" fill="#fff" filter="url(#cs)"/>
+      <rect x="0" y="0" width="188" height="4" rx="2" fill="#0E5FD8"/>
+      <circle cx="30" cy="34" r="13" fill="#0E5FD8" opacity=".12"/>
+      <path d="M22 32 h12 M38 28 l5 4 l-5 4 M38 40 h-12 M22 44 l-5 -4 l5 -4" stroke="#0E5FD8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(-4,-6)"/>
+      <text x="54" y="40" font-size="15" font-weight="700" fill="#1A1F26">调拨</text>
+      <text x="20" y="70" class="mono" font-size="11" fill="#5A6472">#0E5FD8 · ⇄</text>
+    </g>
+    <g transform="translate(612,20)">
+      <rect width="188" height="96" rx="12" fill="#fff" filter="url(#cs)"/>
+      <rect x="0" y="0" width="188" height="4" rx="2" fill="#7B61FF"/>
+      <circle cx="30" cy="34" r="13" fill="#7B61FF" opacity=".14"/>
+      <path d="M22 30 h16 M22 36 h12 M22 42 h16" stroke="#7B61FF" stroke-width="2.2" stroke-linecap="round"/>
+      <text x="54" y="40" font-size="15" font-weight="700" fill="#1A1F26">盘点</text>
+      <text x="20" y="70" class="mono" font-size="11" fill="#5A6472">#7B61FF · ✓</text>
+    </g>
+    <g transform="translate(816,20)">
+      <rect width="188" height="96" rx="12" fill="#fff" filter="url(#cs)"/>
+      <rect x="0" y="0" width="188" height="4" rx="2" fill="#E64545"/>
+      <circle cx="30" cy="34" r="13" fill="#E64545" opacity=".12"/>
+      <path d="M30 22 l11 20 h-22 z" fill="none" stroke="#E64545" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M30 30 v6 M30 39 v1.5" stroke="#E64545" stroke-width="2.2" stroke-linecap="round"/>
+      <text x="54" y="40" font-size="15" font-weight="700" fill="#1A1F26">异常</text>
+      <text x="20" y="70" class="mono" font-size="11" fill="#5A6472">#E64545 · ⚠</text>
+    </g>
+  </g>
+
+  <!-- ===== 字号 / 间距 / 圆角 ===== -->
+  <g transform="translate(60,470)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#1A1F26">03 · 排版 · 间距 · 圆角</text>
+
+    <!-- 字号 -->
+    <g transform="translate(0,20)">
+      <rect width="420" height="330" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#1A1F26">字号阶梯（sp）</text>
+      <line x1="20" y1="42" x2="400" y2="42" stroke="#DFE3E8"/>
+      <text x="20" y="76" font-size="32" font-weight="700" fill="#1A1F26">MTR-2026</text>
+      <text x="248" y="76" class="mono" font-size="11" fill="#8A94A3">display 32 / 700</text>
+      <text x="20" y="118" font-size="24" font-weight="700" fill="#1A1F26">页面标题</text>
+      <text x="248" y="118" class="mono" font-size="11" fill="#8A94A3">h1 24 / 700</text>
+      <text x="20" y="156" font-size="20" font-weight="600" fill="#1A1F26">卡片标题</text>
+      <text x="248" y="156" class="mono" font-size="11" fill="#8A94A3">h2 20 / 600</text>
+      <text x="20" y="192" font-size="16" fill="#1A1F26">正文内容 16sp</text>
+      <text x="248" y="192" class="mono" font-size="11" fill="#8A94A3">body 16 / 400</text>
+      <text x="20" y="226" font-size="14" fill="#5A6472">辅助说明 14sp</text>
+      <text x="248" y="226" class="mono" font-size="11" fill="#8A94A3">caption 14 / 400</text>
+      <text x="20" y="256" font-size="12" fill="#8A94A3">角标 12sp（下限）</text>
+      <text x="248" y="256" class="mono" font-size="11" fill="#8A94A3">tiny 12 / 400</text>
+      <line x1="20" y1="276" x2="400" y2="276" stroke="#DFE3E8"/>
+      <text x="20" y="300" class="mono" font-size="12" fill="#0E5FD8">数字/料号 → Roboto Mono 等宽</text>
+      <text x="20" y="318" font-size="11" fill="#8A94A3">避免数字认读错误，料号必须等宽</text>
+    </g>
+
+    <!-- 间距 -->
+    <g transform="translate(440,20)">
+      <rect width="340" height="330" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#1A1F26">间距（8dp 栅格）</text>
+      <line x1="20" y1="42" x2="320" y2="42" stroke="#DFE3E8"/>
+      <g transform="translate(20,56)">
+        <rect width="4" height="20" fill="#0E5FD8"/><text x="16" y="16" class="mono" font-size="12" fill="#1A1F26">4dp</text><text x="76" y="16" font-size="11" fill="#8A94A3">图标·文字</text>
+      </g>
+      <g transform="translate(20,90)">
+        <rect width="8" height="20" fill="#0E5FD8"/><text x="20" y="16" class="mono" font-size="12" fill="#1A1F26">8dp</text><text x="76" y="16" font-size="11" fill="#8A94A3">小间距</text>
+      </g>
+      <g transform="translate(20,124)">
+        <rect width="16" height="20" fill="#0E5FD8"/><text x="28" y="16" class="mono" font-size="12" fill="#1A1F26">16dp</text><text x="86" y="16" font-size="11" fill="#8A94A3">卡片内边距·页面边距</text>
+      </g>
+      <g transform="translate(20,158)">
+        <rect width="24" height="20" fill="#0E5FD8"/><text x="36" y="16" class="mono" font-size="12" fill="#1A1F26">24dp</text><text x="94" y="16" font-size="11" fill="#8A94A3">区块间距</text>
+      </g>
+      <g transform="translate(20,192)">
+        <rect width="32" height="20" fill="#0E5FD8"/><text x="44" y="16" class="mono" font-size="12" fill="#1A1F26">32dp</text><text x="102" y="16" font-size="11" fill="#8A94A3">大区块分隔</text>
+      </g>
+      <line x1="20" y1="230" x2="320" y2="230" stroke="#DFE3E8"/>
+      <text x="20" y="256" font-size="12" font-weight="700" fill="#1A1F26">触控热区</text>
+      <rect x="20" y="266" width="48" height="20" rx="4" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".4"/>
+      <text x="76" y="281" font-size="11" fill="#5A6472">最小 48dp（Material 底线）</text>
+      <rect x="20" y="292" width="72" height="20" rx="4" fill="#0E5FD8" opacity=".9"/>
+      <text x="100" y="307" font-size="11" fill="#5A6472">主操作 ≥56dp ／ 扫码键 72dp</text>
+    </g>
+
+    <!-- 圆角 -->
+    <g transform="translate(800,20)">
+      <rect width="380" height="330" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#1A1F26">圆角 · 阴影</text>
+      <line x1="20" y1="42" x2="360" y2="42" stroke="#DFE3E8"/>
+      <rect x="20" y="58" width="100" height="56" rx="8" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".3"/>
+      <text x="132" y="82" class="mono" font-size="12" fill="#1A1F26">8dp</text><text x="132" y="100" font-size="11" fill="#8A94A3">输入框·小标签</text>
+      <rect x="20" y="128" width="100" height="56" rx="12" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".3"/>
+      <text x="132" y="152" class="mono" font-size="12" fill="#1A1F26">12dp</text><text x="132" y="170" font-size="11" fill="#8A94A3">卡片·按钮（默认）</text>
+      <rect x="20" y="198" width="100" height="56" rx="16" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".3"/>
+      <text x="132" y="222" class="mono" font-size="12" fill="#1A1F26">16dp</text><text x="132" y="240" font-size="11" fill="#8A94A3">弹窗·底部抽屉</text>
+      <rect x="20" y="268" width="56" height="44" rx="22" fill="#E8F0FE" stroke="#0E5FD8" stroke-opacity=".3"/>
+      <text x="88" y="292" class="mono" font-size="12" fill="#1A1F26">999dp</text><text x="88" y="310" font-size="11" fill="#8A94A3">圆形按钮·头像</text>
+
+      <g transform="translate(228,58)">
+        <rect width="120" height="56" rx="12" fill="#fff" filter="url(#cs)"/>
+        <text x="60" y="34" text-anchor="middle" font-size="10" fill="#5A6472">shadow-1 卡片</text>
+      </g>
+      <g transform="translate(228,128)">
+        <rect width="120" height="56" rx="12" fill="#fff"/>
+        <rect x="0" y="0" width="120" height="56" rx="12" fill="none" stroke="#0E5FD8"/>
+        <text x="60" y="34" text-anchor="middle" font-size="10" fill="#0E5FD8">描边 1.5dp</text>
+      </g>
+      <text x="228" y="212" font-size="11" fill="#8A94A3">统一使用</text>
+      <text x="228" y="232" class="mono" font-size="11" fill="#5A6472">0 1 3 rgba(0,0,0,.08)</text>
+      <text x="228" y="250" class="mono" font-size="11" fill="#5A6472">0 4 12 rgba(0,0,0,.12)</text>
+    </g>
+  </g>
+
+  <!-- ===== 组件状态 ===== -->
+  <g transform="translate(60,840)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#1A1F26">04 · 组件状态（四态齐全）</text>
+
+    <!-- 按钮 -->
+    <g transform="translate(0,20)">
+      <rect width="640" height="290" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#1A1F26">按钮</text>
+      <line x1="20" y1="42" x2="620" y2="42" stroke="#DFE3E8"/>
+      <text x="20" y="70" font-size="11" fill="#8A94A3">默认</text>
+      <text x="200" y="70" font-size="11" fill="#8A94A3">按压</text>
+      <text x="380" y="70" font-size="11" fill="#8A94A3">禁用</text>
+      <text x="540" y="70" font-size="11" fill="#8A94A3">加载</text>
+
+      <rect x="20" y="80" width="160" height="48" rx="12" fill="#0E5FD8"/><text x="100" y="111" text-anchor="middle" font-size="14" fill="#fff" font-weight="700">确认流转</text>
+      <rect x="200" y="80" width="160" height="48" rx="12" fill="#0A47A3"/><text x="280" y="111" text-anchor="middle" font-size="14" fill="#fff" font-weight="700">确认流转</text>
+      <rect x="380" y="80" width="140" height="48" rx="12" fill="#DFE3E8"/><text x="450" y="111" text-anchor="middle" font-size="14" fill="#8A94A3">确认流转</text>
+      <rect x="540" y="80" width="80" height="48" rx="12" fill="#0E5FD8"/>
+      <circle cx="580" cy="104" r="9" fill="none" stroke="#fff" stroke-width="2.5" stroke-dasharray="36 20"/>
+
+      <rect x="20" y="150" width="160" height="48" rx="12" fill="#fff" stroke="#0E5FD8" stroke-width="1.5"/><text x="100" y="181" text-anchor="middle" font-size="14" fill="#0E5FD8" font-weight="700">绑定库位</text>
+      <rect x="200" y="150" width="160" height="48" rx="12" fill="#E8F0FE" stroke="#0E5FD8" stroke-width="1.5"/><text x="280" y="181" text-anchor="middle" font-size="14" fill="#0E5FD8" font-weight="700">绑定库位</text>
+      <rect x="380" y="150" width="140" height="48" rx="12" fill="#fff" stroke="#DFE3E8" stroke-width="1.5"/><text x="450" y="181" text-anchor="middle" font-size="14" fill="#8A94A3">绑定库位</text>
+      <rect x="540" y="150" width="80" height="48" rx="12" fill="#fff" stroke="#DFE3E8" stroke-width="1.5"/><circle cx="580" cy="174" r="9" fill="none" stroke="#8A94A3" stroke-width="2.5" stroke-dasharray="36 20"/>
+
+      <rect x="20" y="220" width="160" height="48" rx="12" fill="#E64545"/><text x="100" y="251" text-anchor="middle" font-size="14" fill="#fff" font-weight="700">驳回</text>
+      <rect x="200" y="220" width="160" height="48" rx="12" fill="#00A870"/><text x="280" y="251" text-anchor="middle" font-size="14" fill="#fff" font-weight="700">通过</text>
+      <rect x="380" y="220" width="240" height="48" rx="12" fill="#fff" stroke="#DFE3E8"/><text x="500" y="251" text-anchor="middle" font-size="14" fill="#5A6472">全宽按钮（16dp 边距）</text>
+    </g>
+
+    <!-- 输入框 + 标签 -->
+    <g transform="translate(660,20)">
+      <rect width="620" height="290" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#1A1F26">输入框 / 状态标签</text>
+      <line x1="20" y1="42" x2="600" y2="42" stroke="#DFE3E8"/>
+
+      <rect x="20" y="58" width="180" height="48" rx="10" fill="#fff" stroke="#DFE3E8"/><text x="34" y="88" font-size="13" fill="#8A94A3">默认状态</text>
+      <rect x="216" y="58" width="180" height="48" rx="10" fill="#fff" stroke="#0E5FD8" stroke-width="2"/><text x="230" y="88" class="mono" font-size="13" fill="#1A1F26">E20260417</text>
+      <rect x="412" y="58" width="188" height="48" rx="10" fill="#fff" stroke="#E64545" stroke-width="2"/><text x="426" y="88" font-size="13" fill="#1A1F26">ABC-999</text><text x="426" y="120" font-size="11" fill="#E64545">料号不存在，请核对</text>
+
+      <text x="20" y="160" font-size="11" fill="#8A94A3">状态标签</text>
+      <rect x="20" y="170" width="80" height="26" rx="8" fill="#00A870" opacity=".14"/><text x="60" y="187" text-anchor="middle" font-size="12" fill="#00A870" font-weight="600">已入库</text>
+      <rect x="108" y="170" width="80" height="26" rx="8" fill="#F5A623" opacity=".16"/><text x="148" y="187" text-anchor="middle" font-size="12" fill="#B8791A" font-weight="600">待同步</text>
+      <rect x="196" y="170" width="80" height="26" rx="8" fill="#E64545" opacity=".13"/><text x="236" y="187" text-anchor="middle" font-size="12" fill="#E64545" font-weight="600">异常</text>
+      <rect x="284" y="170" width="80" height="26" rx="8" fill="#0E5FD8" opacity=".12"/><text x="324" y="187" text-anchor="middle" font-size="12" fill="#0E5FD8" font-weight="600">进行中</text>
+      <rect x="372" y="170" width="80" height="26" rx="8" fill="#8A94A3" opacity=".14"/><text x="412" y="187" text-anchor="middle" font-size="12" fill="#5A6472" font-weight="600">已作废</text>
+
+      <text x="20" y="228" font-size="11" fill="#8A94A3">离线状态条（常驻顶部）</text>
+      <rect x="20" y="238" width="580" height="36" rx="10" fill="#F5A623" opacity=".14"/>
+      <path d="M38 250 v8 M38 262 v2" stroke="#F5A623" stroke-width="2.2" stroke-linecap="round"/>
+      <text x="54" y="261" font-size="12" fill="#B8791A" font-weight="700">离线中 · 3 条待同步</text>
+      <text x="566" y="261" text-anchor="end" font-size="12" fill="#B8791A">重试 ›</text>
+    </g>
+  </g>
+
+  <!-- ===== 角色 Tab ===== -->
+  <g transform="translate(60,1150)">
+    <text x="0" y="0" font-size="17" font-weight="700" fill="#1A1F26">05 · 角色化底部导航（按权限动态渲染）</text>
+    <g transform="translate(0,22)">
+      <rect width="1280" height="90" rx="14" fill="#fff" filter="url(#cs)"/>
+      <text x="20" y="30" font-size="12" font-weight="700" fill="#0E5FD8">操作员（4）</text>
+      <text x="20" y="56" font-size="12" fill="#5A6472">扫码 · 任务 · 记录 · 我的</text>
+      <line x1="300" y1="16" x2="300" y2="74" stroke="#DFE3E8"/>
+      <text x="320" y="30" font-size="12" font-weight="700" fill="#00A870">仓管（5）</text>
+      <text x="320" y="56" font-size="12" fill="#5A6472">扫码 · 库存 · 盘点 · 记录 · 我的</text>
+      <line x1="640" y1="16" x2="640" y2="74" stroke="#DFE3E8"/>
+      <text x="660" y="30" font-size="12" font-weight="700" fill="#F5A623">主管（4）</text>
+      <text x="660" y="56" font-size="12" fill="#5A6472">概览 · 审批 · 报表 · 我的</text>
+      <line x1="960" y1="16" x2="960" y2="74" stroke="#DFE3E8"/>
+      <text x="980" y="30" font-size="12" font-weight="700" fill="#7B61FF">管理员（5）</text>
+      <text x="980" y="56" font-size="12" fill="#5A6472">概览 · 用户 · 配置 · 日志 · 我的</text>
+    </g>
+  </g>
+</svg>

@@ -5,6 +5,11 @@ build/
 __pycache__/
 *.db
 *.sqlite*
+.venv/
 .env
+*.pem
+*.key
 
+# Kotlin / build tooling
 .kotlin/
+*.log

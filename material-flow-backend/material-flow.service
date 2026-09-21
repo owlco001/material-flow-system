@@ -8,7 +8,9 @@ User=material-flow
 Group=material-flow
 WorkingDirectory=/srv/material-flow
 EnvironmentFile=/etc/material-flow/material-flow.env
-ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+# app.main reads VERSION from this package; keep the unit versionless.
+ExecStartPre=/srv/material-flow/.venv/bin/python -m app.migrate
+ExecStart=/srv/material-flow/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

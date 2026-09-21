@@ -5,5 +5,16 @@
         <item name="android:navigationBarColor">#F7F9FC</item>
         <item name="android:statusBarColor">#F7F9FC</item>
         <item name="android:windowLightStatusBar">true</item>
+        <!-- 冷启动背景：改用品牌深蓝渐变，消除白屏闪烁。
+             系统在 Activity 首帧前显示 windowBackground，
+             若仍是浅色，会出现一次刺眼的白闪。 -->
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <!-- 启动页专用主题：状态栏融入深色背景，避免顶部出现亮条 -->
+    <style name="Theme.Logistics.Splash" parent="Theme.Logistics">
+        <item name="android:statusBarColor">#0B2E6F</item>
+        <item name="android:navigationBarColor">#0B2E6F</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

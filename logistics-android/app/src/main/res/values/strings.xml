@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌名：保持「博阳智造」不变 -->
+    <string name="app_name">博阳智造</string>
+    <!-- 产品定位副标题：全 App 唯一来源，请勿在页面内硬编码，避免改一处漏一处 -->
+    <string name="brand_subtitle">智慧工厂 · 扫码作业平台</string>
+    <!-- 开机动画标语 -->
+    <string name="brand_tagline">博阳智造，构建未来</string>
+</resources>

@@ -1,0 +1,122 @@
+package com.company.logistics.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.company.logistics.BuildConfig
+import java.net.URI
+import java.net.URL
+
+/**
+ * 后端地址配置（可运行时修改）。
+ *
+ * 为什么需要它：构建期注入（`-PapiBaseUrl`）要求每次换环境都重新打包，
+ * 现场调试 / 多环境切换时不可行。改成「构建期给默认值 + 运行时可覆盖」：
+ *
+ *   优先级：用户保存的地址 > 构建期注入值 > fail-closed 占位符
+ *
+ * 安全约束：
+ *  - 仅接受 http/https，且必须能解析出 host，防止误填 `abc` 之类导致崩溃；
+ *  - Debug 可用于受控内网验收；Release 只接受 HTTPS，且不会沿用旧的明文覆盖值；
+ *  - 地址本身不含凭据，无需加密存储。
+ */
+class EndpointStore private constructor(
+    private val prefs: SharedPreferences
+) {
+
+    /** 用户显式配置的地址；null 表示未配置过，走构建期默认值 */
+    val savedUrl: String?
+        get() = prefs.getString(KEY_URL, null)?.takeUnless {
+            !BuildConfig.DEBUG && it.startsWith("http://", ignoreCase = true)
+        }
+
+    /** 当前生效的地址 */
+    val effectiveUrl: String get() = savedUrl?.takeIf { it.isNotBlank() } ?: BuildConfig.API_BASE_URL
+
+    /** 是否正在使用构建期默认值（未人工配置） */
+    val usingBuildDefault: Boolean get() = savedUrl.isNullOrBlank()
+
+    /** 当前生效地址是否可用于登录。构建注入的合法地址也算已配置。 */
+    val isConfigured: Boolean get() = isConfiguredUrl(effectiveUrl)
+
+    /** 是否命中占位符 —— 说明既没配也没注入，必然连不上 */
+    val isPlaceholder: Boolean
+        get() = isPlaceholderUrl(effectiveUrl)
+
+    fun save(rawUrl: String): Result<String> {
+        val normalized = normalize(rawUrl)
+            ?: return Result.failure(IllegalArgumentException(ERR_INVALID))
+        if (!BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true)) {
+            return Result.failure(IllegalArgumentException(ERR_RELEASE_HTTP))
+        }
+        prefs.edit().putString(KEY_URL, normalized).apply()
+        return Result.success(normalized)
+    }
+
+    fun clear() {
+        prefs.edit().remove(KEY_URL).apply()
+    }
+
+    companion object {
+        private const val FILE_NAME = "logistics_endpoint"
+        private const val KEY_URL = "api_base_url"
+
+        const val ERR_INVALID = "地址格式不正确，请填写形如 http://192.168.1.10:8000 的完整地址"
+        const val ERR_SCHEME = "只支持 http:// 或 https:// 开头的地址"
+        const val ERR_RELEASE_HTTP = "正式版只支持 HTTPS 地址，请改用 https://"
+
+        @Volatile
+        private var instance: EndpointStore? = null
+
+        fun get(context: Context): EndpointStore = instance ?: synchronized(this) {
+            instance ?: EndpointStore(
+                context.applicationContext.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
+            ).also { instance = it }
+        }
+
+        /**
+         * 规范化用户输入。
+         *
+         * 容错处理（现场手工输入很容易漏字符）：
+         *  - 去除首尾空白与末尾斜杠
+         *  - 未写协议时补 `http://`（内网 IP 场景最常见）
+         *  - 校验 host 非空
+         *
+         * 返回 null 表示无法解析为合法地址。
+         */
+        fun normalize(raw: String): String? {
+            var s = raw.trim()
+            if (s.isEmpty()) return null
+
+            // 未带协议：按内网调试场景补 http://
+            if (!s.startsWith("http://", ignoreCase = true) &&
+                !s.startsWith("https://", ignoreCase = true)
+            ) {
+                // 若用户写了别的协议（如 ftp://），拒绝而不是硬加前缀
+                if (s.contains("://")) return null
+                s = "http://$s"
+            }
+
+            s = s.trimEnd('/')
+
+            if (s.endsWith("://")) return null
+
+            // Reject credentials, query strings, fragments, and malformed hosts.
+            val uri = runCatching { URI(s) }.getOrNull() ?: return null
+            if (uri.scheme?.lowercase() !in setOf("http", "https")) return null
+            if (uri.host.isNullOrBlank() || uri.userInfo != null || uri.query != null || uri.fragment != null) {
+                return null
+            }
+            runCatching { URL(s) }.getOrNull() ?: return null
+            return s
+        }
+
+        /** Placeholder matching is deliberately host-exact, not a substring check. */
+        fun isPlaceholderUrl(url: String): Boolean {
+            val host = runCatching { URI(url).host }.getOrNull() ?: return false
+            return host.equals("api.example.invalid", ignoreCase = true)
+        }
+
+        fun isConfiguredUrl(url: String): Boolean =
+            normalize(url) != null && !isPlaceholderUrl(url)
+    }
+}
