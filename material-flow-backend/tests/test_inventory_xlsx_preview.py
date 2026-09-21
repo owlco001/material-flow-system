@@ -169,3 +169,92 @@ def test_inventory_xlsx_preview_requires_authentication(tmp_path, monkeypatch):
         response = post_inventory_preview(client, None, workbook)
 
     assert response.status_code == 401
+
+
+def commit_inventory(client: TestClient, auth: dict[str, str], preview_id: str,
+                     operation_id: str | None = None, snapshot_name: str = "九月库存"):
+    operation_id = operation_id or rid()
+    headers = {**auth, "Idempotency-Key": operation_id, "X-Request-Id": rid()}
+    return client.post(
+        "/api/v1/inventory/import/commit",
+        json={
+            "previewId": preview_id,
+            "clientOperationId": operation_id,
+            "snapshotName": snapshot_name,
+        },
+        headers=headers,
+    )
+
+
+def test_inventory_preview_is_persisted_and_commit_is_idempotent_without_business_writes(tmp_path, monkeypatch):
+    setup_backend(tmp_path, monkeypatch)
+    workbook = inventory_workbook([
+        ["一号仓", "MTR-001", "工业轴承", "件", "A-01", "主库位", "12.500", "20"],
+    ])
+    with TestClient(backend.app) as client:
+        auth = login(client)
+        preview_response = post_inventory_preview(client, auth, workbook)
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["previewId"]
+        assert preview["status"] == "PREVIEW"
+        assert preview["expiresAt"]
+
+        c = backend.db()
+        try:
+            batch = c.execute("SELECT * FROM inventory_import_batches WHERE id=?", (preview["previewId"],)).fetchone()
+            row = c.execute("SELECT * FROM inventory_import_rows WHERE batch_id=?", (preview["previewId"],)).fetchone()
+            assert batch["valid_count"] == 1 and batch["invalid_count"] == 0
+            assert row["available_quantity_decimal"] == "12.500"
+            assert row["raw_row_json"]
+        finally:
+            c.close()
+
+        operation_id = rid()
+        first = commit_inventory(client, auth, preview["previewId"], operation_id)
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["idempotent"] is False
+        assert first_body["status"] == "COMMITTED"
+        second = commit_inventory(client, auth, preview["previewId"], operation_id)
+        assert second.status_code == 200, second.text
+        second_body = second.json()
+        assert second_body["idempotent"] is True
+        assert second_body["snapshotId"] == first_body["snapshotId"]
+        assert second_body["batchId"] == first_body["batchId"]
+
+        c = backend.db()
+        try:
+            assert c.execute("SELECT COUNT(*) FROM inventory_import_operations").fetchone()[0] == 1
+            assert c.execute("SELECT status FROM inventory_import_batches WHERE id=?", (preview["previewId"],)).fetchone()[0] == "COMMITTED"
+            assert c.execute("SELECT COUNT(*) FROM inventory").fetchone()[0] == 1
+            assert c.execute("SELECT COUNT(*) FROM materials").fetchone()[0] >= 1
+        finally:
+            c.close()
+
+
+def test_inventory_commit_rejects_conflicting_payload_and_invalid_preview(tmp_path, monkeypatch):
+    setup_backend(tmp_path, monkeypatch)
+    valid = inventory_workbook([["一号仓", "MTR-001", "工业轴承", "件", "A-01", "主库位", "12", "20"]])
+    invalid = inventory_workbook([["一号仓", "", "工业轴承", "件", "A-01", "主库位", "bad", "20"]])
+    with TestClient(backend.app) as client:
+        auth = login(client)
+        preview = post_inventory_preview(client, auth, valid).json()
+        operation_id = rid()
+        assert commit_inventory(client, auth, preview["previewId"], operation_id).status_code == 200
+        conflict = commit_inventory(client, auth, preview["previewId"], operation_id, "另一个名称")
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "IDEMPOTENCY_PAYLOAD_MISMATCH"
+        bad = post_inventory_preview(client, auth, invalid).json()
+        rejected = commit_inventory(client, auth, bad["previewId"])
+        assert rejected.status_code == 422
+        assert rejected.json()["error"]["code"] == "INVENTORY_VALIDATION_FAILED"
+
+
+def test_inventory_commit_requires_authentication(tmp_path, monkeypatch):
+    setup_backend(tmp_path, monkeypatch)
+    with TestClient(backend.app) as client:
+        response = client.post("/api/v1/inventory/import/commit", json={
+            "previewId": rid(), "clientOperationId": rid(), "snapshotName": "未授权",
+        })
+    assert response.status_code == 401

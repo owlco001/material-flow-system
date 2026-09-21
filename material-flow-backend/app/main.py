@@ -589,6 +589,11 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS inventory_import_batches(id TEXT PRIMARY KEY, file_sha256 TEXT NOT NULL, header_row INTEGER NOT NULL, total_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, snapshot_id TEXT);
+    CREATE TABLE IF NOT EXISTS inventory_import_rows(id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES inventory_import_batches(id) ON DELETE CASCADE, line_no INTEGER NOT NULL, raw_row_json TEXT NOT NULL, parsed_json TEXT NOT NULL, material_code TEXT NOT NULL, location_code TEXT, available_quantity_decimal TEXT, on_hand_quantity_decimal TEXT, valid INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS inventory_import_operations(client_operation_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES inventory_import_batches(id), created_by TEXT NOT NULL REFERENCES users(id), payload_json TEXT NOT NULL, result_json TEXT NOT NULL, snapshot_id TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS inventory_snapshots(id TEXT PRIMARY KEY, batch_id TEXT NOT NULL UNIQUE REFERENCES inventory_import_batches(id), snapshot_name TEXT NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS inventory_snapshot_rows(id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES inventory_snapshots(id) ON DELETE CASCADE, line_no INTEGER NOT NULL, material_code TEXT NOT NULL, location_code TEXT, available_quantity_decimal TEXT NOT NULL, on_hand_quantity_decimal TEXT NOT NULL, parsed_json TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
@@ -1626,6 +1631,28 @@ def _inventory_preview_from_xlsx(raw: bytes, *, trace_id: str) -> dict[str, Any]
     }
 
 
+INVENTORY_IMPORT_ROLES = {"ADMIN", "WAREHOUSE_ADMIN"}
+
+
+class InventoryCommitRequest(BaseModel):
+    previewId: uuid.UUID
+    clientOperationId: uuid.UUID
+    snapshotName: str = Field(min_length=1, max_length=128)
+
+
+def _persist_inventory_preview(c: sqlite3.Connection, *, user_id: str, digest: str, parsed: dict[str, Any]) -> tuple[str, str]:
+    batch_id = str(uuid.uuid4()); created_at = now()
+    expires_at = datetime.fromtimestamp(time.time() + 1800, timezone.utc).isoformat()
+    summary = parsed["preview"]
+    c.execute("INSERT INTO inventory_import_batches(id,file_sha256,header_row,total_count,valid_count,invalid_count,status,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (batch_id, digest, parsed["headerRow"], summary["totalRows"], summary["validRows"], summary["invalidRows"], "PREVIEW", user_id, created_at, expires_at))
+    for item in parsed["rows"]:
+        encoded = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        c.execute("INSERT INTO inventory_import_rows VALUES(?,?,?,?,?,?,?,?,?,1)", (str(uuid.uuid4()), batch_id, item["lineNo"], encoded, encoded, item["materialCode"], item["locationCode"], item["availableQuantity"], item["onHandQuantity"]))
+    for line_no in {e["lineNo"] for e in parsed["errors"]}:
+        c.execute("INSERT INTO inventory_import_rows VALUES(?,?,?,?,?,?,?,?,?,0)", (str(uuid.uuid4()), batch_id, line_no, "{}", "{}", "", None, None, None))
+    return batch_id, expires_at
+
+
 @app.post("/api/v1/inventory/import/preview")
 async def preview_inventory_import(
     file: UploadFile = File(...),
@@ -1640,18 +1667,61 @@ async def preview_inventory_import(
         raise ApiError(422, "INVENTORY_TEMPLATE_INVALID", "库存快照预览仅支持 XLSX 文件", trace_id=trace_id)
     parsed = _inventory_preview_from_xlsx(raw, trace_id=trace_id)
     digest = hashlib.sha256(raw).hexdigest()
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        preview_id, expires_at = _persist_inventory_preview(c, user_id=user["id"], digest=digest, parsed=parsed)
+        c.commit()
+    finally:
+        c.close()
     return {
+        "previewId": preview_id,
         "batch": {
             "type": "INVENTORY_SNAPSHOT_XLSX",
             "fileSha256": digest,
             "headerRow": parsed["headerRow"],
         },
         "preview": parsed["preview"],
+        "status": "PREVIEW",
+        "expiresAt": expires_at,
         "rows": parsed["rows"],
         "errors": parsed["errors"],
         "traceId": trace_id,
         "serverTime": now(),
     }
+
+
+@app.post("/api/v1/inventory/import/commit")
+def commit_inventory_import(body: InventoryCommitRequest, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] not in INVENTORY_IMPORT_ROLES:
+        raise ApiError(403, CODE_FORBIDDEN, "无权提交库存快照", trace_id=trace_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    operation_id = str(body.clientOperationId); payload = json.dumps(body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM inventory_import_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
+        if prior:
+            if prior["created_by"] != user["id"] or prior["payload_json"] != payload:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id); c.rollback(); return result
+        batch = c.execute("SELECT * FROM inventory_import_batches WHERE id=? AND created_by=?", (str(body.previewId), user["id"])).fetchone()
+        if not batch or batch["status"] != "PREVIEW" or datetime.fromisoformat(batch["expires_at"]) <= datetime.now(timezone.utc):
+            raise ApiError(409, "INVENTORY_PREVIEW_EXPIRED", "预览不存在、已过期或已提交", trace_id=trace_id)
+        if batch["invalid_count"] != 0 or batch["valid_count"] <= 0:
+            raise ApiError(422, "INVENTORY_VALIDATION_FAILED", "预览包含错误或没有有效行", trace_id=trace_id)
+        snapshot_id, ts = str(uuid.uuid4()), now()
+        c.execute("INSERT INTO inventory_snapshots VALUES(?,?,?,?,?,?)", (snapshot_id, batch["id"], body.snapshotName, "COMMITTED", user["id"], ts))
+        for row in c.execute("SELECT * FROM inventory_import_rows WHERE batch_id=? AND valid=1", (batch["id"],)).fetchall():
+            c.execute("INSERT INTO inventory_snapshot_rows VALUES(?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), snapshot_id, row["line_no"], row["material_code"], row["location_code"], row["available_quantity_decimal"], row["on_hand_quantity_decimal"], row["parsed_json"]))
+        result = {"previewId": batch["id"], "batchId": batch["id"], "snapshotId": snapshot_id, "snapshotName": body.snapshotName, "status": "COMMITTED", "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("UPDATE inventory_import_batches SET status='COMMITTED', snapshot_id=? WHERE id=?", (snapshot_id, batch["id"]))
+        c.execute("INSERT INTO inventory_import_operations VALUES(?,?,?,?,?,?,?)", (operation_id, batch["id"], user["id"], payload, json.dumps(result, ensure_ascii=False, sort_keys=True), snapshot_id, ts)); c.commit(); return result
+    except ApiError:
+        c.rollback(); raise
+    finally:
+        c.close()
 
 
 def _validate_bom_preview_rows(
