@@ -1500,6 +1500,16 @@ class TransferAction(BaseModel):
 # ==================== BOM CSV/XLSX import (A1/2A) ====================
 BOM_COLUMNS = ("modelCode", "materialCode", "materialName", "specification", "unit", "quantity", "scrapRate", "substituteMaterialCodes")
 BOM_XLSX_REQUIRED_COLUMNS = ("料品编码", "料品名称", "规格", "单位名称", "实际用量", "是否生效")
+INVENTORY_XLSX_REQUIRED_COLUMNS = (
+    "存储地点名称",
+    "料号",
+    "品名",
+    "库存单位名称",
+    "库位编码",
+    "库位名称",
+    "库存可用量(库存单位)",
+    "现存量(库存单位)",
+)
 BOM_PREVIEWS: dict[str, dict[str, Any]] = {}
 BOM_IMPORT_ROLES = {"ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR"}
 
@@ -1534,6 +1544,113 @@ def _is_xlsx_upload(file: UploadFile) -> bool:
     return filename.endswith(".xlsx") or content_type in {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/xlsx",
+    }
+
+
+def _inventory_decimal(value: str) -> str | None:
+    from decimal import Decimal, InvalidOperation
+    try:
+        d = Decimal((value or "").strip())
+    except (InvalidOperation, AttributeError):
+        return None
+    if not d.is_finite():
+        return None
+    return str(d)
+
+
+def _cell_by_header(row, header, field: str) -> str:
+    index = header.column_map[field]
+    return row.values[index].strip() if index < len(row.values) else ""
+
+
+def _inventory_preview_from_xlsx(raw: bytes, *, trace_id: str) -> dict[str, Any]:
+    try:
+        rows = XlsxSheetReader.read_rows(raw, max_rows=20001)
+        header = HeaderDetectService.detect_header(rows, INVENTORY_XLSX_REQUIRED_COLUMNS)
+    except HeaderMissingFieldsError as exc:
+        raise ApiError(
+            422,
+            "INVENTORY_TEMPLATE_INVALID",
+            "XLSX 库存快照模板缺少必要表头",
+            trace_id=trace_id,
+            details={"missingFields": list(exc.missing_fields)},
+        ) from None
+    except XlsxMaxRowsExceededError:
+        raise ApiError(422, "INVENTORY_FILE_TOO_LARGE", "XLSX 行数超过 20000", trace_id=trace_id) from None
+    except XlsxParseError:
+        raise ApiError(422, "INVENTORY_TEMPLATE_INVALID", "XLSX 文件无法解析", trace_id=trace_id) from None
+
+    preview_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    total_rows = 0
+    for row in rows:
+        if row.index <= header.header_row_index:
+            continue
+        values = {field: _cell_by_header(row, header, field) for field in INVENTORY_XLSX_REQUIRED_COLUMNS}
+        if not any(values.values()):
+            continue
+        total_rows += 1
+        item_errors = []
+        if not values["料号"]:
+            item_errors.append({"lineNo": row.index, "field": "materialCode", "code": "REQUIRED", "message": "料号不能为空"})
+        available_quantity = _inventory_decimal(values["库存可用量(库存单位)"])
+        on_hand_quantity = _inventory_decimal(values["现存量(库存单位)"])
+        if available_quantity is None:
+            item_errors.append({"lineNo": row.index, "field": "availableQuantity", "code": "INVALID_QUANTITY", "message": "数量必须为合法 Decimal"})
+        if on_hand_quantity is None:
+            item_errors.append({"lineNo": row.index, "field": "onHandQuantity", "code": "INVALID_QUANTITY", "message": "数量必须为合法 Decimal"})
+        if item_errors:
+            errors.extend(item_errors)
+            continue
+        preview_rows.append({
+            "lineNo": row.index,
+            "storageLocationName": values["存储地点名称"],
+            "materialCode": values["料号"],
+            "materialName": values["品名"],
+            "unit": values["库存单位名称"],
+            "locationCode": values["库位编码"],
+            "locationName": values["库位名称"],
+            "availableQuantity": available_quantity,
+            "onHandQuantity": on_hand_quantity,
+        })
+    return {
+        "preview": {
+            "totalRows": total_rows,
+            "validRows": len(preview_rows),
+            "invalidRows": total_rows - len(preview_rows),
+            "canCommit": False,
+        },
+        "rows": preview_rows,
+        "errors": errors,
+        "headerRow": header.header_row_index,
+    }
+
+
+@app.post("/api/v1/inventory/import/preview")
+async def preview_inventory_import(
+    file: UploadFile = File(...),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise ApiError(413, "INVENTORY_FILE_TOO_LARGE", "文件超过 10MB", trace_id=trace_id)
+    if not _is_xlsx_upload(file):
+        raise ApiError(422, "INVENTORY_TEMPLATE_INVALID", "库存快照预览仅支持 XLSX 文件", trace_id=trace_id)
+    parsed = _inventory_preview_from_xlsx(raw, trace_id=trace_id)
+    digest = hashlib.sha256(raw).hexdigest()
+    return {
+        "batch": {
+            "type": "INVENTORY_SNAPSHOT_XLSX",
+            "fileSha256": digest,
+            "headerRow": parsed["headerRow"],
+        },
+        "preview": parsed["preview"],
+        "rows": parsed["rows"],
+        "errors": parsed["errors"],
+        "traceId": trace_id,
+        "serverTime": now(),
     }
 
 
