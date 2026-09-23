@@ -31,9 +31,10 @@ import java.io.File
 fun FilamentDebug3dPanel(
     glbFile: File?, selectedInfo: AssemblyModelFileInfo? = null, modelCode: String = "", modelName: String = "",
     status: String = "", progress: Long = 0, uploading: Boolean = false, loadingPublished: Boolean = false,
-    resultMeta: AssemblyModelMeta? = null,
+    retryUpload: Boolean = false, retryLoad: Boolean = false, resultMeta: AssemblyModelMeta? = null,
     onModelCodeChanged: (String) -> Unit = {}, onModelNameChanged: (String) -> Unit = {},
-    onPick: () -> Unit = {}, onUpload: () -> Unit = {}, onLoadPublishedModel: () -> Unit = {},
+    onPick: () -> Unit = {}, onUpload: () -> Unit = {}, onRetryUpload: () -> Unit = onUpload,
+    onLoadPublishedModel: () -> Unit = {}, onRetryLoad: () -> Unit = onLoadPublishedModel,
 ) {
     val renderer = remember { FilamentModelRenderer() }
     var renderStatus by remember { mutableStateOf(if (glbFile == null) "暂无模型" else "等待 Surface") }
@@ -46,8 +47,14 @@ fun FilamentDebug3dPanel(
         Button(onClick = onPick, enabled = !uploading) { Text("选择 GLB") }
         selectedInfo?.let { Text("${it.displayName} · ${it.byteSize} B · SHA-256 ${it.sha256}") }
         Button(onClick = onUpload, enabled = !uploading && selectedInfo != null) { Text(if (uploading) "上传中 ${progress}/${selectedInfo?.byteSize}" else "上传") }
+        if (retryUpload && !uploading) {
+            Button(onClick = onRetryUpload) { Text("重试上传") }
+        }
         Button(onClick = onLoadPublishedModel, enabled = !uploading && !loadingPublished && modelCode.isNotBlank()) {
             Text(if (loadingPublished) "加载已发布模型中" else "加载已发布模型")
+        }
+        if (retryLoad && !loadingPublished) {
+            Button(onClick = onRetryLoad) { Text("重试加载") }
         }
         Text(status.ifBlank { renderStatus })
         Text("渲染：$renderStatus")

@@ -67,6 +67,37 @@ object Debug3dUploadPolicy {
     }
 }
 
+/** Retains one idempotency key for a failed upload and its user retry. */
+class Debug3dUploadOperation {
+    private var operationId: java.util.UUID? = null
+
+    fun id(): java.util.UUID = operationId ?: java.util.UUID.randomUUID().also { operationId = it }
+
+    fun complete() {
+        operationId = null
+    }
+}
+
+/** Keeps HTTP failures actionable without coupling the debug UI to transport details. */
+object Debug3dErrorPolicy {
+    fun upload(error: Throwable): String = "上传失败：${message(error, "上传暂时不可用")}"
+
+    fun load(error: Throwable): String = "加载失败：${message(error, "模型下载或校验失败")}"
+
+    private fun message(error: Throwable, fallback: String): String = when (error) {
+        is com.company.logistics.data.remote.ApiException -> when (error.statusCode) {
+            401 -> "登录已失效，请重新登录后重试"
+            403 -> "当前账号无权执行该操作"
+            404 -> "无已发布模型，请确认 modelCode"
+            409 -> "模型状态已变化，请重试"
+            413 -> "文件超过服务端大小限制"
+            415 -> "服务端不支持该文件格式"
+            else -> if (error.retryable || error.statusCode >= 500) "网络或服务暂时不可用，请重试" else fallback
+        }
+        else -> "网络失败，请检查连接后重试"
+    }
+}
+
 @Composable
 fun Debug3dPanel(
     adapter: ModelRendererAdapter = remember { OrbitCameraModelRendererAdapter() },

@@ -1,5 +1,7 @@
 package com.company.logistics.ui.screens
 
+import com.company.logistics.data.remote.ApiException
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +48,34 @@ class Debug3dPanelTest {
         coordinator.complete()
         assertTrue(coordinator.request("GearboxAssy") { requests++ })
         assertTrue(requests == 2)
+    }
+
+    @Test
+    fun failedUploadRetryReusesIdempotencyKeyUntilSuccess() {
+        val operation = Debug3dUploadOperation()
+        val first = operation.id()
+        assertEquals(first, operation.id())
+        operation.complete()
+        assertFalse(first == operation.id())
+    }
+
+    @Test
+    fun httpFailuresHaveRecoverableMessagesForUploadAndLoad() {
+        val statuses = listOf(401, 403, 404, 409, 413, 415)
+        statuses.forEach { status ->
+            val error = ApiException(status, "TEST", "backend detail")
+            assertTrue(Debug3dErrorPolicy.upload(error).startsWith("上传失败："))
+            assertTrue(Debug3dErrorPolicy.load(error).startsWith("加载失败："))
+            assertFalse(Debug3dErrorPolicy.upload(error).contains("backend detail"))
+        }
+        assertEquals("上传失败：网络失败，请检查连接后重试", Debug3dErrorPolicy.upload(IllegalStateException("offline")))
+    }
+
+    @Test
+    fun retryableServerErrorsTellUserToRetry() {
+        val error = ApiException(503, "UNAVAILABLE", "temporary", retryable = true)
+        assertTrue(Debug3dErrorPolicy.upload(error).contains("请重试"))
+        assertTrue(Debug3dErrorPolicy.load(error).contains("请重试"))
     }
 
     @Test

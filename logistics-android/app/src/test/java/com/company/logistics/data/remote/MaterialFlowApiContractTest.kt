@@ -431,6 +431,9 @@ class MaterialFlowApiContractTest {
         val conflict = ApiParser.parseError(409, "{\"code\":\"CONFLICT\",\"message\":\"version conflict\",\"retryable\":false}")
         assertEquals(409, conflict.statusCode)
         assertTrue(!conflict.retryable)
+        listOf(403, 404, 413, 415).forEach { status ->
+            assertEquals(status, ApiParser.parseError(status, null).statusCode)
+        }
         val old = ApiConfig.baseUrl
         try {
             ApiConfig.baseUrl = "http://127.0.0.1:1"
