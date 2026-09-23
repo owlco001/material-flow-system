@@ -6,6 +6,20 @@ import org.junit.Test
 
 class Debug3dPanelTest {
     @Test
+    fun uploadDefaultsAreValid() {
+        assertTrue(Debug3dUploadPolicy.DEFAULT_MODEL_CODE == "GearboxAssy")
+        assertTrue(Debug3dUploadPolicy.DEFAULT_MODEL_NAME == "Gearbox Assembly")
+        assertTrue(Debug3dUploadPolicy.validate(Debug3dUploadPolicy.DEFAULT_MODEL_CODE, Debug3dUploadPolicy.DEFAULT_MODEL_NAME) == null)
+    }
+
+    @Test
+    fun uploadValidationRejectsEmptyAndInvalidValues() {
+        assertTrue(Debug3dUploadPolicy.validate("", "Assembly")?.contains("modelCode") == true)
+        assertTrue(Debug3dUploadPolicy.validate("Gearbox Assy", "Assembly")?.contains("modelCode") == true)
+        assertTrue(Debug3dUploadPolicy.validate("GearboxAssy", " ") == "modelName 不能为空")
+    }
+
+    @Test
     fun entryIsVisibleOnlyForDebugBuilds() {
         assertTrue(Debug3dEntryPolicy.isVisible(true))
         assertFalse(Debug3dEntryPolicy.isVisible(false))

@@ -16,6 +16,7 @@ import com.company.logistics.data.remote.AssemblyModelFileInfo
 import com.company.logistics.data.remote.AssemblyModelMeta
 import com.company.logistics.data.remote.AssemblyModelRepository
 import com.company.logistics.data.remote.MaterialFlowApi
+import com.company.logistics.ui.screens.Debug3dUploadPolicy
 import com.company.logistics.ui.theme.LogisticsTheme
 import java.io.File
 import java.util.UUID
@@ -31,8 +32,8 @@ class Debug3dActivity : ComponentActivity() {
     private var uploading by mutableStateOf(false)
     private var glbFile by mutableStateOf<File?>(null)
     private var resultMeta by mutableStateOf<AssemblyModelMeta?>(null)
-    private var modelCode by mutableStateOf("")
-    private var modelName by mutableStateOf("")
+    private var modelCode by mutableStateOf(Debug3dUploadPolicy.DEFAULT_MODEL_CODE)
+    private var modelName by mutableStateOf(Debug3dUploadPolicy.DEFAULT_MODEL_NAME)
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
         selectedUri = uri
@@ -65,6 +66,10 @@ class Debug3dActivity : ComponentActivity() {
     }
 
     private fun upload() {
+        Debug3dUploadPolicy.validate(modelCode, modelName)?.let {
+            status = it
+            return
+        }
         val uri = selectedUri ?: run { status = "请先选择 GLB 文件"; return }
         if (uploading) return
         uploading = true; progress = 0L; resultMeta = null

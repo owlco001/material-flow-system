@@ -34,6 +34,23 @@ object Debug3dEntryPolicy {
     fun isVisible(isDebugBuild: Boolean): Boolean = isDebugBuild
 }
 
+object Debug3dUploadPolicy {
+    const val DEFAULT_MODEL_CODE = "GearboxAssy"
+    const val DEFAULT_MODEL_NAME = "Gearbox Assembly"
+
+    private val modelCodePattern = Regex("[A-Za-z0-9._-]{1,64}")
+
+    fun validate(modelCode: String, modelName: String): String? {
+        if (!modelCodePattern.matches(modelCode)) {
+            return "modelCode 格式无效：仅允许 1-64 个 ASCII 字母、数字、.、_、-"
+        }
+        if (modelName.isBlank()) {
+            return "modelName 不能为空"
+        }
+        return null
+    }
+}
+
 @Composable
 fun Debug3dPanel(
     adapter: ModelRendererAdapter = remember { OrbitCameraModelRendererAdapter() },
