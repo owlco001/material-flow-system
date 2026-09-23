@@ -13,6 +13,7 @@ class FilamentModelRendererTest {
         val initialized = AtomicBoolean(false)
         val renderer = FilamentModelRenderer(
             filamentInitializer = { initialized.set(true) },
+            gltfioInitializer = { },
             engineFactory = {
                 assertTrue("Filament.init must run first", initialized.get())
                 throw IllegalStateException("stop after ordering assertion")
@@ -20,6 +21,22 @@ class FilamentModelRendererTest {
         )
 
         assertEquals("stop after ordering assertion", renderer.initializationFailureMessage())
+        renderer.release()
+    }
+
+    @Test
+    fun gltfioNativeLibraryIsLoadedBeforeEngineCreation() {
+        val order = mutableListOf<String>()
+        val renderer = FilamentModelRenderer(
+            filamentInitializer = { order += "filament" },
+            gltfioInitializer = { order += "gltfio" },
+            engineFactory = {
+                order += "engine"
+                throw IllegalStateException("stop after ordering assertion")
+            },
+        )
+
+        assertEquals(listOf("filament", "gltfio", "engine"), order)
         renderer.release()
     }
 

@@ -12,6 +12,7 @@ import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.gltfio.AssetLoader
 import com.google.android.filament.gltfio.FilamentAsset
+import com.google.android.filament.gltfio.Gltfio
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.google.android.filament.EntityManager
@@ -24,6 +25,7 @@ import kotlin.math.sin
 /** Real Filament GLB renderer; all Filament objects are owned and released here. */
 class FilamentModelRenderer(
     private val filamentInitializer: () -> Unit = { Filament.init() },
+    private val gltfioInitializer: () -> Unit = { Gltfio.init() },
     private val engineFactory: () -> Engine = { Engine.create() },
 ) : ModelRendererAdapter, Choreographer.FrameCallback {
     override val camera = OrbitCameraState()
@@ -58,6 +60,7 @@ class FilamentModelRenderer(
         var createdResourceLoader: ResourceLoader? = null
         try {
             filamentInitializer()
+            gltfioInitializer()
             createdEngine = engineFactory()
             createdEntityManager = EntityManager.get()
             createdMaterialProvider = UbershaderProvider(createdEngine)
