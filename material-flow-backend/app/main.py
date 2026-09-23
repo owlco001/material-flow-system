@@ -26,7 +26,7 @@ from app.xlsx_parser import (
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -65,7 +65,12 @@ HEALTH_TABLES = frozenset({
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
     "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations", "bom_versions", "bom_items", "production_order_models",
     "admin_user_delete_operations", "admin_user_edit_operations", "admin_user_password_reset_operations",
+    "assembly_model_versions",
  })
+
+GLB_MAX_BYTES = 15 * 1024 * 1024
+GLB_MAGIC = b"glTF"
+MODEL_CODE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 # 密码哈希器：Argon2id，参数对齐 OWASP 2024 推荐（契约 A03）
 _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
@@ -589,6 +594,24 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assembly_model_versions(
+        id TEXT PRIMARY KEY,
+        model_code TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK(version > 0),
+        format TEXT NOT NULL CHECK(format='GLB'),
+        byte_size INTEGER NOT NULL CHECK(byte_size > 0 AND byte_size <= 15728640),
+        sha256 TEXT NOT NULL,
+        storage_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('PUBLISHED','ARCHIVED')),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        idempotency_key TEXT UNIQUE,
+        UNIQUE(model_code, version),
+        UNIQUE(model_code, sha256)
+    );
+    CREATE INDEX IF NOT EXISTS idx_assembly_model_versions_published
+        ON assembly_model_versions(model_code, status, version);
     CREATE TABLE IF NOT EXISTS inventory_import_batches(id TEXT PRIMARY KEY, file_sha256 TEXT NOT NULL, header_row INTEGER NOT NULL, total_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, snapshot_id TEXT);
     CREATE TABLE IF NOT EXISTS inventory_import_rows(id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES inventory_import_batches(id) ON DELETE CASCADE, line_no INTEGER NOT NULL, raw_row_json TEXT NOT NULL, parsed_json TEXT NOT NULL, material_code TEXT NOT NULL, location_code TEXT, available_quantity_decimal TEXT, on_hand_quantity_decimal TEXT, valid INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS inventory_import_operations(client_operation_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES inventory_import_batches(id), created_by TEXT NOT NULL REFERENCES users(id), payload_json TEXT NOT NULL, result_json TEXT NOT NULL, snapshot_id TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -774,6 +797,10 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE production_order_models ADD COLUMN planned_quantity INTEGER NOT NULL DEFAULT 0")
     if "version" not in model_cols:
         c.execute("ALTER TABLE production_order_models ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+    model_version_cols = {r["name"] for r in c.execute("PRAGMA table_info(assembly_model_versions)").fetchall()}
+    if model_version_cols and "idempotency_key" not in model_version_cols:
+        c.execute("ALTER TABLE assembly_model_versions ADD COLUMN idempotency_key TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_assembly_model_versions_idempotency ON assembly_model_versions(idempotency_key)")
 
 
 def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
@@ -1500,6 +1527,144 @@ class TransferApproval(BaseModel):
 
 class TransferAction(BaseModel):
     clientOperationId: uuid.UUID
+
+
+def _assembly_model_payload(row: sqlite3.Row, *, include_server_time: bool = False) -> dict[str, Any]:
+    payload = {
+        "modelId": row["id"], "modelCode": row["model_code"], "modelName": row["model_name"],
+        "version": row["version"], "format": row["format"], "byteSize": row["byte_size"],
+        "sha256": row["sha256"],
+        "downloadPath": f"/api/v1/assembly-models/{row['model_code']}/versions/{row['version']}/content",
+    }
+    if include_server_time:
+        payload["serverTime"] = now()
+    return payload
+
+
+@app.post("/api/v1/assembly-models", status_code=201)
+async def upload_assembly_model(
+    modelCode: str = Form(...), modelName: str = Form(...), file: UploadFile = File(...),
+    sha256: str | None = Form(default=None),
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> JSONResponse:
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 或 WAREHOUSE_ADMIN 可上传模型", trace_id=trace_id)
+    if not MODEL_CODE_RE.fullmatch(modelCode):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "modelCode 格式无效", trace_id=trace_id)
+    modelName = modelName.strip()
+    if not 1 <= len(modelName) <= 128:
+        raise ApiError(422, CODE_VALIDATION_ERROR, "modelName 格式无效", trace_id=trace_id)
+    if not idempotency_key:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "缺少 Idempotency-Key 请求头", trace_id=trace_id)
+    try:
+        idempotency_key = str(uuid.UUID(idempotency_key))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "Idempotency-Key 必须是合法 UUID", trace_id=trace_id) from None
+    if not file.filename or Path(file.filename).suffix.lower() != ".glb":
+        raise ApiError(415, "MODEL_FILE_TYPE_UNSUPPORTED", "模型文件必须是 .glb", trace_id=trace_id)
+    if sha256 is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "sha256 格式无效", trace_id=trace_id)
+
+    _ensure_storage_dirs()
+    temp_dir = UPLOAD_DIR / ".tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"{uuid.uuid4().hex}.upload"
+    digest = hashlib.sha256()
+    byte_size = 0
+    try:
+        with temp_path.open("wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                byte_size += len(chunk)
+                if byte_size > GLB_MAX_BYTES:
+                    raise ApiError(413, "MODEL_FILE_TOO_LARGE", "模型文件超过 15 MiB", trace_id=trace_id)
+                digest.update(chunk)
+                output.write(chunk)
+        calculated_sha = digest.hexdigest()
+        with temp_path.open("rb") as source:
+            if source.read(4) != GLB_MAGIC:
+                raise ApiError(422, "MODEL_FILE_INVALID_GLTF", "文件不是有效 GLB", trace_id=trace_id)
+        if sha256 and sha256.lower() != calculated_sha:
+            raise ApiError(422, "MODEL_SHA256_MISMATCH", "文件 SHA-256 校验失败", trace_id=trace_id)
+
+        c = db()
+        moved_path: Path | None = None
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            prior = c.execute("SELECT * FROM assembly_model_versions WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+            if prior:
+                if prior["model_code"] != modelCode or prior["model_name"] != modelName or prior["sha256"] != calculated_sha or prior["byte_size"] != byte_size:
+                    raise ApiError(409, "MODEL_UPLOAD_PAYLOAD_MISMATCH", "相同幂等键的上传内容不一致", trace_id=trace_id)
+                c.rollback()
+                payload = _assembly_model_payload(prior)
+                payload.update(status=prior["status"], idempotent=True, traceId=trace_id)
+                return JSONResponse(status_code=200, content=payload)
+            prior = c.execute("SELECT * FROM assembly_model_versions WHERE model_code=? AND sha256=?", (modelCode, calculated_sha)).fetchone()
+            if prior:
+                c.rollback()
+                payload = _assembly_model_payload(prior)
+                payload.update(status=prior["status"], idempotent=True, traceId=trace_id)
+                return JSONResponse(status_code=200, content=payload)
+
+            version = c.execute("SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM assembly_model_versions WHERE model_code=?", (modelCode,)).fetchone()["next_version"]
+            model_id = "asmmdl_" + uuid.uuid4().hex
+            storage_key = f"assembly-models/{model_id}/v{version}.glb"
+            target = UPLOAD_DIR / storage_key
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temp_path, target)
+            moved_path = target
+            created_at = now()
+            c.execute("UPDATE assembly_model_versions SET status='ARCHIVED' WHERE model_code=? AND status='PUBLISHED'", (modelCode,))
+            c.execute("""INSERT INTO assembly_model_versions
+                (id,model_code,model_name,version,format,byte_size,sha256,storage_key,status,created_by,created_at,idempotency_key)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (model_id, modelCode, modelName, version, "GLB", byte_size, calculated_sha, storage_key, "PUBLISHED", user["id"], created_at, idempotency_key))
+            c.commit()
+            row = c.execute("SELECT * FROM assembly_model_versions WHERE id=?", (model_id,)).fetchone()
+            payload = _assembly_model_payload(row)
+            payload.update(status="PUBLISHED", idempotent=False, traceId=trace_id)
+            return JSONResponse(status_code=201, content=payload)
+        except Exception:
+            c.rollback()
+            if moved_path and moved_path.exists():
+                moved_path.unlink()
+            raise
+        finally:
+            c.close()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+@app.get("/api/v1/assembly-models/{model_code}/published")
+def published_assembly_model(model_code: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    if not MODEL_CODE_RE.fullmatch(model_code):
+        raise HTTPException(404, "资源不存在")
+    c = db()
+    row = c.execute("SELECT * FROM assembly_model_versions WHERE model_code=? AND status='PUBLISHED' ORDER BY version DESC LIMIT 1", (model_code,)).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(404, "资源不存在")
+    return _assembly_model_payload(row, include_server_time=True)
+
+
+@app.get("/api/v1/assembly-models/{model_code}/versions/{version}/content")
+def download_assembly_model(model_code: str, version: int, user: sqlite3.Row = Depends(current_user)) -> FileResponse:
+    if not MODEL_CODE_RE.fullmatch(model_code) or version < 1:
+        raise HTTPException(404, "资源不存在")
+    c = db()
+    row = c.execute("SELECT * FROM assembly_model_versions WHERE model_code=? AND version=? AND status='PUBLISHED'", (model_code, version)).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(404, "资源不存在")
+    root = UPLOAD_DIR.resolve()
+    path = (root / row["storage_key"]).resolve()
+    if root not in path.parents or path.suffix.lower() != ".glb" or not path.is_file():
+        raise HTTPException(404, "资源不存在")
+    return FileResponse(path, media_type="model/gltf-binary", headers={"ETag": f'"{row["sha256"]}"', "Cache-Control": "private, max-age=86400"})
 
 
 # ==================== BOM CSV/XLSX import (A1/2A) ====================
