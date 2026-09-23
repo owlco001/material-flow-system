@@ -652,6 +652,7 @@ object ApiParser {
             modelName = root.optString("modelName"), version = root.optInt("version"),
             format = root.optString("format"), byteSize = root.optLong("byteSize"),
             sha256 = root.optString("sha256"), downloadPath = root.optString("downloadPath"),
+            status = root.optString("status"),
         )
     }
 

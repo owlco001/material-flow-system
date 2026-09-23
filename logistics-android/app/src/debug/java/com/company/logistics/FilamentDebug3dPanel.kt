@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -22,55 +22,38 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
+import com.company.logistics.data.remote.AssemblyModelFileInfo
+import com.company.logistics.data.remote.AssemblyModelMeta
 import com.company.logistics.rendering.FilamentModelRenderer
 import java.io.File
 
 @Composable
-fun FilamentDebug3dPanel(glbFile: File?, loadStatus: String = "") {
+fun FilamentDebug3dPanel(
+    glbFile: File?, selectedInfo: AssemblyModelFileInfo? = null, modelCode: String = "", modelName: String = "",
+    status: String = "", progress: Long = 0, uploading: Boolean = false, resultMeta: AssemblyModelMeta? = null,
+    onModelCodeChanged: (String) -> Unit = {}, onModelNameChanged: (String) -> Unit = {},
+    onPick: () -> Unit = {}, onUpload: () -> Unit = {},
+) {
     val renderer = remember { FilamentModelRenderer() }
-    var status by remember(loadStatus, glbFile) { mutableStateOf(loadStatus.ifBlank { if (glbFile == null) "暂无模型" else "等待 Surface" }) }
-
-    DisposableEffect(renderer) {
-        onDispose { renderer.release() }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("3D 装配图测试", style = MaterialTheme.typography.headlineSmall)
-        Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    var renderStatus by remember { mutableStateOf(if (glbFile == null) "暂无模型" else "等待 Surface") }
+    DisposableEffect(renderer) { onDispose { renderer.release() } }
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("3D 装配图测试")
+        OutlinedTextField(modelCode, onModelCodeChanged, label = { Text("modelCode") }, singleLine = true)
+        OutlinedTextField(modelName, onModelNameChanged, label = { Text("modelName") }, singleLine = true)
+        Button(onClick = onPick, enabled = !uploading) { Text("选择 GLB") }
+        selectedInfo?.let { Text("${it.displayName} · ${it.byteSize} B · SHA-256 ${it.sha256}") }
+        Button(onClick = onUpload, enabled = !uploading && selectedInfo != null) { Text(if (uploading) "上传中 ${progress}/${selectedInfo?.byteSize}" else "上传") }
+        Text(status.ifBlank { renderStatus })
+        resultMeta?.let { Text("模型元数据：${it.modelCode} v${it.version} · ${it.format} · ${it.byteSize} B · ${it.sha256}") }
         AndroidView(
-            modifier = Modifier.fillMaxWidth().height(300.dp).pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    renderer.onRotate(pan.x * 0.2f, pan.y * 0.2f)
-                    renderer.onPan(pan.x * 0.01f, pan.y * 0.01f)
-                    renderer.onScale(zoom)
-                }
-            },
-            factory = { context ->
-                SurfaceView(context).also { surfaceView ->
-                    surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            renderer.attach(holder.surface)
-                            glbFile?.let { file ->
-                                status = renderer.loadGlb(file).fold(
-                                    onSuccess = { "GLB 已加载：${file.name}" },
-                                    onFailure = { "GLB 加载失败：${it.message}" },
-                                )
-                            }
-                        }
-
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            renderer.onViewportChanged(width, height)
-                        }
-
-                        override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
-                    })
-                }
-            },
+            modifier = Modifier.fillMaxWidth().height(300.dp).pointerInput(Unit) { detectTransformGestures { _, pan, zoom, _ -> renderer.onRotate(pan.x * .2f, pan.y * .2f); renderer.onPan(pan.x * .01f, pan.y * .01f); renderer.onScale(zoom) } },
+            factory = { context -> SurfaceView(context).also { view -> view.holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) { renderer.attach(holder.surface); glbFile?.let { file -> renderStatus = renderer.loadGlb(file).fold({ "GLB 已加载：${file.name}" }, { "GLB 加载失败：${it.message}" }) } }
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { renderer.onViewportChanged(width, height) }
+                override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+            }) } },
         )
         Button(onClick = renderer::resetCamera) { Text("重置相机") }
-        Text("Yaw ${renderer.camera.yawDegrees.toInt()}° · Pitch ${renderer.camera.pitchDegrees.toInt()}° · 距离 %.2f".format(renderer.camera.distance))
     }
 }

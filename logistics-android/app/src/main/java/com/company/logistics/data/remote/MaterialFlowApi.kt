@@ -27,6 +27,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -524,6 +525,51 @@ open class MaterialFlowApi(
     open suspend fun publishedAssemblyModel(modelCode: String): AssemblyModelMeta = withContext(Dispatchers.IO) {
         require(modelCode.isNotBlank()) { "modelCode 不能为空" }
         ApiParser.parseAssemblyModelMeta(request("GET", "/api/v1/assembly-models/${encodeQuery(modelCode)}/published", null))
+    }
+
+    suspend fun uploadAssemblyModel(
+        modelCode: String,
+        modelName: String,
+        fileName: String,
+        contentType: String,
+        contentLength: Long,
+        content: InputStream,
+        requestId: UUID,
+        operationId: UUID,
+        onProgress: (Long) -> Unit = {},
+    ): AssemblyModelMeta = withContext(Dispatchers.IO) {
+        val boundary = "----MaterialFlowAssemblyModel${UUID.randomUUID().toString().replace("-", "")}"
+        val prefix = "--$boundary\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\n$modelCode\r\n" +
+            "--$boundary\r\nContent-Disposition: form-data; name=\"modelName\"\r\n\r\n$modelName\r\n" +
+            "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"${fileName.replace(Regex("[\"\\r\\n]"), "_")}\"\r\n" +
+            "Content-Type: $contentType\r\n\r\n"
+        val suffix = "\r\n--$boundary--\r\n"
+        val conn = openConnection("/api/v1/assembly-models", "POST")
+        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
+        conn.setRequestProperty("Idempotency-Key", operationId.toString())
+        conn.setRequestProperty("X-Request-Id", requestId.toString())
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        conn.setRequestProperty("Content-Length", (prefix.toByteArray(Charsets.UTF_8).size + contentLength + suffix.toByteArray(Charsets.UTF_8).size).toString())
+        conn.doOutput = true
+        try {
+            conn.outputStream.use { out ->
+                out.write(prefix.toByteArray(Charsets.UTF_8))
+                val buffer = ByteArray(64 * 1024)
+                var sent = 0L
+                while (true) {
+                    val count = content.read(buffer)
+                    if (count < 0) break
+                    out.write(buffer, 0, count)
+                    sent += count
+                    onProgress(sent)
+                }
+                check(sent == contentLength) { "文件大小在上传期间发生变化" }
+                out.write(suffix.toByteArray(Charsets.UTF_8))
+            }
+            val (code, text) = readResponse(conn)
+            if (code !in 200..299) throw ApiParser.parseError(code, text)
+            ApiParser.parseAssemblyModelMeta(text ?: throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true))
+        } finally { content.close() }
     }
 
     open suspend fun downloadAssemblyModelContent(meta: AssemblyModelMeta): ByteArray = withContext(Dispatchers.IO) {
