@@ -1,5 +1,6 @@
 package com.company.logistics.data.remote
 
+import java.io.OutputStream
 import java.security.MessageDigest
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -28,6 +29,11 @@ class AssemblyModelRepositoryTest {
     private class FakeModelApi(private val meta: AssemblyModelMeta, private val bytes: ByteArray) : MaterialFlowApi() {
         var downloads = 0
         override suspend fun publishedAssemblyModel(modelCode: String) = meta
-        override suspend fun downloadAssemblyModelContent(meta: AssemblyModelMeta): ByteArray { downloads++; return bytes }
+        override suspend fun downloadAssemblyModelContent(meta: AssemblyModelMeta, output: OutputStream, onProgress: (Long) -> Unit): Long {
+            downloads++
+            output.write(bytes)
+            onProgress(bytes.size.toLong())
+            return bytes.size.toLong()
+        }
     }
 }

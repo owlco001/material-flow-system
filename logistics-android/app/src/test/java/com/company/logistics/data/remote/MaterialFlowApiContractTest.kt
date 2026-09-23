@@ -1,6 +1,7 @@
 package com.company.logistics.data.remote
 
 import kotlinx.coroutines.runBlocking
+import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
@@ -435,6 +436,28 @@ class MaterialFlowApiContractTest {
             ApiConfig.baseUrl = "http://127.0.0.1:1"
             assertTrue(runCatching { MaterialFlowApi().also { it.updateToken("token") }.createDevice("11111111-1111-1111-1111-111111111111", "D-1", "机台", "一车间", null) }.isFailure)
         } finally { ApiConfig.baseUrl = old }
+    }
+
+    @Test
+    fun modelDownloadStreamsAuthorizedBytesAndReportsProgress() = runBlocking {
+        val meta = AssemblyModelMeta("id", "M-1", "Model", 3, "glb", 9, "a".repeat(64), "/content")
+        val output = ByteArrayOutputStream()
+        var progress = 0L
+        val captured = captureOneRequest("glb-bytes") { port ->
+            val previous = ApiConfig.baseUrl
+            try {
+                ApiConfig.baseUrl = "http://127.0.0.1:$port"
+                MaterialFlowApi().also { api ->
+                    api.updateToken("access-token")
+                    val received = api.downloadAssemblyModelContent(meta, output) { progress = it }
+                    assertEquals(9, received)
+                }
+            } finally { ApiConfig.baseUrl = previous }
+        }
+        assertEquals("GET /api/v1/assembly-models/M-1/versions/3/content HTTP/1.1", captured.requestLine)
+        assertEquals("Bearer access-token", captured.headers["Authorization"])
+        assertEquals("glb-bytes", output.toString(Charsets.UTF_8.name()))
+        assertEquals(9, progress)
     }
 
     private data class CapturedRequest(

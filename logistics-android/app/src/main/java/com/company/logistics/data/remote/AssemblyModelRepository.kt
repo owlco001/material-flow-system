@@ -53,8 +53,8 @@ class AssemblyModelRepository(private val api: MaterialFlowApi, private val cach
             target.delete(); cacheDir.mkdirs()
             val temp = File.createTempFile(".assembly-", ".download", cacheDir)
             try {
-                temp.outputStream().use { it.write(api.downloadAssemblyModelContent(meta)) }
-                check(temp.length() == meta.byteSize && sha256(temp) == meta.sha256.lowercase()) { "模型文件校验失败" }
+                val received = temp.outputStream().use { output -> api.downloadAssemblyModelContent(meta, output) }
+                check(received == meta.byteSize && temp.length() == meta.byteSize && sha256(temp) == meta.sha256.lowercase()) { "模型文件校验失败" }
                 try { Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE) }
                 catch (_: java.nio.file.AtomicMoveNotSupportedException) { Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
             } finally { temp.delete() }

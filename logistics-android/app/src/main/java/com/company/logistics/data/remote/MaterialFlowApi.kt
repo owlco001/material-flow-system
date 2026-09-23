@@ -26,8 +26,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -572,7 +572,12 @@ open class MaterialFlowApi(
         } finally { content.close() }
     }
 
-    open suspend fun downloadAssemblyModelContent(meta: AssemblyModelMeta): ByteArray = withContext(Dispatchers.IO) {
+    /** Streams an authorized model response without retaining the complete GLB in memory. */
+    open suspend fun downloadAssemblyModelContent(
+        meta: AssemblyModelMeta,
+        output: OutputStream,
+        onProgress: (Long) -> Unit = {},
+    ): Long = withContext(Dispatchers.IO) {
         val conn = openConnection("/api/v1/assembly-models/${encodeQuery(meta.modelCode)}/versions/${meta.version}/content", "GET")
         conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
         val code = conn.responseCode
@@ -582,7 +587,18 @@ open class MaterialFlowApi(
             throw ApiParser.parseError(code, text)
         }
         try {
-            conn.inputStream.use { input -> ByteArrayOutputStream().use { output -> input.copyTo(output); output.toByteArray() } }
+            conn.inputStream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var received = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    received += count
+                    onProgress(received)
+                }
+                received
+            }
         } finally { conn.disconnect() }
     }
 
