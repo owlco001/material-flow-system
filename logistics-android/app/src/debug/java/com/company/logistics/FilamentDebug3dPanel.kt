@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.company.logistics.data.remote.AssemblyModelFileInfo
 import com.company.logistics.data.remote.AssemblyModelMeta
 import com.company.logistics.rendering.FilamentModelRenderer
+import com.company.logistics.rendering.FilamentUnavailableException
 import java.io.File
 
 @Composable
@@ -66,7 +67,13 @@ fun FilamentDebug3dPanel(
                     surfaceReady = true
                     renderer.attach(holder.surface).fold(
                         { if (glbFile == null) renderStatus = "等待模型" },
-                        { renderStatus = "3D 不可用：${it.message ?: "设备不支持或初始化失败"}" },
+                        { error ->
+                            renderStatus = if (error is FilamentUnavailableException) {
+                                "FILAMENT_UNAVAILABLE：Filament 不可用"
+                            } else {
+                                "3D 不可用：${error.message ?: "设备不支持或初始化失败"}"
+                            }
+                        },
                     )
                 }
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { renderer.onViewportChanged(width, height) }

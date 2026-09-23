@@ -4,6 +4,7 @@ import android.view.Choreographer
 import android.view.Surface
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
+import com.google.android.filament.Filament
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.SwapChain
@@ -21,7 +22,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /** Real Filament GLB renderer; all Filament objects are owned and released here. */
-class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback {
+class FilamentModelRenderer(
+    private val filamentInitializer: () -> Unit = { Filament.init() },
+    private val engineFactory: () -> Engine = { Engine.create() },
+) : ModelRendererAdapter, Choreographer.FrameCallback {
     override val camera = OrbitCameraState()
 
     private val choreographer by lazy { Choreographer.getInstance() }
@@ -53,7 +57,8 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
         var createdAssetLoader: AssetLoader? = null
         var createdResourceLoader: ResourceLoader? = null
         try {
-            createdEngine = Engine.create()
+            filamentInitializer()
+            createdEngine = engineFactory()
             createdEntityManager = EntityManager.get()
             createdMaterialProvider = UbershaderProvider(createdEngine)
             createdRenderer = createdEngine.createRenderer()
@@ -211,8 +216,8 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
     internal fun initializationFailureMessage(): String? = initializationError?.message
 
     private fun checkAvailable() {
-        check(initializationError == null) {
-            "Filament is unavailable${initializationError?.message?.let { ": $it" } ?: ""}"
+        if (initializationError != null) {
+            throw FilamentUnavailableException(initializationError)
         }
     }
 
@@ -234,3 +239,6 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
         )
     }
 }
+
+class FilamentUnavailableException(cause: Throwable?) :
+    IllegalStateException("FILAMENT_UNAVAILABLE", cause)

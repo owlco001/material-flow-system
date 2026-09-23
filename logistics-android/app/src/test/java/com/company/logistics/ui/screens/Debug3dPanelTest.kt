@@ -72,6 +72,15 @@ class Debug3dPanelTest {
     }
 
     @Test
+    fun publishedModelAbsenceHasAStableStatusDistinctFromFilamentFailure() {
+        val noModel = Debug3dErrorPolicy.load(ApiException(404, "NOT_FOUND", "missing"))
+
+        assertTrue(noModel.contains("NO_PUBLISHED_MODEL"))
+        assertFalse(noModel.contains("FILAMENT_UNAVAILABLE"))
+        assertTrue(com.company.logistics.rendering.FilamentUnavailableException(null).message == "FILAMENT_UNAVAILABLE")
+    }
+
+    @Test
     fun retryableServerErrorsTellUserToRetry() {
         val error = ApiException(503, "UNAVAILABLE", "temporary", retryable = true)
         assertTrue(Debug3dErrorPolicy.upload(error).contains("请重试"))

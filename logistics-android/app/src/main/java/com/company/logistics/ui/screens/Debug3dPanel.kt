@@ -88,7 +88,7 @@ object Debug3dErrorPolicy {
         is com.company.logistics.data.remote.ApiException -> when (error.statusCode) {
             401 -> "登录已失效，请重新登录后重试"
             403 -> "当前账号无权执行该操作"
-            404 -> "无已发布模型，请确认 modelCode"
+            404 -> "NO_PUBLISHED_MODEL：无已发布模型，请确认 modelCode"
             409 -> "模型状态已变化，请重试"
             413 -> "文件超过服务端大小限制"
             415 -> "服务端不支持该文件格式"
