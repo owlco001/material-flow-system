@@ -77,6 +77,7 @@ fun LogisticsApp(
     scannerViewModel: ScannerViewModel,
     endpointStore: EndpointStore,
     onEndpointChanged: (String) -> Unit,
+    onOpenDebug3d: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -158,6 +159,11 @@ fun LogisticsApp(
                         containerColor = LogisticsTheme.colors.pageBackground
                     ),
                     actions = {
+                        if (onOpenDebug3d != null) {
+                            androidx.compose.material3.TextButton(onClick = onOpenDebug3d) {
+                                Text("3D测试")
+                            }
+                        }
                         if (state.role == com.company.logistics.model.UserRole.ADMIN && !state.preview && state.screen == Screen.WORKSPACE) {
                             androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.USER_MANAGEMENT) }) { Text("用户管理") }
                         }

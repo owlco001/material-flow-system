@@ -1,0 +1,26 @@
+package com.company.logistics.ui.screens
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class Debug3dPanelTest {
+    @Test
+    fun entryIsVisibleOnlyForDebugBuilds() {
+        assertTrue(Debug3dEntryPolicy.isVisible(true))
+        assertFalse(Debug3dEntryPolicy.isVisible(false))
+    }
+
+    @Test
+    fun debugPanelUsesCameraStateAdapterForInteraction() {
+        val adapter = com.company.logistics.rendering.OrbitCameraModelRendererAdapter()
+        adapter.onRotate(15f, -5f)
+        adapter.onScale(1.25f)
+        adapter.onPan(0.5f, -0.25f)
+
+        assertTrue(adapter.camera.yawDegrees == 15f)
+        assertTrue(adapter.camera.pitchDegrees == -5f)
+        assertTrue(adapter.camera.distance < 5f)
+        assertTrue(adapter.camera.panX == 0.5f)
+    }
+}
