@@ -7,7 +7,7 @@ class VersionConfigTest {
 
     @Test
     fun deliveryVersionIsCurrent() {
-        assertEquals(22, BuildConfig.VERSION_CODE)
-        assertEquals("0.5.8", BuildConfig.VERSION_NAME)
+        assertEquals(23, BuildConfig.VERSION_CODE)
+        assertEquals("0.5.9", BuildConfig.VERSION_NAME)
     }
 }
