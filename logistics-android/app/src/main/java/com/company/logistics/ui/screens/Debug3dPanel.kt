@@ -29,6 +29,22 @@ import androidx.compose.ui.unit.dp
 import com.company.logistics.rendering.ModelRendererAdapter
 import com.company.logistics.rendering.OrbitCameraModelRendererAdapter
 
+/** Serializes published-model loads so upload callbacks and manual retries cannot race. */
+class Debug3dModelLoadCoordinator {
+    private var inFlight = false
+
+    fun request(modelCode: String, load: (String) -> Unit): Boolean {
+        if (inFlight || modelCode.isBlank()) return false
+        inFlight = true
+        load(modelCode)
+        return true
+    }
+
+    fun complete() {
+        inFlight = false
+    }
+}
+
 /** Keeps the debug entry decision testable without making release navigation depend on it. */
 object Debug3dEntryPolicy {
     fun isVisible(isDebugBuild: Boolean): Boolean = isDebugBuild

@@ -26,6 +26,29 @@ class Debug3dPanelTest {
     }
 
     @Test
+    fun uploadSuccessCanTriggerPublishedModelLoad() {
+        val coordinator = Debug3dModelLoadCoordinator()
+        var requestedCode: String? = null
+
+        assertTrue(coordinator.request("GearboxAssy") { requestedCode = it })
+        assertTrue(requestedCode == "GearboxAssy")
+    }
+
+    @Test
+    fun blankOrInFlightPublishedModelRequestsAreSuppressed() {
+        val coordinator = Debug3dModelLoadCoordinator()
+        var requests = 0
+
+        assertFalse(coordinator.request("") { requests++ })
+        assertTrue(coordinator.request("GearboxAssy") { requests++ })
+        assertFalse(coordinator.request("GearboxAssy") { requests++ })
+        assertTrue(requests == 1)
+        coordinator.complete()
+        assertTrue(coordinator.request("GearboxAssy") { requests++ })
+        assertTrue(requests == 2)
+    }
+
+    @Test
     fun debugPanelUsesCameraStateAdapterForInteraction() {
         val adapter = com.company.logistics.rendering.OrbitCameraModelRendererAdapter()
         adapter.onRotate(15f, -5f)
