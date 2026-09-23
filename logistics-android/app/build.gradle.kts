@@ -72,6 +72,10 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
+    // Filament 1.52.0 is pinned and resolved from Google's Maven repository.
+    implementation("com.google.android.filament:filament-android:1.52.0")
+    implementation("com.google.android.filament:gltfio-android:1.52.0")
+
     // ---- 摄像头扫码（版本锁定，不使用动态版本号）----
     // CameraX 1.3.4：兼容 compileSdk 34 / Compose BOM 2024.09.03
     implementation("androidx.camera:camera-core:1.3.4")
