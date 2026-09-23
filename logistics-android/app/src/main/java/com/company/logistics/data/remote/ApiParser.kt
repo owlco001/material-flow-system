@@ -645,6 +645,16 @@ object ApiParser {
         )
     }
 
+    fun parseAssemblyModelMeta(json: String): AssemblyModelMeta {
+        val root = JSONObject(json)
+        return AssemblyModelMeta(
+            modelId = root.optString("modelId"), modelCode = root.optString("modelCode"),
+            modelName = root.optString("modelName"), version = root.optInt("version"),
+            format = root.optString("format"), byteSize = root.optLong("byteSize"),
+            sha256 = root.optString("sha256"), downloadPath = root.optString("downloadPath"),
+        )
+    }
+
     /** C14 GET labor summary endpoints. Exact camelCase contract fields; absent minutes stay null. */
     fun parseLaborSummary(json: String): LaborSummaryPage {
         val root = JSONObject(json)

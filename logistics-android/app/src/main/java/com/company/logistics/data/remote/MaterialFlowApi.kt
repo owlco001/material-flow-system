@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -519,6 +520,25 @@ open class MaterialFlowApi(
 
     suspend fun assemblyTasks(page: Int = 1, pageSize: Int = 20): List<AssemblyTask> =
         assemblyTaskPage(page, pageSize).items
+
+    open suspend fun publishedAssemblyModel(modelCode: String): AssemblyModelMeta = withContext(Dispatchers.IO) {
+        require(modelCode.isNotBlank()) { "modelCode 不能为空" }
+        ApiParser.parseAssemblyModelMeta(request("GET", "/api/v1/assembly-models/${encodeQuery(modelCode)}/published", null))
+    }
+
+    open suspend fun downloadAssemblyModelContent(meta: AssemblyModelMeta): ByteArray = withContext(Dispatchers.IO) {
+        val conn = openConnection("/api/v1/assembly-models/${encodeQuery(meta.modelCode)}/versions/${meta.version}/content", "GET")
+        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val text = conn.errorStream?.bufferedReader()?.use(BufferedReader::readText)
+            conn.disconnect()
+            throw ApiParser.parseError(code, text)
+        }
+        try {
+            conn.inputStream.use { input -> ByteArrayOutputStream().use { output -> input.copyTo(output); output.toByteArray() } }
+        } finally { conn.disconnect() }
+    }
 
     suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): AssemblyTaskPage = withContext(Dispatchers.IO) {
         require(page >= 1 && pageSize == 20) { "装配任务分页固定为 20 条" }

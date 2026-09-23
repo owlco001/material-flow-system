@@ -26,9 +26,9 @@ import com.company.logistics.rendering.FilamentModelRenderer
 import java.io.File
 
 @Composable
-fun FilamentDebug3dPanel(glbFile: File?) {
+fun FilamentDebug3dPanel(glbFile: File?, loadStatus: String = "") {
     val renderer = remember { FilamentModelRenderer() }
-    var status by remember { mutableStateOf(if (glbFile == null) "暂无 GLB：通过 glb_path 启动参数提供测试文件" else "等待 Surface") }
+    var status by remember(loadStatus, glbFile) { mutableStateOf(loadStatus.ifBlank { if (glbFile == null) "暂无模型" else "等待 Surface" }) }
 
     DisposableEffect(renderer) {
         onDispose { renderer.release() }
