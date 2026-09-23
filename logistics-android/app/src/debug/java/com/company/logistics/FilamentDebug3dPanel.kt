@@ -72,7 +72,7 @@ fun FilamentDebug3dPanel(
                                 "FILAMENT_UNAVAILABLE：Filament 不可用"
                             } else {
                                 "3D 不可用：${error.message ?: "设备不支持或初始化失败"}"
-                            }
+                            } + (renderer.initializationFailureChain()?.let { " / $it" } ?: "")
                         },
                     )
                 }
@@ -86,7 +86,7 @@ fun FilamentDebug3dPanel(
                 renderStatus = "加载模型中"
                 renderStatus = renderer.loadGlb(file).fold(
                     { "GLB 已渲染：${file.name}" },
-                    { "GLB 渲染失败：${it.message ?: "文件无效或设备不支持"}" },
+                    { "GLB 渲染失败：${it.message ?: "文件无效或设备不支持"}" + (renderer.initializationFailureChain()?.let { chain -> " / $chain" } ?: "") },
                 )
             }
         }

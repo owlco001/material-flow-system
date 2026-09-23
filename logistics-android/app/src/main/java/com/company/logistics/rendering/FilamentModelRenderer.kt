@@ -215,6 +215,13 @@ class FilamentModelRenderer(
 
     internal fun initializationFailureMessage(): String? = initializationError?.message
 
+    /** Root-cause chain for diagnostics, e.g. "UnsatisfiedLinkError(dlopen failed...) <- ...". */
+    internal fun initializationFailureChain(): String? =
+        initializationError?.let { root ->
+            generateSequence(root) { it.cause }.take(5)
+                .joinToString(" <- ") { "${it.javaClass.simpleName}(${it.message ?: "-"})" }
+        }
+
     private fun checkAvailable() {
         if (initializationError != null) {
             throw FilamentUnavailableException(initializationError)

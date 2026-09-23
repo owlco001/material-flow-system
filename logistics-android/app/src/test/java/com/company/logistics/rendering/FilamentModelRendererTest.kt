@@ -38,6 +38,22 @@ class FilamentModelRendererTest {
     }
 
     @Test
+    fun initializationFailureChainExposesRootCause() {
+        val renderer = FilamentModelRenderer(
+            filamentInitializer = { throw UnsatisfiedLinkError("dlopen failed: not 16KB aligned") },
+            engineFactory = { error("Engine.create must not run") },
+        )
+
+        val failure = renderer.loadGlb(File("/definitely-missing/debug-model.glb"))
+
+        assertTrue(failure.exceptionOrNull() is FilamentUnavailableException)
+        val chain = renderer.initializationFailureChain()
+        assertTrue(chain != null && chain.contains("UnsatisfiedLinkError"))
+        assertTrue(chain!!.contains("not 16KB aligned"))
+        renderer.release()
+    }
+
+    @Test
     fun rendererConstructionAndReleaseDoNotThrowWhenFilamentIsUnavailable() {
         val renderer = FilamentModelRenderer()
 
