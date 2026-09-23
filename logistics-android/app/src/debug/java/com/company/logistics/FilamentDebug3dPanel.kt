@@ -49,9 +49,14 @@ fun FilamentDebug3dPanel(
         AndroidView(
             modifier = Modifier.fillMaxWidth().height(300.dp).pointerInput(Unit) { detectTransformGestures { _, pan, zoom, _ -> renderer.onRotate(pan.x * .2f, pan.y * .2f); renderer.onPan(pan.x * .01f, pan.y * .01f); renderer.onScale(zoom) } },
             factory = { context -> SurfaceView(context).also { view -> view.holder.addCallback(object : SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) { renderer.attach(holder.surface); glbFile?.let { file -> renderStatus = renderer.loadGlb(file).fold({ "GLB 已加载：${file.name}" }, { "GLB 加载失败：${it.message}" }) } }
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    renderer.attach(holder.surface).fold(
+                        { glbFile?.let { file -> renderStatus = renderer.loadGlb(file).fold({ "GLB 已加载：${file.name}" }, { "GLB 加载失败：${it.message}" }) } },
+                        { renderStatus = "3D 不可用：${it.message ?: "设备不支持或初始化失败"}" },
+                    )
+                }
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { renderer.onViewportChanged(width, height) }
-                override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+                override fun surfaceDestroyed(holder: SurfaceHolder) { renderer.detachSurface(); renderStatus = "等待 Surface" }
             }) } },
         )
         Button(onClick = renderer::resetCamera) { Text("重置相机") }

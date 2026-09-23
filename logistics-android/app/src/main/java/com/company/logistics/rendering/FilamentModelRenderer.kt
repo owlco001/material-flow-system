@@ -24,42 +24,97 @@ import kotlin.math.sin
 class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback {
     override val camera = OrbitCameraState()
 
-    private val choreographer = Choreographer.getInstance()
-    private val engine = Engine.create()
-    private val entityManager = EntityManager.get()
-    private val materialProvider = UbershaderProvider(engine)
-    private val renderer: Renderer = engine.createRenderer()
-    private val scene: Scene = engine.createScene()
-    private val view: View = engine.createView()
-    private val cameraComponent: Camera = engine.createCamera(entityManager.create())
-    private val assetLoader = AssetLoader(engine, materialProvider, entityManager)
-    private val resourceLoader = ResourceLoader(engine)
+    private val choreographer by lazy { Choreographer.getInstance() }
+    private var engine: Engine? = null
+    private var entityManager: EntityManager? = null
+    private var materialProvider: UbershaderProvider? = null
+    private var renderer: Renderer? = null
+    private var scene: Scene? = null
+    private var view: View? = null
+    private var cameraComponent: Camera? = null
+    private var assetLoader: AssetLoader? = null
+    private var resourceLoader: ResourceLoader? = null
+    private var initializationError: Throwable? = null
     private var swapChain: SwapChain? = null
     private var asset: FilamentAsset? = null
     private var released = false
+    private var frameCallbackPosted = false
     private var viewportWidth = 1
     private var viewportHeight = 1
 
     init {
-        view.scene = scene
-        view.camera = cameraComponent
-        view.isPostProcessingEnabled = false
-        applyCamera()
+        var createdEngine: Engine? = null
+        var createdEntityManager: EntityManager? = null
+        var createdMaterialProvider: UbershaderProvider? = null
+        var createdRenderer: Renderer? = null
+        var createdScene: Scene? = null
+        var createdView: View? = null
+        var createdCamera: Camera? = null
+        var createdAssetLoader: AssetLoader? = null
+        var createdResourceLoader: ResourceLoader? = null
+        try {
+            createdEngine = Engine.create()
+            createdEntityManager = EntityManager.get()
+            createdMaterialProvider = UbershaderProvider(createdEngine)
+            createdRenderer = createdEngine.createRenderer()
+            createdScene = createdEngine.createScene()
+            createdView = createdEngine.createView()
+            createdCamera = createdEngine.createCamera(createdEntityManager.create())
+            createdAssetLoader = AssetLoader(createdEngine, createdMaterialProvider, createdEntityManager)
+            createdResourceLoader = ResourceLoader(createdEngine)
+
+            engine = createdEngine
+            entityManager = createdEntityManager
+            materialProvider = createdMaterialProvider
+            renderer = createdRenderer
+            scene = createdScene
+            view = createdView
+            cameraComponent = createdCamera
+            assetLoader = createdAssetLoader
+            resourceLoader = createdResourceLoader
+            view?.scene = createdScene
+            view?.camera = createdCamera
+            view?.isPostProcessingEnabled = false
+            applyCamera()
+        } catch (failure: Throwable) {
+            initializationError = failure
+            createdResourceLoader?.destroy()
+            createdAssetLoader?.destroy()
+            createdView?.let { createdEngine?.destroyView(it) }
+            createdScene?.let { createdEngine?.destroyScene(it) }
+            createdRenderer?.let { createdEngine?.destroyRenderer(it) }
+            createdCamera?.let {
+                createdEngine?.destroyCameraComponent(it.getEntity())
+                createdEntityManager?.destroy(it.getEntity())
+            }
+            createdMaterialProvider?.destroy()
+            createdEngine?.destroy()
+        }
     }
 
-    fun attach(surface: Surface) {
+    fun attach(surface: Surface): Result<Unit> = runCatching {
         check(!released) { "renderer has been released" }
-        swapChain?.let(engine::destroySwapChain)
-        swapChain = engine.createSwapChain(surface)
+        checkAvailable()
+        val activeEngine = engine ?: error("Filament engine is unavailable")
+        swapChain?.let(activeEngine::destroySwapChain)
+        swapChain = activeEngine.createSwapChain(surface)
         choreographer.removeFrameCallback(this)
         choreographer.postFrameCallback(this)
+        frameCallbackPosted = true
+    }
+
+    fun detachSurface() {
+        if (frameCallbackPosted) choreographer.removeFrameCallback(this)
+        frameCallbackPosted = false
+        swapChain?.let { chain -> engine?.destroySwapChain(chain) }
+        swapChain = null
     }
 
     fun onViewportChanged(width: Int, height: Int) {
         viewportWidth = width.coerceAtLeast(1)
         viewportHeight = height.coerceAtLeast(1)
-        view.viewport = Viewport(0, 0, viewportWidth, viewportHeight)
-        cameraComponent.setProjection(
+        view?.viewport = Viewport(0, 0, viewportWidth, viewportHeight)
+        cameraComponent?.setProjection(
             45.0,
             viewportWidth.toDouble() / viewportHeight,
             0.1,
@@ -70,31 +125,44 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
 
     fun loadGlb(file: File): Result<Unit> = runCatching {
         check(!released) { "renderer has been released" }
+        checkAvailable()
         require(file.isFile) { "GLB file does not exist: ${file.path}" }
         require(file.length() >= 20L) { "GLB file is truncated" }
-        val loaded = FileChannel.open(file.toPath(), StandardOpenOption.READ).use { channel ->
-            val buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
-            assetLoader.createAsset(buffer)
-                ?: error("Filament rejected GLB: ${file.name}")
+        val activeAssetLoader = assetLoader ?: error("Filament asset loader is unavailable")
+        val activeResourceLoader = resourceLoader ?: error("Filament resource loader is unavailable")
+        val activeScene = scene ?: error("Filament scene is unavailable")
+        var candidate: FilamentAsset? = null
+        try {
+            candidate = FileChannel.open(file.toPath(), StandardOpenOption.READ).use { channel ->
+                val buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
+                activeAssetLoader.createAsset(buffer)
+                    ?: error("Filament rejected GLB: ${file.name}")
+            }
+            activeResourceLoader.loadResources(candidate!!)
+            candidate!!.releaseSourceData()
+            asset?.let { previous ->
+                activeScene.removeEntities(previous.entities)
+                activeAssetLoader.destroyAsset(previous)
+            }
+            asset = candidate
+            activeScene.addEntities(candidate!!.entities)
+            candidate = null
+            applyCamera()
+        } finally {
+            candidate?.let(activeAssetLoader::destroyAsset)
         }
-        asset?.let(assetLoader::destroyAsset)
-        scene.removeEntities(asset?.entities ?: intArrayOf())
-        asset = loaded
-        resourceLoader.loadResources(loaded)
-        loaded.releaseSourceData()
-        scene.addEntities(loaded.entities)
-        applyCamera()
-    }.onFailure {
-        asset?.let(assetLoader::destroyAsset)
-        asset = null
     }
 
     override fun doFrame(frameTimeNanos: Long) {
         val chain = swapChain
-        if (!released && chain != null && renderer.beginFrame(chain, frameTimeNanos)) {
-            renderer.render(view)
-            renderer.endFrame()
+        val activeRenderer = renderer
+        val activeView = view
+        if (!released && chain != null && activeRenderer != null && activeView != null && activeRenderer.beginFrame(chain, frameTimeNanos)) {
+            activeRenderer.render(activeView)
+            activeRenderer.endFrame()
             choreographer.postFrameCallback(this)
+        } else {
+            frameCallbackPosted = false
         }
     }
 
@@ -121,20 +189,31 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
     fun release() {
         if (released) return
         released = true
-        choreographer.removeFrameCallback(this)
-        asset?.let(assetLoader::destroyAsset)
+        detachSurface()
+        asset?.let { current ->
+            scene?.removeEntities(current.entities)
+            assetLoader?.destroyAsset(current)
+        }
         asset = null
-        swapChain?.let(engine::destroySwapChain)
-        swapChain = null
-        resourceLoader.destroy()
-        assetLoader.destroy()
-        engine.destroyView(view)
-        engine.destroyScene(scene)
-        engine.destroyRenderer(renderer)
-        engine.destroyCameraComponent(cameraComponent.getEntity())
-        entityManager.destroy(cameraComponent.getEntity())
-        materialProvider.destroy()
-        engine.destroy()
+        resourceLoader?.destroy()
+        assetLoader?.destroy()
+        view?.let { engine?.destroyView(it) }
+        scene?.let { engine?.destroyScene(it) }
+        renderer?.let { engine?.destroyRenderer(it) }
+        cameraComponent?.let {
+            engine?.destroyCameraComponent(it.getEntity())
+            entityManager?.destroy(it.getEntity())
+        }
+        materialProvider?.destroy()
+        engine?.destroy()
+    }
+
+    internal fun initializationFailureMessage(): String? = initializationError?.message
+
+    private fun checkAvailable() {
+        check(initializationError == null) {
+            "Filament is unavailable${initializationError?.message?.let { ": $it" } ?: ""}"
+        }
     }
 
     private fun applyCamera() {
@@ -142,7 +221,7 @@ class FilamentModelRenderer : ModelRendererAdapter, Choreographer.FrameCallback 
         val pitch = Math.toRadians(camera.pitchDegrees.toDouble())
         val distance = camera.distance.toDouble()
         val cosPitch = cos(pitch)
-        cameraComponent.lookAt(
+        cameraComponent?.lookAt(
             distance * cosPitch * sin(yaw) + camera.panX,
             distance * sin(pitch) + camera.panY,
             distance * cosPitch * cos(yaw),
