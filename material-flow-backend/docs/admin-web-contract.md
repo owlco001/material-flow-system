@@ -11,10 +11,10 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 
 | 切片 | 内容 | 准入角色 | 状态 |
 |------|------|----------|------|
-| S1 | 契约文档、登录/登出、Cookie 会话、CSRF、鉴权守卫、仪表盘骨架 | ADMIN | 进行中 |
+| S1 | 契约文档、登录/登出、Cookie 会话、CSRF、鉴权守卫、仪表盘骨架 | ADMIN | 已实现 |
 | S2 | 用户管理（列表/新建/编辑/重置密码/删除），复用 /admin/users 服务语义 | ADMIN | 已实现 |
 | S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
-| S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WAREHOUSE_ADMIN | 待做 |
+| S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S5 | 装配模型管理（版本/发布查询） | ADMIN | 待做 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
@@ -152,6 +152,19 @@ WAREHOUSE_ADMIN 兼容放行）、状态机（仅 PENDING_APPROVAL 可审批）�
 
 `execute`（出库执行动作）显式不在本切片范围（S3.1 待做）。
 
+### 6.4 S4 工时汇总与车间概览路由（准入 ADMIN + WORKSHOP_SUPERVISOR）
+
+准入与 `/api/v1/workshop/*` 统计门禁逐字一致（WORKSHOP_SUPERVISOR|ADMIN；
+WAREHOUSE_ADMIN 不准入本节）。统计端点注册在 assembly_routes.register() 闭包内，
+web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL 口径，零漂移）。
+
+- `GET /admin/reports?page=` → 200 车间概览：workshop/summary 卡片（总任务/完成/
+  整体进度/装配工时/借调工时/合计）+ workshop/machine-progress 表（机台号/任务数/
+  完成/进度/三类工时）+ 分页。
+- `GET /admin/reports/labor?page=&deviceId=&orderNo=&assemblerId=` → 200 工时汇总：
+  按任务-人员粒度（labor_item：taskId/orderNo/deviceNo/assemblerId+Name/装配工时/
+  借调工时/合计）+ 全页合计 + 分页（pageSize 固定 20，同 API 422 语义）。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -206,6 +219,13 @@ WAREHOUSE_ADMIN 兼容放行）、状态机（仅 PENDING_APPROVAL 可审批）�
 8. `GET /admin/handovers?query={hid}` 命中留痕：显示 handoverId 与至少一条
    audit_events 事件；未知 ID 显示 404 提示。
 9. `POST approve` 缺 csrf_token → 403 且状态不变。
+
+### 8.3 S4 断言（tests/test_admin_web_reports.py）
+
+1. WORKSHOP_SUPERVISOR 会话 `GET /admin/reports` → 200；WAREHOUSE_ADMIN → 403。
+2. 概览显示种子汇总文案（总任务 2 · 完成 1）与机台行（机台号）。
+3. 工时汇总显示任务-人员行与分钟数；`orderNo` 过滤命中/不命中（空集显示「暂无数据」）。
+4. `page=99` 空页 200 不报错。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 

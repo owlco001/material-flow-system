@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}工时汇总 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/reports" style="color:#fff;margin-right:12px">车间概览</a>
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<a href="/admin/handovers" style="color:#fff;margin-right:12px">交接留痕</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>工时汇总</h2>
+<div class="card" style="max-width:720px">
+  <form method="get" action="/admin/reports/labor">
+    <label>机台 ID</label>
+    <input name="deviceId" value="{{ filters.deviceId or '' }}" style="max-width:180px">
+    <label>订单号</label>
+    <input name="orderNo" value="{{ filters.orderNo or '' }}" style="max-width:180px">
+    <label>人员 ID</label>
+    <input name="assemblerId" value="{{ filters.assemblerId or '' }}" style="max-width:180px">
+    <button type="submit">筛选</button>
+  </form>
+</div>
+
+<p style="margin-top:16px">共 {{ total_rows }} 行 · 全页合计 {{ total_minutes }} 分钟</p>
+<table>
+  <tr><th>任务</th><th>订单号</th><th>机台</th><th>人员</th><th>装配工时</th><th>借调工时</th><th>合计</th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.taskId }}</td>
+    <td>{{ item.orderNo }}</td>
+    <td>{{ item.deviceNo }}</td>
+    <td>{{ item.assemblerName }}（{{ item.assemblerId }}）</td>
+    <td>{{ item.assemblyLaborMinutes }}</td>
+    <td>{{ item.temporaryTransferLaborMinutes }}</td>
+    <td>{{ item.totalLaborMinutes }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7">暂无数据</td></tr>
+  {% endfor %}
+</table>
+<p style="margin-top:12px">
+  {% if page > 1 %}
+  <a href="/admin/reports/labor?page={{ page - 1 }}&deviceId={{ filters.deviceId or '' }}&orderNo={{ filters.orderNo or '' }}&assemblerId={{ filters.assemblerId or '' }}">上一页</a>
+  {% endif %}
+  第 {{ page }} / {{ total_pages }} 页
+  {% if page < total_pages %}
+  <a href="/admin/reports/labor?page={{ page + 1 }}&deviceId={{ filters.deviceId or '' }}&orderNo={{ filters.orderNo or '' }}&assemblerId={{ filters.assemblerId or '' }}">下一页</a>
+  {% endif %}
+</p>
+{% endblock %}

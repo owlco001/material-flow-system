@@ -42,6 +42,7 @@ from app.main import (
     list_transfers,
     now,
     reset_employee_password,
+    app as backend_app,
 )
 
 router = APIRouter()
@@ -674,5 +675,104 @@ def admin_handover_timeline(request: Request, hid: str):
             "query": hid,
             "result": result,
             "error": None,
+        },
+    )
+
+
+# ==================== S4：工时汇总与车间概览（契约 §6.4）====================
+
+REPORT_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR")
+
+
+def _report_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in REPORT_ROLES:
+        return None, HTMLResponse(
+            "403 禁止访问：统计页面仅对管理员/车间主管开放", status_code=403
+        )
+    return user, None
+
+
+def _api_endpoint(path: str):
+    """从 FastAPI 路由表解析既有 API 处理函数并直接调用（统计口径零漂移）。
+
+    workshop 统计端点注册在 assembly_routes.register() 闭包内，无法按模块名导入；
+    路由表解析保持「同一函数、同一 SQL」语义。
+    """
+    for route in backend_app.routes:
+        if getattr(route, "path", "") == path and "GET" in getattr(route, "methods", set()):
+            return route.endpoint
+    raise RuntimeError(f"API endpoint not found: {path}")
+
+
+def _page_param(request: Request) -> int:
+    try:
+        return max(1, int(request.query_params.get("page", "1") or 1))
+    except ValueError:
+        return 1
+
+
+@router.get("/admin/reports", response_class=HTMLResponse)
+def admin_reports_overview(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    page = _page_param(request)
+    try:
+        summary = _api_endpoint("/api/v1/workshop/summary")(user=user)
+        machines = _api_endpoint("/api/v1/workshop/machine-progress")(
+            user=user, page=page, pageSize=20
+        )
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "summary": summary,
+            "machines": machines["items"],
+            "page": page,
+        },
+    )
+
+
+@router.get("/admin/reports/labor", response_class=HTMLResponse)
+def admin_reports_labor(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    page = _page_param(request)
+    filters = {
+        "deviceId": request.query_params.get("deviceId") or None,
+        "orderNo": request.query_params.get("orderNo") or None,
+        "assemblerId": request.query_params.get("assemblerId") or None,
+    }
+    try:
+        data = _api_endpoint("/api/v1/workshop/labor-summary")(
+            page=page,
+            pageSize=20,
+            deviceId=filters["deviceId"],
+            orderNo=filters["orderNo"],
+            assemblerId=filters["assemblerId"],
+            user=user,
+        )
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "reports_labor.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": data["items"],
+            "page": data["page"],
+            "total_pages": data["totalPages"],
+            "total_rows": data["total"],
+            "total_minutes": data["totalLaborMinutes"],
+            "filters": filters,
         },
     )
