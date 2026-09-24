@@ -262,7 +262,7 @@ def test_package_version_is_the_health_check_version_identifier():
 
 def test_release_documentation_replays_version_and_systemd_contract():
     package_version = VERSION_PATH.read_text(encoding="ascii").strip()
-    deployment = DEPLOYMENT_PATH.read_text(encoding="ascii")
+    deployment = DEPLOYMENT_PATH.read_text(encoding="utf-8")
     service = SERVICE_PATH.read_text(encoding="ascii")
 
     with TestClient(backend.app) as client:
