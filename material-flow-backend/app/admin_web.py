@@ -56,6 +56,7 @@ from app.main import (
     preview_bom_import as api_bom_preview,
     reset_employee_password,
     review_exception as api_review_exception,
+    upload_assembly_model as api_upload_model,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -290,6 +291,14 @@ NOTICE_TEXTS = {
     "assigned": "任务成员已分配",
     "unassigned": "任务成员已移除",
     "bom_imported": "BOM 已导入",
+    "model_uploaded": "模型已上传并发布",
+    "upload_bad_type": "上传失败：模型文件必须是 .glb",
+    "upload_bad_glb": "上传失败：文件不是有效 GLB",
+    "upload_too_large": "上传失败：模型文件超过 15 MiB",
+    "upload_bad_code": "上传失败：modelCode 格式无效",
+    "upload_bad_name": "上传失败：modelName 格式无效",
+    "upload_forbidden": "上传失败：仅管理员或仓库管理员可上传模型",
+    "upload_failed": "上传失败：未通过服务端校验",
 }
 
 
@@ -1415,3 +1424,44 @@ async def admin_bom_commit(request: Request):
     except HTTPException as exc:
         return _bom_error_page(request, user, f"{exc.status_code}：{exc.detail}")
     return _see_other("/admin/boms?notice=bom_imported")
+
+
+# ==================== S14：装配模型上传（契约 §6.13）====================
+
+MODEL_UPLOAD_NOTICE = {
+    "模型文件必须是 .glb": "upload_bad_type",
+    "文件不是有效 GLB": "upload_bad_glb",
+    "模型文件超过 15 MiB": "upload_too_large",
+    "modelCode 格式无效": "upload_bad_code",
+    "modelName 格式无效": "upload_bad_name",
+    "仅 ADMIN 或 WAREHOUSE_ADMIN 可上传模型": "upload_forbidden",
+}
+
+
+@router.post("/admin/models/upload")
+async def admin_model_upload(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    upload = form.get("file")
+    try:
+        await api_upload_model(
+            modelCode=str(form.get("modelCode", "")),
+            modelName=str(form.get("modelName", "")),
+            file=upload,  # type: ignore[arg-type]  # form["file"] 即 UploadFile
+            sha256=str(form.get("sha256", "")).strip() or None,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        notice = MODEL_UPLOAD_NOTICE.get(_api_error_message(exc), "upload_failed")
+        return _see_other(f"/admin/models?notice={notice}")
+    except HTTPException as exc:
+        notice = MODEL_UPLOAD_NOTICE.get(str(getattr(exc, "detail", "")), "upload_failed")
+        return _see_other(f"/admin/models?notice={notice}")
+    return _see_other("/admin/models?notice=model_uploaded")

@@ -11,6 +11,23 @@
 {% endblock %}
 {% block content %}
 <h2>装配模型管理</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+<div class="card" style="max-width:560px">
+  <h3>上传 GLB 模型（新版本自动发布，旧发布版自动归档）</h3>
+  <form method="post" action="/admin/models/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>机型码</label>
+    <input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy">
+    <label>模型名</label>
+    <input name="modelName" required style="max-width:240px">
+    <label>GLB 文件（≤ 15 MiB）</label>
+    <input type="file" name="file" required accept=".glb">
+    <label>文件 SHA-256（可选校验）</label>
+    <input name="sha256" style="max-width:340px" placeholder="64 位十六进制">
+    <button type="submit">上传并发布</button>
+  </form>
+</div>
 <div class="card" style="max-width:520px">
   <form method="get" action="/admin/models">
     <label>机型码（留空显示全部）</label>

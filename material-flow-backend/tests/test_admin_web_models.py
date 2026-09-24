@@ -45,8 +45,9 @@ def seed_models():
 
 
 @pytest.fixture(autouse=True)
-def _seed(isolated_backend_database):
+def _seed(isolated_backend_database, tmp_path_factory, monkeypatch):
     seed_users()
+    monkeypatch.setattr(backend, "UPLOAD_DIR", tmp_path_factory.mktemp("uploads"))
     yield
 
 
@@ -102,3 +103,89 @@ def test_models_unknown_code_and_empty_db():
         missing = client.get("/admin/models?code=NoSuchModel")
         assert missing.status_code == 200
         assert "资源不存在" in missing.text
+
+
+MINI_GLB = b"glTF" + b"\x02\x00\x00\x00" + (32).to_bytes(4, "little") + b"\x00" * 24
+
+
+def test_model_upload_success_and_version_rollover():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        page = client.get("/admin/models")
+        r = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": form_csrf(page.text), "modelCode": "GearboxAssy", "modelName": "齿轮箱装配"},
+            files={"file": ("gearbox.glb", MINI_GLB, "model/gltf-binary")},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/models?notice=model_uploaded"
+        r2 = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": form_csrf(page.text), "modelCode": "GearboxAssy", "modelName": "齿轮箱装配2"},
+            files={"file": ("gearbox2.glb", MINI_GLB + b"\x01", "model/gltf-binary")},
+            follow_redirects=False,
+        )
+        assert r2.status_code == 303
+        c = backend.db()
+        rows = c.execute(
+            "SELECT version, status FROM assembly_model_versions WHERE model_code='GearboxAssy'"
+            " ORDER BY version"
+        ).fetchall()
+        c.close()
+        assert [(row["version"], row["status"]) for row in rows] == [(1, "ARCHIVED"), (2, "PUBLISHED")]
+
+
+def test_model_upload_validation_notices():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        page = client.get("/admin/models")
+        bad_type = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": form_csrf(page.text), "modelCode": "GearboxAssy", "modelName": "m"},
+            files={"file": ("x.obj", b"objdata", "application/octet-stream")},
+            follow_redirects=False,
+        )
+        assert bad_type.status_code == 303
+        assert bad_type.headers["location"] == "/admin/models?notice=upload_bad_type"
+        bad_glb = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": form_csrf(page.text), "modelCode": "GearboxAssy", "modelName": "m"},
+            files={"file": ("x.glb", b"NOTG" + b"\x00" * 28, "model/gltf-binary")},
+            follow_redirects=False,
+        )
+        assert bad_glb.status_code == 303
+        assert bad_glb.headers["location"] == "/admin/models?notice=upload_bad_glb"
+        c = backend.db()
+        count = c.execute("SELECT COUNT(*) FROM assembly_model_versions").fetchone()[0]
+        c.close()
+        assert count == 0
+
+
+def test_model_upload_supervisor_forbidden():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        token = form_csrf(client.get("/admin/reports").text)
+        r = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": token, "modelCode": "GearboxAssy", "modelName": "m"},
+            files={"file": ("x.glb", MINI_GLB, "model/gltf-binary")},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/models?notice=upload_forbidden"
+
+
+def test_model_upload_without_csrf_rejected():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        r = client.post(
+            "/admin/models/upload",
+            data={"csrf_token": "", "modelCode": "GearboxAssy", "modelName": "m"},
+            files={"file": ("x.glb", MINI_GLB, "model/gltf-binary")},
+        )
+        assert r.status_code == 403
+        c = backend.db()
+        count = c.execute("SELECT COUNT(*) FROM assembly_model_versions").fetchone()[0]
+        c.close()
+        assert count == 0

@@ -24,6 +24,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S11 | 机台任务与成员分配（多人协作装配） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S12 | 直属领导（managerId）补齐 | ADMIN | 已实现 |
 | S13 | BOM 导入（CSV/XLSX 两段式预览→提交）与版本查询 | ADMIN + PLANNER + WORKSHOP_SUPERVISOR | 已实现 |
+| S14 | 装配模型上传（GLB 上传→自动发布→旧发布归档） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -261,6 +262,17 @@ ASSEMBLER、1..20 个不同成员、幂等表 assembly_assignment_operations、�
 - `POST /admin/boms/import/commit`（form: csrf_token, clientOperationId, previewId,
   publish 可选）→ 303 → `?notice=bom_imported`。
 
+### 6.13 S14 装配模型上传路由（准入 ADMIN + WAREHOUSE_ADMIN）
+
+复用 upload_assembly_model 同名处理函数（multipart 直传；版本递增 + 旧 PUBLISHED
+→ ARCHIVED + 新 PUBLISHED 语义零漂移；.glb 后缀 / GLB magic / 15 MiB 上限 / 可选
+sha256 校验 / Idempotency-Key 幂等表）。失败经 NOTICE 映射回列表页
+（upload_bad_type / upload_bad_glb / upload_too_large / upload_bad_code /
+upload_bad_name / upload_forbidden / upload_failed）。
+
+- `POST /admin/models/upload`（multipart: csrf_token, modelCode, modelName, file,
+  sha256 可选；clientOperationId 可选，缺省时服务端生成）→ 303 → `?notice=model_uploaded`。
+
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
 复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
@@ -392,6 +404,15 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
 4. 提交预览（publish 不勾）→ 303 `?notice=bom_imported`；bom_versions + bom_items
    落库。
 5. 缺 csrf_token 的上传/提交 → 403 无副作用。
+
+### 8.12 S14 断言（tests/test_admin_web_models.py 追加）
+
+1. ADMIN 上传最小合法 GLB（临时 UPLOAD_DIR）→ 303 `?notice=model_uploaded`；
+   assembly_model_versions 出现 PUBLISHED 行。
+2. 再传不同内容 → 版本递增且旧发布转 ARCHIVED。
+3. 非 .glb 后缀 → `?notice=upload_bad_type`；坏 magic → `?notice=upload_bad_glb`。
+4. WORKSHOP_SUPERVISOR 上传 → `?notice=upload_forbidden`（无落库）。
+5. 缺 csrf_token → 403 无落库。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 
