@@ -283,6 +283,8 @@ NOTICE_TEXTS = {
     "executed": "出库执行完成，库存已变更",
     "stocktake_confirmed": "盘点已确认",
     "exception_reviewed": "异常已审核",
+    "assigned": "任务成员已分配",
+    "unassigned": "任务成员已移除",
 }
 
 
@@ -735,16 +737,16 @@ def _report_or_403(request: Request):
     return user, None
 
 
-def _api_endpoint(path: str):
+def _api_endpoint(path: str, method: str = "GET"):
     """从 FastAPI 路由表解析既有 API 处理函数并直接调用（统计口径零漂移）。
 
     workshop 统计端点注册在 assembly_routes.register() 闭包内，无法按模块名导入；
     路由表解析保持「同一函数、同一 SQL」语义。
     """
     for route in backend_app.routes:
-        if getattr(route, "path", "") == path and "GET" in getattr(route, "methods", set()):
+        if getattr(route, "path", "") == path and method in getattr(route, "methods", set()):
             return route.endpoint
-    raise RuntimeError(f"API endpoint not found: {path}")
+    raise RuntimeError(f"API endpoint not found: {method} {path}")
 
 
 def _page_param(request: Request) -> int:
@@ -1151,3 +1153,118 @@ def admin_workspace(request: Request):
             "filters": {"status": q.get("status") or "", "orderNo": q.get("orderNo") or ""},
         },
     )
+
+
+# ==================== S11：机台任务分配（契约 §6.11）====================
+
+
+def _request_with_id(request: Request) -> Request:
+    """合成带合法 X-Request-Id 的 Request（assembly 闭包从 headers 取 trace id）。"""
+    scope = dict(request.scope)
+    raw = [(k, v) for k, v in request.headers.raw if k.lower() != b"x-request-id"]
+    raw.append((b"x-request-id", str(uuid.uuid4()).encode()))
+    scope["headers"] = raw
+
+    async def _no_body():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return Request(scope, _no_body)
+
+
+def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
+    page = _page_param(request)
+    device_id = request.query_params.get("deviceId") or None
+    try:
+        tasks_data = _api_endpoint("/api/v1/assembly/tasks")(
+            page=page, pageSize=20, deviceId=device_id, user=user
+        )
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    c = db()
+    try:
+        assemblers = c.execute(
+            "SELECT id, username, display_name FROM users"
+            " WHERE role='ASSEMBLER' AND active=1 ORDER BY username"
+        ).fetchall()
+    finally:
+        c.close()
+    names = {row["id"]: row["display_name"] for row in assemblers}
+    assign_ops = {item["id"]: str(uuid.uuid4()) for item in tasks_data["items"]}
+    remove_ops = {
+        f"{item['id']}:{m['assembler_id']}": str(uuid.uuid4())
+        for item in tasks_data["items"]
+        for m in item.get("members", [])
+    }
+    return templates.TemplateResponse(
+        request,
+        "tasks.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": tasks_data["items"],
+            "page": tasks_data["page"],
+            "total_pages": tasks_data["totalPages"],
+            "total_rows": tasks_data["total"],
+            "assemblers": assemblers,
+            "names": names,
+            "assign_ops": assign_ops,
+            "remove_ops": remove_ops,
+            "device_id": device_id or "",
+            "error": error,
+            "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+        },
+    )
+
+
+@router.get("/admin/tasks", response_class=HTMLResponse)
+def admin_tasks(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    return _tasks_page(request, user)
+
+
+@router.post("/admin/tasks/{tid}/assignments")
+async def admin_task_assign(request: Request, tid: str):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    assembler_ids = [str(v) for v in form.getlist("assemblerIds")]
+    try:
+        _api_endpoint("/api/v1/assembly/tasks/{tid}/assignments", method="POST")(
+            tid=tid,
+            body={"clientOperationId": operation_id, "assemblerIds": assembler_ids},
+            request=_request_with_id(request),
+            user=user,
+            idempotency_key=operation_id,
+        )
+    except HTTPException as exc:
+        return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
+    return _see_other(f"/admin/tasks?notice=assigned")
+
+
+@router.post("/admin/tasks/{tid}/assignments/{assembler_id}/remove")
+async def admin_task_unassign(request: Request, tid: str, assembler_id: str):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        _api_endpoint("/api/v1/assembly/tasks/{tid}/assignments/{assembler_id}", method="DELETE")(
+            tid=tid,
+            assembler_id=assembler_id,
+            request=_request_with_id(request),
+            body={"clientOperationId": operation_id},
+            user=user,
+            idempotency_key=operation_id,
+        )
+    except HTTPException as exc:
+        return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
+    return _see_other(f"/admin/tasks?notice=unassigned")

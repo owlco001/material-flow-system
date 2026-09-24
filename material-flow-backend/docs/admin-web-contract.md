@@ -21,6 +21,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S8 | 物料—库位—库存 + 盘点 + 异常查询 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S9 | 物料状态工作台（本角色视图：状态计数 + 工作项 + 责任/交接链） | ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S10 | 盘点确认 / 异常审核动作 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
+| S11 | 机台任务与成员分配（多人协作装配） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -227,6 +228,22 @@ stocktake_operations / exception_operations、状态机语义一致）。
   `?notice=exception_reviewed`；失败内联文案（如「异常状态不允许审批」
   「decision 无效」）。操作按钮仅在对应待办状态（PENDING_CONFIRM / PENDING）显示。
 
+### 6.11 S11 机台任务分配路由（准入 ADMIN + WORKSHOP_SUPERVISOR）
+
+复用 assembly 闭包的 list_tasks / assign / unassign（路由表解析调用）；闭包从
+`request.headers` 取 X-Request-Id，web 层以合成 Request 注入合法 UUID（不改
+业务代码）。分配语义保持：首个 assemblerId=LEAD 其余 MEMBER、成员必须启用
+ASSEMBLER、1..20 个不同成员、幂等表 assembly_assignment_operations、移除为
+软删（removed_at）+ legacy 单人清空。
+
+- `GET /admin/tasks?page=&deviceId=` → 200：任务卡列表（id/订单/机台/状态/进度 +
+  成员链（LEAD/MEMBER + 姓名 + 移除按钮）+ 分配表单（启用装配工多选）+ 分页）。
+- `POST /admin/tasks/{tid}/assignments`（form: csrf_token, clientOperationId,
+  assemblerIds 多选）→ 303 → `?notice=assigned`。
+- `POST /admin/tasks/{tid}/assignments/{assembler_id}/remove`（form: csrf_token,
+  clientOperationId）→ 303 → `?notice=unassigned`。失败均重渲染任务页 +
+  API 文案（如「成员必须是启用的 ASSEMBLER」「assemblerIds 必须为 1..20 个不同成员」）。
+
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
 复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
@@ -338,6 +355,15 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
 2. 审核 PENDING 异常 APPROVE → status=APPROVED；REJECT → status=REJECTED。
 3. 审核已处理异常 → 「异常状态不允许审批」。
 4. 缺 csrf_token 的两个 POST → 403 且状态不变。
+
+### 8.10 S11 断言（tests/test_admin_web_tasks.py）
+
+1. WORKSHOP_SUPERVISOR `GET /admin/tasks` → 200；WAREHOUSE_ADMIN → 403。
+2. 种子任务成员显示（LEAD 标签 + 姓名）。
+3. 分配两名装配工 → 303 `?notice=assigned`；DB 成员行（首人 LEAD、次人 MEMBER）。
+4. 分配非装配工（OPERATOR）→ 「成员必须是启用的 ASSEMBLER」且不落库。
+5. 移除成员 → 303 `?notice=unassigned`；removed_at 非空。
+6. 缺 csrf_token 的 POST → 403 且成员不变。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}机台任务 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/reports" style="color:#fff;margin-right:12px">车间概览</a>
+<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>机台任务与成员分配</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+<div class="card" style="max-width:520px">
+  <form method="get" action="/admin/tasks">
+    <label>机台 ID（留空全部）</label>
+    <input name="deviceId" value="{{ device_id }}" style="max-width:200px">
+    <button type="submit">筛选</button>
+  </form>
+</div>
+
+<p style="margin-top:16px">共 {{ total_rows }} 行</p>
+{% for item in items %}
+<div class="card" style="margin-top:12px">
+  <p><strong>{{ item.id }}</strong> · 订单 {{ item.orderNo }} · 机台 {{ item.deviceNo }}
+     · 状态 {{ item.status }} · 进度 {{ item.progressStage }}/3</p>
+  <p>成员：
+    {% for m in item.members %}
+      {{ m.assignment_role }}:{{ names.get(m.assembler_id, m.assembler_id) }}
+      <form method="post" action="/admin/tasks/{{ item.id }}/assignments/{{ m.assembler_id }}/remove" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="clientOperationId" value="{{ remove_ops[item.id ~ ':' ~ m.assembler_id] }}">
+        <button type="submit" style="margin:0 6px 0 2px;background:#b91c1c">移除</button>
+      </form>
+      {% if not loop.last %}、{% endif %}
+    {% else %}暂无成员{% endfor %}
+  </p>
+  <form method="post" action="/admin/tasks/{{ item.id }}/assignments">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="{{ assign_ops[item.id] }}">
+    <label>分配装配工（勾选顺序第一个为组长 LEAD，最多 20 人）</label><br>
+    {% for a in assemblers %}
+    <label style="display:inline-block;margin-right:12px">
+      <input type="checkbox" name="assemblerIds" value="{{ a.id }}">{{ a.display_name }}（{{ a.username }}）
+    </label>
+    {% else %}
+    <span>暂无可用装配工</span>
+    {% endfor %}
+    <br><button type="submit">保存分配</button>
+  </form>
+</div>
+{% else %}
+<p>暂无数据</p>
+{% endfor %}
+
+<p style="margin-top:12px">
+  {% if page > 1 %}<a href="/admin/tasks?page={{ page - 1 }}&deviceId={{ device_id }}">上一页</a>{% endif %}
+  第 {{ page }} / {{ total_pages }} 页
+  {% if page < total_pages %}<a href="/admin/tasks?page={{ page + 1 }}&deviceId={{ device_id }}">下一页</a>{% endif %}
+</p>
+{% endblock %}
