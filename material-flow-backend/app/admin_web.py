@@ -310,8 +310,10 @@ def _render_users(request: Request, user: sqlite3.Row, error: str | None = None)
     c = db()
     try:
         rows = c.execute(
-            "SELECT id, username, display_name, role, active, must_change_password, created_at"
-            " FROM users ORDER BY created_at"
+            "SELECT u.id, u.username, u.display_name, u.role, u.active,"
+            " u.must_change_password, u.created_at, m.display_name AS manager_name"
+            " FROM users u LEFT JOIN employee_managers em ON em.employee_id=u.id"
+            " LEFT JOIN users m ON m.id=em.manager_id ORDER BY u.created_at"
         ).fetchall()
     finally:
         c.close()
@@ -341,6 +343,13 @@ def _render_user_form(
     error: str | None = None,
 ):
     safe_values = {k: v for k, v in values.items() if k != "password"}
+    c = db()
+    try:
+        managers = c.execute(
+            "SELECT id, username, display_name FROM users WHERE active=1 ORDER BY username"
+        ).fetchall()
+    finally:
+        c.close()
     return templates.TemplateResponse(
         request,
         "user_form.html",
@@ -351,6 +360,7 @@ def _render_user_form(
             "title": "新建用户" if mode == "create" else "编辑用户",
             "action": "/admin/users/new" if mode == "create" else f"/admin/users/{user_id}/edit",
             "values": safe_values,
+            "managers": managers,
             "role_labels": ROLE_LABELS,
             "assignable_roles": CREATE_ROLES if mode == "create" else EDIT_ROLES,
             "client_operation_id": str(uuid.uuid4()) if mode == "edit" else None,
@@ -388,10 +398,11 @@ async def admin_user_create(request: Request):
         "displayName": str(form.get("displayName", "")).strip(),
         "role": str(form.get("role", "")),
         "password": str(form.get("password", "")),
+        "managerId": str(form.get("managerId", "")) or None,
     }
     try:
         add_employee(
-            EmployeeCreate(**values, managerId=None),
+            EmployeeCreate(**values),
             user=user,
             x_request_id=str(uuid.uuid4()),
         )

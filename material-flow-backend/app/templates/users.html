@@ -13,7 +13,7 @@
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <p><a href="/admin/users/new">新建用户</a></p>
 <table>
-  <tr><th>工号</th><th>显示名</th><th>角色</th><th>状态</th><th>首登改密</th><th>操作</th></tr>
+  <tr><th>工号</th><th>显示名</th><th>角色</th><th>状态</th><th>首登改密</th><th>直属领导</th><th>操作</th></tr>
   {% for row in rows %}
   <tr>
     <td>{{ row.username }}</td>
@@ -21,6 +21,7 @@
     <td>{{ role_labels.get(row.role, row.role) }}</td>
     <td>{{ "在职" if row.active else "已停用" }}</td>
     <td>{{ "是" if row.must_change_password else "否" }}</td>
+    <td>{{ row.manager_name or "—" }}</td>
     <td>
       <a href="/admin/users/{{ row.id }}/edit">编辑</a>
       <form method="post" action="/admin/users/{{ row.id }}/password-reset" style="display:inline">

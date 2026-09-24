@@ -265,3 +265,52 @@ def test_edit_without_csrf_rejected_no_change():
         c = backend.db()
         assert c.execute("SELECT display_name FROM users WHERE id='u_target'").fetchone()[0] == "目标用户"
         c.close()
+
+
+def test_create_with_manager_id_links_row():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        page = client.get("/admin/users/new")
+        r = client.post(
+            "/admin/users/new",
+            data={
+                "csrf_token": form_csrf(page.text),
+                "employeeNo": "emp-mgr",
+                "displayName": "带领导",
+                "role": "OPERATOR",
+                "password": "Init@2026x",
+                "managerId": "u_admin",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        c = backend.db()
+        row = c.execute(
+            "SELECT manager_id FROM employee_managers WHERE employee_id="
+            "(SELECT id FROM users WHERE username='emp-mgr')"
+        ).fetchone()
+        c.close()
+        assert row["manager_id"] == "u_admin"
+        assert "管理员" in client.get("/admin/users").text
+
+
+def test_create_with_unknown_manager_rejected():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        page = client.get("/admin/users/new")
+        r = client.post(
+            "/admin/users/new",
+            data={
+                "csrf_token": form_csrf(page.text),
+                "employeeNo": "emp-badmgr",
+                "displayName": "坏领导",
+                "role": "OPERATOR",
+                "password": "Init@2026x",
+                "managerId": "u_nobody",
+            },
+        )
+        assert r.status_code == 200 and "直属领导不存在" in r.text
+        c = backend.db()
+        count = c.execute("SELECT COUNT(*) FROM users WHERE username='emp-badmgr'").fetchone()[0]
+        c.close()
+        assert count == 0

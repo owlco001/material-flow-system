@@ -133,7 +133,8 @@ reset_employee_password / delete_employee），语义零漂移：幂等双头
 - `POST /admin/users/{user_id}/delete`（form: csrf_token, clientOperationId）
   → 303 → `?notice=disabled`（软停用，保留历史）。
 
-接受缺口（显式记录）：新建表单暂不提供直属领导（managerId）选择器，接口参数置空；
+直属领导（managerId）：新建表单提供可选下拉（任意在职用户；校验同 API「直属领导
+不存在」）；编辑侧 EditUserRequest 无该字段，显式保留不支持。
 列表暂不分页（用户量为厂内规模）。
 
 ### 6.3 S3 流转审批与交接留痕路由（准入 ADMIN + WAREHOUSE_ADMIN）
@@ -275,7 +276,9 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
    Set-Cookie 含 Max-Age=0。
 9. 过期会话（expires_at < now）访问 `GET /admin/` → 303 Location=/admin/login。
 10. 仪表盘渲染：200 含当前用户名与三个计数数字（用已知种子数据断言）。
-11. 全部 GET/POST 响应体不包含任何 `password` 明文回显（提交值不出现）。
+11. 全部 GET/POST 响应体不包含任何 password 明文回显（提交值不出现）。
+12. 新建用户带 managerId → `employee_managers` 行落库；用户列表显示直属领导。
+13. 新建用户带不存在的 managerId → 「直属领导不存在」且不落库。
 
 ### 8.1 S2 断言（tests/test_admin_web_users.py）
 

@@ -30,6 +30,15 @@
       <option value="{{ code }}" {% if values.role == code %}selected{% endif %}>{{ role_labels.get(code, code) }}</option>
       {% endfor %}
     </select>
+    {% if mode == "create" %}
+    <label>直属领导（可选）</label>
+    <select name="managerId">
+      <option value="">（不设）</option>
+      {% for m in managers %}
+      <option value="{{ m.id }}" {% if values.managerId == m.id %}selected{% endif %}>{{ m.display_name }}（{{ m.username }}）</option>
+      {% endfor %}
+    </select>
+    {% endif %}
     {% if mode == "edit" %}
     <label style="margin-top:12px">
       <input type="checkbox" name="active" style="width:auto" {% if values.active %}checked{% endif %}> 在职
