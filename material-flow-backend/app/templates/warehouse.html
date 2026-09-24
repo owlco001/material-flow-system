@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}物料与库存 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>物料与库存</h2>
+<div class="card" style="max-width:520px">
+  <form method="get" action="/admin/warehouse">
+    <label>物料编码（查库位分布）</label>
+    <input name="code" value="{{ code }}" style="max-width:220px" placeholder="如 M-001">
+    <button type="submit">查询</button>
+  </form>
+</div>
+
+{% if material_error %}
+<p class="error" style="margin-top:16px">{{ material_error }}</p>
+{% endif %}
+
+{% if material %}
+{% set m = material.get("material") or {} %}
+{% set inv = material.get("inventory") or {} %}
+<div class="card" style="margin-top:16px">
+  <h3>{{ m.get("code") }} · {{ m.get("name") }}</h3>
+  <p>规格：{{ m.get("specification") or "—" }} · 单位：{{ m.get("unit") or "—" }}
+     · 批次：{{ m.get("batchNo") or "—" }} · 效期：{{ m.get("expiryDate") or "—" }}</p>
+  <p>总量 {{ inv.get("totalQuantity") }} · 可用 {{ inv.get("availableQuantity") }} · 库存版本 {{ material.get("version") }}</p>
+  <table>
+    <tr><th>库位</th><th>数量</th></tr>
+    {% for loc in inv.get("locations") or [] %}
+    <tr><td>{{ loc.get("locationCode") }}</td><td>{{ loc.get("quantity") }}</td></tr>
+    {% else %}
+    <tr><td colspan="2">暂无库位库存</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<h3 style="margin-top:24px">盘点待确认</h3>
+<table>
+  <tr><th>ID</th><th>物料</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>创建</th><th>确认</th></tr>
+  {% for s in stocktakes %}
+  <tr>
+    <td>{{ s.id }}</td>
+    <td>{{ s.material_code or s.material_id }}</td>
+    <td>{{ s.book_quantity }}</td>
+    <td>{{ s.actual_quantity }}</td>
+    <td>{{ s.difference }}</td>
+    <td>{{ stocktake_labels.get(s.status, s.status) }}</td>
+    <td>{{ s.created_at }}</td>
+    <td>{{ s.confirmed_by or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8">暂无盘点记录</td></tr>
+  {% endfor %}
+</table>
+
+<h3 style="margin-top:24px">异常记录</h3>
+<table>
+  <tr><th>ID</th><th>类型</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>描述</th><th>订单</th><th>机台</th><th>时间</th></tr>
+  {% for e in exceptions %}
+  <tr>
+    <td>{{ e.id }}</td>
+    <td>{{ e.type }}</td>
+    <td>{{ e.book_quantity }}</td>
+    <td>{{ e.actual_quantity }}</td>
+    <td>{{ e.difference }}</td>
+    <td>{{ exception_labels.get(e.status, e.status) }}</td>
+    <td>{{ e.description or "—" }}</td>
+    <td>{{ e.order_no or "—" }}</td>
+    <td>{{ e.device_id or "—" }}</td>
+    <td>{{ e.created_at }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="10">暂无异常记录</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

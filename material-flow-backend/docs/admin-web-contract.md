@@ -18,6 +18,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S5 | 装配模型管理（版本/发布查询） | ADMIN | 已实现 |
 | S6 | 审计日志查询（audit_logs ∪ audit_events 统一视图） | ADMIN | 已实现 |
 | S7 | 生产订单查询（列表 + 单号详情聚合） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
+| S8 | 物料—库位—库存 + 盘点 + 异常查询 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -202,6 +203,15 @@ entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图�
   order_no 命中时的详情卡（订单信息 + 装配任务表 + 物料需求表，缺省显示
   「暂无物料需求（或不在您的可见范围内）」）。订单不存在/无权 → 内联 ApiError 文案。
 
+### 6.8 S8 物料—库位—库存查询路由（准入 ADMIN + WAREHOUSE_ADMIN）
+
+三个只读端点复用同名处理函数（inventory / list_stocktakes / list_exceptions）。
+
+- `GET /admin/warehouse?code=` → 200：物料库存查询（物料卡 + 总量/可用/库存版本 +
+  库位分布表）+ 盘点表（ID/物料/账面/实盘/差异/状态/创建/确认）+ 异常表
+  （ID/类型/账面/实盘/差异/状态/描述/订单/机台/时间）。code 不存在 → 内联
+  「物料不存在」；盘点/异常状态码映射中文标签，未知码原样显示。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -288,6 +298,13 @@ entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图�
 2. 列表显示种子订单（单号/产品/状态）。
 3. `?order_no=SO-TEST` 命中显示详情卡与任务行；`?order_no=NOPE` 内联「订单不存在」。
 4. 仅含 init_db 演示种子的库 200 且列表含演示单据（库恒非空，锚定 demo 事实）。
+
+### 8.7 S8 断言（tests/test_admin_web_warehouse.py）
+
+1. WAREHOUSE_ADMIN `GET /admin/warehouse` → 200；WORKSHOP_SUPERVISOR → 403。
+2. `?code=M-001` 命中：物料卡（名称/批次）+ 库位行（库位码/数量）+ 总量/可用。
+3. `?code=NOPE` 内联「物料不存在」。
+4. 种子盘点与异常行均显示（含中文状态标签）。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 

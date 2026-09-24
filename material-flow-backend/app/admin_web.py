@@ -42,7 +42,10 @@ from app.main import (
     execute_transfer as api_execute_transfer,
     get_transfer,
     handover_timeline,
+    inventory as api_inventory,
     list_transfers,
+    list_exceptions as api_list_exceptions,
+    list_stocktakes as api_list_stocktakes,
     now,
     order_detail as api_order_detail,
     reset_employee_password,
@@ -953,5 +956,51 @@ def admin_orders(request: Request):
             "order_no": order_no,
             "detail": detail,
             "error": error,
+        },
+    )
+
+
+# ==================== S8：物料—库位—库存查询（契约 §6.8）====================
+
+STOCKTAKE_STATUS_LABELS = {
+    "PENDING_CONFIRM": "待确认",
+    "CONFIRMED": "已确认",
+}
+
+EXCEPTION_STATUS_LABELS = {
+    "PENDING": "待处理",
+    "RESOLVED": "已处理",
+    "REJECTED": "已驳回",
+}
+
+
+@router.get("/admin/warehouse", response_class=HTMLResponse)
+def admin_warehouse(request: Request):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    code = str(request.query_params.get("code", "")).strip()
+    material = None
+    material_error = None
+    if code:
+        try:
+            material = api_inventory(code=code, user=user)
+        except HTTPException as exc:
+            material_error = f"{exc.status_code}：{exc.detail}"
+    stocktakes = api_list_stocktakes(user=user)["items"]
+    exceptions = api_list_exceptions(user=user)["items"]
+    return templates.TemplateResponse(
+        request,
+        "warehouse.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "code": code,
+            "material": material,
+            "material_error": material_error,
+            "stocktakes": stocktakes,
+            "exceptions": exceptions,
+            "stocktake_labels": STOCKTAKE_STATUS_LABELS,
+            "exception_labels": EXCEPTION_STATUS_LABELS,
         },
     )
