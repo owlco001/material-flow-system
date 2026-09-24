@@ -64,6 +64,8 @@ from app.main import (
     OrderModelCreate,
     OrderStatusRequest,
     set_order_status as api_set_order_status,
+    SessionRevokeRequest,
+    revoke_user_sessions as api_revoke_sessions,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -308,6 +310,7 @@ NOTICE_TEXTS = {
     "upload_failed": "上传失败：未通过服务端校验",
     "order_created": "生产订单已创建",
     "order_status_changed": "订单状态已推进",
+    "sessions_revoked": "该用户会话已全部强制下线",
 }
 
 
@@ -1680,3 +1683,34 @@ async def admin_order_status(request: Request, order_no: str):
             status_code=200,
         )
     return _see_other("/admin/orders?notice=order_status_changed")
+
+
+# ==================== S23：会话强制下线（契约 §6.18）====================
+
+
+@router.post("/admin/users/{user_id}/revoke-sessions")
+async def admin_revoke_sessions(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    try:
+        api_revoke_sessions(
+            user_id,
+            SessionRevokeRequest(clientOperationId=str(uuid.uuid4())),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        return HTMLResponse(
+            f"<p class='error'>{_api_error_message(exc)}</p><p><a href='/admin/users'>返回用户列表</a></p>",
+            status_code=200,
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/users'>返回用户列表</a></p>",
+            status_code=200,
+        )
+    return _see_other("/admin/users?notice=sessions_revoked")

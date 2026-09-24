@@ -31,6 +31,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S19 | 车间概览可视化（机台进度 CSS 条形图） | REPORT_ROLES | 已实现 |
 | S21 | 生产订单创建面（web 表单 → create_order API） | ADMIN + PLANNER | 已实现 |
 | S22 | 订单状态推进（RELEASED→IN_PROGRESS→COMPLETED） | ADMIN + PLANNER | 已实现 |
+| S23 | 会话强制下线（APP + WEB 会话全吊销） | ADMIN | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -321,6 +322,18 @@ ORDER_STATUS_CHANGED + 幂等表 order_operations(action='SET_ORDER_STATUS')。
   可选缺省服务端生成）→ 303 → `?notice=order_status_changed`；失败 → 200 错误页
   内联 API 文案 + 返回列表链接。
 
+### 6.18 S23 会话强制下线路由（准入 ADMIN）
+
+复用 revoke_user_sessions 内核 API 同名处理函数。语义：一次性删除目标用户全部
+APP `sessions` 与 `web_sessions` 行（与 S2 重置密码/删除用户的吊销 SQL 语义一致）；
+审计 `SESSIONS_REVOKED`（audit_events 兼作幂等记录，同 BOM_IMPORT 模式）。
+
+- API `POST /api/v1/users/{user_id}/sessions/revoke`（body: clientOperationId）
+  → 200 `{userId, revokedSessions, revokedWebSessions, serverTime, traceId, idempotent}`；
+  用户不存在 → 404「用户不存在」；非 ADMIN → 403。
+- web `POST /admin/users/{user_id}/revoke-sessions`（form: csrf_token）→ 303 →
+  `?notice=sessions_revoked`；失败 → 200 错误页内联 API 文案。
+
 ### 8.15 S21 断言（tests/test_admin_web_order_create.py）
 
 1. PLANNER 打开新建页 200；WORKSHOP_SUPERVISOR → 403（创建面门禁）。
@@ -338,6 +351,13 @@ ORDER_STATUS_CHANGED + 幂等表 order_operations(action='SET_ORDER_STATUS')。
 3. WAREHOUSE_ADMIN → 403；PLANNER 可推进；同键重放 → idempotent:true。
 4. web 表单推进 → 303 `?notice=order_status_changed`；非法转换 → 200 内联「订单状态
    不允许变更」。
+
+### 8.17 S23 断言（tests/test_sessions_revoke.py）
+
+1. ADMIN API 吊销 → 200 计数正确（APP 1 + WEB 1）+ 双表清零 + SESSIONS_REVOKED 审计。
+2. 幂等：同键重放 → `idempotent: true` 且计数保持原结果。
+3. 用户不存在 → 404；OPERATOR 调用 → 403。
+4. web 表单（用户列表「强制下线」按钮）→ 303 `?notice=sessions_revoked` + 双表清零。
 
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 

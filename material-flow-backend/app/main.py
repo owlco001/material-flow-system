@@ -2713,6 +2713,72 @@ class OrderStatusRequest(BaseModel):
 ORDER_TRANSITIONS = {"RELEASED": "IN_PROGRESS", "IN_PROGRESS": "COMPLETED"}
 
 
+class SessionRevokeRequest(BaseModel):
+    clientOperationId: str
+
+
+@app.post("/api/v1/users/{user_id}/sessions/revoke")
+def revoke_user_sessions(
+    user_id: str,
+    body: SessionRevokeRequest,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """强制下线：吊销目标用户全部 APP/WEB 会话（契约 §6.18）。"""
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可强制下线", trace_id=trace_id)
+    try:
+        operation_id = str(uuid.UUID(body.clientOperationId))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "clientOperationId 必须是合法 UUID", trace_id=trace_id) from None
+    payload = json.dumps({"userId": user_id, "clientOperationId": operation_id}, sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM audit_events WHERE event_type='SESSIONS_REVOKED' AND client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if prior["before_json"] != payload:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["after_json"])
+            result.update(idempotent=True, traceId=trace_id)
+            c.rollback()
+            return result
+        target = c.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise ApiError(404, CODE_USER_NOT_FOUND, "用户不存在", trace_id=trace_id)
+        app_cur = c.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        web_cur = c.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+        ts = now()
+        result = {
+            "userId": user_id,
+            "revokedSessions": app_cur.rowcount,
+            "revokedWebSessions": web_cur.rowcount,
+            "serverTime": ts, "traceId": trace_id, "idempotent": False,
+        }
+        c.execute(
+            "INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,"
+            "request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("SESSIONS_REVOKED", "USER", user_id, user["id"], user["role"], trace_id,
+             operation_id, payload,
+             json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
+        )
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 @app.post("/api/v1/orders/{order_no}/status")
 def set_order_status(
     order_no: str,
