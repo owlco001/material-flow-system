@@ -17,6 +17,17 @@ button { margin-top: 16px; padding: 8px 20px; background: #1f6feb; color: #fff; 
 .error { color: #b91c1c; margin-top: 8px; }
 table { border-collapse: collapse; width: 100%; background: #fff; }
 th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; font-size: 14px; }
+/* S16 移动端适配：表格横滚 + 小屏布局 + 触控目标 */
+table { display: block; overflow-x: auto; white-space: nowrap; }
+@media (max-width: 720px) {
+  header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  nav a { margin-right: 0 !important; }
+  main { margin: 12px auto; padding: 0 10px; }
+  th, td { padding: 6px 8px; font-size: 13px; }
+  input, select, button { max-width: 100%; min-height: 40px; box-sizing: border-box; }
+  .cards .card { flex: 1 1 100%; }
+}
 </style>
 </head>
 <body>

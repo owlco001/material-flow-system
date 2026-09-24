@@ -26,6 +26,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S13 | BOM 导入（CSV/XLSX 两段式预览→提交）与版本查询 | ADMIN + PLANNER + WORKSHOP_SUPERVISOR | 已实现 |
 | S14 | 装配模型上传（GLB 上传→自动发布→旧发布归档） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S15 | CSV 数据导出（审计日志 / 物料工作台） | 审计 ADMIN；工作台同 §6.9 | 已实现 |
+| S16 | 移动端响应式适配（CSS-only：表格横滚/小屏布局/触控目标） | 全部页面 | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
