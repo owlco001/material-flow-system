@@ -20,6 +20,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S7 | 生产订单查询（列表 + 单号详情聚合） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S8 | 物料—库位—库存 + 盘点 + 异常查询 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S9 | 物料状态工作台（本角色视图：状态计数 + 工作项 + 责任/交接链） | ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
+| S10 | 盘点确认 / 异常审核动作 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -213,6 +214,19 @@ entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图�
   （ID/类型/账面/实盘/差异/状态/描述/订单/机台/时间）。code 不存在 → 内联
   「物料不存在」；盘点/异常状态码映射中文标签，未知码原样显示。
 
+### 6.10 S10 盘点确认/异常审核动作路由（准入 ADMIN + WAREHOUSE_ADMIN）
+
+复用 confirm_stocktake / review_exception 同名处理函数（Decision 模型、幂等表
+stocktake_operations / exception_operations、状态机语义一致）。
+
+- `POST /admin/warehouse/stocktakes/{sid}/confirm`（form: csrf_token,
+  clientOperationId）→ 303 → `?notice=stocktake_confirmed`；失败重渲染仓储页 +
+  ApiError 文案（如「待确认盘点不存在或已处理」）。
+- `POST /admin/warehouse/exceptions/{eid}/review`（form: csrf_token,
+  clientOperationId, decision=APPROVE|REJECT, comment）→ 303 →
+  `?notice=exception_reviewed`；失败内联文案（如「异常状态不允许审批」
+  「decision 无效」）。操作按钮仅在对应待办状态（PENDING_CONFIRM / PENDING）显示。
+
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
 复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
@@ -316,6 +330,14 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
 2. `?code=M-001` 命中：物料卡（名称/批次）+ 库位行（库位码/数量）+ 总量/可用。
 3. `?code=NOPE` 内联「物料不存在」。
 4. 种子盘点与异常行均显示（含中文状态标签）。
+
+### 8.9 S10 断言（tests/test_admin_web_warehouse.py 追加）
+
+1. 确认 PENDING_CONFIRM 盘点 → 303 `?notice=stocktake_confirmed`；DB status=CONFIRMED
+   且 confirmed_by=操作者；重复确认 → 「待确认盘点不存在或已处理」。
+2. 审核 PENDING 异常 APPROVE → status=APPROVED；REJECT → status=REJECTED。
+3. 审核已处理异常 → 「异常状态不允许审批」。
+4. 缺 csrf_token 的两个 POST → 403 且状态不变。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 

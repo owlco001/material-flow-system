@@ -24,6 +24,7 @@ from app.main import (
     LOGIN_MAX_FAILURES,
     LOGIN_WINDOW_SECONDS,
     ApiError,
+    Decision,
     DeleteUserRequest,
     EditUserRequest,
     EmployeeCreate,
@@ -36,6 +37,7 @@ from app.main import (
     audit_logs as api_audit_logs,
     audit,
     check_password,
+    confirm_stocktake as api_confirm_stocktake,
     db,
     delete_employee,
     edit_employee,
@@ -49,6 +51,7 @@ from app.main import (
     now,
     order_detail as api_order_detail,
     reset_employee_password,
+    review_exception as api_review_exception,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -278,6 +281,8 @@ NOTICE_TEXTS = {
     "approved": "申请已审批通过",
     "rejected": "申请已驳回",
     "executed": "出库执行完成，库存已变更",
+    "stocktake_confirmed": "盘点已确认",
+    "exception_reviewed": "异常已审核",
 }
 
 
@@ -971,7 +976,7 @@ STOCKTAKE_STATUS_LABELS = {
 
 EXCEPTION_STATUS_LABELS = {
     "PENDING": "待处理",
-    "RESOLVED": "已处理",
+    "APPROVED": "已通过",
     "REJECTED": "已驳回",
 }
 
@@ -1002,6 +1007,85 @@ def admin_warehouse(request: Request):
             "material_error": material_error,
             "stocktakes": stocktakes,
             "exceptions": exceptions,
+            "stocktake_ops": {s["id"]: str(uuid.uuid4()) for s in stocktakes},
+            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
+            "stocktake_labels": STOCKTAKE_STATUS_LABELS,
+            "exception_labels": EXCEPTION_STATUS_LABELS,
+        },
+    )
+
+
+# ==================== S10：盘点确认/异常审核动作（契约 §6.10）====================
+
+
+@router.post("/admin/warehouse/stocktakes/{sid}/confirm")
+async def admin_stocktake_confirm(request: Request, sid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        api_confirm_stocktake(
+            sid,
+            Decision(decision="CONFIRM", clientOperationId=operation_id),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_warehouse(request, user, error=_api_error_message(exc))
+    return _see_other("/admin/warehouse?notice=stocktake_confirmed")
+
+
+@router.post("/admin/warehouse/exceptions/{eid}/review")
+async def admin_exception_review(request: Request, eid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        api_review_exception(
+            eid,
+            Decision(
+                decision=str(form.get("decision", "")),
+                comment=str(form.get("comment", "")),
+                clientOperationId=operation_id,
+            ),
+            request,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_warehouse(request, user, error=_api_error_message(exc))
+    return _see_other("/admin/warehouse?notice=exception_reviewed")
+
+
+def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
+    code = str(request.query_params.get("code", "")).strip()
+    stocktakes = api_list_stocktakes(user=user)["items"]
+    exceptions = api_list_exceptions(user=user)["items"]
+    return templates.TemplateResponse(
+        request,
+        "warehouse.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "code": code,
+            "material": None,
+            "material_error": None,
+            "error": error,
+            "notice_text": None,
+            "stocktakes": stocktakes,
+            "exceptions": exceptions,
+            "stocktake_ops": {s["id"]: str(uuid.uuid4()) for s in stocktakes},
+            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
             "stocktake_labels": STOCKTAKE_STATUS_LABELS,
             "exception_labels": EXCEPTION_STATUS_LABELS,
         },

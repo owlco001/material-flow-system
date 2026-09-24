@@ -11,6 +11,8 @@
 {% endblock %}
 {% block content %}
 <h2>物料与库存</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
 <div class="card" style="max-width:520px">
   <form method="get" action="/admin/warehouse">
     <label>物料编码（查库位分布）</label>
@@ -44,7 +46,7 @@
 
 <h3 style="margin-top:24px">盘点待确认</h3>
 <table>
-  <tr><th>ID</th><th>物料</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>创建</th><th>确认</th></tr>
+  <tr><th>ID</th><th>物料</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>创建</th><th>确认</th><th>操作</th></tr>
   {% for s in stocktakes %}
   <tr>
     <td>{{ s.id }}</td>
@@ -55,15 +57,24 @@
     <td>{{ stocktake_labels.get(s.status, s.status) }}</td>
     <td>{{ s.created_at }}</td>
     <td>{{ s.confirmed_by or "—" }}</td>
+    <td>
+      {% if s.status == "PENDING_CONFIRM" %}
+      <form method="post" action="/admin/warehouse/stocktakes/{{ s.id }}/confirm" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="clientOperationId" value="{{ stocktake_ops[s.id] }}">
+        <button type="submit" style="margin:0">确认盘点</button>
+      </form>
+      {% endif %}
+    </td>
   </tr>
   {% else %}
-  <tr><td colspan="8">暂无盘点记录</td></tr>
+  <tr><td colspan="9">暂无盘点记录</td></tr>
   {% endfor %}
 </table>
 
 <h3 style="margin-top:24px">异常记录</h3>
 <table>
-  <tr><th>ID</th><th>类型</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>描述</th><th>订单</th><th>机台</th><th>时间</th></tr>
+  <tr><th>ID</th><th>类型</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>描述</th><th>订单</th><th>机台</th><th>时间</th><th>审核</th></tr>
   {% for e in exceptions %}
   <tr>
     <td>{{ e.id }}</td>
@@ -76,9 +87,23 @@
     <td>{{ e.order_no or "—" }}</td>
     <td>{{ e.device_id or "—" }}</td>
     <td>{{ e.created_at }}</td>
+    <td>
+      {% if e.status == "PENDING" %}
+      <form method="post" action="/admin/warehouse/exceptions/{{ e.id }}/review" style="margin:0;min-width:180px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="clientOperationId" value="{{ exception_ops[e.id] }}">
+        <select name="decision" style="max-width:80px">
+          <option value="APPROVE">通过</option>
+          <option value="REJECT">驳回</option>
+        </select>
+        <input name="comment" placeholder="备注" style="max-width:100px">
+        <button type="submit" style="margin:0">提交</button>
+      </form>
+      {% endif %}
+    </td>
   </tr>
   {% else %}
-  <tr><td colspan="10">暂无异常记录</td></tr>
+  <tr><td colspan="11">暂无异常记录</td></tr>
   {% endfor %}
 </table>
 {% endblock %}
