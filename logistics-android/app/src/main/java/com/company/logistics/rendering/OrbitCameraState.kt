@@ -1,5 +1,9 @@
 package com.company.logistics.rendering
 
+import kotlin.math.atan
+import kotlin.math.min
+import kotlin.math.tan
+
 /** Engine-neutral camera state for a future 3D model surface. */
 class OrbitCameraState(
     private val minDistance: Float = 1f,
@@ -56,9 +60,12 @@ class OrbitCameraState(
     }
 
     /** Frames a model of the given bounding radius at screen center; keeps orbit angles. */
-    fun fit(radius: Float) {
+    fun fit(radius: Float, aspect: Float = 1f) {
         require(radius > 0f) { "radius must be positive" }
-        distance = (radius * 2.5f).coerceIn(minDistance, maxDistance)
+        require(aspect > 0f) { "aspect must be positive" }
+        val halfFovX = atan(tan(HALF_FOV_Y_RADIANS) * aspect)
+        val halfFov = min(halfFovX, HALF_FOV_Y_RADIANS)
+        distance = (radius / tan(halfFov) * 1.15f).coerceIn(minDistance, maxDistance)
         panX = 0f
         panY = 0f
     }
@@ -70,5 +77,6 @@ class OrbitCameraState(
     private companion object {
         const val MIN_PITCH = -89f
         const val MAX_PITCH = 89f
+        const val HALF_FOV_Y_RADIANS = 0.3926991f // 22.5 degrees, matching the renderer's 45deg FOV
     }
 }

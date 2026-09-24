@@ -7,6 +7,7 @@ import com.google.android.filament.Engine
 import com.google.android.filament.Filament
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
+import com.google.android.filament.Skybox
 import com.google.android.filament.SwapChain
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
@@ -41,6 +42,7 @@ class FilamentModelRenderer(
     private var cameraComponent: Camera? = null
     private var keyLightEntity: Int? = null
     private var fillLightEntity: Int? = null
+    private var skybox: Skybox? = null
     private var assetLoader: AssetLoader? = null
     private var resourceLoader: ResourceLoader? = null
     private var initializationError: Throwable? = null
@@ -67,6 +69,7 @@ class FilamentModelRenderer(
         var createdCamera: Camera? = null
         var createdKeyLight: Int? = null
         var createdFillLight: Int? = null
+        var createdSkybox: Skybox? = null
         var createdAssetLoader: AssetLoader? = null
         var createdResourceLoader: ResourceLoader? = null
         try {
@@ -95,6 +98,10 @@ class FilamentModelRenderer(
                     .build(createdEngine, entity)
                 createdScene.addEntity(entity)
             }
+            createdSkybox = Skybox.Builder()
+                .color(0.25f, 0.03f, 0.03f, 1.0f)
+                .build(createdEngine)
+            createdScene.skybox = createdSkybox
             createdAssetLoader = AssetLoader(createdEngine, createdMaterialProvider, createdEntityManager)
             createdResourceLoader = ResourceLoader(createdEngine)
 
@@ -107,11 +114,12 @@ class FilamentModelRenderer(
             cameraComponent = createdCamera
             keyLightEntity = createdKeyLight
             fillLightEntity = createdFillLight
+            skybox = createdSkybox
             assetLoader = createdAssetLoader
             resourceLoader = createdResourceLoader
             view?.scene = createdScene
             view?.camera = createdCamera
-            view?.isPostProcessingEnabled = false
+            view?.isPostProcessingEnabled = true
             applyCamera()
         } catch (failure: Throwable) {
             initializationError = failure
@@ -124,6 +132,7 @@ class FilamentModelRenderer(
                 createdEngine?.destroyCameraComponent(it.getEntity())
                 createdEntityManager?.destroy(it.getEntity())
             }
+            createdSkybox?.let { createdEngine?.destroySkybox(it) }
             createdFillLight?.let { entity -> createdEngine?.lightManager?.destroy(entity); createdEntityManager?.destroy(entity) }
             createdKeyLight?.let { entity -> createdEngine?.lightManager?.destroy(entity); createdEntityManager?.destroy(entity) }
             createdMaterialProvider?.destroy()
@@ -186,7 +195,10 @@ class FilamentModelRenderer(
             asset = candidate
             activeScene.addEntities(candidate!!.entities)
             val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
-            camera.fit(if (radius > 0f) radius else 1f)
+            camera.fit(
+                radius = if (radius > 0f) radius else 1f,
+                aspect = viewportWidth.toFloat() / viewportHeight.toFloat(),
+            )
             candidate = null
             applyCamera()
         } finally {
@@ -252,6 +264,7 @@ class FilamentModelRenderer(
             engine?.destroyCameraComponent(it.getEntity())
             entityManager?.destroy(it.getEntity())
         }
+        skybox?.let { engine?.destroySkybox(it) }
         fillLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
         keyLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
         fillLightEntity = null
@@ -288,8 +301,8 @@ class FilamentModelRenderer(
             camera.panY.toDouble(),
             0.0,
             0.0,
-            0.0,
             1.0,
+            0.0,
         )
     }
 }

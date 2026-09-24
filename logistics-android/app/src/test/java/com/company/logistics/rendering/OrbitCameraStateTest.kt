@@ -11,7 +11,7 @@ class OrbitCameraStateTest {
         camera.pan(2f, 3f)
 
         camera.fit(radius = 2f)
-        assertEquals(5f, camera.distance, 0.001f)
+        assertEquals(5.55f, camera.distance, 0.01f)
         assertEquals(0f, camera.panX, 0.001f)
         assertEquals(0f, camera.panY, 0.001f)
 
@@ -20,6 +20,18 @@ class OrbitCameraStateTest {
 
         camera.fit(radius = 0.01f)
         assertEquals(1f, camera.distance, 0.001f)
+    }
+
+    @Test
+    fun fitAccountsForNarrowPortraitAspect() {
+        val camera = OrbitCameraState()
+        camera.fit(radius = 2f, aspect = 1f)
+        val squareAspectDistance = camera.distance
+        camera.fit(radius = 2f, aspect = 0.46f)
+        val portraitDistance = camera.distance
+        assert(portraitDistance > squareAspectDistance) { "portrait fit must back the camera up" }
+        // halfFovX = atan(tan(22.5deg) * 0.46); distance = radius / tan(halfFovX) * 1.15
+        assertEquals(12.07f, portraitDistance, 0.05f)
     }
     @Test
     fun rotateClampsPitchAndWrapsYaw() {
