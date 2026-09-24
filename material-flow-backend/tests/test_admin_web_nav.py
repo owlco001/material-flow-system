@@ -61,3 +61,12 @@ def test_quicknav_supervisor_scoped():
         assert 'href="/admin/users"' not in r.text
         assert 'href="/admin/audit"' not in r.text
         assert 'href="/admin/flows"' not in r.text
+
+
+def test_reports_progress_bars_render():
+    seed()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        r = client.get("/admin/reports")
+        assert r.status_code == 200
+        assert "bar-bg" in r.text and "bar-fg" in r.text

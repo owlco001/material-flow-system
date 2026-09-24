@@ -25,7 +25,9 @@
     <td>{{ m.device_no }}</td>
     <td>{{ m.taskCount }}</td>
     <td>{{ m.completedTaskCount }}</td>
-    <td>{{ m.progressPercent }}%</td>
+    <td>{{ m.progressPercent }}%
+      <div class="bar-bg"><div class="bar-fg {% if m.progressPercent >= 100 %}is-done{% endif %}" style="width: {{ m.progressPercent }}%"></div></div>
+    </td>
     <td>{{ m.assemblyLaborMinutes }}</td>
     <td>{{ m.temporaryTransferLaborMinutes }}</td>
     <td>{{ m.totalLaborMinutes }}</td>
