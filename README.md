@@ -17,11 +17,35 @@
 - `material-flow-backend/`：FastAPI 服务、SQLite 数据库初始化、测试和 systemd 单元。
 - `logistics-android/`：Android 客户端。
 - `material-flow-backend/docs/DEPLOYMENT.md`：后端部署包契约和发布检查清单。
+- `material-flow-backend/docs/admin-web-contract.md`：Web 管理台路由与 wire-format 契约（管理面唯一事实源）。
+- `material-flow-backend/docs/order-creation-contract.md`：生产订单创建/状态推进内核契约。
+- `material-flow-backend/deploy/bootstrap.sh`：后端一键部署脚本（含管理员设定）。
 - `logistics-android/docs/device-acceptance.md`：Android 构建与设备验收说明。
+
+## Web 管理台
+
+服务自带 Web 管理台（`/admin/login`），按登录角色展示：管理员全量管理面（用户/流转/审计/报表/模型/订单/库位）、物料员出库视图、操作员领取/到工位视图、仓库管理员审批/交接视图。覆盖用户管理（含密码重置与强制下线）、流转审批与留痕、出库执行、工时与车间概览、BOM 两段式导入、装配模型上传、生产订单创建与状态推进、盘点/异常处理、CSV 导出和移动端适配。所有写操作与 APP 共用同一套 API 处理函数与审计/幂等语义，wire-format 见 `docs/admin-web-contract.md`。
 
 ## 部署后端
 
-以下步骤使用仓库现有文件和命令。示例服务地址只绑定本机回环地址；对外访问时应由现有反向代理和网络策略提供访问控制与 TLS。
+推荐使用一键部署脚本（在仓库内以 root 执行）：
+
+```bash
+cd material-flow-backend
+bash deploy/bootstrap.sh
+```
+
+脚本完成：运行目录与虚拟环境、依赖安装、**管理员设定**（交互式输入初始密码，不回显，写入 0600 环境文件；用户名 `owlco`，首次登录强制改密）、数据库迁移、systemd 服务、nginx 反代（含模型上传所需 `client_max_body_size 32m` 与根路径 302）和冒烟检查。试装可用 `--no-service --no-nginx`（数据目录自动锚定到本实例，互不干扰）；自动化场景用 `--admin-password-stdin` 从 stdin 喂一次性密码。
+
+管理员账号后续维护使用管理 CLI（密码只经 getpass/stdin，不进命令行参数）：
+
+```bash
+.venv/bin/python -m app.manage_admin create --employee-no <工号> --name <姓名>
+.venv/bin/python -m app.manage_admin reset-password --employee-no <工号>
+.venv/bin/python -m app.manage_admin list
+```
+
+以下为等价的手动部署步骤。示例服务地址只绑定本机回环地址；对外访问时应由现有反向代理和网络策略提供访问控制与 TLS（当前部署形态为内网 HTTP）。
 
 ### 1. 准备运行目录和虚拟环境
 

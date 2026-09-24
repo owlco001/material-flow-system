@@ -12,6 +12,8 @@ The deployable source package must contain these paths together:
 - `app/main.py` - FastAPI application and safe startup initialization.
 - `app/migrate.py` - explicit database initialization and migration entry point.
 - `app/seed.py` - explicit opt-in test-fixture entry point; never run implicitly.
+- `app/manage_admin.py` - administrator provisioning CLI (see below).
+- `deploy/bootstrap.sh` - one-command bootstrap (install, admin setup, service, reverse proxy, smoke).
 - `VERSION` - the single package version identifier.
 - `requirements.txt` - pinned runtime dependencies.
 - `requirements-test.txt` - the runtime requirements plus test-only dependencies.
@@ -110,6 +112,73 @@ Alternatively use `.venv/bin/python -m app.seed --seed`. The seed command
 prints validated counts and checks foreign keys/status values. Never commit
 `data/material_flow.db`, uploads, environment files, or logs; keep runtime
 data outside Git.
+
+## One-command bootstrap
+
+`deploy/bootstrap.sh` performs the full first-time installation as root from
+the repository root: runtime directory + venv + pinned dependencies,
+administrator provisioning, migration, the systemd unit, an nginx reverse
+proxy template, and a health smoke check. It contains no hostnames,
+addresses, or credentials; parameters come from flags and the protected
+environment file only.
+
+```bash
+cd material-flow-backend
+bash deploy/bootstrap.sh                              # full install
+bash deploy/bootstrap.sh --no-service --no-nginx      # trial install (isolated data dir)
+printf '%s\n' '<one-time-password>' | bash deploy/bootstrap.sh --admin-password-stdin
+```
+
+Flags: `--prefix` (default `/srv/material-flow`), `--env-file` (default
+`/etc/material-flow/material-flow.env`), `--service-user`, `--no-service`,
+`--no-nginx`, `--admin-password-stdin`. `MATERIAL_FLOW_DATA` /
+`MATERIAL_FLOW_UPLOADS` are anchored to the prefix unless the environment
+file overrides them, so trial installs can never touch an existing
+database. The nginx template sets `client_max_body_size 32m` (the 15MiB GLB
+upload cap exceeds nginx's 1m default and would surface as a client-side
+network error) and redirects `/` to `/admin/login`.
+
+## Administrator provisioning
+
+Two mechanisms exist, both forcing a password change at first login
+(`must_change_password=1`):
+
+1. **Bootstrap**: when `users` is empty and `INITIAL_ADMIN_PASSWORD` is set
+   (via the 0600 environment file, never argv/logs/Git), startup creates the
+   initial administrator `owlco`. `bootstrap.sh` prompts for this password
+   interactively (no echo, confirmed twice) or reads it from stdin with
+   `--admin-password-stdin`. The value is one-time: the admin must change it
+   at first login. Provisioning state is recorded in `setup_state`.
+2. **CLI**: `app.manage_admin` provisions and rotates accounts from the
+   server shell. Passwords are read via getpass (double-confirmed) or
+   `--password-stdin` — never as a command-line argument (argv is visible in
+   the process list and shell history). `reset-password` rotates the hash
+   and revokes every APP and WEB session for that user; both actions append
+   `*_CLI` audit events.
+
+```bash
+.venv/bin/python -m app.manage_admin create --employee-no <工号> --name <姓名> [--role ADMIN]
+.venv/bin/python -m app.manage_admin reset-password --employee-no <工号>
+.venv/bin/python -m app.manage_admin list
+.venv/bin/python -m app.manage_admin status
+```
+
+`create` accepts only the four management-side roles
+(`ADMIN`/`WAREHOUSE_ADMIN`/`PLANNER`/`WORKSHOP_SUPERVISOR`); operator-level
+accounts are provisioned through the web console. Disable or re-key any
+temporary account (including `owlco`) once real accounts exist.
+
+## Backup & upgrade
+
+1. Hot-backup the SQLite database before every change
+   (`sqlite3.Connection.backup()` — the `sqlite3` CLI may be absent; use
+   `.venv/bin/python`).
+2. Sync `app/`, `templates/`, `requirements.txt`, `tests/` into the
+   deployment directory; never touch `data/`, `uploads/`, `backups/`.
+3. `.venv/bin/pip install -r requirements.txt`, then
+   `systemctl restart material-flow`.
+4. Smoke: `/healthz` 200, `/admin/login` 200, an admin page returns 303
+   (auth guard), an API route returns 401 unauthenticated.
 
 ## Health verification
 
