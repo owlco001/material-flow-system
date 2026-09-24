@@ -33,12 +33,12 @@ def seed_users():
     c.close()
 
 
-def seed_transfer(rid="tr_1", status="PENDING_APPROVAL", created_by="u_op", op="op-tr-1"):
+def seed_transfer(rid="tr_1", status="PENDING_APPROVAL", created_by="u_op", op="op-tr-1", approved_by=None):
     c = backend.db()
     c.execute(
         "INSERT INTO transfer_requests(id,client_operation_id,type,status,payload_json,"
-        "created_by,created_at) VALUES(?,?,?,?,?,?,?)",
-        (rid, op, "OUTBOUND", status, '{"items": []}', created_by, backend.now()),
+        "created_by,created_at,approved_by) VALUES(?,?,?,?,?,?,?,?)",
+        (rid, op, "OUTBOUND", status, '{"items": []}', created_by, backend.now(), approved_by),
     )
     c.commit()
     c.close()
@@ -231,3 +231,54 @@ def test_approve_without_csrf_rejected_no_change():
         c = backend.db()
         assert c.execute("SELECT status FROM transfer_requests WHERE id='tr_1'").fetchone()[0] == "PENDING_APPROVAL"
         c.close()
+
+
+def test_execute_success_then_replay_conflict():
+    seed_transfer(status="APPROVED", approved_by="u_admin", op="op-exec-1")
+    with TestClient(backend.app) as client:
+        assert web_login(client, "wh-admin", "Wh@2026x").status_code == 303
+        page = client.get("/admin/flows/tr_1")
+        assert 'name="clientOperationId"' in page.text
+        r = client.post(
+            "/admin/flows/tr_1/execute",
+            data={"csrf_token": form_csrf(page.text), "clientOperationId": str(uuid.uuid4())},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/flows/tr_1?notice=executed"
+        c = backend.db()
+        assert c.execute("SELECT status FROM transfer_requests WHERE id='tr_1'").fetchone()[0] == "EXECUTED"
+        c.close()
+        page2 = client.get("/admin/flows/tr_1")
+        r2 = client.post(
+            "/admin/flows/tr_1/execute",
+            data={"csrf_token": form_csrf(page2.text), "clientOperationId": str(uuid.uuid4())},
+        )
+        assert r2.status_code == 200 and "申请已执行，不能重复执行" in r2.text
+
+
+def test_execute_forbidden_when_executor_is_approver():
+    seed_transfer(status="APPROVED", approved_by="u_wh", op="op-exec-2")
+    with TestClient(backend.app) as client:
+        assert web_login(client, "wh-admin", "Wh@2026x").status_code == 303
+        page = client.get("/admin/flows/tr_1")
+        r = client.post(
+            "/admin/flows/tr_1/execute",
+            data={"csrf_token": form_csrf(page.text), "clientOperationId": str(uuid.uuid4())},
+        )
+        assert r.status_code == 200 and "审批人与执行人不能是同一用户" in r.text
+        c = backend.db()
+        assert c.execute("SELECT status FROM transfer_requests WHERE id='tr_1'").fetchone()[0] == "APPROVED"
+        c.close()
+
+
+def test_execute_requires_approved_state():
+    seed_transfer()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "wh-admin", "Wh@2026x").status_code == 303
+        page = client.get("/admin/flows/tr_1")
+        r = client.post(
+            "/admin/flows/tr_1/execute",
+            data={"csrf_token": form_csrf(page.text), "clientOperationId": str(uuid.uuid4())},
+        )
+        assert r.status_code == 200 and "申请尚未审批通过" in r.text

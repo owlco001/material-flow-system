@@ -42,6 +42,17 @@
 </div>
 {% endif %}
 
+{% if can_execute %}
+<div class="card" style="margin-top:16px;max-width:520px">
+  <h3>执行出库</h3>
+  <form method="post" action="/admin/flows/{{ item.id }}/execute">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="{{ execute_op }}">
+    <button type="submit">执行出库变更</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card" style="margin-top:16px">
   <h3>关联交接</h3>
   <table>

@@ -150,7 +150,11 @@ WAREHOUSE_ADMIN 兼容放行）、状态机（仅 PENDING_APPROVAL 可审批）�
 - `GET /admin/handovers/{hid}` → 200 时间线（handoverId/workItemId/status/
   workspaceStatus + audit_events 时间序事件表）。
 
-`execute`（出库执行动作）显式不在本切片范围（S3.1 待做）。
+`POST /admin/flows/{rid}/execute`（S3.1，form: csrf_token, clientOperationId）
+→ 303 → `/admin/flows/{rid}?notice=executed`；复用 execute_transfer 语义
+（仅 APPROVED 可执行、审批人≠执行人、幂等 replay、逐 item 乐观锁整单回滚）；
+失败重渲染详情+ApiError 文案（如「申请已执行，不能重复执行」
+「申请尚未审批通过」「审批人与执行人不能是同一用户」「库存不足」）。
 
 ### 6.4 S4 工时汇总与车间概览路由（准入 ADMIN + WORKSHOP_SUPERVISOR）
 
@@ -229,6 +233,10 @@ web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL �
 8. `GET /admin/handovers?query={hid}` 命中留痕：显示 handoverId 与至少一条
    audit_events 事件；未知 ID 显示 404 提示。
 9. `POST approve` 缺 csrf_token → 403 且状态不变。
+10. APPROVED（approved_by 他人）`POST execute` → 303 `?notice=executed`，
+    状态变 EXECUTED；对 EXECUTED 再执行 → 「申请已执行，不能重复执行」。
+11. 审批人=执行人 → 「审批人与执行人不能是同一用户」，状态不变。
+12. PENDING 申请 `POST execute` → 「申请尚未审批通过」。
 
 ### 8.3 S4 断言（tests/test_admin_web_reports.py）
 
