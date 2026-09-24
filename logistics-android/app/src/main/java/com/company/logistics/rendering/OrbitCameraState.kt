@@ -33,7 +33,9 @@ class OrbitCameraState(
 
     private val initialYaw = yawDegrees
     private val initialPitch = pitchDegrees
-    private val initialZoom = initialDistance
+    private var homeZoom = initialDistance
+    private var zoomMin = minDistance
+    private var zoomMax = maxDistance
 
     fun rotate(deltaYaw: Float, deltaPitch: Float) {
         yawDegrees = normalizeYaw(yawDegrees + deltaYaw)
@@ -43,7 +45,7 @@ class OrbitCameraState(
     /** A scale below one zooms out; a scale above one zooms in. */
     fun zoom(scale: Float) {
         require(scale > 0f) { "scale must be positive" }
-        distance = (distance / scale).coerceIn(minDistance, maxDistance)
+        distance = (distance / scale).coerceIn(zoomMin, zoomMax)
     }
 
     fun pan(deltaX: Float, deltaY: Float) {
@@ -54,7 +56,7 @@ class OrbitCameraState(
     fun reset() {
         yawDegrees = initialYaw
         pitchDegrees = initialPitch
-        distance = initialZoom
+        distance = homeZoom
         panX = 0f
         panY = 0f
     }
@@ -65,7 +67,12 @@ class OrbitCameraState(
         require(aspect > 0f) { "aspect must be positive" }
         val halfFovX = atan(tan(HALF_FOV_Y_RADIANS) * aspect)
         val halfFov = min(halfFovX, HALF_FOV_Y_RADIANS)
-        distance = (radius / tan(halfFov) * 1.15f).coerceIn(minDistance, maxDistance)
+        // Framing scales with the model: clamping to fixed bounds framed 2cm parts at
+        // 0.1 units (near-plane slicing) and refused to back off from huge assemblies.
+        distance = radius / tan(halfFov) * 1.15f
+        homeZoom = distance
+        zoomMin = distance / ZOOM_RATIO
+        zoomMax = distance * ZOOM_RATIO
         panX = 0f
         panY = 0f
     }
@@ -78,5 +85,6 @@ class OrbitCameraState(
         const val MIN_PITCH = -89f
         const val MAX_PITCH = 89f
         const val HALF_FOV_Y_RADIANS = 0.3926991f // 22.5 degrees, matching the renderer's 45deg FOV
+        const val ZOOM_RATIO = 50f
     }
 }

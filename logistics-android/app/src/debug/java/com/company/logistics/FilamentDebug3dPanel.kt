@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,13 +46,14 @@ fun FilamentDebug3dPanel(
     onPick: () -> Unit = {}, onUpload: () -> Unit = {}, onRetryUpload: () -> Unit = onUpload,
     onLoadPublishedModel: () -> Unit = {}, onRetryLoad: () -> Unit = onLoadPublishedModel,
 ) {
-    val renderer = remember { FilamentModelRenderer() }
+    val appBackground = MaterialTheme.colorScheme.background
+    val renderer = remember { FilamentModelRenderer(backgroundArgb = appBackground.toArgb()) }
     var renderStatus by remember { mutableStateOf(if (glbFile == null) "暂无模型" else "等待 Surface") }
     var fullscreen by remember { mutableStateOf(false) }
     DisposableEffect(renderer) { onDispose { renderer.release() } }
 
     if (fullscreen) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxSize().background(appBackground)) {
             RenderViewport(
                 renderer = renderer, glbFile = glbFile, onStatus = { renderStatus = it },
                 modifier = Modifier.fillMaxSize(),

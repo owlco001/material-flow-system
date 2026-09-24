@@ -29,11 +29,16 @@ class FilamentModelRenderer(
     private val filamentInitializer: () -> Unit = { Filament.init() },
     private val gltfioInitializer: () -> Unit = { Gltfio.init() },
     private val engineFactory: () -> Engine = { Engine.create() },
+    backgroundArgb: Int = 0xFFFFFBFE.toInt(),
 ) : ModelRendererAdapter, Choreographer.FrameCallback {
     // Distance bounds scale with real assemblies: the Gearbox sample sits ~160 units from
     // the origin with a 15.6 radius and needs a ~94 unit viewing distance.
     override val camera = OrbitCameraState(minDistance = 0.1f, maxDistance = 2000f)
     private var modelCenter = floatArrayOf(0f, 0f, 0f)
+    private var modelRadius = 1f
+    private val backgroundR = RenderMath.srgbToLinear(((backgroundArgb shr 16) and 0xFF) / 255f)
+    private val backgroundG = RenderMath.srgbToLinear(((backgroundArgb shr 8) and 0xFF) / 255f)
+    private val backgroundB = RenderMath.srgbToLinear((backgroundArgb and 0xFF) / 255f)
 
     private val choreographer by lazy { Choreographer.getInstance() }
     private var engine: Engine? = null
@@ -102,7 +107,7 @@ class FilamentModelRenderer(
                 createdScene.addEntity(entity)
             }
             createdSkybox = Skybox.Builder()
-                .color(0.25f, 0.03f, 0.03f, 1.0f)
+                .color(backgroundR, backgroundG, backgroundB, 1.0f)
                 .build(createdEngine)
             createdScene.skybox = createdSkybox
             createdAssetLoader = AssetLoader(createdEngine, createdMaterialProvider, createdEntityManager)
@@ -165,13 +170,7 @@ class FilamentModelRenderer(
         viewportWidth = width.coerceAtLeast(1)
         viewportHeight = height.coerceAtLeast(1)
         view?.viewport = Viewport(0, 0, viewportWidth, viewportHeight)
-        cameraComponent?.setProjection(
-            45.0,
-            viewportWidth.toDouble() / viewportHeight,
-            0.1,
-            100.0,
-            Camera.Fov.VERTICAL,
-        )
+        applyCamera()
     }
 
     fun loadGlb(file: File): Result<Unit> = runCatching {
@@ -199,8 +198,9 @@ class FilamentModelRenderer(
             activeScene.addEntities(candidate!!.entities)
             val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
             modelCenter = candidate!!.boundingBox.center
+            modelRadius = if (radius > 0f) radius else 1f
             camera.fit(
-                radius = if (radius > 0f) radius else 1f,
+                radius = modelRadius,
                 aspect = viewportWidth.toFloat() / viewportHeight.toFloat(),
             )
             candidate = null
@@ -310,6 +310,14 @@ class FilamentModelRenderer(
             0.0,
             1.0,
             0.0,
+        )
+        val (near, far) = RenderMath.clipPlanes(camera.distance, modelRadius)
+        cameraComponent?.setProjection(
+            45.0,
+            viewportWidth.toDouble() / viewportHeight,
+            near,
+            far,
+            Camera.Fov.VERTICAL,
         )
     }
 }

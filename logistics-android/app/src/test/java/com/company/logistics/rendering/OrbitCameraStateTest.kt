@@ -6,7 +6,7 @@ import org.junit.Test
 
 class OrbitCameraStateTest {
     @Test
-    fun fitFramesModelRadiusResetsPanAndClampsToBounds() {
+    fun fitFramesModelRadiusWithoutAbsoluteBounds() {
         val camera = OrbitCameraState()
         camera.pan(2f, 3f)
 
@@ -15,11 +15,41 @@ class OrbitCameraStateTest {
         assertEquals(0f, camera.panX, 0.001f)
         assertEquals(0f, camera.panY, 0.001f)
 
+        // 取景随模型尺度自适应：绝不被固定区间钳制（曾把 2cm 模型钳到 0.1 距离
+       // 造成近平面裁剪"巨大化"，也曾把大模型钳在 20 单位而放不下）。
         camera.fit(radius = 100f)
-        assertEquals(20f, camera.distance, 0.001f)
+        assertEquals(277.7f, camera.distance, 0.1f)
 
-        camera.fit(radius = 0.01f)
-        assertEquals(1f, camera.distance, 0.001f)
+        camera.fit(radius = 0.017f)
+        assertEquals(0.0472f, camera.distance, 0.0005f)
+    }
+
+    @Test
+    fun zoomUsesRelativeBoundsAfterFit() {
+        val camera = OrbitCameraState()
+        camera.fit(radius = 0.017f)
+        val framed = camera.distance
+
+        camera.zoom(scale = 0.001f)
+        assertEquals(framed * 50f, camera.distance, framed * 0.001f)
+
+        camera.zoom(scale = 100000f)
+        assertEquals(framed / 50f, camera.distance, framed * 0.001f)
+    }
+
+    @Test
+    fun resetReturnsToFramedDistanceAfterFit() {
+        val camera = OrbitCameraState()
+        camera.fit(radius = 0.017f)
+        val framed = camera.distance
+        camera.zoom(3f)
+        camera.pan(1f, 1f)
+
+        camera.reset()
+
+        assertEquals(framed, camera.distance, 0.0001f)
+        assertEquals(0f, camera.panX, 0.0001f)
+        assertEquals(0f, camera.panY, 0.0001f)
     }
 
     @Test
