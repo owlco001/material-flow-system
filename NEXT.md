@@ -82,7 +82,7 @@ cd material-flow-backend && python3 -m pytest tests/ -q
 - [ ] **轮换 Gitee 访问令牌**
   该令牌已出现在对话与仓库历史中，属泄露状态。
   重建时务必在「授权仓库」里勾选 `material-flow-system`（上次 403 就是因为没勾）。
-- [ ] **`107.173.70.115` 为公网明文 HTTP**，建议上 TLS。
+- [ ] **服务器公网地址（[REDACTED]）为公网明文 HTTP**，建议上 TLS。
 
 ### P1 — 测试基础设施（已修复并提交 ef85bfa，待推送）
 
