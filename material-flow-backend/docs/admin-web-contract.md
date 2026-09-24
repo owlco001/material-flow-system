@@ -15,7 +15,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S2 | 用户管理（列表/新建/编辑/重置密码/删除），复用 /admin/users 服务语义 | ADMIN | 已实现 |
 | S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
-| S5 | 装配模型管理（版本/发布查询） | ADMIN | 待做 |
+| S5 | 装配模型管理（版本/发布查询） | ADMIN | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -165,6 +165,16 @@ web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL �
   按任务-人员粒度（labor_item：taskId/orderNo/deviceNo/assemblerId+Name/装配工时/
   借调工时/合计）+ 全页合计 + 分页（pageSize 固定 20，同 API 422 语义）。
 
+### 6.5 S5 装配模型管理路由（准入 ADMIN）
+
+只读。版本总表为对 `assembly_model_versions` 的只读查询（LIMIT 200）；「当前发布」
+区块复用 `GET /api/v1/assembly-models/{model_code}/published` 同一处理函数
+（路由表解析调用），404（非法 model_code 或无 PUBLISHED）内联提示。
+
+- `GET /admin/models?code=` → 200：版本表（ID/机型码/名称/版本/格式/字节/SHA-256/
+  状态/创建人/时间；code 空=全部按机型分组排序）+ code 命中时的当前发布卡片
+  （含版本/字节/SHA-256/创建时间）。上传/发布动作显式不在范围（只读查询面）。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -226,6 +236,13 @@ web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL �
 2. 概览显示种子汇总文案（总任务 2 · 完成 1）与机台行（机台号）。
 3. 工时汇总显示任务-人员行与分钟数；`orderNo` 过滤命中/不命中（空集显示「暂无数据」）。
 4. `page=99` 空页 200 不报错。
+
+### 8.4 S5 断言（tests/test_admin_web_models.py）
+
+1. ADMIN 会话 `GET /admin/models` → 200；WORKSHOP_SUPERVISOR → 403。
+2. 版本表显示种子两版本行（PUBLISHED/ARCHIVED 中文状态标签）。
+3. `?code=GearboxAssy` 过滤命中且显示当前发布卡片（版本号与 SHA-256 片段）。
+4. 未知 code 显示「资源不存在」提示；空库 200 显示「暂无数据」。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 

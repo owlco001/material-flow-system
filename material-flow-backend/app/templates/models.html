@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}装配模型 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/reports" style="color:#fff;margin-right:12px">车间概览</a>
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>装配模型管理</h2>
+<div class="card" style="max-width:520px">
+  <form method="get" action="/admin/models">
+    <label>机型码（留空显示全部）</label>
+    <input name="code" value="{{ code }}" style="max-width:220px" placeholder="如 GearboxAssy">
+    <button type="submit">查询</button>
+  </form>
+</div>
+
+{% if published %}
+<div class="card" style="margin-top:16px;max-width:720px">
+  <h3>当前发布 · {{ published.modelCode }}</h3>
+  <p>版本 v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}…</p>
+  <p>创建 {{ published.createdBy }} @ {{ published.createdAt }}</p>
+</div>
+{% elif published_error %}
+<p class="error" style="margin-top:16px">{{ published_error }}（{{ code }} 无已发布版本）</p>
+{% endif %}
+
+<h3 style="margin-top:24px">版本列表</h3>
+<table>
+  <tr><th>ID</th><th>机型码</th><th>名称</th><th>版本</th><th>格式</th><th>字节</th><th>SHA-256</th><th>状态</th><th>创建人</th><th>时间</th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.id }}</td>
+    <td><a href="/admin/models?code={{ row.model_code }}">{{ row.model_code }}</a></td>
+    <td>{{ row.model_name }}</td>
+    <td>v{{ row.version }}</td>
+    <td>{{ row.format }}</td>
+    <td>{{ row.byte_size }}</td>
+    <td>{{ row.sha256[:12] }}…</td>
+    <td>{{ status_labels.get(row.status, row.status) }}</td>
+    <td>{{ row.created_by }}</td>
+    <td>{{ row.created_at }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="10">暂无数据</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

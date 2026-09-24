@@ -776,3 +776,60 @@ def admin_reports_labor(request: Request):
             "filters": filters,
         },
     )
+
+
+# ==================== S5：装配模型管理（契约 §6.5）====================
+
+MODEL_STATUS_LABELS = {
+    "PUBLISHED": "已发布",
+    "ARCHIVED": "已归档",
+    "DRAFT": "草稿",
+}
+
+
+@router.get("/admin/models", response_class=HTMLResponse)
+def admin_models_list(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    code = str(request.query_params.get("code", "")).strip()
+    c = db()
+    try:
+        if code:
+            rows = c.execute(
+                "SELECT id, model_code, model_name, version, format, byte_size, sha256,"
+                " status, created_by, created_at FROM assembly_model_versions"
+                " WHERE model_code=? ORDER BY version DESC LIMIT 200",
+                (code,),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, model_code, model_name, version, format, byte_size, sha256,"
+                " status, created_by, created_at FROM assembly_model_versions"
+                " ORDER BY model_code, version DESC LIMIT 200"
+            ).fetchall()
+    finally:
+        c.close()
+
+    published = None
+    published_error = None
+    if code:
+        try:
+            published = _api_endpoint("/api/v1/assembly-models/{model_code}/published")(
+                model_code=code, user=user
+            )
+        except HTTPException as exc:
+            published_error = f"{exc.status_code}：{exc.detail}"
+    return templates.TemplateResponse(
+        request,
+        "models.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "rows": rows,
+            "code": code,
+            "published": published,
+            "published_error": published_error,
+            "status_labels": MODEL_STATUS_LABELS,
+        },
+    )
