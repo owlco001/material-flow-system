@@ -85,3 +85,22 @@ def test_workspace_export_operator_forbidden():
     with TestClient(backend.app) as client:
         assert web_login(client, "operator1", "Op@2026xx").status_code == 303
         assert client.get("/admin/workspace/export").status_code == 403
+
+
+def test_labor_and_machines_export_for_supervisor():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        labor = client.get("/admin/reports/labor/export")
+        assert labor.status_code == 200
+        assert labor.headers["content-type"].startswith("text/csv")
+        assert "labor-summary.csv" in labor.headers["content-disposition"]
+        machines = client.get("/admin/reports/machines/export")
+        assert machines.status_code == 200
+        assert "machine-progress.csv" in machines.headers["content-disposition"]
+
+
+def test_reports_export_operator_forbidden():
+    with TestClient(backend.app) as client:
+        assert web_login(client, "operator1", "Op@2026xx").status_code == 303
+        assert client.get("/admin/reports/labor/export").status_code == 403
+        assert client.get("/admin/reports/machines/export").status_code == 403

@@ -1486,15 +1486,15 @@ def _csv_response(filename: str, rows: list[dict]) -> Response:
     )
 
 
-def _collect_all(fn, **kwargs) -> list[dict]:
-    """按 API 单页上限（le=100）分页收集全部行（导出不留尾页）。"""
+def _collect_all(fn, page_size: int = 100, **kwargs) -> list[dict]:
+    """按 API 单页上限分页收集全部行（导出不留尾页；page_size 须在各 API 合法范围内）。"""
     rows: list[dict] = []
     page = 1
     while True:
-        data = fn(page=page, pageSize=100, **kwargs)
+        data = fn(page=page, pageSize=page_size, **kwargs)
         batch = data.get("items") or []
         rows.extend(batch)
-        if len(batch) < 100:
+        if len(batch) < page_size:
             return rows
         page += 1
 
@@ -1537,3 +1537,29 @@ def admin_workspace_export(request: Request):
         x_client_operation_id=None,
     )
     return _csv_response("material-workspace", rows)
+
+
+@router.get("/admin/reports/labor/export")
+def admin_labor_export(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    q = request.query_params
+    rows = _collect_all(
+        _api_endpoint("/api/v1/workshop/labor-summary"),
+        page_size=20,
+        deviceId=q.get("deviceId") or None,
+        orderNo=q.get("orderNo") or None,
+        assemblerId=q.get("assemblerId") or None,
+        user=user,
+    )
+    return _csv_response("labor-summary", rows)
+
+
+@router.get("/admin/reports/machines/export")
+def admin_machines_export(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=20, user=user)
+    return _csv_response("machine-progress", rows)

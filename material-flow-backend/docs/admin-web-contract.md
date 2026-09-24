@@ -285,6 +285,9 @@ api_workspace_items），过滤参数与列表页一致；因 API 单页上限 l
 - `GET /admin/audit/export?from=&to=&eventType=&entityType=&operatorId=&entityId=`
   → CSV（audit-logs.csv）。
 - `GET /admin/workspace/export?status=&orderNo=` → CSV（material-workspace.csv）。
+- `GET /admin/reports/labor/export?deviceId=&orderNo=&assemblerId=` → CSV
+  （labor-summary.csv；准入同 §6.4 REPORT_ROLES）。
+- `GET /admin/reports/machines/export` → CSV（machine-progress.csv；准入同上）。
 
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
@@ -433,6 +436,12 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
    → 403。
 2. ADMIN 工作台导出 → 200 text/csv + Content-Disposition: attachment。
 3. OPERATOR 工作台导出 → 403。
+
+### 8.14 S17 断言（tests/test_admin_web_exports.py 追加）
+
+1. WORKSHOP_SUPERVISOR 工时导出 → 200 text/csv + attachment（labor-summary.csv）。
+2. 机台进度导出 → 200 text/csv + attachment（machine-progress.csv）。
+3. OPERATOR 两者 → 403。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 
