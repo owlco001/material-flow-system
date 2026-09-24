@@ -551,6 +551,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS transfer_operations(client_operation_id TEXT PRIMARY KEY, transfer_request_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS handover_operations(client_operation_id TEXT PRIMARY KEY, handover_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stocktake_operations(client_operation_id TEXT PRIMARY KEY, stocktake_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS order_operations(client_operation_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS exception_operations(client_operation_id TEXT PRIMARY KEY, exception_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_tasks(id TEXT PRIMARY KEY, order_no TEXT NOT NULL, device_id TEXT NOT NULL, device_no TEXT NOT NULL, assigned_assembler_id TEXT REFERENCES users(id), status TEXT NOT NULL CHECK(status IN ('WAITING_MATERIAL','MATERIAL_ACCEPTED','IN_PROGRESS','PAUSED_FOR_TEMPORARY_TRANSFER','COMPLETED')), progress_stage INTEGER NOT NULL DEFAULT 0 CHECK(progress_stage BETWEEN 0 AND 3), task_version INTEGER NOT NULL DEFAULT 1, material_accepted_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS labor_records(id TEXT PRIMARY KEY, task_id TEXT REFERENCES assembly_tasks(id), worker_user_id TEXT NOT NULL REFERENCES users(id), type TEXT NOT NULL CHECK(type IN ('ASSEMBLY','TEMPORARY_TRANSFER')), status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED')), started_at TEXT NOT NULL, ended_at TEXT, duration_minutes INTEGER CHECK(duration_minutes IS NULL OR duration_minutes >= 0), remark TEXT, client_operation_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
@@ -2578,6 +2579,130 @@ def _material_summary(rows: list[sqlite3.Row] | list[dict[str, Any]]) -> dict[st
         "totalInStockQuantity": sum(item["inStockQuantity"] for item in items),
         "totalShortageQuantity": sum(item["shortageQuantity"] for item in items),
     }
+
+
+class OrderModelCreate(BaseModel):
+    modelCode: str
+    modelName: str
+    plannedQuantity: int
+
+
+class OrderCreateRequest(BaseModel):
+    clientOperationId: str
+    orderNo: str
+    productName: str
+    status: str | None = None
+    models: list[OrderModelCreate]
+
+
+ORDER_STATUSES = ("RELEASED", "IN_PROGRESS", "COMPLETED")
+ORDER_NO_RE = re.compile(r"[A-Za-z0-9_\-]{1,64}")
+
+
+@app.post("/api/v1/orders", status_code=201)
+def create_order(
+    body: OrderCreateRequest,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """创建生产订单与细分机型（契约：docs/order-creation-contract.md）。"""
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] not in {"ADMIN", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 或 PLANNER 可创建生产订单", trace_id=trace_id)
+    try:
+        operation_id = str(uuid.UUID(body.clientOperationId))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "clientOperationId 必须是合法 UUID", trace_id=trace_id) from None
+    order_no = body.orderNo.strip()
+    if not ORDER_NO_RE.fullmatch(order_no):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "orderNo 格式无效", trace_id=trace_id)
+    product_name = body.productName.strip()
+    if not 1 <= len(product_name) <= 128:
+        raise ApiError(422, CODE_VALIDATION_ERROR, "productName 格式无效", trace_id=trace_id)
+    status = (body.status or "RELEASED").strip().upper()
+    if status not in ORDER_STATUSES:
+        raise ApiError(422, CODE_VALIDATION_ERROR, "status 取值无效", trace_id=trace_id)
+    if not 1 <= len(body.models) <= 20:
+        raise ApiError(422, CODE_VALIDATION_ERROR, "models 必须为 1..20 项", trace_id=trace_id)
+    seen_codes: set[str] = set()
+    for item in body.models:
+        code = item.modelCode.strip()
+        if not MODEL_CODE_RE.fullmatch(code):
+            raise ApiError(422, CODE_VALIDATION_ERROR, "modelCode 格式无效", trace_id=trace_id)
+        name = item.modelName.strip()
+        if not 1 <= len(name) <= 128:
+            raise ApiError(422, CODE_VALIDATION_ERROR, "modelName 格式无效", trace_id=trace_id)
+        if item.plannedQuantity < 1:
+            raise ApiError(422, CODE_VALIDATION_ERROR, "plannedQuantity 必须 >= 1", trace_id=trace_id)
+        if code in seen_codes:
+            raise ApiError(422, CODE_VALIDATION_ERROR, "modelCode 重复", trace_id=trace_id)
+        seen_codes.add(code)
+    payload = json.dumps(body.model_dump(mode="json"), sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM order_operations WHERE client_operation_id=?", (operation_id,)
+        ).fetchone()
+        if prior:
+            if prior["payload_json"] != payload:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            result.update(idempotent=True, traceId=trace_id)
+            c.rollback()
+            return result
+        if c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (order_no,)).fetchone():
+            raise ApiError(409, "ORDER_NO_TAKEN", "生产订单号已存在", trace_id=trace_id)
+        for code in seen_codes:
+            if c.execute("SELECT 1 FROM production_order_models WHERE model_code=?", (code,)).fetchone():
+                raise ApiError(409, "MODEL_CODE_TAKEN", "机型码已被占用", trace_id=trace_id)
+        order_id, ts = str(uuid.uuid4()), now()
+        c.execute(
+            "INSERT INTO production_orders(id,order_no,product_name,status,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (order_id, order_no, product_name, status, ts, ts),
+        )
+        model_rows = []
+        for item in body.models:
+            model_id = str(uuid.uuid4())
+            c.execute(
+                "INSERT INTO production_order_models(id,order_id,model_code,model_name,"
+                "planned_quantity,created_at) VALUES(?,?,?,?,?,?)",
+                (model_id, order_id, item.modelCode.strip(), item.modelName.strip(), item.plannedQuantity, ts),
+            )
+            model_rows.append({
+                "id": model_id,
+                "modelCode": item.modelCode.strip(),
+                "modelName": item.modelName.strip(),
+                "plannedQuantity": item.plannedQuantity,
+            })
+        result = {
+            "orderId": order_id, "orderNo": order_no, "status": status,
+            "models": model_rows, "serverTime": ts, "traceId": trace_id, "idempotent": False,
+        }
+        c.execute(
+            "INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,"
+            "request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("ORDER_CREATED", "PRODUCTION_ORDER", order_id, user["id"], user["role"], trace_id,
+             operation_id, "{}", json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
+        )
+        c.execute(
+            "INSERT INTO order_operations(client_operation_id,order_id,action,payload_json,result_json,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (operation_id, order_id, "CREATE_ORDER", payload,
+             json.dumps(result, ensure_ascii=False, sort_keys=True), ts),
+        )
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 
 @app.post("/api/v1/orders/material-status")
