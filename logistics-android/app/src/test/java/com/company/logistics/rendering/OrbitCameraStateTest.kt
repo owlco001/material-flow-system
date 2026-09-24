@@ -6,6 +6,22 @@ import org.junit.Test
 
 class OrbitCameraStateTest {
     @Test
+    fun fitFramesModelRadiusResetsPanAndClampsToBounds() {
+        val camera = OrbitCameraState()
+        camera.pan(2f, 3f)
+
+        camera.fit(radius = 2f)
+        assertEquals(5f, camera.distance, 0.001f)
+        assertEquals(0f, camera.panX, 0.001f)
+        assertEquals(0f, camera.panY, 0.001f)
+
+        camera.fit(radius = 100f)
+        assertEquals(20f, camera.distance, 0.001f)
+
+        camera.fit(radius = 0.01f)
+        assertEquals(1f, camera.distance, 0.001f)
+    }
+    @Test
     fun rotateClampsPitchAndWrapsYaw() {
         val camera = OrbitCameraState()
 

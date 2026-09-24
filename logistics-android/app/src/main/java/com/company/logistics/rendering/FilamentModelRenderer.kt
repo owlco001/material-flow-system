@@ -16,6 +16,7 @@ import com.google.android.filament.gltfio.Gltfio
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.google.android.filament.EntityManager
+import com.google.android.filament.LightManager
 import java.io.File
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
@@ -38,6 +39,8 @@ class FilamentModelRenderer(
     private var scene: Scene? = null
     private var view: View? = null
     private var cameraComponent: Camera? = null
+    private var keyLightEntity: Int? = null
+    private var fillLightEntity: Int? = null
     private var assetLoader: AssetLoader? = null
     private var resourceLoader: ResourceLoader? = null
     private var initializationError: Throwable? = null
@@ -56,6 +59,8 @@ class FilamentModelRenderer(
         var createdScene: Scene? = null
         var createdView: View? = null
         var createdCamera: Camera? = null
+        var createdKeyLight: Int? = null
+        var createdFillLight: Int? = null
         var createdAssetLoader: AssetLoader? = null
         var createdResourceLoader: ResourceLoader? = null
         try {
@@ -68,6 +73,22 @@ class FilamentModelRenderer(
             createdScene = createdEngine.createScene()
             createdView = createdEngine.createView()
             createdCamera = createdEngine.createCamera(createdEntityManager.create())
+            createdKeyLight = createdEntityManager.create().also { entity ->
+                LightManager.Builder(LightManager.Type.DIRECTIONAL)
+                    .intensity(60_000f)
+                    .color(1.0f, 0.98f, 0.95f)
+                    .direction(-0.6f, -1.0f, -0.8f)
+                    .build(createdEngine, entity)
+                createdScene.addEntity(entity)
+            }
+            createdFillLight = createdEntityManager.create().also { entity ->
+                LightManager.Builder(LightManager.Type.DIRECTIONAL)
+                    .intensity(20_000f)
+                    .color(0.85f, 0.92f, 1.0f)
+                    .direction(0.8f, -0.3f, 0.7f)
+                    .build(createdEngine, entity)
+                createdScene.addEntity(entity)
+            }
             createdAssetLoader = AssetLoader(createdEngine, createdMaterialProvider, createdEntityManager)
             createdResourceLoader = ResourceLoader(createdEngine)
 
@@ -78,6 +99,8 @@ class FilamentModelRenderer(
             scene = createdScene
             view = createdView
             cameraComponent = createdCamera
+            keyLightEntity = createdKeyLight
+            fillLightEntity = createdFillLight
             assetLoader = createdAssetLoader
             resourceLoader = createdResourceLoader
             view?.scene = createdScene
@@ -95,6 +118,8 @@ class FilamentModelRenderer(
                 createdEngine?.destroyCameraComponent(it.getEntity())
                 createdEntityManager?.destroy(it.getEntity())
             }
+            createdFillLight?.let { entity -> createdEngine?.lightManager?.destroy(entity); createdEntityManager?.destroy(entity) }
+            createdKeyLight?.let { entity -> createdEngine?.lightManager?.destroy(entity); createdEntityManager?.destroy(entity) }
             createdMaterialProvider?.destroy()
             createdEngine?.destroy()
         }
@@ -154,6 +179,8 @@ class FilamentModelRenderer(
             }
             asset = candidate
             activeScene.addEntities(candidate!!.entities)
+            val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
+            camera.fit(if (radius > 0f) radius else 1f)
             candidate = null
             applyCamera()
         } finally {
@@ -212,6 +239,10 @@ class FilamentModelRenderer(
             engine?.destroyCameraComponent(it.getEntity())
             entityManager?.destroy(it.getEntity())
         }
+        fillLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
+        keyLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
+        fillLightEntity = null
+        keyLightEntity = null
         materialProvider?.destroy()
         engine?.destroy()
     }

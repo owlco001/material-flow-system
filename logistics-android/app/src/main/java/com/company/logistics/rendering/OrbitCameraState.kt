@@ -55,6 +55,14 @@ class OrbitCameraState(
         panY = 0f
     }
 
+    /** Frames a model of the given bounding radius at screen center; keeps orbit angles. */
+    fun fit(radius: Float) {
+        require(radius > 0f) { "radius must be positive" }
+        distance = (radius * 2.5f).coerceIn(minDistance, maxDistance)
+        panX = 0f
+        panY = 0f
+    }
+
     private fun normalizeYaw(value: Float): Float {
         return ((value + 180f) % 360f + 360f) % 360f - 180f
     }
