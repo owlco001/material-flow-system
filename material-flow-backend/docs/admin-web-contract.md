@@ -29,6 +29,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S16 | 移动端响应式适配（CSS-only：表格横滚/小屏布局/触控目标） | 全部页面 | 已实现 |
 | S18 | 全局统一导航 + 内核边界固化 | 全部页面 | 已实现 |
 | S19 | 车间概览可视化（机台进度 CSS 条形图） | REPORT_ROLES | 已实现 |
+| S21 | 生产订单创建面（web 表单 → create_order API） | ADMIN + PLANNER | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -295,6 +296,26 @@ api_workspace_items），过滤参数与列表页一致；因 API 单页上限 l
 - `GET /admin/reports/labor/export?deviceId=&orderNo=&assemblerId=` → CSV
   （labor-summary.csv；准入同 §6.4 REPORT_ROLES）。
 - `GET /admin/reports/machines/export` → CSV（machine-progress.csv；准入同上）。
+
+### 6.16 S21 生产订单创建路由（准入 ADMIN + PLANNER）
+
+复用 create_order 内核 API 同名处理函数（docs/order-creation-contract.md）；角色
+门禁、字段校验、冲突语义（409 文案）、审计与幂等零漂移。同时 **REPORT_ROLES
+定义扩为 ADMIN + WORKSHOP_SUPERVISOR + PLANNER**（§6.4/§6.5/§6.7 的工时/概览/
+任务/订单族页面随之对计划员开放；§6.11 任务分配 API 门禁维持不变）。
+
+- `GET /admin/orders/new` → 200：创建表单（订单号/产品名 + 5 行细分机型槽）。
+- `POST /admin/orders/create`（form: csrf_token, orderNo, productName,
+  modelCode1..5 / modelName1..5 / modelQty1..5，空行忽略）→ 303 →
+  `?notice=order_created`；失败（冲突/校验）→ 200 表单页内联 API 文案 + 回填。
+
+### 8.15 S21 断言（tests/test_admin_web_order_create.py）
+
+1. PLANNER 打开新建页 200；WORKSHOP_SUPERVISOR → 403（创建面门禁）。
+2. PLANNER 打开订单列表 200（REPORT_ROLES 扩展生效）。
+3. 表单创建（2 行机型）→ 303 `?notice=order_created` + orders/models 落库。
+4. 重复订单号 → 200 内联「生产订单号已存在」。
+5. 无机型行 → 200 内联「1..20 项」；缺 csrf → 403 无落库。
 
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 

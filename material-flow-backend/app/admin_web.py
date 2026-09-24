@@ -59,6 +59,9 @@ from app.main import (
     reset_employee_password,
     review_exception as api_review_exception,
     upload_assembly_model as api_upload_model,
+    create_order as api_create_order,
+    OrderCreateRequest,
+    OrderModelCreate,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -301,6 +304,7 @@ NOTICE_TEXTS = {
     "upload_bad_name": "上传失败：modelName 格式无效",
     "upload_forbidden": "上传失败：仅管理员或仓库管理员可上传模型",
     "upload_failed": "上传失败：未通过服务端校验",
+    "order_created": "生产订单已创建",
 }
 
 
@@ -750,7 +754,8 @@ def admin_handover_timeline(request: Request, hid: str):
 
 # ==================== S4：工时汇总与车间概览（契约 §6.4）====================
 
-REPORT_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR")
+# S21 起含 PLANNER：计划员需要订单/统计/任务视图（§6.16 契约注记）。
+REPORT_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER")
 
 
 def _report_or_403(request: Request):
@@ -1563,3 +1568,79 @@ def admin_machines_export(request: Request):
         return denied
     rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=20, user=user)
     return _csv_response("machine-progress", rows)
+
+
+# ==================== S21：生产订单创建面（契约 §6.16）====================
+
+ORDER_CREATE_ROLES = ("ADMIN", "PLANNER")
+
+
+def _order_create_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in ORDER_CREATE_ROLES:
+        return None, HTMLResponse(
+            "403 禁止访问：创建订单仅对管理员/计划员开放", status_code=403
+        )
+    return user, None
+
+
+def _order_form_page(request: Request, user: sqlite3.Row, values: dict, error: str | None = None):
+    return templates.TemplateResponse(
+        request,
+        "order_form.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "values": values,
+            "error": error,
+        },
+    )
+
+
+@router.get("/admin/orders/new", response_class=HTMLResponse)
+def admin_order_new(request: Request):
+    user, denied = _order_create_or_403(request)
+    if denied:
+        return denied
+    return _order_form_page(request, user, values={})
+
+
+@router.post("/admin/orders/create")
+async def admin_order_create(request: Request):
+    user, denied = _order_create_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    values = {k: str(v) for k, v in form.items() if k != "csrf_token"}
+    models = []
+    for i in range(1, 6):
+        code = values.get(f"modelCode{i}", "").strip()
+        if not code:
+            continue
+        models.append(
+            OrderModelCreate(
+                modelCode=code,
+                modelName=values.get(f"modelName{i}", "").strip(),
+                plannedQuantity=int(values.get(f"modelQty{i}", "0") or 0),
+            )
+        )
+    try:
+        api_create_order(
+            OrderCreateRequest(
+                clientOperationId=str(uuid.uuid4()),
+                orderNo=values.get("orderNo", "").strip(),
+                productName=values.get("productName", "").strip(),
+                models=models,
+            ),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        return _order_form_page(request, user, values=values, error=_api_error_message(exc))
+    except HTTPException as exc:
+        return _order_form_page(request, user, values=values, error=f"{exc.status_code}：{exc.detail}")
+    return _see_other("/admin/orders?notice=order_created")
