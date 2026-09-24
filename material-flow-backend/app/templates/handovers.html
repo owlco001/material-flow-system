@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}交接留痕 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<a href="/admin/users" style="color:#fff;margin-right:12px">用户管理</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>交接留痕查询</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="card" style="max-width:560px">
+  <form method="get" action="/admin/handovers">
+    <label>交接单 / 工作物料 / 需求单号</label>
+    <input name="query" value="{{ query }}" placeholder="ho_… / wi_… / 需求单 ID" required>
+    <button type="submit">查询</button>
+  </form>
+</div>
+
+{% if result %}
+<div class="card" style="margin-top:16px">
+  <h3>交接 {{ result.handoverId }}</h3>
+  <p>工作物：{{ result.workItemId }} · 状态：{{ result.status }} · 工作台状态：{{ result.workspaceStatus }}</p>
+  <table>
+    <tr><th>时间</th><th>事件</th><th>实体</th><th>操作人</th><th>结果</th></tr>
+    {% for ev in result["items"] %}
+    <tr>
+      <td>{{ ev.get("server_time") or ev.get("serverTime") or "—" }}</td>
+      <td>{{ ev.get("event_type") or ev.get("eventType") or "—" }}</td>
+      <td>{{ ev.get("entity_id") or ev.get("entityId") or "—" }}</td>
+      <td>{{ ev.get("actor_user_id") or ev.get("actorUserId") or "—" }}</td>
+      <td>{{ ev.get("result") or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">暂无留痕事件</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

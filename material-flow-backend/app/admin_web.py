@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -29,12 +29,17 @@ from app.main import (
     EmployeeCreate,
     PasswordResetRequest,
     ROLES,
+    TransferApproval,
     add_employee,
+    approve as api_approve,
     audit,
     check_password,
     db,
     delete_employee,
     edit_employee,
+    get_transfer,
+    handover_timeline,
+    list_transfers,
     now,
     reset_employee_password,
 )
@@ -64,7 +69,8 @@ def _session_user(request: Request) -> sqlite3.Row | None:
     c = db()
     try:
         row = c.execute(
-            "SELECT ws.csrf_token AS csrf_token, ws.expires_at AS expires_at, u.*"
+            "SELECT ws.csrf_token AS csrf_token, ws.expires_at AS expires_at,"
+            " 'web' AS session_device_id, u.*"
             " FROM web_sessions ws JOIN users u ON u.id = ws.user_id"
             " WHERE ws.id=? AND u.active=1",
             (token,),
@@ -259,6 +265,8 @@ NOTICE_TEXTS = {
     "updated": "用户已更新",
     "reset": "密码已重置（目标用户会话已吊销，首次登录需改密）",
     "disabled": "用户已停用",
+    "approved": "申请已审批通过",
+    "rejected": "申请已驳回",
 }
 
 
@@ -501,3 +509,170 @@ async def admin_user_delete(request: Request, user_id: str):
     finally:
         c.close()
     return _see_other("/admin/users?notice=disabled")
+
+
+# ==================== S3：流转审批与交接留痕（契约 §6.3）====================
+
+MANAGER_ROLES = ("ADMIN", "WAREHOUSE_ADMIN")
+
+TRANSFER_STATUS_LABELS = {
+    "PENDING_APPROVAL": "待审批",
+    "APPROVED": "已审批",
+    "REJECTED": "已驳回",
+    "EXECUTED": "已执行",
+}
+
+
+def _manager_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in MANAGER_ROLES:
+        return None, HTMLResponse(
+            "403 禁止访问：审批与留痕页面仅对管理员/仓库管理员开放", status_code=403
+        )
+    return user, None
+
+
+def _api_http_error_response(exc: HTTPException):
+    return HTMLResponse(f"{exc.status_code}：{exc.detail}", status_code=exc.status_code)
+
+
+@router.get("/admin/flows", response_class=HTMLResponse)
+def admin_flows_list(request: Request):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    status = request.query_params.get("status") or None
+    try:
+        data = list_transfers(status=status, user=user)
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "flows.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": data["items"],
+            "status_filter": status or "",
+            "status_labels": TRANSFER_STATUS_LABELS,
+            "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+        },
+    )
+
+
+def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: str | None = None):
+    try:
+        item = get_transfer(rid, user=user)
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    c = db()
+    try:
+        handover_rows = c.execute(
+            "SELECT id, status, quantity, receiver_user_id, created_at"
+            " FROM material_handovers WHERE transfer_request_id=? ORDER BY created_at",
+            (rid,),
+        ).fetchall()
+    finally:
+        c.close()
+    return templates.TemplateResponse(
+        request,
+        "flow_detail.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "item": item,
+            "handovers": handover_rows,
+            "error": error,
+            "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+            "can_approve": item.get("status") == "PENDING_APPROVAL",
+            "decision_op": str(uuid.uuid4()),
+            "status_labels": TRANSFER_STATUS_LABELS,
+        },
+    )
+
+
+@router.get("/admin/flows/{rid}", response_class=HTMLResponse)
+def admin_flow_detail(request: Request, rid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    return _render_flow_detail(request, user, rid)
+
+
+@router.post("/admin/flows/{rid}/approve")
+async def admin_flow_approve(request: Request, rid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", ""))
+    decision = str(form.get("decision", ""))
+    try:
+        api_approve(
+            rid,
+            TransferApproval(
+                decision=decision,
+                comment=str(form.get("comment", "")),
+                clientOperationId=operation_id,
+            ),
+            request,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_flow_detail(request, user, rid, error=_api_error_message(exc))
+    notice = "rejected" if decision == "REJECT" else "approved"
+    return _see_other(f"/admin/flows/{rid}?notice={notice}")
+
+
+@router.get("/admin/handovers", response_class=HTMLResponse)
+def admin_handovers_search(request: Request):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    query = str(request.query_params.get("query", "")).strip()
+    result = None
+    error = None
+    if query:
+        try:
+            result = handover_timeline(query, user=user)
+        except HTTPException as exc:
+            error = f"{exc.status_code}：{exc.detail}"
+    return templates.TemplateResponse(
+        request,
+        "handovers.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "query": query,
+            "result": result,
+            "error": error,
+        },
+    )
+
+
+@router.get("/admin/handovers/{hid}", response_class=HTMLResponse)
+def admin_handover_timeline(request: Request, hid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    try:
+        result = handover_timeline(hid, user=user)
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "handovers.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "query": hid,
+            "result": result,
+            "error": None,
+        },
+    )

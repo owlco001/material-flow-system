@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}流转详情 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<a href="/admin/handovers" style="color:#fff;margin-right:12px">交接留痕</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>流转申请详情</h2>
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="card">
+  <p>申请单：{{ item.id }}</p>
+  <p>类型：{{ item.type }} · 状态：{{ status_labels.get(item.status, item.status) }}</p>
+  <p>单据号：{{ item.document_no or "—" }}</p>
+  <p>创建：{{ item.created_by }} @ {{ item.created_at or "—" }}</p>
+  {% if item.approved_by %}
+  <p>审批：{{ item.approved_by }} @ {{ item.approved_at or "—" }}
+     {% if item.rejection_reason %}· 驳回原因：{{ item.rejection_reason }}{% endif %}</p>
+  {% endif %}
+  <pre style="background:#f5f6f8;padding:8px;overflow:auto">{{ item.payload | tojson(indent=2) if item.payload else "（无载荷）" }}</pre>
+</div>
+
+{% if can_approve %}
+<div class="card" style="margin-top:16px;max-width:520px">
+  <h3>审批</h3>
+  <form method="post" action="/admin/flows/{{ item.id }}/approve">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="{{ decision_op }}">
+    <label>决定</label>
+    <select name="decision">
+      <option value="APPROVE">通过</option>
+      <option value="REJECT">驳回</option>
+    </select>
+    <label>原因/备注（驳回必填，1-500 字）</label>
+    <input name="comment" maxlength="500">
+    <button type="submit">提交审批</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:16px">
+  <h3>关联交接</h3>
+  <table>
+    <tr><th>交接单</th><th>状态</th><th>数量</th><th>接收人</th><th>时间</th><th>留痕</th></tr>
+    {% for h in handovers %}
+    <tr>
+      <td>{{ h.id }}</td><td>{{ h.status }}</td><td>{{ h.quantity }}</td>
+      <td>{{ h.receiver_user_id or "—" }}</td><td>{{ h.created_at }}</td>
+      <td><a href="/admin/handovers/{{ h.id }}">时间线</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">暂无交接记录</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<p style="margin-top:16px"><a href="/admin/flows">返回列表</a></p>
+{% endblock %}

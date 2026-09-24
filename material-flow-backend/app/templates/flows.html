@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}流转申请 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/users" style="color:#fff;margin-right:12px">用户管理</a>
+<a href="/admin/handovers" style="color:#fff;margin-right:12px">交接留痕</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>流转申请</h2>
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+<p>
+  <a href="/admin/flows">全部</a> ·
+  <a href="/admin/flows?status=PENDING_APPROVAL">待审批</a> ·
+  <a href="/admin/flows?status=APPROVED">已审批</a> ·
+  <a href="/admin/flows?status=REJECTED">已驳回</a> ·
+  <a href="/admin/flows?status=EXECUTED">已执行</a>
+</p>
+<table>
+  <tr><th>申请单</th><th>类型</th><th>状态</th><th>单据号</th><th>创建时间</th><th>详情</th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.id }}</td>
+    <td>{{ item.type }}</td>
+    <td>{{ status_labels.get(item.status, item.status) }}</td>
+    <td>{{ item.document_no or "—" }}</td>
+    <td>{{ item.created_at or "—" }}</td>
+    <td><a href="/admin/flows/{{ item.id }}">查看</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">暂无数据</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

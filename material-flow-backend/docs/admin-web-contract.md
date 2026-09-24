@@ -13,7 +13,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 |------|------|----------|------|
 | S1 | 契约文档、登录/登出、Cookie 会话、CSRF、鉴权守卫、仪表盘骨架 | ADMIN | 进行中 |
 | S2 | 用户管理（列表/新建/编辑/重置密码/删除），复用 /admin/users 服务语义 | ADMIN | 已实现 |
-| S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 待做 |
+| S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WAREHOUSE_ADMIN | 待做 |
 | S5 | 装配模型管理（版本/发布查询） | ADMIN | 待做 |
 
@@ -130,6 +130,28 @@ reset_employee_password / delete_employee），语义零漂移：幂等双头
 接受缺口（显式记录）：新建表单暂不提供直属领导（managerId）选择器，接口参数置空；
 列表暂不分页（用户量为厂内规模）。
 
+### 6.3 S3 流转审批与交接留痕路由（准入 ADMIN + WAREHOUSE_ADMIN）
+
+写/读操作直接调用既有 API 函数（list_transfers / get_transfer / approve /
+handover_timeline），沿用可见性范围（_transfer_visibility）、审批门禁
+（申请人不能自批、非 ADMIN 需直属领导关系；无 employee_managers 数据的旧库
+WAREHOUSE_ADMIN 兼容放行）、状态机（仅 PENDING_APPROVAL 可审批）与幂等语义。
+
+- `GET /admin/flows?status=` → 200 列表（status ∈ TRANSFER_STATES，非法值 400 页；
+  空=全部；沿用 LIMIT 100 可见性范围）。
+- `GET /admin/flows/{rid}` → 200 详情（含 payload JSON、审批人/驳回原因、关联交接表
+  与时间线链接；PENDING_APPROVAL 时展示审批表单）。不可见 403 页 / 不存在 404 页。
+- `POST /admin/flows/{rid}/approve`（form: csrf_token, clientOperationId,
+  decision=APPROVE|REJECT, comment）→ 303 → `/admin/flows/{rid}?notice=approved|rejected`；
+  失败重渲染详情+ApiError 文案（如「拒绝时必须填写原因（1-500 字）」
+  「申请人不能审批本人申请」「申请状态不允许审批」）。
+- `GET /admin/handovers?query=` → 200 查询表单 + 命中渲染（query 为交接单/工作物/
+  需求单 ID，同 handover_timeline 聚合语义；404 内联提示不跳转）。
+- `GET /admin/handovers/{hid}` → 200 时间线（handoverId/workItemId/status/
+  workspaceStatus + audit_events 时间序事件表）。
+
+`execute`（出库执行动作）显式不在本切片范围（S3.1 待做）。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -169,6 +191,21 @@ reset_employee_password / delete_employee），语义零漂移：幂等双头
 8. `POST delete` → 303 `?notice=disabled`；目标 `active=0` 且历史行保留。
 9. OPERATOR 会话访问 `GET /admin/users` → 403。
 10. `POST edit` 缺 csrf_token → 403 且目标行未变更。
+
+### 8.2 S3 断言（tests/test_admin_web_flows.py）
+
+1. WAREHOUSE_ADMIN 会话 `GET /admin/flows` → 200；OPERATOR → 403。
+2. 列表显示种子 PENDING_APPROVAL 申请与「待审批」状态标签。
+3. `GET /admin/flows/{rid}` 显示 payload 与审批表单；对 REJECTED 申请不显示审批表单。
+4. WAREHOUSE_ADMIN 对他人 PENDING 申请 `POST approve(decision=APPROVE)` → 303
+   `?notice=approved`；DB `status='APPROVED'` 且 `approved_by` 为操作者。
+5. `decision=REJECT` 且 comment 空 → 详情页含「拒绝时必须填写原因（1-500 字）」，
+   状态不变。
+6. 申请人对自己申请审批 → 「申请人不能审批本人申请」，状态不变。
+7. 对已 APPROVED 申请再批 → 「申请状态不允许审批」（409 文案）。
+8. `GET /admin/handovers?query={hid}` 命中留痕：显示 handoverId 与至少一条
+   audit_events 事件；未知 ID 显示 404 提示。
+9. `POST approve` 缺 csrf_token → 403 且状态不变。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 
