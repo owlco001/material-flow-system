@@ -23,11 +23,14 @@ table { display: block; overflow-x: auto; white-space: nowrap; }
   header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px; }
   nav { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
   nav a { margin-right: 0 !important; }
+  .quicknav { gap: 6px 10px; padding: 8px 10px; }
   main { margin: 12px auto; padding: 0 10px; }
   th, td { padding: 6px 8px; font-size: 13px; }
   input, select, button { max-width: 100%; min-height: 40px; box-sizing: border-box; }
   .cards .card { flex: 1 1 100%; }
 }
+.quicknav { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 20px; background: #fff; border-bottom: 1px solid #e5e7eb; align-items: center; }
+.quicknav a { color: #1f6feb; text-decoration: none; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -35,6 +38,22 @@ table { display: block; overflow-x: auto; white-space: nowrap; }
   <strong>物料流转 · 管理后台</strong>
   <nav>{% block nav %}{% endblock %}</nav>
 </header>
+{% if user %}
+<nav class="quicknav">
+  {% if user.role == "ADMIN" %}<a href="/admin/">仪表盘</a>{% endif %}
+  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}<a href="/admin/workspace">工作台</a>{% endif %}
+  {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
+  <a href="/admin/reports">概览</a><a href="/admin/reports/labor">工时</a><a href="/admin/tasks">任务</a>
+  {% endif %}
+  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN") %}
+  <a href="/admin/flows">流转</a><a href="/admin/handovers">留痕</a><a href="/admin/warehouse">仓库</a><a href="/admin/models">模型</a>
+  {% endif %}
+  {% if user.role in ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR") %}<a href="/admin/boms">BOM</a>{% endif %}
+  {% if user.role == "ADMIN" %}
+  <a href="/admin/users">用户</a><a href="/admin/orders">订单</a><a href="/admin/audit">审计</a>
+  {% endif %}
+</nav>
+{% endif %}
 <main>{% block content %}{% endblock %}</main>
 </body>
 </html>
