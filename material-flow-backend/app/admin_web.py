@@ -66,6 +66,8 @@ from app.main import (
     set_order_status as api_set_order_status,
     SessionRevokeRequest,
     revoke_user_sessions as api_revoke_sessions,
+    TaskCreateRequest,
+    create_assembly_task as api_create_task,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -311,6 +313,7 @@ NOTICE_TEXTS = {
     "order_created": "生产订单已创建",
     "order_status_changed": "订单状态已推进",
     "sessions_revoked": "该用户会话已全部强制下线",
+    "task_created": "机台任务已创建",
 }
 
 
@@ -1714,3 +1717,44 @@ async def admin_revoke_sessions(request: Request, user_id: str):
             status_code=200,
         )
     return _see_other("/admin/users?notice=sessions_revoked")
+
+
+# ==================== S24：装配任务创建（契约 §6.19）====================
+
+TASK_CREATE_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR")
+
+
+@router.post("/admin/tasks/create")
+async def admin_task_create(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in TASK_CREATE_ROLES:
+        return HTMLResponse(
+            "403 禁止访问：创建任务仅对管理员/车间主管开放", status_code=403
+        )
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    try:
+        api_create_task(
+            TaskCreateRequest(
+                clientOperationId=str(uuid.uuid4()),
+                orderNo=str(form.get("orderNo", "")).strip(),
+                deviceId=str(form.get("deviceId", "")).strip(),
+                deviceNo=str(form.get("deviceNo", "")).strip(),
+            ),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        return HTMLResponse(
+            f"<p class='error'>{_api_error_message(exc)}</p><p><a href='/admin/tasks'>返回任务列表</a></p>",
+            status_code=200,
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/tasks'>返回任务列表</a></p>",
+            status_code=200,
+        )
+    return _see_other("/admin/tasks?notice=task_created")

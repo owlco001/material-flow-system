@@ -2713,6 +2713,86 @@ class OrderStatusRequest(BaseModel):
 ORDER_TRANSITIONS = {"RELEASED": "IN_PROGRESS", "IN_PROGRESS": "COMPLETED"}
 
 
+class TaskCreateRequest(BaseModel):
+    clientOperationId: str
+    orderNo: str
+    deviceId: str
+    deviceNo: str
+
+
+@app.post("/api/v1/assembly/tasks", status_code=201)
+def create_assembly_task(
+    body: TaskCreateRequest,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """创建机台装配任务（契约 §6.19：订单—机台任务拆解入口）。"""
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR"}:
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 或 WORKSHOP_SUPERVISOR 可创建任务", trace_id=trace_id)
+    try:
+        operation_id = str(uuid.UUID(body.clientOperationId))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "clientOperationId 必须是合法 UUID", trace_id=trace_id) from None
+    order_no = body.orderNo.strip()
+    device_id = body.deviceId.strip()
+    device_no = body.deviceNo.strip()
+    for label, value in (("orderNo", order_no), ("deviceId", device_id), ("deviceNo", device_no)):
+        if not 1 <= len(value) <= 64:
+            raise ApiError(422, CODE_VALIDATION_ERROR, f"{label} 格式无效", trace_id=trace_id)
+    payload = json.dumps(
+        {"orderNo": order_no, "deviceId": device_id, "deviceNo": device_no, "clientOperationId": operation_id},
+        sort_keys=True,
+    )
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM audit_events WHERE event_type='ASSEMBLY_TASK_CREATED' AND client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if prior["before_json"] != payload:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["after_json"])
+            result.update(idempotent=True, traceId=trace_id)
+            c.rollback()
+            return result
+        if c.execute(
+            "SELECT 1 FROM assembly_tasks WHERE order_no=? AND device_id=?", (order_no, device_id)
+        ).fetchone():
+            raise ApiError(409, "TASK_ALREADY_EXISTS", "机台任务已存在", trace_id=trace_id)
+        task_id, ts = str(uuid.uuid4()), now()
+        c.execute(
+            "INSERT INTO assembly_tasks(id,order_no,device_id,device_no,assigned_assembler_id,status,"
+            "progress_stage,task_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (task_id, order_no, device_id, device_no, None, "WAITING_MATERIAL", 0, 1, ts, ts),
+        )
+        result = {
+            "taskId": task_id, "orderNo": order_no, "deviceId": device_id, "deviceNo": device_no,
+            "status": "WAITING_MATERIAL", "progressStage": 0, "taskVersion": 1,
+            "serverTime": ts, "traceId": trace_id, "idempotent": False,
+        }
+        c.execute(
+            "INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,"
+            "request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("ASSEMBLY_TASK_CREATED", "ASSEMBLY_TASK", task_id, user["id"], user["role"], trace_id,
+             operation_id, payload,
+             json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
+        )
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 class SessionRevokeRequest(BaseModel):
     clientOperationId: str
 

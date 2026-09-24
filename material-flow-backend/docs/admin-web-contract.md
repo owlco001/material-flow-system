@@ -32,6 +32,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S21 | 生产订单创建面（web 表单 → create_order API） | ADMIN + PLANNER | 已实现 |
 | S22 | 订单状态推进（RELEASED→IN_PROGRESS→COMPLETED） | ADMIN + PLANNER | 已实现 |
 | S23 | 会话强制下线（APP + WEB 会话全吊销） | ADMIN | 已实现 |
+| S24 | 装配任务创建（订单—机台任务拆解） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -333,6 +334,26 @@ APP `sessions` 与 `web_sessions` 行（与 S2 重置密码/删除用户的吊�
   用户不存在 → 404「用户不存在」；非 ADMIN → 403。
 - web `POST /admin/users/{user_id}/revoke-sessions`（form: csrf_token）→ 303 →
   `?notice=sessions_revoked`；失败 → 200 错误页内联 API 文案。
+
+### 6.19 S24 装配任务创建路由（准入 ADMIN + WORKSHOP_SUPERVISOR）
+
+复用 create_assembly_task 内核 API 同名处理函数。语义：订单按机台拆解为装配任务
+（初始 WAITING_MATERIAL / progress_stage 0 / task_version 1）；同 (orderNo, deviceId)
+唯一 → 409「机台任务已存在」；审计 `ASSEMBLY_TASK_CREATED`（audit_events 兼作
+幂等记录）。
+
+- API `POST /api/v1/assembly/tasks`（body: clientOperationId, orderNo, deviceId,
+  deviceNo）→ 201；字段空/超长 → 422；PLANNER 等其他角色 → 403。
+- web `POST /admin/tasks/create`（form: csrf_token, orderNo, deviceId, deviceNo）
+  → 303 → `?notice=task_created`；失败 → 200 错误页内联 API 文案。
+
+### 8.18 S24 断言（tests/test_task_creation.py）
+
+1. ADMIN API 创建 → 201 + 落库（WAITING_MATERIAL/0/1）+ ASSEMBLY_TASK_CREATED 审计。
+2. 同 (orderNo, deviceId) 冲突 → 409「机台任务已存在」。
+3. 字段空 → 422；PLANNER → 403。
+4. 幂等：同键重放 → `idempotent: true` 同 taskId。
+5. web 表单（任务页「新建任务」）→ 303 `?notice=task_created` + 落库。
 
 ### 8.15 S21 断言（tests/test_admin_web_order_create.py）
 
