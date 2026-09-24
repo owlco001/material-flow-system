@@ -9,21 +9,34 @@ import hmac
 import secrets
 import sqlite3
 import time
+import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
 from app.main import (
     APP_VERSION,
     LOGIN_LOCK_SECONDS,
     LOGIN_MAX_FAILURES,
     LOGIN_WINDOW_SECONDS,
+    ApiError,
+    DeleteUserRequest,
+    EditUserRequest,
+    EmployeeCreate,
+    PasswordResetRequest,
+    ROLES,
+    add_employee,
     audit,
     check_password,
     db,
+    delete_employee,
+    edit_employee,
     now,
+    reset_employee_password,
 )
 
 router = APIRouter()
@@ -51,9 +64,7 @@ def _session_user(request: Request) -> sqlite3.Row | None:
     c = db()
     try:
         row = c.execute(
-            "SELECT ws.csrf_token AS csrf_token, ws.expires_at AS expires_at,"
-            " u.id AS user_id, u.username AS username, u.display_name AS display_name,"
-            " u.role AS role"
+            "SELECT ws.csrf_token AS csrf_token, ws.expires_at AS expires_at, u.*"
             " FROM web_sessions ws JOIN users u ON u.id = ws.user_id"
             " WHERE ws.id=? AND u.active=1",
             (token,),
@@ -225,3 +236,268 @@ def admin_home(request: Request):
             "csrf_token": user["csrf_token"],
         },
     )
+
+
+# ==================== S2：用户管理（契约 §6-S2）====================
+
+ROLE_LABELS = {
+    "OPERATOR": "操作员",
+    "MATERIAL": "物料员",
+    "WAREHOUSE_ADMIN": "仓库管理员",
+    "ADMIN": "管理员",
+    "PLANNER": "计划员",
+    "WORKSHOP_SUPERVISOR": "车间主管",
+    "ASSEMBLER": "装配工",
+}
+# 新建可选角色：ROLES 去掉 ADMIN（add_employee 同语义）。
+CREATE_ROLES = tuple(role for role in ROLES if role != "ADMIN")
+# 编辑可改角色：与 edit_employee 的白名单逐字一致（PLANNER 仅可创建不可改派）。
+EDIT_ROLES = ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER")
+
+NOTICE_TEXTS = {
+    "created": "用户已创建（首次登录需修改密码）",
+    "updated": "用户已更新",
+    "reset": "密码已重置（目标用户会话已吊销，首次登录需改密）",
+    "disabled": "用户已停用",
+}
+
+
+def _admin_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return None, HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
+    return user, None
+
+
+def _api_error_message(exc: Exception) -> str:
+    if isinstance(exc, ApiError):
+        # ApiError 的用户可见文案存在 HTTPException.detail（super().__init__(detail=message)）。
+        return str(getattr(exc, "detail", None) or "操作被拒绝")
+    if isinstance(exc, ValidationError):
+        return "输入校验未通过（如密码至少 8 位）"
+    return "操作失败"
+
+
+def _render_users(request: Request, user: sqlite3.Row, error: str | None = None):
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT id, username, display_name, role, active, must_change_password, created_at"
+            " FROM users ORDER BY created_at"
+        ).fetchall()
+    finally:
+        c.close()
+    notice_code = request.query_params.get("notice", "")
+    return templates.TemplateResponse(
+        request,
+        "users.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "rows": rows,
+            "role_labels": ROLE_LABELS,
+            "notice_text": NOTICE_TEXTS.get(notice_code),
+            "error": error,
+            "reset_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
+            "delete_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
+        },
+    )
+
+
+def _render_user_form(
+    request: Request,
+    user: sqlite3.Row,
+    mode: str,
+    values: dict[str, Any],
+    user_id: str | None = None,
+    error: str | None = None,
+):
+    safe_values = {k: v for k, v in values.items() if k != "password"}
+    return templates.TemplateResponse(
+        request,
+        "user_form.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "mode": mode,
+            "title": "新建用户" if mode == "create" else "编辑用户",
+            "action": "/admin/users/new" if mode == "create" else f"/admin/users/{user_id}/edit",
+            "values": safe_values,
+            "role_labels": ROLE_LABELS,
+            "assignable_roles": CREATE_ROLES if mode == "create" else EDIT_ROLES,
+            "client_operation_id": str(uuid.uuid4()) if mode == "edit" else None,
+            "error": error,
+        },
+    )
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+def admin_users_list(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    return _render_users(request, user)
+
+
+@router.get("/admin/users/new", response_class=HTMLResponse)
+def admin_user_new_form(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    return _render_user_form(request, user, mode="create", values={"role": CREATE_ROLES[0]})
+
+
+@router.post("/admin/users/new")
+async def admin_user_create(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    values = {
+        "employeeNo": str(form.get("employeeNo", "")).strip(),
+        "displayName": str(form.get("displayName", "")).strip(),
+        "role": str(form.get("role", "")),
+        "password": str(form.get("password", "")),
+    }
+    try:
+        add_employee(
+            EmployeeCreate(**values, managerId=None),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_user_form(
+            request, user, mode="create", values=values, error=_api_error_message(exc)
+        )
+    return _see_other("/admin/users?notice=created")
+
+
+@router.get("/admin/users/{user_id}/edit", response_class=HTMLResponse)
+def admin_user_edit_form(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    c = db()
+    try:
+        target = c.execute(
+            "SELECT id, username, display_name, role, active FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    finally:
+        c.close()
+    if target is None:
+        return HTMLResponse("404 用户不存在", status_code=404)
+    return _render_user_form(
+        request,
+        user,
+        mode="edit",
+        user_id=user_id,
+        values={
+            "employeeNo": target["username"],
+            "displayName": target["display_name"],
+            "role": target["role"] if target["role"] in EDIT_ROLES else EDIT_ROLES[0],
+            "active": bool(target["active"]),
+        },
+    )
+
+
+@router.post("/admin/users/{user_id}/edit")
+async def admin_user_edit(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", ""))
+    values = {
+        "employeeNo": str(form.get("employeeNo", "")),
+        "displayName": str(form.get("displayName", "")).strip(),
+        "role": str(form.get("role", "")),
+        "active": form.get("active") == "on",
+    }
+    try:
+        edit_employee(
+            user_id,
+            EditUserRequest(
+                clientOperationId=operation_id,
+                displayName=values["displayName"],
+                role=values["role"],
+                active=values["active"],
+            ),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_user_form(
+            request,
+            user,
+            mode="edit",
+            user_id=user_id,
+            values=values,
+            error=_api_error_message(exc),
+        )
+    return _see_other("/admin/users?notice=updated")
+
+
+@router.post("/admin/users/{user_id}/password-reset")
+async def admin_user_password_reset(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", ""))
+    try:
+        reset_employee_password(
+            user_id,
+            PasswordResetRequest(
+                newPassword=str(form.get("newPassword", "")), clientOperationId=operation_id
+            ),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_users(request, user, error=_api_error_message(exc))
+    # API 语义只吊销 APP sessions；web_sessions 是本界面私有表，需在 web 层补删。
+    c = db()
+    try:
+        c.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+        c.commit()
+    finally:
+        c.close()
+    return _see_other("/admin/users?notice=reset")
+
+
+@router.post("/admin/users/{user_id}/delete")
+async def admin_user_delete(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", ""))
+    try:
+        delete_employee(
+            user_id,
+            DeleteUserRequest(clientOperationId=operation_id),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_users(request, user, error=_api_error_message(exc))
+    c = db()
+    try:
+        c.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+        c.commit()
+    finally:
+        c.close()
+    return _see_other("/admin/users?notice=disabled")

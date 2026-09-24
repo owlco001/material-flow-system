@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/users" style="color:#fff">用户管理</a>
+{% endblock %}
+{% block content %}
+<div class="card" style="max-width:480px">
+  <h2>{{ title }}</h2>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="{{ action }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if client_operation_id %}
+    <input type="hidden" name="clientOperationId" value="{{ client_operation_id }}">
+    {% endif %}
+    {% if mode == "create" %}
+    <label>工号</label>
+    <input name="employeeNo" value="{{ values.employeeNo }}" maxlength="64" required>
+    {% else %}
+    <p>工号：{{ values.employeeNo }}</p>
+    {% endif %}
+    <label>显示名</label>
+    <input name="displayName" value="{{ values.displayName }}" maxlength="128" required>
+    <label>角色</label>
+    <select name="role">
+      {% for code in assignable_roles %}
+      <option value="{{ code }}" {% if values.role == code %}selected{% endif %}>{{ role_labels.get(code, code) }}</option>
+      {% endfor %}
+    </select>
+    {% if mode == "edit" %}
+    <label style="margin-top:12px">
+      <input type="checkbox" name="active" style="width:auto" {% if values.active %}checked{% endif %}> 在职
+    </label>
+    {% else %}
+    <label>初始密码</label>
+    <input name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required>
+    {% endif %}
+    <button type="submit">保存</button>
+  </form>
+  <p><a href="/admin/users">返回列表</a></p>
+</div>
+{% endblock %}

@@ -12,7 +12,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | 切片 | 内容 | 准入角色 | 状态 |
 |------|------|----------|------|
 | S1 | 契约文档、登录/登出、Cookie 会话、CSRF、鉴权守卫、仪表盘骨架 | ADMIN | 进行中 |
-| S2 | 用户管理（列表/新建/编辑/重置密码/删除），复用 /admin/users 服务语义 | ADMIN | 待做 |
+| S2 | 用户管理（列表/新建/编辑/重置密码/删除），复用 /admin/users 服务语义 | ADMIN | 已实现 |
 | S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 待做 |
 | S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WAREHOUSE_ADMIN | 待做 |
 | S5 | 装配模型管理（版本/发布查询） | ADMIN | 待做 |
@@ -103,6 +103,33 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
 （`HttpOnly; SameSite=Lax; Path=/admin`；未过期会话访问会 303，故匿名态才下发），
 表单 `csrf_token` 字段= 该 Cookie 值；POST 用 hmac.compare_digest 校验后即轮换。
 
+### 6.2 S2 用户管理路由（全部需 ADMIN 会话；POST 需会话 csrf_token）
+
+写操作**直接调用既有 API 路由函数**（add_employee / edit_employee /
+reset_employee_password / delete_employee），语义零漂移：幂等双头
+（X-Request-Id + Idempotency-Key = 表单 hidden clientOperationId，每次渲染新 uuid）、
+审计、业务责任门禁、最后 ADMIN 保护、停用即吊销会话全部照旧。
+
+- `GET /admin/users` → 200 HTML 用户列表（工号/显示名/角色中文/在职/首登改密/操作列）。
+- `GET /admin/users/new` → 200 HTML 新建表单（employeeNo/displayName/role/password；
+  role 选项 = ROLES 去掉 ADMIN，含 PLANNER）。
+- `POST /admin/users/new`（form: csrf_token, employeeNo, displayName, role, password）
+  - 成功：303 → `/admin/users?notice=created`
+  - ApiError/校验失败：200 重渲染表单 + 错误文案（密码值不回显）
+- `GET /admin/users/{user_id}/edit` → 200 编辑表单（displayName/role/active；
+  role 选项 = OPERATOR|MATERIAL|WAREHOUSE_ADMIN|WORKSHOP_SUPERVISOR|ASSEMBLER，
+  与 edit_employee 白名单逐字一致；携 hidden clientOperationId）。
+- `POST /admin/users/{user_id}/edit`（form: csrf_token, clientOperationId,
+  displayName, role, active=on|缺省）→ 303 → `?notice=updated`；失败重渲染表单+文案。
+- `POST /admin/users/{user_id}/password-reset`（form: csrf_token,
+  clientOperationId, newPassword）→ 303 → `?notice=reset`；失败重渲染列表+文案。
+  任何响应/页面不得出现 newPassword 明文或哈希串。
+- `POST /admin/users/{user_id}/delete`（form: csrf_token, clientOperationId）
+  → 303 → `?notice=disabled`（软停用，保留历史）。
+
+接受缺口（显式记录）：新建表单暂不提供直属领导（managerId）选择器，接口参数置空；
+列表暂不分页（用户量为厂内规模）。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -125,6 +152,23 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
 9. 过期会话（expires_at < now）访问 `GET /admin/` → 303 Location=/admin/login。
 10. 仪表盘渲染：200 含当前用户名与三个计数数字（用已知种子数据断言）。
 11. 全部 GET/POST 响应体不包含任何 `password` 明文回显（提交值不出现）。
+
+### 8.1 S2 断言（tests/test_admin_web_users.py）
+
+1. `GET /admin/users` 列表显示种子用户（工号/显示名/角色中文标签/在职状态）。
+2. `POST /admin/users/new` 合法输入 → 303 `?notice=created`；users 新增行，
+   `must_change_password=1`，`password_hash` 为 `$argon2id$`，且响应与后续页面
+   不含提交的初始密码明文。
+3. 新建重复工号且信息不一致 → 表单页含「工号已存在但员工信息不一致」（ApiError 409 文案）。
+4. 新建 `role=ADMIN` 直接 POST → 表单页含「角色无效」（400 文案）。
+5. `POST /admin/users/{id}/edit` 改显示名 → 303 `?notice=updated`；DB `display_name` 更新。
+6. 编辑对自己 `active=off` → 含「不能停用当前登录用户」（409 文案）。
+7. `POST password-reset` → 303 `?notice=reset`；hash 为 `$argon2id$`、
+   `must_change_password=1`、目标用户在 sessions 与 web_sessions 的行全部吊销，
+   任何页面不含新密码明文与 `$argon2id$` 串。
+8. `POST delete` → 303 `?notice=disabled`；目标 `active=0` 且历史行保留。
+9. OPERATOR 会话访问 `GET /admin/users` → 403。
+10. `POST edit` 缺 csrf_token → 403 且目标行未变更。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 
