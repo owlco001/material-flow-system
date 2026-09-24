@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}物料状态工作台 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
+<a href="/admin/warehouse" style="color:#fff;margin-right:12px">物料库存</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>物料状态工作台</h2>
+<p style="color:#6b7280">当前角色视图：{{ summary.role }}（{{ summary.authenticatedRole }}）· 生成 {{ summary.generatedAt }}</p>
+
+<div class="cards">
+  <div class="card"><h3>流转待办</h3>
+    <p>待审批 {{ summary.pendingApprovalCount }} · 待出库 {{ summary.pendingOutboundCount }} · 待交接 {{ summary.pendingHandoverCount }}</p></div>
+  <div class="card"><h3>物料状态</h3>
+    <p>到工位 {{ summary.atStationCount }} · 已领取 {{ summary.pickedUpCount }} · 缺料 {{ summary.outOfStockCount }} · 待处理 {{ summary.pendingCount }}</p></div>
+  <div class="card"><h3>交接结果</h3>
+    <p>已确认 {{ summary.confirmedCount }} · 被拒 {{ summary.rejectedHandoverCount }} · 取消 {{ summary.cancelledHandoverCount }}</p></div>
+</div>
+
+<div class="card" style="margin-top:16px;max-width:680px">
+  <form method="get" action="/admin/workspace">
+    <label>状态码（如 ARRIVED / IN_STOCK / OUT_OF_STOCK）</label>
+    <input name="status" value="{{ filters.status }}" style="max-width:190px">
+    <label>订单号</label>
+    <input name="orderNo" value="{{ filters.orderNo }}" style="max-width:150px">
+    <button type="submit">筛选</button>
+    <a href="/admin/workspace" style="margin-left:8px">重置</a>
+  </form>
+</div>
+
+<p style="margin-top:16px">共 {{ total_rows }} 行</p>
+<table>
+  <tr><th>订单</th><th>机台</th><th>物料</th><th>规格</th><th>需求</th><th>到货</th><th>在库</th><th>已发</th><th>已领</th><th>状态</th><th>责任人</th><th>最近交接</th><th>流转</th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.orderNo }}</td>
+    <td>{{ item.deviceNo }}</td>
+    <td>{{ item.materialCode }} {{ item.materialName }}</td>
+    <td>{{ item.specification or "—" }}</td>
+    <td>{{ item.requiredQuantity }}</td>
+    <td>{{ item.arrivedQuantity }}</td>
+    <td>{{ item.inStockQuantity }}</td>
+    <td>{{ item.issuedQuantity }}</td>
+    <td>{{ item.pickedQuantity }}</td>
+    <td>{{ item.label or item.statusCode }}</td>
+    <td>{{ item.currentOwnerName or item.assignedUserName or "—" }}</td>
+    <td>{{ item.lastHandoverStatus or "—" }}</td>
+    <td>{{ item.transferStatus or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="13">暂无数据</td></tr>
+  {% endfor %}
+</table>
+<p style="margin-top:12px">
+  {% if page > 1 %}
+  <a href="/admin/workspace?page={{ page - 1 }}&status={{ filters.status }}&orderNo={{ filters.orderNo }}">上一页</a>
+  {% endif %}
+  第 {{ page }} / {{ total_pages }} 页
+  {% if page < total_pages %}
+  <a href="/admin/workspace?page={{ page + 1 }}&status={{ filters.status }}&orderNo={{ filters.orderNo }}">下一页</a>
+  {% endif %}
+</p>
+{% endblock %}

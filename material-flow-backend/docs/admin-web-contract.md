@@ -19,6 +19,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S6 | 审计日志查询（audit_logs ∪ audit_events 统一视图） | ADMIN | 已实现 |
 | S7 | 生产订单查询（列表 + 单号详情聚合） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S8 | 物料—库位—库存 + 盘点 + 异常查询 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
+| S9 | 物料状态工作台（本角色视图：状态计数 + 工作项 + 责任/交接链） | ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -212,6 +213,16 @@ entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图�
   （ID/类型/账面/实盘/差异/状态/描述/订单/机台/时间）。code 不存在 → 内联
   「物料不存在」；盘点/异常状态码映射中文标签，未知码原样显示。
 
+### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
+
+复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
+x_request_id；viewRole 恒 None——角色预览特性开关未启用（API 抛
+「管理员角色预览未启用」），预览选择器显式排除在本切片外）。
+
+- `GET /admin/workspace?page=&status=&orderNo=` → 200：角色视图标识 + 三组状态计数
+  卡片（流转待办/物料状态/交接结果）+ 工作项表（订单/机台/物料/规格/需求/到货/
+  在库/已发/已领/状态/责任人/最近交接/流转）+ status/orderNo 过滤 + 分页。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -305,6 +316,13 @@ entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图�
 2. `?code=M-001` 命中：物料卡（名称/批次）+ 库位行（库位码/数量）+ 总量/可用。
 3. `?code=NOPE` 内联「物料不存在」。
 4. 种子盘点与异常行均显示（含中文状态标签）。
+
+### 8.8 S9 断言（tests/test_admin_web_workspace.py）
+
+1. ADMIN/WAREHOUSE_ADMIN/WORKSHOP_SUPERVISOR 200；OPERATOR → 403。
+2. 页面显示状态计数卡片与角色视图标识。
+3. 工作项表显示 demo 需求行（订单号/物料码/状态标签）。
+4. `orderNo` 过滤命中；`page=2` 空页 200 不报错。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 

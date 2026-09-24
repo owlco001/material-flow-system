@@ -50,6 +50,8 @@ from app.main import (
     order_detail as api_order_detail,
     reset_employee_password,
     app as backend_app,
+    workspace_material_items as api_workspace_items,
+    workspace_summary as api_workspace_summary,
 )
 
 router = APIRouter()
@@ -1002,5 +1004,66 @@ def admin_warehouse(request: Request):
             "exceptions": exceptions,
             "stocktake_labels": STOCKTAKE_STATUS_LABELS,
             "exception_labels": EXCEPTION_STATUS_LABELS,
+        },
+    )
+
+
+# ==================== S9：物料状态工作台（契约 §6.9）====================
+
+WORKSPACE_ROLES = ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR")
+
+
+def _workspace_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in WORKSPACE_ROLES:
+        return None, HTMLResponse(
+            "403 禁止访问：物料状态工作台仅对管理员/仓库管理员/车间主管开放",
+            status_code=403,
+        )
+    return user, None
+
+
+@router.get("/admin/workspace", response_class=HTMLResponse)
+def admin_workspace(request: Request):
+    user, denied = _workspace_or_403(request)
+    if denied:
+        return denied
+    q = request.query_params
+    page = _page_param(request)
+    try:
+        summary = api_workspace_summary(
+            viewRole=None,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            x_client_operation_id=None,
+        )
+        items = api_workspace_items(
+            viewRole=None,
+            status=q.get("status") or None,
+            orderNo=q.get("orderNo") or None,
+            page=page,
+            pageSize=20,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            x_client_operation_id=None,
+        )
+    except ApiError as exc:
+        return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "workspace.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "summary": summary,
+            "items": items["items"],
+            "page": items["page"],
+            "total_pages": items["totalPages"],
+            "total_rows": items["total"],
+            "filters": {"status": q.get("status") or "", "orderNo": q.get("orderNo") or ""},
         },
     )
