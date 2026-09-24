@@ -33,6 +33,7 @@ from app.main import (
     TransferApproval,
     add_employee,
     approve as api_approve,
+    audit_logs as api_audit_logs,
     audit,
     check_password,
     db,
@@ -43,6 +44,7 @@ from app.main import (
     handover_timeline,
     list_transfers,
     now,
+    order_detail as api_order_detail,
     reset_employee_password,
     app as backend_app,
 )
@@ -859,5 +861,97 @@ def admin_models_list(request: Request):
             "published": published,
             "published_error": published_error,
             "status_labels": MODEL_STATUS_LABELS,
+        },
+    )
+
+
+# ==================== S6：审计日志查询（契约 §6.6）====================
+
+
+@router.get("/admin/audit", response_class=HTMLResponse)
+def admin_audit_logs(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    q = request.query_params
+    filters = {
+        "from": q.get("from") or None,
+        "to": q.get("to") or None,
+        "eventType": q.get("eventType") or None,
+        "entityType": q.get("entityType") or None,
+        "operatorId": q.get("operatorId") or None,
+        "entityId": q.get("entityId") or None,
+    }
+    data = None
+    error = None
+    try:
+        data = api_audit_logs(
+            page=_page_param(request),
+            pageSize=50,
+            from_=filters["from"],
+            to_=filters["to"],
+            eventType=filters["eventType"],
+            entityType=filters["entityType"],
+            operatorId=filters["operatorId"],
+            action=None,
+            resourceType=None,
+            resourceId=None,
+            entityId=filters["entityId"],
+            user=user,
+        )
+    except HTTPException as exc:
+        error = f"{exc.status_code}：{exc.detail}"
+    return templates.TemplateResponse(
+        request,
+        "audit.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": (data or {}).get("items", []),
+            "page": _page_param(request),
+            "error": error,
+            "filters": filters,
+        },
+    )
+
+
+# ==================== S7：生产订单查询（契约 §6.7）====================
+
+
+@router.get("/admin/orders", response_class=HTMLResponse)
+def admin_orders(request: Request):
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    order_no = str(request.query_params.get("order_no", "")).strip()
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT id, order_no, product_name, status, created_at, updated_at"
+            " FROM production_orders ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+    finally:
+        c.close()
+    detail = None
+    error = None
+    if order_no:
+        try:
+            detail = api_order_detail(
+                order_no=order_no, page=_page_param(request), pageSize=20, user=user
+            )
+        except ApiError as exc:
+            error = _api_error_message(exc)
+        except HTTPException as exc:
+            error = f"{exc.status_code}：{exc.detail}"
+    return templates.TemplateResponse(
+        request,
+        "orders.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "rows": rows,
+            "order_no": order_no,
+            "detail": detail,
+            "error": error,
         },
     )

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}审计日志 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/users" style="color:#fff;margin-right:12px">用户管理</a>
+<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>审计日志</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="card">
+  <form method="get" action="/admin/audit">
+    <label>起始时间（ISO-8601）</label>
+    <input name="from" value="{{ filters['from'] or '' }}" style="max-width:190px" placeholder="2026-09-01T00:00:00Z">
+    <label>截止时间</label>
+    <input name="to" value="{{ filters['to'] or '' }}" style="max-width:190px">
+    <label>事件类型</label>
+    <input name="eventType" value="{{ filters.eventType or '' }}" style="max-width:150px" placeholder="如 OUTBOUND_APPROVED">
+    <label>实体类型</label>
+    <input name="entityType" value="{{ filters.entityType or '' }}" style="max-width:150px">
+    <label>操作人 ID</label>
+    <input name="operatorId" value="{{ filters.operatorId or '' }}" style="max-width:150px">
+    <label>实体 ID</label>
+    <input name="entityId" value="{{ filters.entityId or '' }}" style="max-width:150px">
+    <button type="submit">查询</button>
+    <a href="/admin/audit" style="margin-left:8px">重置</a>
+  </form>
+</div>
+
+<table style="margin-top:16px">
+  <tr><th>时间</th><th>记录类型</th><th>事件</th><th>实体类型</th><th>实体 ID</th><th>操作人</th><th>角色</th><th>结果</th><th>请求 ID</th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.server_time or "—" }}</td>
+    <td>{{ "审计事件" if item.record_type == "AUDIT_EVENT" else "审计日志" }}</td>
+    <td>{{ item.event_type }}</td>
+    <td>{{ item.entity_type or "—" }}</td>
+    <td>{{ item.entity_id or "—" }}</td>
+    <td>{{ item.actor_user_id or "—" }}</td>
+    <td>{{ item.actor_role or "—" }}</td>
+    <td>{{ item.result or "—" }}</td>
+    <td>{{ item.request_id or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="9">暂无数据</td></tr>
+  {% endfor %}
+</table>
+<p style="margin-top:12px">
+  {% if page > 1 %}
+  <a href="/admin/audit?page={{ page - 1 }}&from={{ filters['from'] or '' }}&to={{ filters['to'] or '' }}&eventType={{ filters.eventType or '' }}&entityType={{ filters.entityType or '' }}&operatorId={{ filters.operatorId or '' }}&entityId={{ filters.entityId or '' }}">上一页</a>
+  {% endif %}
+  第 {{ page }} 页
+  {% if items %}
+  <a href="/admin/audit?page={{ page + 1 }}&from={{ filters['from'] or '' }}&to={{ filters['to'] or '' }}&eventType={{ filters.eventType or '' }}&entityType={{ filters.entityType or '' }}&operatorId={{ filters.operatorId or '' }}&entityId={{ filters.entityId or '' }}">下一页</a>
+  {% endif %}
+</p>
+{% endblock %}

@@ -16,6 +16,8 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S3 | 流转申请/交接留痕查询与审批（transfer_requests、handovers timeline） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S4 | 工时汇总（人员/任务/机台/订单）与车间概览 | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S5 | 装配模型管理（版本/发布查询） | ADMIN | 已实现 |
+| S6 | 审计日志查询（audit_logs ∪ audit_events 统一视图） | ADMIN | 已实现 |
+| S7 | 生产订单查询（列表 + 单号详情聚合） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -179,6 +181,27 @@ web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL �
   状态/创建人/时间；code 空=全部按机型分组排序）+ code 命中时的当前发布卡片
   （含版本/字节/SHA-256/创建时间）。上传/发布动作显式不在范围（只读查询面）。
 
+### 6.6 S6 审计日志路由（准入 ADMIN）
+
+直接调用既有 `audit_logs` 处理函数（同参数语义：page/pageSize=50、from/to
+ISO-8601、eventType/action、entityType/resourceType、operatorId、
+entityId/resourceId），沿用 audit_logs ∪ audit_events 脱敏统一视图。
+
+- `GET /admin/audit?page=&from=&to=&eventType=&entityType=&operatorId=&entityId=`
+  → 200：过滤表单 + 记录表（时间/记录类型/事件/实体类型/实体 ID/操作人/角色/
+  结果/请求 ID）+ 分页（过滤参数透传）。非法时间/区间倒挂 → 内联错误
+  （「必须是合法 ISO-8601 时间」「from 不能晚于 to」）。
+
+### 6.7 S7 生产订单路由（准入 ADMIN + WORKSHOP_SUPERVISOR）
+
+列表为对 `production_orders` 的只读查询（LIMIT 100）；单号详情复用
+`GET /api/v1/orders/{order_no}/detail` 同一处理函数（路由表解析调用），
+沿用其内嵌可见性范围（装配工仅本人任务物料、其余角色 scoped 要求）。
+
+- `GET /admin/orders?order_no=&page=` → 200：订单表（单号/产品/状态/时间）+
+  order_no 命中时的详情卡（订单信息 + 装配任务表 + 物料需求表，缺省显示
+  「暂无物料需求（或不在您的可见范围内）」）。订单不存在/无权 → 内联 ApiError 文案。
+
 ## 7. 幂等与事务规则（S1）
 
 - S1 无业务写入（仅会话行的插入/删除，天然幂等：INSERT 一次、DELETE 可重放）。
@@ -251,6 +274,20 @@ web 层经 FastAPI 路由表解析同一处理函数直接调用（同一 SQL �
 2. 版本表显示种子两版本行（PUBLISHED/ARCHIVED 中文状态标签）。
 3. `?code=GearboxAssy` 过滤命中且显示当前发布卡片（版本号与 SHA-256 片段）。
 4. 未知 code 显示「资源不存在」提示；空库 200 显示「暂无数据」。
+
+### 8.5 S6 断言（tests/test_admin_web_audit.py）
+
+1. ADMIN `GET /admin/audit` → 200；WAREHOUSE_ADMIN → 403。
+2. 种子 audit_logs 与 audit_events 各一行均显示（两种记录类型标签）。
+3. `eventType` 过滤命中；不命中显示「暂无数据」。
+4. `from` 晚于 `to` → 内联「from 不能晚于 to」；非法时间格式 → 内联 ISO-8601 文案。
+
+### 8.6 S7 断言（tests/test_admin_web_orders.py）
+
+1. WORKSHOP_SUPERVISOR `GET /admin/orders` → 200；WAREHOUSE_ADMIN → 403。
+2. 列表显示种子订单（单号/产品/状态）。
+3. `?order_no=SO-TEST` 命中显示详情卡与任务行；`?order_no=NOPE` 内联「订单不存在」。
+4. 仅含 init_db 演示种子的库 200 且列表含演示单据（库恒非空，锚定 demo 事实）。
 
 ## 9. 验收门禁（每个切片完成时全绿）
 
