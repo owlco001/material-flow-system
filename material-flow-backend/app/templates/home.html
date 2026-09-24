@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 · 物料流转管理{% endblock %}
+{% block nav %}
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>仪表盘</h2>
+<div class="cards">
+  <div class="card"><h3>用户</h3><p>总数 {{ users_total }} · 启用 {{ users_active }}</p></div>
+  <div class="card"><h3>待审批流转申请</h3><p>{{ pending_transfers }}</p></div>
+  <div class="card"><h3>待确认交接</h3><p>{{ pending_handovers }}</p></div>
+</div>
+<p style="color:#6b7280;margin-top:16px">服务版本 {{ app_version }}</p>
+{% endblock %}

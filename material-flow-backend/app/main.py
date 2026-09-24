@@ -593,6 +593,8 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS setup_operations(client_operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
     CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_model_versions(
         id TEXT PRIMARY KEY,
@@ -5165,3 +5167,10 @@ def upload_file(purpose: str, file: UploadFile = File(...), user: sqlite3.Row = 
     fid = "file_" + uuid.uuid4().hex; target = UPLOAD_DIR / (fid + suffix); data = file.file.read(5 * 1024 * 1024 + 1)
     if len(data) > 5 * 1024 * 1024: raise HTTPException(413, "图片超过 5MB")
     target.write_bytes(data); return {"fileId": fid, "purpose": purpose, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+# Web 管理界面（SSR，契约 docs/admin-web-contract.md）。
+# 必须在模块末尾注册：admin_web 复用本模块的服务函数（db/check_password/audit 等）。
+try:
+    from .admin_web import router as _admin_web_router
+except ImportError:
+    from admin_web import router as _admin_web_router
+app.include_router(_admin_web_router)

@@ -4,3 +4,5 @@ python-multipart==0.0.20
 # 密码哈希：Argon2id（契约 A03）。注意本机已装的 25.1.0 与 23.1.0
 # 在 API 上兼容，锁 23.1.0 是与现有部署环境对齐的保守选择。
 argon2-cffi==23.1.0
+# Web 管理界面 SSR 模板（契约 docs/admin-web-contract.md）
+jinja2==3.1.4
