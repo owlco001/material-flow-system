@@ -25,6 +25,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S12 | 直属领导（managerId）补齐 | ADMIN | 已实现 |
 | S13 | BOM 导入（CSV/XLSX 两段式预览→提交）与版本查询 | ADMIN + PLANNER + WORKSHOP_SUPERVISOR | 已实现 |
 | S14 | 装配模型上传（GLB 上传→自动发布→旧发布归档） | ADMIN + WAREHOUSE_ADMIN | 已实现 |
+| S15 | CSV 数据导出（审计日志 / 物料工作台） | 审计 ADMIN；工作台同 §6.9 | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -273,6 +274,17 @@ upload_bad_name / upload_forbidden / upload_failed）。
 - `POST /admin/models/upload`（multipart: csrf_token, modelCode, modelName, file,
   sha256 可选；clientOperationId 可选，缺省时服务端生成）→ 303 → `?notice=model_uploaded`。
 
+### 6.14 S15 CSV 数据导出路由
+
+读操作序列化输出（text/csv; charset=utf-8 + Excel UTF-8 BOM +
+Content-Disposition: attachment）。数据源与列表页同名处理函数（api_audit_logs /
+api_workspace_items），过滤参数与列表页一致；因 API 单页上限 le=100，导出按页
+收集全部行。审计导出仅 ADMIN；工作台导出角色同 §6.9。
+
+- `GET /admin/audit/export?from=&to=&eventType=&entityType=&operatorId=&entityId=`
+  → CSV（audit-logs.csv）。
+- `GET /admin/workspace/export?status=&orderNo=` → CSV（material-workspace.csv）。
+
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
 复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
@@ -413,6 +425,13 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
 3. 非 .glb 后缀 → `?notice=upload_bad_type`；坏 magic → `?notice=upload_bad_glb`。
 4. WORKSHOP_SUPERVISOR 上传 → `?notice=upload_forbidden`（无落库）。
 5. 缺 csrf_token → 403 无落库。
+
+### 8.13 S15 断言（tests/test_admin_web_exports.py）
+
+1. ADMIN 审计导出 → 200 text/csv + BOM + 表头行 + 行数=种子行数；WORKSHOP_SUPERVISOR
+   → 403。
+2. ADMIN 工作台导出 → 200 text/csv + Content-Disposition: attachment。
+3. OPERATOR 工作台导出 → 403。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 

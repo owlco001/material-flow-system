@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import csv
 import hmac
+import io
 import secrets
 import sqlite3
 import time
@@ -14,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -1465,3 +1467,73 @@ async def admin_model_upload(request: Request):
         notice = MODEL_UPLOAD_NOTICE.get(str(getattr(exc, "detail", "")), "upload_failed")
         return _see_other(f"/admin/models?notice={notice}")
     return _see_other("/admin/models?notice=model_uploaded")
+
+
+# ==================== S15：CSV 数据导出（契约 §6.14）====================
+
+
+def _csv_response(filename: str, rows: list[dict]) -> Response:
+    out = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    body = "\ufeff" + out.getvalue()  # Excel 友好的 UTF-8 BOM
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+    )
+
+
+def _collect_all(fn, **kwargs) -> list[dict]:
+    """按 API 单页上限（le=100）分页收集全部行（导出不留尾页）。"""
+    rows: list[dict] = []
+    page = 1
+    while True:
+        data = fn(page=page, pageSize=100, **kwargs)
+        batch = data.get("items") or []
+        rows.extend(batch)
+        if len(batch) < 100:
+            return rows
+        page += 1
+
+
+@router.get("/admin/audit/export")
+def admin_audit_export(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    q = request.query_params
+    rows = _collect_all(
+        api_audit_logs,
+        from_=q.get("from") or None,
+        to_=q.get("to") or None,
+        eventType=q.get("eventType") or None,
+        entityType=q.get("entityType") or None,
+        operatorId=q.get("operatorId") or None,
+        action=None,
+        resourceType=None,
+        resourceId=None,
+        entityId=q.get("entityId") or None,
+        user=user,
+    )
+    return _csv_response("audit-logs", rows)
+
+
+@router.get("/admin/workspace/export")
+def admin_workspace_export(request: Request):
+    user, denied = _workspace_or_403(request)
+    if denied:
+        return denied
+    q = request.query_params
+    rows = _collect_all(
+        api_workspace_items,
+        viewRole=None,
+        status=q.get("status") or None,
+        orderNo=q.get("orderNo") or None,
+        user=user,
+        x_request_id=str(uuid.uuid4()),
+        x_client_operation_id=None,
+    )
+    return _csv_response("material-workspace", rows)
