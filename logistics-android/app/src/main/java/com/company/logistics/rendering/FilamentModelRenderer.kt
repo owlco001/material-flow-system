@@ -30,7 +30,10 @@ class FilamentModelRenderer(
     private val gltfioInitializer: () -> Unit = { Gltfio.init() },
     private val engineFactory: () -> Engine = { Engine.create() },
 ) : ModelRendererAdapter, Choreographer.FrameCallback {
-    override val camera = OrbitCameraState()
+    // Distance bounds scale with real assemblies: the Gearbox sample sits ~160 units from
+    // the origin with a 15.6 radius and needs a ~94 unit viewing distance.
+    override val camera = OrbitCameraState(minDistance = 0.1f, maxDistance = 2000f)
+    private var modelCenter = floatArrayOf(0f, 0f, 0f)
 
     private val choreographer by lazy { Choreographer.getInstance() }
     private var engine: Engine? = null
@@ -195,6 +198,7 @@ class FilamentModelRenderer(
             asset = candidate
             activeScene.addEntities(candidate!!.entities)
             val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
+            modelCenter = candidate!!.boundingBox.center
             camera.fit(
                 radius = if (radius > 0f) radius else 1f,
                 aspect = viewportWidth.toFloat() / viewportHeight.toFloat(),
@@ -293,13 +297,16 @@ class FilamentModelRenderer(
         val pitch = Math.toRadians(camera.pitchDegrees.toDouble())
         val distance = camera.distance.toDouble()
         val cosPitch = cos(pitch)
+        val centerX = modelCenter[0].toDouble()
+        val centerY = modelCenter[1].toDouble()
+        val centerZ = modelCenter[2].toDouble()
         cameraComponent?.lookAt(
-            distance * cosPitch * sin(yaw) + camera.panX,
-            distance * sin(pitch) + camera.panY,
-            distance * cosPitch * cos(yaw),
-            camera.panX.toDouble(),
-            camera.panY.toDouble(),
-            0.0,
+            centerX + distance * cosPitch * sin(yaw) + camera.panX,
+            centerY + distance * sin(pitch) + camera.panY,
+            centerZ + distance * cosPitch * cos(yaw),
+            centerX + camera.panX.toDouble(),
+            centerY + camera.panY.toDouble(),
+            centerZ,
             0.0,
             1.0,
             0.0,
