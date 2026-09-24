@@ -12,6 +12,8 @@
 {% block content %}
 <h2>生产订单</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if request and request.query_params.get("notice") == "order_created" %}<p style="color:#15803d">生产订单已创建</p>{% endif %}
+{% if request and request.query_params.get("notice") == "order_status_changed" %}<p style="color:#15803d">订单状态已推进</p>{% endif %}
 <div class="card" style="max-width:520px">
   <form method="get" action="/admin/orders">
     <label>订单号（留空显示全部，填单号看详情）</label>
@@ -63,7 +65,7 @@
 
 <h3 style="margin-top:24px">订单列表</h3>
 <table>
-  <tr><th>订单号</th><th>产品</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>详情</th></tr>
+  <tr><th>订单号</th><th>产品</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>详情</th><th>推进</th></tr>
   {% for row in rows %}
   <tr>
     <td>{{ row.order_no }}</td>
@@ -72,9 +74,24 @@
     <td>{{ row.created_at }}</td>
     <td>{{ row.updated_at or "—" }}</td>
     <td><a href="/admin/orders?order_no={{ row.order_no }}">查看</a></td>
+    <td>
+      {% if row.status == "RELEASED" %}
+      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="status" value="IN_PROGRESS">
+        <button type="submit" style="margin:0;padding:4px 10px">开始生产</button>
+      </form>
+      {% elif row.status == "IN_PROGRESS" %}
+      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="status" value="COMPLETED">
+        <button type="submit" style="margin:0;padding:4px 10px">完成</button>
+      </form>
+      {% else %}—{% endif %}
+    </td>
   </tr>
   {% else %}
-  <tr><td colspan="6">暂无数据</td></tr>
+  <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
 {% endblock %}

@@ -62,6 +62,8 @@ from app.main import (
     create_order as api_create_order,
     OrderCreateRequest,
     OrderModelCreate,
+    OrderStatusRequest,
+    set_order_status as api_set_order_status,
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
@@ -305,6 +307,7 @@ NOTICE_TEXTS = {
     "upload_forbidden": "上传失败：仅管理员或仓库管理员可上传模型",
     "upload_failed": "上传失败：未通过服务端校验",
     "order_created": "生产订单已创建",
+    "order_status_changed": "订单状态已推进",
 }
 
 
@@ -1644,3 +1647,36 @@ async def admin_order_create(request: Request):
     except HTTPException as exc:
         return _order_form_page(request, user, values=values, error=f"{exc.status_code}：{exc.detail}")
     return _see_other("/admin/orders?notice=order_created")
+
+
+# ==================== S22：订单状态推进（契约 §6.17）====================
+
+
+@router.post("/admin/orders/{order_no}/status")
+async def admin_order_status(request: Request, order_no: str):
+    user, denied = _order_create_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        api_set_order_status(
+            order_no,
+            OrderStatusRequest(clientOperationId=operation_id, status=str(form.get("status", ""))),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        msg = _api_error_message(exc)
+        return HTMLResponse(
+            f"<p class='error'>{msg}</p><p><a href='/admin/orders'>返回订单列表</a></p>",
+            status_code=200,
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/orders'>返回订单列表</a></p>",
+            status_code=200,
+        )
+    return _see_other("/admin/orders?notice=order_status_changed")

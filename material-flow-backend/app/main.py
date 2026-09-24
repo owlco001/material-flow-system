@@ -2705,6 +2705,87 @@ def create_order(
         c.close()
 
 
+class OrderStatusRequest(BaseModel):
+    clientOperationId: str
+    status: str
+
+
+ORDER_TRANSITIONS = {"RELEASED": "IN_PROGRESS", "IN_PROGRESS": "COMPLETED"}
+
+
+@app.post("/api/v1/orders/{order_no}/status")
+def set_order_status(
+    order_no: str,
+    body: OrderStatusRequest,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """生产订单状态推进（契约：docs/order-creation-contract.md §4）。"""
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    if user["role"] not in {"ADMIN", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 或 PLANNER 可变更订单状态", trace_id=trace_id)
+    try:
+        operation_id = str(uuid.UUID(body.clientOperationId))
+    except (ValueError, AttributeError, TypeError):
+        raise ApiError(400, CODE_VALIDATION_ERROR, "clientOperationId 必须是合法 UUID", trace_id=trace_id) from None
+    target = body.status.strip().upper()
+    if target not in ("IN_PROGRESS", "COMPLETED"):
+        raise ApiError(422, CODE_VALIDATION_ERROR, "status 取值无效", trace_id=trace_id)
+    payload = json.dumps({"orderNo": order_no, "status": target, "clientOperationId": operation_id}, sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM order_operations WHERE client_operation_id=?", (operation_id,)
+        ).fetchone()
+        if prior:
+            if prior["payload_json"] != payload:
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            result.update(idempotent=True, traceId=trace_id)
+            c.rollback()
+            return result
+        order = c.execute("SELECT * FROM production_orders WHERE order_no=?", (order_no,)).fetchone()
+        if not order:
+            raise ApiError(404, "ORDER_NOT_FOUND", "生产订单不存在", trace_id=trace_id)
+        current = order["status"]
+        if ORDER_TRANSITIONS.get(current) != target:
+            raise ApiError(409, "ORDER_STATUS_INVALID", "订单状态不允许变更", trace_id=trace_id)
+        ts = now()
+        c.execute(
+            "UPDATE production_orders SET status=?, updated_at=? WHERE id=?",
+            (target, ts, order["id"]),
+        )
+        result = {
+            "orderId": order["id"], "orderNo": order_no, "previousStatus": current,
+            "status": target, "serverTime": ts, "traceId": trace_id, "idempotent": False,
+        }
+        c.execute(
+            "INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,"
+            "request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("ORDER_STATUS_CHANGED", "PRODUCTION_ORDER", order["id"], user["id"], user["role"],
+             trace_id, operation_id, json.dumps({"status": current}),
+             json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
+        )
+        c.execute(
+            "INSERT INTO order_operations(client_operation_id,order_id,action,payload_json,result_json,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (operation_id, order["id"], "SET_ORDER_STATUS", payload,
+             json.dumps(result, ensure_ascii=False, sort_keys=True), ts),
+        )
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 @app.post("/api/v1/orders/material-status")
 def material_status(
     body: dict[str, str],

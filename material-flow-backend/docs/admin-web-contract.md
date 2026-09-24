@@ -30,6 +30,7 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S18 | 全局统一导航 + 内核边界固化 | 全部页面 | 已实现 |
 | S19 | 车间概览可视化（机台进度 CSS 条形图） | REPORT_ROLES | 已实现 |
 | S21 | 生产订单创建面（web 表单 → create_order API） | ADMIN + PLANNER | 已实现 |
+| S22 | 订单状态推进（RELEASED→IN_PROGRESS→COMPLETED） | ADMIN + PLANNER | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -309,6 +310,17 @@ api_workspace_items），过滤参数与列表页一致；因 API 单页上限 l
   modelCode1..5 / modelName1..5 / modelQty1..5，空行忽略）→ 303 →
   `?notice=order_created`；失败（冲突/校验）→ 200 表单页内联 API 文案 + 回填。
 
+### 6.17 S22 订单状态推进路由（准入 ADMIN + PLANNER）
+
+复用 set_order_status 内核 API 同名处理函数（docs/order-creation-contract.md §4）。
+状态机单向推进：RELEASED → IN_PROGRESS → COMPLETED（跳级/重复/回退 → 409
+「订单状态不允许变更」；未知单号 → 404「生产订单不存在」）；审计
+ORDER_STATUS_CHANGED + 幂等表 order_operations(action='SET_ORDER_STATUS')。
+
+- `POST /admin/orders/{order_no}/status`（form: csrf_token, status, clientOperationId
+  可选缺省服务端生成）→ 303 → `?notice=order_status_changed`；失败 → 200 错误页
+  内联 API 文案 + 返回列表链接。
+
 ### 8.15 S21 断言（tests/test_admin_web_order_create.py）
 
 1. PLANNER 打开新建页 200；WORKSHOP_SUPERVISOR → 403（创建面门禁）。
@@ -316,6 +328,16 @@ api_workspace_items），过滤参数与列表页一致；因 API 单页上限 l
 3. 表单创建（2 行机型）→ 303 `?notice=order_created` + orders/models 落库。
 4. 重复订单号 → 200 内联「生产订单号已存在」。
 5. 无机型行 → 200 内联「1..20 项」；缺 csrf → 403 无落库。
+
+### 8.16 S22 断言（tests/test_order_status.py）
+
+1. API 推进（RELEASED→IN_PROGRESS）→ 200 + 落库 + ORDER_STATUS_CHANGED 审计 +
+   SET_ORDER_STATUS 幂等行。
+2. 状态机守卫：跳级 RELEASED→COMPLETED → 409「订单状态不允许变更」；COMPLETED 重复
+   → 409；未知单号 → 404；非法目标值 → 422。
+3. WAREHOUSE_ADMIN → 403；PLANNER 可推进；同键重放 → idempotent:true。
+4. web 表单推进 → 303 `?notice=order_status_changed`；非法转换 → 200 内联「订单状态
+   不允许变更」。
 
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
