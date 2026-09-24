@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.company.logistics.data.remote.AssemblyModelFileInfo
 import com.company.logistics.data.remote.AssemblyModelMeta
@@ -107,8 +108,20 @@ private fun RenderViewport(
     modifier: Modifier = Modifier,
 ) {
     var surfaceReady by remember { mutableStateOf(false) }
+    var diag by remember { mutableStateOf("诊断启动中…") }
+    LaunchedEffect(renderer) {
+        while (true) {
+            val (scheduled, begun, rendered) = renderer.debugFrameCounters()
+            diag = "渲染诊断\ninit: ${renderer.initializationFailureChain() ?: "OK"}\n" +
+                "surface: ${if (surfaceReady) "ready" else "none"}\n" +
+                "frames: sched=$scheduled begun=$begun rendered=$rendered\n" +
+                "model: ${glbFile?.name ?: "未加载"}"
+            kotlinx.coroutines.delay(500)
+        }
+    }
+    Box(modifier) {
     AndroidView(
-        modifier = modifier.pointerInput(renderer) {
+        modifier = Modifier.fillMaxSize().pointerInput(renderer) {
             detectTransformGestures { _, pan, zoom, _ ->
                 renderer.onRotate(pan.x * .2f, pan.y * .2f)
                 renderer.onPan(pan.x * .01f, pan.y * .01f)
@@ -151,6 +164,11 @@ private fun RenderViewport(
             }
         },
     )
+    Text(
+        diag, color = Color.White, fontSize = 13.sp, lineHeight = 17.sp,
+        modifier = Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color(0xCC000000)).padding(10.dp),
+    )
+    }
     LaunchedEffect(glbFile, surfaceReady) {
         val file = glbFile
         if (surfaceReady && file != null) {

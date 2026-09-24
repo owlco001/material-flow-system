@@ -50,6 +50,12 @@ class FilamentModelRenderer(
     private var frameCallbackPosted = false
     private var viewportWidth = 1
     private var viewportHeight = 1
+    private var framesScheduled = 0L
+    private var framesBegun = 0L
+    private var framesRendered = 0L
+
+    /** Diagnostic counters for the debug overlay; cheap increments, no locks needed on the UI thread. */
+    internal fun debugFrameCounters(): Triple<Long, Long, Long> = Triple(framesScheduled, framesBegun, framesRendered)
 
     init {
         var createdEngine: Engine? = null
@@ -189,6 +195,7 @@ class FilamentModelRenderer(
     }
 
     override fun doFrame(frameTimeNanos: Long) {
+        framesScheduled++
         val chain = swapChain
         val activeRenderer = renderer
         val activeView = view
@@ -197,8 +204,10 @@ class FilamentModelRenderer(
             return
         }
         if (chain != null && activeRenderer != null && activeView != null && activeRenderer.beginFrame(chain, frameTimeNanos)) {
+            framesBegun++
             activeRenderer.render(activeView)
             activeRenderer.endFrame()
+            framesRendered++
         }
         // Keep scheduling unconditionally: a skipped frame (beginFrame == false, e.g. the first
         // frames after attach) must not permanently stop the render loop.
