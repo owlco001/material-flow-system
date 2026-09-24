@@ -1,7 +1,8 @@
 package com.company.logistics
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -115,11 +116,11 @@ private fun RenderViewport(
             }
         },
         factory = { context ->
-            SurfaceView(context).also { view ->
-                view.holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
+            TextureView(context).also { view ->
+                view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
                         surfaceReady = true
-                        renderer.attach(holder.surface).fold(
+                        renderer.attach(Surface(surfaceTexture)).fold(
                             { if (glbFile == null) onStatus("等待模型") },
                             { error ->
                                 onStatus(
@@ -131,18 +132,22 @@ private fun RenderViewport(
                                 )
                             },
                         )
-                    }
-
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
                         renderer.onViewportChanged(width, height)
                     }
 
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                        renderer.onViewportChanged(width, height)
+                    }
+
+                    override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
                         surfaceReady = false
                         renderer.detachSurface()
                         onStatus("等待 Surface")
+                        return true
                     }
-                })
+
+                    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+                }
             }
         },
     )

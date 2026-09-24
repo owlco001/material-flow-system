@@ -192,13 +192,17 @@ class FilamentModelRenderer(
         val chain = swapChain
         val activeRenderer = renderer
         val activeView = view
-        if (!released && chain != null && activeRenderer != null && activeView != null && activeRenderer.beginFrame(chain, frameTimeNanos)) {
+        if (released) {
+            frameCallbackPosted = false
+            return
+        }
+        if (chain != null && activeRenderer != null && activeView != null && activeRenderer.beginFrame(chain, frameTimeNanos)) {
             activeRenderer.render(activeView)
             activeRenderer.endFrame()
-            choreographer.postFrameCallback(this)
-        } else {
-            frameCallbackPosted = false
         }
+        // Keep scheduling unconditionally: a skipped frame (beginFrame == false, e.g. the first
+        // frames after attach) must not permanently stop the render loop.
+        choreographer.postFrameCallback(this)
     }
 
     override fun onRotate(deltaX: Float, deltaY: Float) {
