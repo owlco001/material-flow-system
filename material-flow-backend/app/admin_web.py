@@ -24,6 +24,7 @@ from app.main import (
     LOGIN_MAX_FAILURES,
     LOGIN_WINDOW_SECONDS,
     ApiError,
+    BomCommitRequest,
     Decision,
     DeleteUserRequest,
     EditUserRequest,
@@ -35,6 +36,7 @@ from app.main import (
     add_employee,
     approve as api_approve,
     audit_logs as api_audit_logs,
+    commit_bom_import as api_bom_commit,
     audit,
     check_password,
     confirm_stocktake as api_confirm_stocktake,
@@ -48,8 +50,10 @@ from app.main import (
     list_transfers,
     list_exceptions as api_list_exceptions,
     list_stocktakes as api_list_stocktakes,
+    list_bom_versions as api_bom_versions,
     now,
     order_detail as api_order_detail,
+    preview_bom_import as api_bom_preview,
     reset_employee_password,
     review_exception as api_review_exception,
     app as backend_app,
@@ -285,6 +289,7 @@ NOTICE_TEXTS = {
     "exception_reviewed": "异常已审核",
     "assigned": "任务成员已分配",
     "unassigned": "任务成员已移除",
+    "bom_imported": "BOM 已导入",
 }
 
 
@@ -1279,3 +1284,134 @@ async def admin_task_unassign(request: Request, tid: str, assembler_id: str):
     except HTTPException as exc:
         return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
     return _see_other(f"/admin/tasks?notice=unassigned")
+
+
+# ==================== S13：BOM 导入（契约 §6.12）====================
+
+BOM_ROLES = ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR")
+
+
+def _bom_or_403(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in BOM_ROLES:
+        return None, HTMLResponse(
+            "403 禁止访问：BOM 导入仅对管理员/计划员/车间主管开放", status_code=403
+        )
+    return user, None
+
+
+@router.get("/admin/boms", response_class=HTMLResponse)
+def admin_boms(request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    page = _page_param(request)
+    q = request.query_params
+    try:
+        data = api_bom_versions(
+            modelCode=q.get("modelCode") or None,
+            status=q.get("status") or None,
+            page=page,
+            pageSize=20,
+            user=user,
+        )
+    except ApiError as exc:
+        return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
+    except HTTPException as exc:
+        return _api_http_error_response(exc)
+    return templates.TemplateResponse(
+        request,
+        "boms.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": data["items"],
+            "page": data["page"],
+            "total_rows": data["total"],
+            "filters": {"modelCode": q.get("modelCode") or "", "status": q.get("status") or ""},
+            "error": None,
+            "notice_text": NOTICE_TEXTS.get(q.get("notice", "")),
+        },
+    )
+
+
+@router.post("/admin/boms/import", response_class=HTMLResponse)
+async def admin_bom_preview(request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    upload = form.get("file")
+    model_code = str(form.get("modelCode", "")).strip()
+    if upload is None or not hasattr(upload, "filename") or not model_code:
+        return _bom_error_page(request, user, "请选择文件并填写机型码")
+    try:
+        preview = await api_bom_preview(
+            file=upload,
+            modelCode=model_code,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError) as exc:
+        return _bom_error_page(request, user, _api_error_message(exc))
+    except HTTPException as exc:
+        return _bom_error_page(request, user, f"{exc.status_code}：{exc.detail}")
+    return templates.TemplateResponse(
+        request,
+        "bom_preview.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "preview": preview,
+            "commit_op": str(uuid.uuid4()),
+        },
+    )
+
+
+def _bom_error_page(request: Request, user: sqlite3.Row, error: str):
+    data = api_bom_versions(modelCode=None, status=None, page=1, pageSize=20, user=user)
+    return templates.TemplateResponse(
+        request,
+        "boms.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "items": data["items"],
+            "page": data["page"],
+            "total_rows": data["total"],
+            "filters": {"modelCode": "", "status": ""},
+            "error": error,
+            "notice_text": None,
+        },
+    )
+
+
+@router.post("/admin/boms/import/commit")
+async def admin_bom_commit(request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        api_bom_commit(
+            BomCommitRequest(
+                previewId=str(form.get("previewId", "")),
+                clientOperationId=operation_id,
+                publish=form.get("publish") == "on",
+            ),
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _bom_error_page(request, user, _api_error_message(exc))
+    except HTTPException as exc:
+        return _bom_error_page(request, user, f"{exc.status_code}：{exc.detail}")
+    return _see_other("/admin/boms?notice=bom_imported")

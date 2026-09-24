@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}BOM 管理 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
+<a href="/admin/tasks" style="color:#fff;margin-right:12px">机台任务</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>BOM 版本管理与导入</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+
+<div class="card" style="max-width:560px">
+  <h3>导入 BOM（CSV / XLSX，两步：预览 → 提交）</h3>
+  <form method="post" action="/admin/boms/import" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>机型码</label>
+    <input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy">
+    <label>文件（CSV 表头：modelCode,materialCode,materialName,specification,unit,quantity,scrapRate,substituteMaterialCodes）</label>
+    <input type="file" name="file" required accept=".csv,.xlsx">
+    <button type="submit">上传并预览</button>
+  </form>
+</div>
+
+<div class="card" style="margin-top:16px;max-width:680px">
+  <form method="get" action="/admin/boms">
+    <label>机型码</label>
+    <input name="modelCode" value="{{ filters.modelCode }}" style="max-width:170px">
+    <label>状态</label>
+    <input name="status" value="{{ filters.status }}" style="max-width:120px" placeholder="DRAFT / PUBLISHED">
+    <button type="submit">筛选</button>
+    <a href="/admin/boms" style="margin-left:8px">重置</a>
+  </form>
+</div>
+
+<h3 style="margin-top:24px">版本列表（共 {{ total_rows }}）</h3>
+<table>
+  <tr><th>ID</th><th>机型码</th><th>版本</th><th>状态</th><th>行数</th><th>文件 SHA-256</th><th>创建</th><th>发布</th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.id }}</td>
+    <td>{{ item.model_code }}</td>
+    <td>v{{ item.version_no }}</td>
+    <td>{{ item.status }}</td>
+    <td>{{ item.row_count }}</td>
+    <td>{{ (item.source_file_sha256 or "")[:12] }}…</td>
+    <td>{{ item.created_by }} @ {{ item.created_at }}</td>
+    <td>{{ item.published_by or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8">暂无数据</td></tr>
+  {% endfor %}
+</table>
+<p style="margin-top:12px">
+  {% if page > 1 %}<a href="/admin/boms?page={{ page - 1 }}&modelCode={{ filters.modelCode }}&status={{ filters.status }}">上一页</a>{% endif %}
+  第 {{ page }} 页
+  {% if items %}<a href="/admin/boms?page={{ page + 1 }}&modelCode={{ filters.modelCode }}&status={{ filters.status }}">下一页</a>{% endif %}
+</p>
+{% endblock %}

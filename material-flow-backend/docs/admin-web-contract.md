@@ -22,6 +22,8 @@ WAREHOUSE_ADMIN（仓库管理员）。业务主线：生产订单—细分机�
 | S9 | 物料状态工作台（本角色视图：状态计数 + 工作项 + 责任/交接链） | ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
 | S10 | 盘点确认 / 异常审核动作 | ADMIN + WAREHOUSE_ADMIN | 已实现 |
 | S11 | 机台任务与成员分配（多人协作装配） | ADMIN + WORKSHOP_SUPERVISOR | 已实现 |
+| S12 | 直属领导（managerId）补齐 | ADMIN | 已实现 |
+| S13 | BOM 导入（CSV/XLSX 两段式预览→提交）与版本查询 | ADMIN + PLANNER + WORKSHOP_SUPERVISOR | 已实现 |
 
 明确排除：外部物流、线边库、配送工位；APP 端 /api/v1/* JSON 契约一律不动。
 
@@ -245,6 +247,20 @@ ASSEMBLER、1..20 个不同成员、幂等表 assembly_assignment_operations、�
   clientOperationId）→ 303 → `?notice=unassigned`。失败均重渲染任务页 +
   API 文案（如「成员必须是启用的 ASSEMBLER」「assemblerIds 必须为 1..20 个不同成员」）。
 
+### 6.12 S13 BOM 导入路由（准入 ADMIN + PLANNER + WORKSHOP_SUPERVISOR）
+
+复用 preview_bom_import / commit_bom_import / list_bom_versions 同名处理函数。
+两段式语义保持（预览存 BOM_PREVIEWS 进程内缓存 → 按 previewId 提交；服务重启后
+预览失效须重新上传；幂等表 bom_operations）。
+
+- `GET /admin/boms?page=&modelCode=&status=` → 200：导入表单（CSV/XLSX + 机型码）+
+  版本列表（ID/机型码/版本/状态/行数/文件 SHA-256/创建/发布）。
+- `POST /admin/boms/import`（multipart: csrf_token, modelCode, file）→ 200 预览页
+  （解析统计/文件校验/错误清单/有效明细 + canCommit 时的提交表单）；失败重渲染
+  列表页 + 文案。
+- `POST /admin/boms/import/commit`（form: csrf_token, clientOperationId, previewId,
+  publish 可选）→ 303 → `?notice=bom_imported`。
+
 ### 6.9 S9 物料状态工作台路由（准入 ADMIN + WAREHOUSE_ADMIN + WORKSHOP_SUPERVISOR）
 
 复用 workspace_summary / workspace_material_items 同名处理函数（web 层自生成
@@ -367,6 +383,15 @@ x_request_id；viewRole 恒 None——角色预览特性开关未启用（API �
 4. 分配非装配工（OPERATOR）→ 「成员必须是启用的 ASSEMBLER」且不落库。
 5. 移除成员 → 303 `?notice=unassigned`；removed_at 非空。
 6. 缺 csrf_token 的 POST → 403 且成员不变。
+
+### 8.11 S13 断言（tests/test_admin_web_boms.py）
+
+1. WORKSHOP_SUPERVISOR `GET /admin/boms` → 200；WAREHOUSE_ADMIN → 403。
+2. 种子 bom_versions 行显示（版本号/状态/行数）。
+3. 上传最小合法 CSV → 预览页显示统计与有效明细；非法文件 → 列表页内联文案。
+4. 提交预览（publish 不勾）→ 303 `?notice=bom_imported`；bom_versions + bom_items
+   落库。
+5. 缺 csrf_token 的上传/提交 → 403 无副作用。
 
 ### 8.8 S9 断言（tests/test_admin_web_workspace.py）
 

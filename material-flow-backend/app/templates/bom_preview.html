@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}BOM 导入预览 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/boms" style="color:#fff">BOM 管理</a>
+{% endblock %}
+{% block content %}
+<h2>BOM 导入预览 · {{ preview.modelCode }}</h2>
+<div class="cards">
+  <div class="card"><h3>解析统计</h3>
+    <p>总行 {{ preview.totalRows }} · 有效 {{ preview.validRows }} · 无效 {{ preview.invalidRows }}</p></div>
+  <div class="card"><h3>文件校验</h3>
+    <p>SHA-256 {{ (preview.fileSha256 or "")[:16] }}…</p></div>
+  <div class="card"><h3>可提交</h3>
+    <p>{{ "是" if preview.canCommit else "否" }}</p></div>
+</div>
+
+{% if preview.errors %}
+<h3 style="margin-top:16px">校验错误</h3>
+<ul>
+  {% for e in preview.errors %}<li class="error">{{ e }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<h3 style="margin-top:16px">有效明细（{{ preview.validRows }} 行）</h3>
+<table>
+  <tr><th>机型</th><th>物料编码</th><th>名称</th><th>规格</th><th>单位</th><th>用量</th><th>损耗率</th><th>替代料</th></tr>
+  {% for item in preview["items"] %}
+  <tr>
+    <td>{{ item.modelCode }}</td>
+    <td>{{ item.materialCode }}</td>
+    <td>{{ item.materialName }}</td>
+    <td>{{ item.specification or "—" }}</td>
+    <td>{{ item.unit }}</td>
+    <td>{{ item.quantity }}</td>
+    <td>{{ item.scrapRate }}</td>
+    <td>{{ item.substituteMaterialCodes or "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8">无有效行</td></tr>
+  {% endfor %}
+</table>
+
+{% if preview.canCommit %}
+<div class="card" style="margin-top:16px;max-width:480px">
+  <h3>确认提交</h3>
+  <form method="post" action="/admin/boms/import/commit">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="{{ commit_op }}">
+    <input type="hidden" name="previewId" value="{{ preview.previewId }}">
+    <label style="margin-top:8px">
+      <input type="checkbox" name="publish" style="width:auto"> 导入后立即发布
+    </label>
+    <button type="submit">提交导入</button>
+  </form>
+</div>
+{% endif %}
+<p style="margin-top:16px"><a href="/admin/boms">返回 BOM 管理</a></p>
+{% endblock %}
