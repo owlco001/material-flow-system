@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}BOM 管理 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
-<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
-<a href="/admin/tasks" style="color:#fff;margin-right:12px">机台任务</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/tasks">机台任务</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}
 <h2>BOM 版本管理与导入</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 
 <div class="card" style="max-width:560px">
   <h3>导入 BOM（CSV / XLSX，两步：预览 → 提交）</h3>

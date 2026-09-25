@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}物料与库存 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
-<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
-<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/flows">流转申请</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}
 <h2>物料与库存</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 <div class="card" style="max-width:520px">
   <form method="get" action="/admin/warehouse">
     <label>物料编码（查库位分布）</label>
@@ -62,7 +62,7 @@
       <form method="post" action="/admin/warehouse/stocktakes/{{ s.id }}/confirm" style="margin:0">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ stocktake_ops[s.id] }}">
-        <button type="submit" style="margin:0">确认盘点</button>
+        <button type="submit" class="btn btn-sm" style="margin:0">确认盘点</button>
       </form>
       {% endif %}
     </td>
@@ -97,7 +97,7 @@
           <option value="REJECT">驳回</option>
         </select>
         <input name="comment" placeholder="备注" style="max-width:100px">
-        <button type="submit" style="margin:0">提交</button>
+        <button type="submit" class="btn btn-sm" style="margin:0">提交</button>
       </form>
       {% endif %}
     </td>

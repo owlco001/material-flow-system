@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% block title %}机台任务 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
-<a href="/admin/reports" style="color:#fff;margin-right:12px">车间概览</a>
-<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/reports">车间概览</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}
 <h2>机台任务与成员分配</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
-{% if request and request.query_params.get("notice") == "task_created" %}<p style="color:#15803d">机台任务已创建</p>{% endif %}
+{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
+{% if request and request.query_params.get("notice") == "task_created" %}<p class="notice">机台任务已创建</p>{% endif %}
 {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
 <div class="card" style="max-width:560px">
   <h3>新建任务（订单按机台拆解）</h3>
@@ -48,7 +48,7 @@
       <form method="post" action="/admin/tasks/{{ item.id }}/assignments/{{ m.assembler_id }}/remove" style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ remove_ops[item.id ~ ':' ~ m.assembler_id] }}">
-        <button type="submit" style="margin:0 6px 0 2px;background:#b91c1c">移除</button>
+        <button type="submit" class="btn btn-danger btn-sm" style="margin:0 6px 0 2px">移除</button>
       </form>
       {% if not loop.last %}、{% endif %}
     {% else %}暂无成员{% endfor %}

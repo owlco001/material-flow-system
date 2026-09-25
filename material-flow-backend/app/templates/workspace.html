@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block title %}物料状态工作台 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
-<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
-<a href="/admin/warehouse" style="color:#fff;margin-right:12px">物料库存</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/warehouse">物料库存</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}

@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block title %}用户管理 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/">仪表盘</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}
 <h2>用户管理</h2>
-{% if notice_text %}<p style="color:#15803d">{{ notice_text }}</p>{% endif %}
+{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <p><a href="/admin/users/new">新建用户</a></p>
 <table>
@@ -28,17 +28,17 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ reset_ops[row.id] }}">
         <input name="newPassword" type="password" placeholder="新密码(至少8位)" required minlength="8" style="max-width:150px">
-        <button type="submit" style="margin:0">重置密码</button>
+        <button type="submit" class="btn btn-secondary btn-sm" style="margin:0">重置密码</button>
       </form>
       <form method="post" action="/admin/users/{{ row.id }}/revoke-sessions" style="display:inline" onsubmit="return confirm('确认强制下线该用户的全部会话？')">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" style="margin:0;background:#b45309">强制下线</button>
+        <button type="submit" class="btn btn-warn btn-sm" style="margin:0">强制下线</button>
       </form>
       {% if row.active %}
       <form method="post" action="/admin/users/{{ row.id }}/delete" style="display:inline" onsubmit="return confirm('确认停用该用户？历史记录保留。')">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ delete_ops[row.id] }}">
-        <button type="submit" style="margin:0;background:#b91c1c">停用</button>
+        <button type="submit" class="btn btn-danger btn-sm">停用</button>
       </form>
       {% endif %}
     </td>

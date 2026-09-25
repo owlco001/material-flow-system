@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block title %}工时汇总 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/reports" style="color:#fff;margin-right:12px">车间概览</a>
-<a href="/admin/flows" style="color:#fff;margin-right:12px">流转申请</a>
-<a href="/admin/handovers" style="color:#fff;margin-right:12px">交接留痕</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/reports">车间概览</a>
+<a class="nav-link" href="/admin/flows">流转申请</a>
+<a class="nav-link" href="/admin/handovers">交接留痕</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}

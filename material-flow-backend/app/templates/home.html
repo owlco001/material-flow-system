@@ -1,18 +1,32 @@
 {% extends "base.html" %}
 {% block title %}仪表盘 · 物料流转管理{% endblock %}
 {% block nav %}
-<a href="/admin/users" style="color:#fff;margin-right:12px">用户管理</a>
-<form method="post" action="/admin/logout" style="margin:0">
+<a class="nav-link" href="/admin/users">用户管理</a>
+<form method="post" action="/admin/logout" class="logout-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
 </form>
 {% endblock %}
 {% block content %}
-<h2>仪表盘</h2>
-<div class="cards">
-  <div class="card"><h3>用户</h3><p>总数 {{ users_total }} · 启用 {{ users_active }}</p></div>
-  <div class="card"><h3>待审批流转申请</h3><p>{{ pending_transfers }}</p></div>
-  <div class="card"><h3>待确认交接</h3><p>{{ pending_handovers }}</p></div>
+<div class="page-head">
+  <h2>仪表盘</h2>
+  <p class="page-desc">服务版本 {{ app_version }} · 关键指标一览</p>
 </div>
-<p style="color:#6b7280;margin-top:16px">服务版本 {{ app_version }}</p>
+<div class="cards">
+  <div class="card">
+    <p class="stat-label">用户</p>
+    <p class="stat-num">{{ users_active }}<span class="muted" style="font-size:15px;font-weight:400"> / {{ users_total }}</span></p>
+    <p class="stat-label">总数 {{ users_total }} · 启用 {{ users_active }}</p>
+  </div>
+  <div class="card">
+    <p class="stat-label">待审批流转申请</p>
+    <p class="stat-num">{{ pending_transfers }}</p>
+    <p class="stat-label"><a href="/admin/flows">前往处理 →</a></p>
+  </div>
+  <div class="card">
+    <p class="stat-label">待确认交接</p>
+    <p class="stat-num">{{ pending_handovers }}</p>
+    <p class="stat-label"><a href="/admin/handovers">前往处理 →</a></p>
+  </div>
+</div>
 {% endblock %}
