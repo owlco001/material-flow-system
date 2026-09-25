@@ -24,6 +24,8 @@ from app.xlsx_parser import (
     XlsxSheetReader,
 )
 
+from app.agent.db import ensure_agent_tables
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -525,6 +527,7 @@ def init_db() -> None:
     c = db()
     try:
         _init_db(c)
+        ensure_agent_tables(c)
     except Exception:
         c.rollback()
         raise
@@ -5571,3 +5574,9 @@ try:
 except ImportError:
     from admin_web import router as _admin_web_router
 app.include_router(_admin_web_router)
+# Agent 接口（数据分析对话 + 智能导入），同样复用本模块服务函数，末尾注册避免循环导入。
+try:
+    from .agent.routes import router as _agent_router
+except ImportError:
+    from agent.routes import router as _agent_router
+app.include_router(_agent_router)
