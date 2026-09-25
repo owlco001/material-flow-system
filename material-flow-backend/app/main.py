@@ -3224,6 +3224,151 @@ def order_detail(
     }
 
 
+@app.get("/api/v1/orders/{order_no}/tasks/{task_id}")
+def order_task_detail(
+    order_no: str,
+    task_id: str,
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """订单下某机台（装配任务）详情：状态、进度、物料。
+
+    可见性沿用订单详情的服务端作用域：ADMIN / WORKSHOP_SUPERVISOR 可看
+    全部任务；ASSEMBLER 仅可看本人被指派的任务；其余角色无权访问。
+    """
+    c = db()
+    order = c.execute(
+        "SELECT id, order_no, product_name, status FROM production_orders WHERE order_no=?",
+        (order_no,),
+    ).fetchone()
+    if not order:
+        c.close()
+        raise ApiError(404, CODE_ORDER_NOT_FOUND, "订单不存在")
+    t = c.execute(
+        """SELECT t.id, t.order_no, t.device_id, t.device_no, t.status,
+                  t.progress_stage, t.task_version, t.assigned_assembler_id,
+                  t.material_accepted_at, t.completed_at,
+                  d.device_name, d.workshop
+             FROM assembly_tasks t
+             LEFT JOIN devices d ON d.id = t.device_id
+            WHERE t.id = ? AND t.order_no = ?""",
+        (task_id, order_no),
+    ).fetchone()
+    if not t:
+        c.close()
+        raise ApiError(404, "TASK_NOT_FOUND", "机台任务不存在", retryable=False)
+    if user["role"] == "ASSEMBLER" and t["assigned_assembler_id"] != user["id"]:
+        c.close()
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看该机台")
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER"}:
+        c.close()
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看该机台")
+
+    stages = [
+        {
+            "stageNo": r["stage_no"], "status": r["status"],
+            "startedAt": r["started_at"], "completedAt": r["completed_at"],
+        }
+        for r in c.execute(
+            "SELECT stage_no, status, started_at, completed_at"
+            " FROM assembly_task_stages WHERE task_id=? ORDER BY stage_no",
+            (task_id,),
+        ).fetchall()
+    ]
+    # 机台物料：按机台号关联订单设备维度（order_devices.device_no）。
+    materials = [
+        {
+            "materialCode": r["material_code"], "materialName": r["material_name"],
+            "specification": r["specification"], "unit": r["unit"],
+            "requiredQuantity": r["required_quantity"],
+            "arrivedQuantity": r["arrived_quantity"],
+            "inStockQuantity": r["in_stock_quantity"],
+            "statusCode": r["status_code"],
+        }
+        for r in c.execute(
+            """SELECT m.code AS material_code, m.name AS material_name,
+                      m.specification, m.unit, r.required_quantity,
+                      r.arrived_quantity, r.in_stock_quantity, r.status_code
+                 FROM order_material_requirements r
+                 JOIN materials m ON m.id = r.material_id
+                 JOIN order_devices od ON od.id = r.device_id
+                WHERE r.order_id = ? AND od.device_no = ?
+                ORDER BY m.code""",
+            (order["id"], t["device_no"]),
+        ).fetchall()
+    ]
+    labor = c.execute(
+        """SELECT type, COALESCE(sum(duration_minutes), 0) AS minutes
+             FROM labor_records
+            WHERE task_id = ? AND status = 'COMPLETED' GROUP BY type""",
+        (task_id,),
+    ).fetchall()
+    labor_minutes = {r["type"]: int(r["minutes"] or 0) for r in labor}
+    members = [
+        {"assemblerId": r["assembler_id"], "role": r["assignment_role"]}
+        for r in c.execute(
+            "SELECT assembler_id, assignment_role FROM assembly_task_members"
+            " WHERE task_id = ? AND removed_at IS NULL",
+            (task_id,),
+        ).fetchall()
+    ]
+    c.close()
+    return {
+        "orderNo": order["order_no"], "productName": order["product_name"],
+        "orderStatus": order["status"],
+        "taskId": t["id"], "deviceId": t["device_id"], "deviceNo": t["device_no"],
+        "deviceName": t["device_name"], "workshop": t["workshop"],
+        "status": t["status"], "progressStage": t["progress_stage"],
+        "taskVersion": t["task_version"],
+        "assignedAssemblerId": t["assigned_assembler_id"],
+        "materialAcceptedAt": t["material_accepted_at"],
+        "completedAt": t["completed_at"],
+        "stages": stages, "materials": materials, "members": members,
+        "laborMinutes": labor_minutes,
+        "serverTime": now(),
+    }
+
+
+@app.get("/api/v1/orders/{order_no}/device-barcodes")
+def order_device_barcodes(
+    order_no: str,
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """订单下全部机台的条码清单，用于批量打印。
+
+    返回每个机台的二维码 / Code128 图片地址（复用单条码接口），
+    条码内容为机台号本身。
+    """
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER", "MATERIAL"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无权批量生成机台码")
+    c = db()
+    try:
+        order = c.execute(
+            "SELECT order_no FROM production_orders WHERE order_no=?", (order_no,)
+        ).fetchone()
+        if not order:
+            raise ApiError(404, CODE_ORDER_NOT_FOUND, "订单不存在")
+        rows = c.execute(
+            """SELECT t.device_no, d.device_name
+                 FROM assembly_tasks t
+                 LEFT JOIN devices d ON d.id = t.device_id
+                WHERE t.order_no = ? GROUP BY t.device_no ORDER BY t.device_no""",
+            (order_no,),
+        ).fetchall()
+    finally:
+        c.close()
+    devices = [
+        {
+            "deviceNo": r["device_no"],
+            "deviceName": r["device_name"],
+            "qrUrl": f"/api/v1/barcodes/device/{r['device_no']}?kind=qr&image=png",
+            "code128Url": f"/api/v1/barcodes/device/{r['device_no']}?kind=code128&image=png",
+        }
+        for r in rows
+    ]
+    return {"orderNo": order_no, "count": len(devices), "devices": devices,
+            "serverTime": now()}
+
+
 def _workspace_status_meta(status_code: str) -> tuple[str, str]:
     """返回服务端状态展示元数据，并对未知状态保持安全降级。"""
     return (

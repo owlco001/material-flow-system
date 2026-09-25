@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}批量机台码 · {{ order_no }} · 智慧工厂{% endblock %}
+{% block nav %}
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/orders?order_no={{ order_no }}">返回订单</a>
+<form method="post" action="/admin/logout" class="logout-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h2>批量机台码</h2>
+  <p class="page-desc">订单 {{ order_no }}{% if order.product_name %}（{{ order.product_name }}）{% endif %} · 共 {{ items | length }} 台机台，每台生成二维码与 Code128 一维码</p>
+</div>
+{% if items %}
+<div class="btn-row" style="margin-bottom:16px">
+  <a class="btn" href="/admin/orders/{{ order_no }}/barcodes/print?kind=both" target="_blank">打印全部（两种码）</a>
+  <a class="btn btn-secondary" href="/admin/orders/{{ order_no }}/barcodes/print?kind=qr" target="_blank">只打印二维码</a>
+  <a class="btn btn-secondary" href="/admin/orders/{{ order_no }}/barcodes/print?kind=code128" target="_blank">只打印一维码</a>
+</div>
+{% for it in items %}
+<div class="card" style="margin-bottom:16px;max-width:720px">
+  <h3>{{ it.device_no }}{% if it.device_name %} · {{ it.device_name }}{% endif %}</h3>
+  <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start">
+    <div style="text-align:center">
+      <p class="page-desc">二维码</p>
+      <img src="{{ it.qr_img }}" alt="二维码" style="max-width:170px;background:#fff;padding:10px;border:1px solid var(--line);border-radius:8px">
+      <div class="btn-row" style="justify-content:center;margin-top:8px">
+        <a class="btn btn-sm btn-secondary" href="/admin/barcodes/image?entity=device&key={{ it.device_no }}&kind=qr&image=png">PNG</a>
+        <a class="btn btn-sm btn-secondary" href="/admin/barcodes/image?entity=device&key={{ it.device_no }}&kind=qr&image=svg">SVG</a>
+      </div>
+    </div>
+    <div style="text-align:center">
+      <p class="page-desc">一维码（Code128）</p>
+      <img src="{{ it.code128_img }}" alt="一维码" style="max-width:300px;background:#fff;padding:10px;border:1px solid var(--line);border-radius:8px">
+      <div class="btn-row" style="justify-content:center;margin-top:8px">
+        <a class="btn btn-sm btn-secondary" href="/admin/barcodes/image?entity=device&key={{ it.device_no }}&kind=code128&image=png">PNG</a>
+        <a class="btn btn-sm btn-secondary" href="/admin/barcodes/image?entity=device&key={{ it.device_no }}&kind=code128&image=svg">SVG</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="notice">该订单下暂无机台任务，无法批量生成机台码。</p>
+{% endif %}
+{% endblock %}

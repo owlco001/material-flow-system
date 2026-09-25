@@ -55,6 +55,7 @@ from app.main import (
     list_bom_versions as api_bom_versions,
     now,
     order_detail as api_order_detail,
+    order_task_detail as api_order_task_detail,
     preview_bom_import as api_bom_preview,
     reset_employee_password,
     review_exception as api_review_exception,
@@ -1006,6 +1007,136 @@ def admin_orders(request: Request):
             "order_no": order_no,
             "detail": detail,
             "error": error,
+        },
+    )
+
+
+@router.get("/admin/orders/{order_no}/tasks/{task_id}", response_class=HTMLResponse)
+def admin_order_task(request: Request, order_no: str, task_id: str):
+    """机台详情页：状态、进度、物料、条码。"""
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    detail = None
+    error = None
+    try:
+        detail = api_order_task_detail(order_no=order_no, task_id=task_id, user=user)
+    except ApiError as exc:
+        error = _api_error_message(exc)
+    except HTTPException as exc:
+        error = f"{exc.status_code}：{exc.detail}"
+    return templates.TemplateResponse(
+        request,
+        "order_task.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "order_no": order_no,
+            "detail": detail,
+            "error": error,
+        },
+    )
+
+
+@router.get("/admin/orders/{order_no}/barcodes", response_class=HTMLResponse)
+def admin_order_barcodes(request: Request, order_no: str):
+    """订单下全部机台的条码批量预览（二维码 + Code128）。"""
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    c = db()
+    try:
+        order = c.execute(
+            "SELECT order_no, product_name, status FROM production_orders WHERE order_no=?",
+            (order_no,),
+        ).fetchone()
+        devices = [
+            {"device_no": r["device_no"], "device_name": r["device_name"]}
+            for r in c.execute(
+                """SELECT t.device_no, d.device_name
+                     FROM assembly_tasks t
+                     LEFT JOIN devices d ON d.id = t.device_id
+                    WHERE t.order_no = ? GROUP BY t.device_no ORDER BY t.device_no""",
+                (order_no,),
+            ).fetchall()
+        ]
+    finally:
+        c.close()
+    if not order:
+        return HTMLResponse("订单不存在", status_code=404)
+    items = []
+    for d in devices:
+        payload, error = _barcode_preview("device", d["device_no"], "qr")
+        if error:
+            continue
+        items.append({
+            "device_no": d["device_no"],
+            "device_name": d["device_name"],
+            "qr_img": _barcodes.data_uri(payload, "qr", "png"),
+            "code128_img": _barcodes.data_uri(payload, "code128", "png"),
+        })
+    return templates.TemplateResponse(
+        request,
+        "order_barcodes.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "order_no": order_no,
+            "order": dict(order),
+            "items": items,
+        },
+    )
+
+
+@router.get("/admin/orders/{order_no}/barcodes/print", response_class=HTMLResponse)
+def admin_order_barcodes_print(request: Request, order_no: str):
+    """订单下全部机台条码的 A4 批量打印页（二维码 + Code128 各一份）。"""
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    kind = request.query_params.get("kind", "both")
+    if kind not in {"qr", "code128", "both"}:
+        kind = "both"
+    c = db()
+    try:
+        order = c.execute(
+            "SELECT order_no FROM production_orders WHERE order_no=?", (order_no,)
+        ).fetchone()
+        device_nos = [
+            r["device_no"]
+            for r in c.execute(
+                "SELECT device_no FROM assembly_tasks WHERE order_no=? "
+                "GROUP BY device_no ORDER BY device_no",
+                (order_no,),
+            ).fetchall()
+        ]
+    finally:
+        c.close()
+    if not order:
+        return HTMLResponse("订单不存在", status_code=404)
+    kinds = ["qr", "code128"] if kind == "both" else [kind]
+    items = []
+    for device_no in device_nos:
+        payload, error = _barcode_preview("device", device_no, "qr")
+        if error:
+            continue
+        for k in kinds:
+            items.append({
+                "device_no": device_no,
+                "payload": payload,
+                "kind": k,
+                "kind_name": KIND_NAMES[k],
+                "img": _barcodes.data_uri(payload, k, "svg"),
+            })
+    return templates.TemplateResponse(
+        request,
+        "order_barcodes_print.html",
+        {
+            "user": user,
+            "order_no": order_no,
+            "kind": kind,
+            "items": items,
+            "csrf_token": user["csrf_token"],
         },
     )
 

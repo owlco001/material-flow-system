@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}机台详情 · {{ order_no }} · 智慧工厂{% endblock %}
+{% block nav %}
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/orders?order_no={{ order_no }}">返回订单</a>
+<form method="post" action="/admin/logout" class="logout-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>机台详情</h2>
+<p class="page-desc">订单 <a href="/admin/orders?order_no={{ order_no }}">{{ order_no }}</a> 下的机台任务</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if detail %}
+{% set pct = (detail.progressStage or 0) * 100 // 3 %}
+<div class="card">
+  <h3>{{ detail.deviceNo }}{% if detail.deviceName %} · {{ detail.deviceName }}{% endif %}</h3>
+  <p>
+    {% if detail.status == "COMPLETED" %}<span class="badge b-ok">已完成</span>
+    {% elif detail.status == "IN_PROGRESS" %}<span class="badge b-info">生产中</span>
+    {% elif detail.status == "PAUSED_FOR_TEMPORARY_TRANSFER" %}<span class="badge b-warn">暂停（临调）</span>
+    {% elif detail.status == "MATERIAL_ACCEPTED" %}<span class="badge b-info">已领料</span>
+    {% else %}<span class="badge b-mute">{{ detail.status }}</span>{% endif %}
+    {% if detail.workshop %}<span class="badge b-mute">{{ detail.workshop }}</span>{% endif %}
+  </p>
+  <p>总体进度：第 {{ detail.progressStage or 0 }} / 3 阶段</p>
+  <div class="bar-bg" style="max-width:420px"><div class="bar-fg{% if detail.status == 'COMPLETED' %} is-done{% endif %}" style="width:{{ pct }}%"></div></div>
+  <p style="margin-top:10px">装配工：{{ detail.assignedAssemblerId or "—" }}
+    {% if detail.members %}（协同：{{ detail.members | map(attribute="assemblerId") | join("、") }}）{% endif %}</p>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>阶段进度</h3>
+  <table>
+    <tr><th>阶段</th><th>状态</th><th>开始</th><th>完成</th></tr>
+    {% for s in detail.stages %}
+    <tr>
+      <td>阶段 {{ s.stageNo }}</td>
+      <td>
+        {% if s.status == "COMPLETED" %}<span class="badge b-ok">已完成</span>
+        {% elif s.status == "IN_PROGRESS" %}<span class="badge b-info">进行中</span>
+        {% elif s.status == "REWORK_REQUIRED" %}<span class="badge b-err">需返工</span>
+        {% else %}<span class="badge b-mute">未开始</span>{% endif %}
+      </td>
+      <td>{{ s.startedAt or "—" }}</td>
+      <td>{{ s.completedAt or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">暂无阶段记录</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>机台物料</h3>
+  <table>
+    <tr><th>物料编码</th><th>名称</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
+    {% for m in detail.materials %}
+    <tr>
+      <td>{{ m.materialCode }}</td>
+      <td>{{ m.materialName }}</td>
+      <td>{{ m.requiredQuantity }} {{ m.unit }}</td>
+      <td>{{ m.arrivedQuantity }}</td>
+      <td>{{ m.inStockQuantity }}</td>
+      <td>
+        {% if m.statusCode == "IN_STOCK" %}<span class="badge b-ok">在库</span>
+        {% elif m.statusCode == "ARRIVED" %}<span class="badge b-info">已到货</span>
+        {% else %}<span class="badge b-err">缺料</span>{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">该机台暂无物料需求</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px;max-width:560px;text-align:center">
+  <h3>机台码</h3>
+  <p><strong>{{ detail.deviceNo }}</strong></p>
+  <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap">
+    <div>
+      <p class="page-desc">二维码</p>
+      <img src="/admin/barcodes/image?entity=device&key={{ detail.deviceNo }}&kind=qr&image=png" alt="机台二维码" style="max-width:180px;background:#fff;padding:10px;border:1px solid var(--line);border-radius:8px">
+    </div>
+    <div>
+      <p class="page-desc">一维码（Code128）</p>
+      <img src="/admin/barcodes/image?entity=device&key={{ detail.deviceNo }}&kind=code128&image=png" alt="机台一维码" style="max-width:260px;background:#fff;padding:10px;border:1px solid var(--line);border-radius:8px">
+    </div>
+  </div>
+  <div class="btn-row" style="justify-content:center;margin-top:14px">
+    <a class="btn" href="/admin/barcodes/print?entity=device&key={{ detail.deviceNo }}&kind=qr&copies=1" target="_blank">打印二维码</a>
+    <a class="btn btn-secondary" href="/admin/barcodes/print?entity=device&key={{ detail.deviceNo }}&kind=code128&copies=1" target="_blank">打印一维码</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
