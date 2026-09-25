@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}条码生成 · 物料流转管理{% endblock %}
+{% block nav %}
+<a href="/admin/" style="color:#fff;margin-right:12px">仪表盘</a>
+<a href="/admin/orders" style="color:#fff;margin-right:12px">生产订单</a>
+<form method="post" action="/admin/logout" style="margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" style="margin:0;background:#b91c1c">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<h2>条码生成</h2>
+<p style="color:#555">为订单、机台、物料生成二维码或 Code128 一维码。条码内容即业务编号本身，可被现场扫码直接识别。</p>
+<div class="card" style="max-width:560px">
+  <form method="get" action="/admin/barcodes">
+    <label>实体类型</label>
+    <select name="entity">
+      <option value="order" {% if entity == "order" %}selected{% endif %}>生产订单</option>
+      <option value="device" {% if entity == "device" %}selected{% endif %}>机台</option>
+      <option value="material" {% if entity == "material" %}selected{% endif %}>物料</option>
+    </select>
+    <label>编号</label>
+    <input name="key" value="{{ key }}" placeholder="如 26B-013 / 机台号 / 料号" style="max-width:260px">
+    <label>条码类型</label>
+    <select name="kind">
+      <option value="qr" {% if kind == "qr" %}selected{% endif %}>二维码（QR）</option>
+      <option value="code128" {% if kind == "code128" %}selected{% endif %}>一维码（Code128）</option>
+    </select>
+    <label>打印份数（1–50）</label>
+    <input name="copies" value="{{ copies }}" type="number" min="1" max="50" style="max-width:120px">
+    <div style="margin-top:12px"><button type="submit">生成预览</button></div>
+  </form>
+</div>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if preview %}
+<div class="card" style="max-width:560px;margin-top:16px;text-align:center">
+  <p><strong>{{ preview.label }}：{{ preview.payload }}</strong></p>
+  <img src="{{ preview.img }}" alt="条码" style="max-width:280px;background:#fff;padding:12px;border:1px solid #e5e7eb">
+  <div style="margin-top:12px;display:flex;gap:12px;justify-content:center">
+    <a class="btn" href="/admin/barcodes/print?entity={{ entity }}&key={{ key }}&kind={{ kind }}&copies={{ copies }}" target="_blank">打印</a>
+    <a class="btn" href="/admin/barcodes/image?entity={{ entity }}&key={{ key }}&kind={{ kind }}&image=png">下载 PNG</a>
+    <a class="btn" href="/admin/barcodes/image?entity={{ entity }}&key={{ key }}&kind={{ kind }}&image=svg">下载 SVG</a>
+  </div>
+</div>
+{% endif %}
+<style>.btn{display:inline-block;padding:8px 16px;background:#1f6feb;color:#fff !important;text-decoration:none;border-radius:6px}</style>
+{% endblock %}

@@ -1758,3 +1758,130 @@ async def admin_task_create(request: Request):
             status_code=200,
         )
     return _see_other("/admin/tasks?notice=task_created")
+
+
+# ==================== 条码生成与打印 ====================
+try:
+    from . import barcodes as _barcodes
+except ImportError:
+    import barcodes as _barcodes
+
+KIND_NAMES = {"qr": "二维码", "code128": "一维码 Code128"}
+
+
+def _barcode_preview(entity: str, key: str, kind: str):
+    """查出规范编号并生成预览数据；返回 (payload, error)。"""
+    if entity not in _barcodes.ENTITIES or kind not in _barcodes.KINDS:
+        return None, "参数无效"
+    c = db()
+    try:
+        payload = _barcodes.resolve_payload(entity, key, c)
+    finally:
+        c.close()
+    if payload is None:
+        return None, "编号不存在"
+    return payload, None
+
+
+@router.get("/admin/barcodes", response_class=HTMLResponse)
+def admin_barcodes(request: Request):
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    entity = request.query_params.get("entity", "order")
+    key = request.query_params.get("key", "").strip()
+    kind = request.query_params.get("kind", "qr")
+    try:
+        copies = max(1, min(50, int(request.query_params.get("copies", "1"))))
+    except ValueError:
+        copies = 1
+    preview, error = None, None
+    if key:
+        payload, error = _barcode_preview(entity, key, kind)
+        if payload is not None:
+            preview = {
+                "payload": payload,
+                "label": _barcodes.ENTITIES[entity][2],
+                "img": _barcodes.data_uri(payload, kind, "png"),
+            }
+    return templates.TemplateResponse(
+        request,
+        "barcodes.html",
+        {
+            "user": user,
+            "entity": entity,
+            "key": key,
+            "kind": kind,
+            "copies": copies,
+            "preview": preview,
+            "error": error,
+            "csrf_token": user["csrf_token"],
+        },
+    )
+
+
+@router.get("/admin/barcodes/print", response_class=HTMLResponse)
+def admin_barcodes_print(request: Request):
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    entity = request.query_params.get("entity", "order")
+    key = request.query_params.get("key", "").strip()
+    kind = request.query_params.get("kind", "qr")
+    try:
+        copies = max(1, min(50, int(request.query_params.get("copies", "1"))))
+    except ValueError:
+        copies = 1
+    if not key:
+        return HTMLResponse("缺少编号参数", status_code=400)
+    payload, error = _barcode_preview(entity, key, kind)
+    if error:
+        return HTMLResponse(error, status_code=404)
+    label = _barcodes.ENTITIES[entity][2]
+    img = _barcodes.data_uri(payload, kind, "svg")
+    items = [{"payload": payload, "img": img} for _ in range(copies)]
+    return templates.TemplateResponse(
+        request,
+        "barcodes_print.html",
+        {
+            "user": user,
+            "entity": entity,
+            "payload": payload,
+            "label": label,
+            "kind": kind,
+            "kind_name": KIND_NAMES[kind],
+            "copies": copies,
+            "items": items,
+            "csrf_token": user["csrf_token"],
+        },
+    )
+
+
+@router.get("/admin/barcodes/image")
+def admin_barcodes_image(request: Request):
+    """管理台会话鉴权的条码图片下载（浏览器直接点击可用，无需 Bearer Token）。"""
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    entity = request.query_params.get("entity", "order")
+    key = request.query_params.get("key", "").strip()
+    kind = request.query_params.get("kind", "qr")
+    image = request.query_params.get("image", "png")
+    if not key:
+        raise HTTPException(400, "缺少编号参数")
+    payload, error = _barcode_preview(entity, key, kind)
+    if error:
+        raise HTTPException(404, error)
+    try:
+        data, media = _barcodes.render(payload, kind, image)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    safe = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "_" for ch in payload)
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{entity}-{safe}.{image}"',
+            "Cache-Control": "private, max-age=86400",
+        },
+    )

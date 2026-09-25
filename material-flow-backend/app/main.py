@@ -26,7 +26,7 @@ from app.xlsx_parser import (
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -2483,6 +2483,51 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
     if typ != "UNKNOWN" and resource_id is None:
         resource_id = upper
     return {"type": typ, "normalizedValue": upper, "resourceId": resource_id}
+
+
+# ==================== 条码生成 ====================
+# 订单 / 机台 / 物料的二维码（QR）与一维码（Code128）。
+# 条码内容直接编码业务编号本身。订单号与物料编码可被 /api/v1/scan/resolve
+# 直接识别；机台号按现有冻结契约在扫码解析中保持 UNKNOWN，仅用于展示与打印。
+try:
+    from . import barcodes as _barcodes
+except ImportError:
+    import barcodes as _barcodes
+
+
+@app.get("/api/v1/barcodes/{entity}/{key}")
+def barcode_image(
+    entity: str,
+    key: str,
+    kind: str = Query("qr", description="qr=二维码, code128=一维码"),
+    image: str = Query("png", description="png=位图, svg=矢量"),
+    user: sqlite3.Row = Depends(current_user),
+) -> Response:
+    if entity not in _barcodes.ENTITIES:
+        raise HTTPException(404, "不支持的条码实体：仅支持 order / device / material")
+    c = db()
+    try:
+        payload = _barcodes.resolve_payload(entity, key, c)
+    finally:
+        c.close()
+    if payload is None:
+        raise HTTPException(404, "编号不存在")
+    try:
+        data, media = _barcodes.render(payload, kind, image)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    safe = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "_" for ch in payload)
+    safe_name = f"{entity}-{safe}.{image}"
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "private, max-age=86400",
+            "X-Barcode-Entity": entity,
+            "X-Barcode-Kind": kind,
+        },
+    )
 
 
 @app.post("/api/v1/auth/change-password")

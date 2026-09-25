@@ -55,7 +55,7 @@ table { display: block; overflow-x: auto; white-space: nowrap; }
   {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}<a href="/admin/orders">订单</a>{% endif %}
   {% if user.role in ("ADMIN", "PLANNER") %}<a href="/admin/orders/new">新建订单</a>{% endif %}
   {% if user.role == "ADMIN" %}
-  <a href="/admin/users">用户</a><a href="/admin/audit">审计</a>
+  <a href="/admin/users">用户</a><a href="/admin/audit">审计</a><a href="/admin/barcodes">条码</a>
   {% endif %}
 </nav>
 {% endif %}

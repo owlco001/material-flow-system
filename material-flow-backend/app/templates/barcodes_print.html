@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>条码打印 · {{ label }} {{ payload }}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; }
+  .toolbar { padding: 12px 16px; background: #f3f4f6; border-bottom: 1px solid #e5e7eb;
+             display: flex; gap: 12px; align-items: center; }
+  .toolbar button { padding: 8px 20px; background: #1f6feb; color: #fff; border: 0;
+                    border-radius: 6px; cursor: pointer; font-size: 15px; }
+  .sheet { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 16px; }
+  .card { border: 1px dashed #9ca3af; border-radius: 8px; padding: 12px;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          page-break-inside: avoid; min-height: 220px; }
+  .card img { max-width: 100%; height: auto; }
+  .card.qr img { width: 150px; }
+  .card.code128 img { width: 230px; }
+  .card .code { margin-top: 8px; font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+  .card .meta { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  @page { size: A4; margin: 10mm; }
+  @media print {
+    .toolbar { display: none; }
+    .sheet { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <span><strong>{{ label }}：{{ payload }}</strong> · {{ kind_name }} · 共 {{ copies }} 张</span>
+  <button onclick="window.print()">打印</button>
+  <a href="/admin/barcodes?entity={{ entity }}&key={{ payload }}&kind={{ kind }}&copies={{ copies }}">返回修改</a>
+</div>
+<div class="sheet">
+  {% for item in items %}
+  <div class="card {{ kind }}">
+    <img src="{{ item.img }}" alt="条码">
+    <div class="code">{{ item.payload }}</div>
+    <div class="meta">{{ label }}</div>
+  </div>
+  {% endfor %}
+</div>
+<script>window.addEventListener("load", function(){ window.print(); });</script>
+</body>
+</html>
