@@ -217,3 +217,36 @@ def test_admin_barcodes_image_download():
     cookies = _admin_cookie()
     r = client.get("/admin/barcodes/image?entity=order&key=NO-SUCH-ORDER", cookies=cookies)
     assert r.status_code == 404
+
+
+# ---------- 条码文字说明 ----------
+
+def test_render_with_label_adds_caption():
+    """带 label 时四种条码图下方都有 “标签：编号” 的文字说明。"""
+    from PIL import Image
+    import io
+
+    data, _ = render("MC-01", "qr", "png", "机台")
+    img = Image.open(io.BytesIO(data))
+    plain = Image.open(io.BytesIO(render("MC-01", "qr", "png")[0]))
+    assert img.height > plain.height  # 说明条增加了高度
+
+    data, _ = render("MC-01", "qr", "svg", "机台")
+    assert "机台：MC-01" in data.decode("utf-8")
+
+    data, _ = render("MC-01", "code128", "png", "机台")
+    img = Image.open(io.BytesIO(data))
+    plain = Image.open(io.BytesIO(render("MC-01", "code128", "png")[0]))
+    assert img.height > plain.height
+
+    data, _ = render("MC-01", "code128", "svg", "机台")
+    text = data.decode("utf-8")
+    assert "机台：MC-01" in text
+    assert text.count("<text") == 1  # 无重复的人读文字
+
+
+def test_render_without_label_unchanged():
+    """不带 label 时保持原样输出（无说明条）。"""
+    data, _ = render("MC-01", "code128", "svg")
+    assert "MC-01" in data.decode("utf-8")
+    assert "机台" not in data.decode("utf-8")

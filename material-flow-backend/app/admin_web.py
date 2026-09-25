@@ -1072,8 +1072,8 @@ def admin_order_barcodes(request: Request, order_no: str):
         items.append({
             "device_no": d["device_no"],
             "device_name": d["device_name"],
-            "qr_img": _barcodes.data_uri(payload, "qr", "png"),
-            "code128_img": _barcodes.data_uri(payload, "code128", "png"),
+            "qr_img": _barcodes.data_uri(payload, "qr", "png", "机台"),
+            "code128_img": _barcodes.data_uri(payload, "code128", "png", "机台"),
         })
     return templates.TemplateResponse(
         request,
@@ -1126,7 +1126,7 @@ def admin_order_barcodes_print(request: Request, order_no: str):
                 "payload": payload,
                 "kind": k,
                 "kind_name": KIND_NAMES[k],
-                "img": _barcodes.data_uri(payload, k, "svg"),
+                "img": _barcodes.data_uri(payload, k, "svg", "机台"),
             })
     return templates.TemplateResponse(
         request,
@@ -1914,6 +1914,11 @@ def _barcode_preview(entity: str, key: str, kind: str):
     return payload, None
 
 
+def _barcode_label(entity: str) -> str:
+    """条码图下方的文字说明用的实体展示名，如 “机台”。"""
+    return _barcodes.ENTITIES.get(entity, ("", "", ""))[2]
+
+
 @router.get("/admin/barcodes", response_class=HTMLResponse)
 def admin_barcodes(request: Request):
     user, err = _admin_or_403(request)
@@ -1933,7 +1938,7 @@ def admin_barcodes(request: Request):
             preview = {
                 "payload": payload,
                 "label": _barcodes.ENTITIES[entity][2],
-                "img": _barcodes.data_uri(payload, kind, "png"),
+                "img": _barcodes.data_uri(payload, kind, "png", _barcode_label(entity)),
             }
     return templates.TemplateResponse(
         request,
@@ -1969,7 +1974,7 @@ def admin_barcodes_print(request: Request):
     if error:
         return HTMLResponse(error, status_code=404)
     label = _barcodes.ENTITIES[entity][2]
-    img = _barcodes.data_uri(payload, kind, "svg")
+    img = _barcodes.data_uri(payload, kind, "svg", _barcode_label(entity))
     items = [{"payload": payload, "img": img} for _ in range(copies)]
     return templates.TemplateResponse(
         request,
@@ -2004,7 +2009,7 @@ def admin_barcodes_image(request: Request):
     if error:
         raise HTTPException(404, error)
     try:
-        data, media = _barcodes.render(payload, kind, image)
+        data, media = _barcodes.render(payload, kind, image, _barcode_label(entity))
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     safe = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "_" for ch in payload)

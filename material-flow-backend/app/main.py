@@ -2516,7 +2516,7 @@ def barcode_image(
     if payload is None:
         raise HTTPException(404, "编号不存在")
     try:
-        data, media = _barcodes.render(payload, kind, image)
+        data, media = _barcodes.render(payload, kind, image, _barcodes.ENTITIES[entity][2])
     except ValueError as e:
         raise HTTPException(422, str(e))
     safe = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "_" for ch in payload)
