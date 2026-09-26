@@ -8,7 +8,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.DeviceModelMap
-import com.company.logistics.ui.Model3dActivity
+import com.company.logistics.Model3dActivity
 
 @Composable
 fun DeviceDetailScreen(
