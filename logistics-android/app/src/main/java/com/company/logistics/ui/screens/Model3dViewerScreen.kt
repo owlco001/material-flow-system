@@ -4,7 +4,9 @@ import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -81,6 +83,7 @@ fun Model3dViewerScreen(
             error != null -> ErrorState(error, onRetry, Modifier.weight(1f))
             glbFile == null -> EmptyState(Modifier.weight(1f))
             else -> {
+                var pickedPart by remember { mutableStateOf<String?>(null) }
                 Box(Modifier.weight(1f)) {
                     AndroidView(
                         modifier = Modifier
@@ -91,6 +94,15 @@ fun Model3dViewerScreen(
                                     renderer.onPan(pan.x * .01f, pan.y * .01f)
                                     renderer.onScale(zoom)
                                 }
+                            }
+                            .pointerInput(renderer) {
+                                detectTapGestures(
+                                    onTap = { offset ->
+                                        renderer.pickPart(offset.x, offset.y) { name ->
+                                            pickedPart = name
+                                        }
+                                    }
+                                )
                             },
                         factory = { ctx ->
                             TextureView(ctx).also { view ->
@@ -133,6 +145,22 @@ fun Model3dViewerScreen(
                                 .background(Color(0x99000000))
                                 .padding(8.dp),
                         )
+                    }
+                    // 点选零件信息
+                    pickedPart?.let { partName ->
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 8.dp)
+                                .background(Color(0xCC1A1D21), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(partName, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { pickedPart = null }) {
+                                Text("关闭", color = Color(0xFF8AB4FF), fontSize = 13.sp)
+                            }
+                        }
                     }
                 }
                 Row(

@@ -268,6 +268,21 @@ class FilamentModelRenderer(
         applyPartTransforms()
     }
 
+    /** 点选零件：返回零件名称（GLB节点名），无命中返回null */
+    fun pickPart(x: Float, y: Float, onResult: (String?) -> Unit) {
+        val vw = view ?: run { onResult(null); return }
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        vw.pick(x.toInt(), viewportHeight - y.toInt(), handler,
+            object : View.OnPickCallback {
+                override fun onPick(result: View.PickResult) {
+                    val name = result.entity.let { entity ->
+                        try { asset?.getName(entity) } catch (_: Exception) { null }
+                    }
+                    onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.entity}")
+                }
+            })
+    }
+
     /** 收集每个可渲染零件的世界中心（模型空间），爆炸时沿中心向外散开 */
     private fun collectPartCenters(asset: FilamentAsset, bboxCenter: FloatArray) {
         partCenters.clear()
