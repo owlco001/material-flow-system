@@ -44,9 +44,18 @@ android {
         compose = true
         buildConfig = true
     }
+    signingConfigs {
+        create("fixedDebug") {
+            storeFile = file("../debug.keystore")
+            storePassword = "smartfactory123"
+            keyAlias = "smartfactory-debug"
+            keyPassword = "smartfactory123"
+        }
+    }
     buildTypes {
         debug {
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("fixedDebug")
         }
         release {
             isDebuggable = false
