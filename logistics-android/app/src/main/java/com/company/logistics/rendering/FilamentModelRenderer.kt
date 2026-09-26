@@ -273,13 +273,11 @@ class FilamentModelRenderer(
         val vw = view ?: run { onResult(null); return }
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         vw.pick(x.toInt(), viewportHeight - y.toInt(), handler,
-            object : View.OnPickCallback {
-                override fun onPick(result: View.PickResult) {
-                    val name = result.entity.let { entity ->
-                        try { asset?.getName(entity) } catch (_: Exception) { null }
-                    }
-                    onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.entity}")
-                }
+            View.OnPickCallback { _, result ->
+                val name = if (result.entity != 0) {
+                    try { asset?.getName(result.entity) } catch (_: Exception) { null }
+                } else null
+                onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.entity}")
             })
     }
 
