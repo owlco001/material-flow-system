@@ -2186,13 +2186,13 @@ def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dic
             d = c.execute("SELECT * FROM devices WHERE device_no=?", (device_id,)).fetchone()
         if not d:
             raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在")
-        # 关联的生产订单
+        # 关联的生产订单（order_devices 用 device_no 关联）
         orders = c.execute("""
-            SELECT po.order_no, po.product_name, od.status as assign_status
+            SELECT po.order_no, po.product_name
             FROM order_devices od
             JOIN production_orders po ON po.id = od.order_id
-            WHERE od.device_id = ?
-        """, (d["id"],)).fetchall()
+            WHERE od.device_no = ?
+        """, (d["device_no"],)).fetchall()
         return {
             "deviceId": d["id"],
             "deviceNo": d["device_no"],
@@ -2200,7 +2200,7 @@ def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dic
             "workshop": d["workshop"],
             "modelCapability": d["model_capability"],
             "status": d["status"],
-            "orders": [{"orderNo": o["order_no"], "productName": o["product_name"], "assignStatus": o["assign_status"]} for o in orders],
+            "orders": [{"orderNo": o["order_no"], "productName": o["product_name"], "assignStatus": None} for o in orders],
         }
     finally:
         c.close()
