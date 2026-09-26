@@ -272,13 +272,12 @@ class FilamentModelRenderer(
     fun pickPart(x: Float, y: Float, onResult: (String?) -> Unit) {
         val vw = view ?: run { onResult(null); return }
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        vw.pick(x.toInt(), viewportHeight - y.toInt(), handler,
-            View.OnPickCallback { _, result ->
-                val name = if (result.entity != 0) {
-                    try { asset?.getName(result.entity) } catch (_: Exception) { null }
-                } else null
-                onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.entity}")
-            })
+        vw.pick(x.toInt(), viewportHeight - y.toInt(), handler) { result: View.PickingQueryResult ->
+            val name = if (result.entity != 0) {
+                try { asset?.getName(result.entity) } catch (_: Exception) { null }
+            } else null
+            onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.entity}")
+        }
     }
 
     /** 收集每个可渲染零件的世界中心（模型空间），爆炸时沿中心向外散开 */
