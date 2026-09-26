@@ -69,6 +69,21 @@ interface OfflineOperationDao {
 
     @Query("SELECT * FROM offline_operations WHERE id = :id")
     suspend fun findById(id: String): OfflineOperationEntity?
+
+    /**
+     * 恢复上次进程被杀时卡在 SYNCING 的记录：改回 PENDING 等待重放。
+     * 不恢复的话，observePendingCount 会一直把它们算进待同步数，但 pending() 永远查不到。
+     */
+    @Query("UPDATE offline_operations SET status = 'PENDING', errorMessage = NULL WHERE status = 'SYNCING'")
+    suspend fun resetStuckSyncing(): Int
+
+    /** 失败/冲突记录：重试 → 改回 PENDING 并清空错误原因，等待下次重放。 */
+    @Query("UPDATE offline_operations SET status = 'PENDING', errorMessage = NULL WHERE id = :id")
+    suspend fun resetToPending(id: String)
+
+    /** 失败/冲突记录：放弃 → 直接删除，不再重放。 */
+    @Query("DELETE FROM offline_operations WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Database(entities = [OfflineOperationEntity::class], version = 2, exportSchema = false)

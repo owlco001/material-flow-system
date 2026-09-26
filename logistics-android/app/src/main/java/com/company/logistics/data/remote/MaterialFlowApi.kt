@@ -23,15 +23,20 @@ import com.company.logistics.model.ExceptionSubmissionResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
  * 物料流转 API 客户端 —— 严格对齐《V1 需求冻结与接口契约》第 4 节。
@@ -41,8 +46,9 @@ import java.util.UUID
  *  - 数量为整数，禁止小数、负数、科学计数法；
  *  - 客户端不得硬编码 IP，Base URL 由配置注入（见 [ApiConfig]）。
  *
- * 说明：V1 使用 HttpURLConnection + org.json，保持与既有工程一致的零额外依赖策略；
- *      如需替换为 Retrofit/OkHttp，只需保持本类的方法签名不变。
+ * 说明：V1 使用 OkHttp + org.json，保持与既有工程一致的零额外序列化依赖策略；
+ *      全局共享一个 OkHttpClient（连接池 + HTTP/2 复用），扫码解析等高频请求
+ *      不再每次重建 TCP/TLS；本类所有公开方法签名保持不变，调用方零改动。
  */
 open class MaterialFlowApi(
     private val config: ApiConfig = ApiConfig
@@ -119,6 +125,19 @@ open class MaterialFlowApi(
     private var lastRefreshAt = 0L
 
     /**
+     * 全局共享的 OkHttpClient：连接池 + HTTP/2 复用。
+     * 原来每个请求都 new HttpURLConnection + disconnect()，扫码解析这类高频请求
+     * 每次都要重建 TCP/TLS；现在同一 host 的连接会被复用。
+     * 超时取 ApiConfig 构建时的配置值（运行时未被修改过，见 ApiConfig）。
+     */
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(config.connectTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(config.readTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    /**
      * 用刷新令牌换取新的令牌对。
      *
      * 区分令牌失效与临时网络失败：只有前者清理会话，后者保留令牌并允许再次重试。
@@ -137,18 +156,20 @@ open class MaterialFlowApi(
             if (accessToken != null && lastRefreshAt > System.currentTimeMillis() - 1000) {
                 return@withContext RefreshOutcome.REFRESHED
             }
-            val conn = openConnection("/api/v1/auth/refresh", "POST")
+            val requestBody = JSONObject().apply {
+                put("refreshToken", token)
+                put("deviceId", deviceId)
+            }.toString().toRequestBody(JSON_MEDIA_TYPE)
+            val httpRequest = Request.Builder()
+                .url(config.baseUrl.trimEnd('/') + "/api/v1/auth/refresh")
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("X-Request-Id", UUID.randomUUID().toString())
+                .post(requestBody)
+                .build()
             try {
-                val body = JSONObject().apply {
-                    put("refreshToken", token)
-                    put("deviceId", deviceId)
+                val (code, text) = httpClient.newCall(httpRequest).execute().use { response ->
+                    response.code to response.body.string()
                 }
-                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString())
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-
-                val (code, text) = readResponse(conn)
                 if (code !in 200..299) {
                     // 4xx 表示 refresh token 已失效；5xx/网关错误仍可重试，不能把用户
                     // 因一次临时网络故障踢回登录页。
@@ -159,7 +180,7 @@ open class MaterialFlowApi(
                         RefreshOutcome.RETRYABLE_FAILURE
                     }
                 }
-                val json = JSONObject(text ?: "")
+                val json = JSONObject(text)
                 val newAccess = json.optString("accessToken").takeIf { it.isNotEmpty() }
                     ?: return@withContext RefreshOutcome.RETRYABLE_FAILURE
                 accessToken = newAccess
@@ -175,9 +196,6 @@ open class MaterialFlowApi(
             } catch (_: Exception) {
                 // 网络异常：保留令牌，下次请求再试
                 RefreshOutcome.RETRYABLE_FAILURE
-            } finally {
-                // readResponse disconnects on its normal path; this also covers write/parse failures.
-                conn.disconnect()
             }
         }
     }
@@ -269,19 +287,22 @@ open class MaterialFlowApi(
     suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): BomImportPreview = withContext(Dispatchers.IO) {
         require(fileBytes.size <= MAX_BOM_FILE_BYTES) { "BOM 文件不能超过 10 MB" }
         require(modelCode.isNotBlank()) { "modelCode 不能为空" }
-        val boundary = "----BomBoundary${UUID.randomUUID().toString().replace("-", "")}"
-        val conn = openConnection("/api/v1/boms/import/preview", "POST")
-        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.setRequestProperty("X-Request-Id", UUID.randomUUID().toString()); conn.doOutput = true
-        conn.outputStream.use { out ->
-            fun write(value: String) = out.write(value.toByteArray(Charsets.UTF_8))
-            write("--$boundary\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\n$modelCode\r\n")
-            write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: text/csv\r\n\r\n")
-            out.write(fileBytes); write("\r\n--$boundary--\r\n")
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("modelCode", modelCode)
+            .addFormDataPart("file", fileName, fileBytes.toRequestBody("text/csv".toMediaType()))
+            .build()
+        val httpRequest = Request.Builder()
+            .url(config.baseUrl.trimEnd('/') + "/api/v1/boms/import/preview")
+            .header("Authorization", "Bearer ${requireToken()}")
+            .header("X-Request-Id", UUID.randomUUID().toString())
+            .post(multipart)
+            .build()
+        val (code, text) = httpClient.newCall(httpRequest).execute().use { response ->
+            response.code to response.body.string()
         }
-        val (code, text) = readResponse(conn); if (code !in 200..299) throw ApiParser.parseError(code, text)
-        val root = JSONObject(text ?: throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true))
+        if (code !in 200..299) throw ApiParser.parseError(code, text)
+        val root = JSONObject(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true) })
         val errors = root.optJSONArray("errors") ?: JSONArray()
         BomImportPreview(root.optString("previewId"), root.optString("modelCode"), root.optInt("totalRows"), root.optInt("validRows"), root.optInt("invalidRows"), root.optBoolean("canCommit"), (0 until errors.length()).map { i -> val e = errors.getJSONObject(i); BomImportError(e.optInt("lineNo"), e.optString("field"), e.optString("code"), e.optString("message")) })
     }
@@ -544,31 +565,37 @@ open class MaterialFlowApi(
             "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"${fileName.replace(Regex("[\"\\r\\n]"), "_")}\"\r\n" +
             "Content-Type: $contentType\r\n\r\n"
         val suffix = "\r\n--$boundary--\r\n"
-        val conn = openConnection("/api/v1/assembly-models", "POST")
-        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
-        conn.setRequestProperty("Idempotency-Key", operationId.toString())
-        conn.setRequestProperty("X-Request-Id", requestId.toString())
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.setRequestProperty("Content-Length", (prefix.toByteArray(Charsets.UTF_8).size + contentLength + suffix.toByteArray(Charsets.UTF_8).size).toString())
-        conn.doOutput = true
-        try {
-            conn.outputStream.use { out ->
-                out.write(prefix.toByteArray(Charsets.UTF_8))
+        val totalLength = prefix.toByteArray(Charsets.UTF_8).size + contentLength + suffix.toByteArray(Charsets.UTF_8).size
+        // 流式请求体：前缀 + 文件流 + 后缀，避免把整个模型读进内存；wire 格式与原来手写的一致。
+        val streamingBody = object : RequestBody() {
+            override fun contentType() = "multipart/form-data; boundary=$boundary".toMediaType()
+            override fun contentLength() = totalLength
+            override fun writeTo(sink: BufferedSink) {
+                sink.write(prefix.toByteArray(Charsets.UTF_8))
                 val buffer = ByteArray(64 * 1024)
                 var sent = 0L
                 while (true) {
                     val count = content.read(buffer)
                     if (count < 0) break
-                    out.write(buffer, 0, count)
+                    sink.write(buffer, 0, count)
                     sent += count
                     onProgress(sent)
                 }
                 check(sent == contentLength) { "文件大小在上传期间发生变化" }
-                out.write(suffix.toByteArray(Charsets.UTF_8))
+                sink.write(suffix.toByteArray(Charsets.UTF_8))
             }
-            val (code, text) = readResponse(conn)
+        }
+        val httpRequest = Request.Builder()
+            .url(fullUrl("/api/v1/assembly-models"))
+            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Idempotency-Key", operationId.toString())
+            .header("X-Request-Id", requestId.toString())
+            .post(streamingBody)
+            .build()
+        try {
+            val (code, text) = executeOnce(httpRequest)
             if (code !in 200..299) throw ApiParser.parseError(code, text)
-            ApiParser.parseAssemblyModelMeta(text ?: throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true))
+            ApiParser.parseAssemblyModelMeta(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true) })
         } finally { content.close() }
     }
 
@@ -578,16 +605,16 @@ open class MaterialFlowApi(
         output: OutputStream,
         onProgress: (Long) -> Unit = {},
     ): Long = withContext(Dispatchers.IO) {
-        val conn = openConnection("/api/v1/assembly-models/${encodeQuery(meta.modelCode)}/versions/${meta.version}/content", "GET")
-        conn.setRequestProperty("Authorization", "Bearer ${requireToken()}")
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            val text = conn.errorStream?.bufferedReader()?.use(BufferedReader::readText)
-            conn.disconnect()
-            throw ApiParser.parseError(code, text)
-        }
-        try {
-            conn.inputStream.use { input ->
+        val httpRequest = Request.Builder()
+            .url(fullUrl("/api/v1/assembly-models/${encodeQuery(meta.modelCode)}/versions/${meta.version}/content"))
+            .header("Authorization", "Bearer ${requireToken()}")
+            .get()
+            .build()
+        httpClient.newCall(httpRequest).execute().use { response ->
+            if (response.code !in 200..299) {
+                throw ApiParser.parseError(response.code, response.body.string())
+            }
+            response.body.byteStream().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 var received = 0L
                 while (true) {
@@ -599,7 +626,7 @@ open class MaterialFlowApi(
                 }
                 received
             }
-        } finally { conn.disconnect() }
+        }
     }
 
     suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): AssemblyTaskPage = withContext(Dispatchers.IO) {
@@ -788,11 +815,28 @@ open class MaterialFlowApi(
         )
     }
 
-    /** 查询流转申请列表；列表接口由服务端按当前用户权限裁剪，客户端不本地过滤。 */
+    /** 查询流转申请列表；列表接口由服务端按当前用户权限裁剪，客户端不本地过滤。
+     *  服务端分页（每页 100 条）：循环拉取直到取完，保证超过 100 条的申请全部可见。
+     *  终止条件取「本页不满一页」与「服务端 total」双保险，兼容未升级分页的老后端。 */
     suspend fun listTransferRequests(status: String? = null): TransferRequestPage = withContext(Dispatchers.IO) {
-        val path = if (status.isNullOrBlank()) "/api/v1/transfer-requests"
-        else "/api/v1/transfer-requests?status=${encodeQuery(status)}"
-        ApiParser.parseTransferRequestList(request("GET", path, null), status)
+        val all = mutableListOf<TransferRequest>()
+        var serverTime: String? = null
+        var page = 1
+        while (page <= TRANSFER_REQUEST_MAX_PAGES) {
+            val path = buildString {
+                append("/api/v1/transfer-requests?page=$page&pageSize=$TRANSFER_REQUEST_PAGE_SIZE")
+                if (!status.isNullOrBlank()) append("&status=${encodeQuery(status)}")
+            }
+            val json = request("GET", path, null)
+            val pageResult = ApiParser.parseTransferRequestList(json, status)
+            all += pageResult.items
+            if (pageResult.serverTime != null) serverTime = pageResult.serverTime
+            if (pageResult.items.size < TRANSFER_REQUEST_PAGE_SIZE) break
+            val total = JSONObject(json).optInt("total", -1)
+            if (total >= 0 && all.size >= total) break
+            page++
+        }
+        TransferRequestPage(items = all, statusFilter = status, serverTime = serverTime)
     }
 
     /** 查询流转申请详情；详情响应中的 payload 由 parser 投影为明细条目。 */
@@ -841,29 +885,32 @@ open class MaterialFlowApi(
         purpose: String
     ): FileUploadResult = withContext(Dispatchers.IO) {
         val token = requireToken()
-        val boundary = "----LogisticsBoundary${UUID.randomUUID().toString().replace("-", "")}"
-        val conn = openConnection("/api/v1/files?purpose=$purpose", "POST")
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        conn.doOutput = true
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", fileName, fileBytes.toRequestBody("application/octet-stream".toMediaType()))
+            .build()
+        val httpRequest = Request.Builder()
+            .url(fullUrl("/api/v1/files?purpose=$purpose"))
+            .header("Authorization", "Bearer $token")
+            .post(multipart)
+            .build()
 
-        conn.outputStream.use { out ->
-            fun write(s: String) = out.write(s.toByteArray(Charsets.UTF_8))
-            write("--$boundary\r\n")
-            write("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n")
-            write("Content-Type: application/octet-stream\r\n\r\n")
-            out.write(fileBytes)
-            write("\r\n--$boundary--\r\n")
-        }
-
-        val (code, text) = readResponse(conn)
+        val (code, text) = executeOnce(httpRequest)
         if (code !in 200..299) throw ApiParser.parseError(code, text)
         ApiParser.parseFileUpload(
-            text ?: throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true)
+            text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true) }
         )
     }
 
-    companion object { const val MAX_BOM_FILE_BYTES = 10 * 1024 * 1024 }
+    companion object {
+        const val MAX_BOM_FILE_BYTES = 10 * 1024 * 1024
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        /** 流转申请分页拉取：每页大小与服务端上限对齐。 */
+        private const val TRANSFER_REQUEST_PAGE_SIZE = 100
+        /** 翻页保护：服务端异常时避免无限循环。 */
+        private const val TRANSFER_REQUEST_MAX_PAGES = 50
+    }
 
     // ==================== 内部实现 ====================
 
@@ -873,27 +920,17 @@ open class MaterialFlowApi(
     private fun encodeQuery(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
 
-    private fun openConnection(path: String, method: String): HttpURLConnection {
-        // 契约：客户端不得硬编码 IP，Base URL 由配置注入
-        val url = URL(config.baseUrl.trimEnd('/') + path)
-        return (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = config.connectTimeoutMs
-            readTimeout = config.readTimeoutMs
-            setRequestProperty("Accept", "application/json")
-        }
-    }
+    /** 契约：客户端不得硬编码 IP，Base URL 由配置注入 */
+    private fun fullUrl(path: String): String = config.baseUrl.trimEnd('/') + path
 
-    private fun readResponse(conn: HttpURLConnection): Pair<Int, String?> {
-        return try {
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = stream?.bufferedReader()?.use(BufferedReader::readText)
-            code to text
-        } finally {
-            conn.disconnect()
+    /**
+     * 同步执行一次 HTTP 调用，返回（状态码，响应体文本）。
+     * ResponseBody.string() 读完即关闭；外层 use 确保连接可被连接池复用。
+     */
+    private fun executeOnce(httpRequest: Request): Pair<Int, String> =
+        httpClient.newCall(httpRequest).execute().use { response ->
+            response.code to response.body.string()
         }
-    }
 
     private suspend fun request(
         method: String,
@@ -906,24 +943,22 @@ open class MaterialFlowApi(
         clientOperationId: String? = null,
     ): String = withContext(Dispatchers.IO) {
         val token = if (auth) requireToken() else null
-        val conn = openConnection(path, method)
-
+        val builder = Request.Builder()
+            .url(fullUrl(path))
+            .header("Accept", "application/json")
+            // 契约：所有请求携带 X-Request-Id；写操作额外携带幂等键。
+            .header("X-Request-Id", requestId ?: UUID.randomUUID().toString())
         if (auth) {
-            conn.setRequestProperty("Authorization", "Bearer $token")
+            builder.header("Authorization", "Bearer $token")
         }
-        // 契约：所有请求携带 X-Request-Id；写操作额外携带幂等键。
-        conn.setRequestProperty("X-Request-Id", requestId ?: UUID.randomUUID().toString())
-        clientOperationId?.let { conn.setRequestProperty("X-Client-Operation-Id", it) }
+        clientOperationId?.let { builder.header("X-Client-Operation-Id", it) }
         if (method != "GET") {
-            conn.setRequestProperty("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
+            builder.header("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
         }
-        if (body != null) {
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.doOutput = true
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        }
+        // GET 不带 body；DELETE 允许带 body（服务端删除用户接口需要）。
+        builder.method(method, body?.toRequestBody(JSON_MEDIA_TYPE))
 
-        val (code, text) = readResponse(conn)
+        val (code, text) = executeOnce(builder.build())
 
         // access token 过期 → 静默刷新后重试一次。
         // allowRetry 防死循环：刷新后的新令牌若仍 401（如账号被停用），
@@ -962,7 +997,8 @@ open class MaterialFlowApi(
             }
             throw ApiParser.parseError(code, text)
         }
-        text ?: throw ApiException(code, "EMPTY_BODY", "服务端返回空响应", retryable = true)
+        if (text.isEmpty()) throw ApiException(code, "EMPTY_BODY", "服务端返回空响应", retryable = true)
+        text
     }
 }
 

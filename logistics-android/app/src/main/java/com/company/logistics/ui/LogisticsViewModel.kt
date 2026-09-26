@@ -2501,6 +2501,40 @@ class LogisticsViewModel(
         }
     }
 
+    /**
+     * 重试单条失败/冲突记录：改回待同步并重新调度自动同步。
+     * 只读预览模式下拒绝执行。
+     */
+    fun retryQueuedOperation(id: String) {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能重试离线记录") }
+            return
+        }
+        viewModelScope.launch {
+            val ok = repo.retryOperation(id)
+            _state.update {
+                it.copy(message = if (ok) "已重新加入同步队列" else "该记录已不存在")
+            }
+        }
+    }
+
+    /**
+     * 放弃单条失败/冲突记录：直接删除，不再重放。
+     * 只读预览模式下拒绝执行。
+     */
+    fun discardQueuedOperation(id: String) {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能删除离线记录") }
+            return
+        }
+        viewModelScope.launch {
+            val ok = repo.discardOperation(id)
+            _state.update {
+                it.copy(message = if (ok) "已放弃该记录" else "该记录已不存在")
+            }
+        }
+    }
+
     companion object {
         fun filterAssemblyTasksByDevice(tasks: List<AssemblyTask>, deviceValue: String): List<AssemblyTask> {
             val value = deviceValue.trim()

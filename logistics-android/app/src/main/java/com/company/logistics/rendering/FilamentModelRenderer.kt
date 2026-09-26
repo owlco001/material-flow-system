@@ -321,6 +321,5 @@ class FilamentModelRenderer(
         )
     }
 }
-
-class FilamentUnavailableException(cause: Throwable?) :
-    IllegalStateException("FILAMENT_UNAVAILABLE", cause)
+// 注意：FilamentUnavailableException 放在同包 RendererExceptions.kt（main sourceSet），
+// 与渲染器解耦，错误归因与单测可直接引用。

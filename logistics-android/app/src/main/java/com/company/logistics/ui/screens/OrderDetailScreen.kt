@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,9 +28,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.company.logistics.Model3dActivity
+import com.company.logistics.model.DeviceModelMap
 import com.company.logistics.model.MaterialStatusCode
 import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.OrderMaterialStatus
@@ -67,6 +71,7 @@ fun OrderDetailScreen(
     modifier: Modifier = Modifier,
 ) {
     var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
     val selectedItems = status?.items?.filter { it.deviceId == selectedDeviceId }.orEmpty()
     if (status != null && selectedDeviceId != null && selectedItems.isNotEmpty()) {
         DeviceMaterialDetail(
@@ -247,6 +252,15 @@ fun OrderDetailScreen(
                             deviceNo = first.deviceNo.orEmpty(),
                             items = deviceItems,
                             onClick = { selectedDeviceId = first.deviceId },
+                            onOpen3d = { code ->
+                                context.startActivity(
+                                    Model3dActivity.intent(
+                                        context, code,
+                                        deviceDisplayName(first.deviceType.orEmpty()),
+                                        first.deviceNo.orEmpty(),
+                                    )
+                                )
+                            },
                         )
                     } else {
                         deviceItems.forEach { item -> OrderMaterialRow(item) }
@@ -349,7 +363,9 @@ private fun DeviceCard(
     deviceNo: String,
     items: List<OrderMaterialItem>,
     onClick: () -> Unit,
+    onOpen3d: (modelCode: String) -> Unit = {},
 ) {
+    val modelCode = remember(deviceType, deviceNo) { DeviceModelMap.modelCodeFor(deviceType, deviceNo) }
     AppCard(modifier = Modifier.clickable(onClick = onClick)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -362,6 +378,19 @@ private fun DeviceCard(
         VSpace(Spacing.sm)
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             DeviceStatusSummary(items)
+        }
+        VSpace(Spacing.sm)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            OutlinedButton(
+                onClick = { modelCode?.let(onOpen3d) },
+                enabled = modelCode != null,
+            ) { Text("3D 模型", fontSize = 13.sp) }
+            if (modelCode == null) {
+                Text("该机型暂无 3D 模型", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+            }
         }
         VSpace(4.dp)
         Text("点击查看机台物料详情", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)

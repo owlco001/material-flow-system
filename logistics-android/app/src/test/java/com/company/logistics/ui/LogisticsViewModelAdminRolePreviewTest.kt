@@ -230,5 +230,8 @@ class LogisticsViewModelAdminRolePreviewTest {
         override suspend fun markSynced(id: String, status: String, serverTime: String?) = Unit
         override suspend fun clearSynced() = Unit
         override suspend fun findById(id: String): OfflineOperationEntity? = null
+        override suspend fun resetStuckSyncing(): Int = 0
+        override suspend fun resetToPending(id: String) = Unit
+        override suspend fun deleteById(id: String) = Unit
     }
 }

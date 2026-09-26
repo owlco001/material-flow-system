@@ -175,7 +175,8 @@ fun WorkspaceScreen(
     onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit = { _, _, _, _ -> },
     exceptionSubmitting: Boolean = false,
 ) {
-    val entries = entriesFor(role)
+    // entriesFor 只跟 role 有关：remember 住，避免每次重组都重建 10+ 个入口对象。
+    val entries = remember(role) { entriesFor(role) }
     var createItem by remember { mutableStateOf<WorkspaceMaterialItem?>(null) }
     var reasonRequest by remember { mutableStateOf<ReasonRequest?>(null) }
     var selectorVisible by remember { mutableStateOf(false) }

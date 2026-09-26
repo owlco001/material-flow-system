@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -58,6 +59,12 @@ import kotlinx.coroutines.delay
  *  - 保存后提供「测试连通性」，但不强制通过才允许保存 ——
  *    后端可能暂时没起来，不应因此卡住配置流程；
  *  - Debug 下的明文 http 给出显式警示；Release 只接受 HTTPS。
+ *
+ * 安全顺序（切换地址前强制退出登录）：
+ *  - 「保存」先只做格式校验并弹出中文确认框，**不写存储**；
+ *  - 用户点「确认切换」后依次：onLogout() → store.save() → onEndpointChanged()；
+ *  - 点「取消」或进程被杀：存储里还是旧地址，旧 token 永远不会被发往新地址。
+ *  「恢复默认」同样走确认 + 退出登录流程。
  */
 @Composable
 fun EndpointConfigScreen(
@@ -66,6 +73,8 @@ fun EndpointConfigScreen(
     onEndpointChanged: (String) -> Unit,
     onBack: () -> Unit,
     onOpenActivation: () -> Unit = {},
+    /** 切换地址确认后调用：退出当前登录（清内存 token + 磁盘会话）。默认空实现供预览/测试。 */
+    onLogout: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LogisticsTheme.colors
@@ -75,6 +84,10 @@ fun EndpointConfigScreen(
     var savedHint by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<TestResult?>(null) }
+    /** 等待确认的规范化新地址；非空 = 正在展示切换确认弹窗。未确认前绝不写存储。 */
+    var pendingSaveUrl by remember { mutableStateOf<String?>(null) }
+    /** 等待确认的「恢复默认」操作；true = 正在展示确认弹窗。 */
+    var pendingClear by remember { mutableStateOf(false) }
 
     // 保存成功提示 2 秒后自动消失，避免常驻干扰
     LaunchedEffect(savedHint) {
@@ -200,16 +213,18 @@ fun EndpointConfigScreen(
         PrimaryButton(
             text = "保存",
             onClick = {
-                store.save(input)
-                    .onSuccess {
-                        input = it
-                        onEndpointChanged(it)
+                // 只校验不写入：合法才弹确认框，用户取消/进程被杀时存储保持旧地址。
+                val normalized = EndpointStore.normalize(input)
+                when {
+                    normalized == null -> errorText = EndpointStore.ERR_INVALID
+                    !BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true) ->
+                        errorText = EndpointStore.ERR_RELEASE_HTTP
+                    normalized == store.effectiveUrl -> {
                         errorText = null
-                        savedHint = "已保存"
+                        savedHint = "地址未变化，无需保存"
                     }
-                    .onFailure {
-                        errorText = it.message ?: EndpointStore.ERR_INVALID
-                    }
+                    else -> pendingSaveUrl = normalized
+                }
             },
             enabled = input.isNotBlank(),
         )
@@ -293,16 +308,70 @@ fun EndpointConfigScreen(
         VSpace(Spacing.sm)
         SecondaryButton(
             text = "清除自定义地址",
-            onClick = {
-                store.clear()
-                input = store.effectiveUrl
-                onEndpointChanged(store.effectiveUrl)
-                errorText = null
-                savedHint = "已恢复默认值"
-                testResult = null
-            },
+            onClick = { pendingClear = true },
             enabled = store.savedUrl != null,
         )
+
+        // ---------- 切换地址确认弹窗 ----------
+        // 未确认前存储保持旧值；确认后严格按「退出登录 → 写存储 → 更新运行时地址」执行。
+        val pendingTarget = pendingSaveUrl
+        if (pendingTarget != null || pendingClear) {
+            val targetUrl = pendingTarget ?: BuildConfig.API_BASE_URL
+            AlertDialog(
+                onDismissRequest = {
+                    pendingSaveUrl = null
+                    pendingClear = false
+                },
+                title = {
+                    Text("切换后端地址", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        "切换环境将退出登录，当前会话将被清除。\n\n新地址：$targetUrl\n\n确认切换吗？",
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            // 先退出登录（清内存 token + 磁盘会话），再写新地址，
+                            // 最后更新运行时 baseUrl：旧 token 永远不会被发往新地址。
+                            onLogout()
+                            if (pendingTarget != null) {
+                                store.save(pendingTarget)
+                                    .onSuccess {
+                                        input = it
+                                        onEndpointChanged(it)
+                                        errorText = null
+                                        savedHint = "已保存并退出登录"
+                                    }
+                                    .onFailure {
+                                        errorText = it.message ?: EndpointStore.ERR_INVALID
+                                    }
+                            } else {
+                                store.clear()
+                                input = store.effectiveUrl
+                                onEndpointChanged(store.effectiveUrl)
+                                errorText = null
+                                savedHint = "已恢复默认值并退出登录"
+                                testResult = null
+                            }
+                            pendingSaveUrl = null
+                            pendingClear = false
+                        }
+                    ) { Text("确认切换", fontSize = 14.sp, color = colors.danger) }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            pendingSaveUrl = null
+                            pendingClear = false
+                        }
+                    ) { Text("取消", fontSize = 14.sp) }
+                },
+            )
+        }
 
         VSpace(Spacing.xl)
         TextButton(onClick = onBack) {

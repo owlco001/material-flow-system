@@ -464,7 +464,7 @@ object ApiParser {
         )
     }
 
-    /** GET /api/v1/transfer-requests；后端当前返回最多 100 条，不在客户端拼接全量。 */
+    /** GET /api/v1/transfer-requests（单页解析；翻页拼接由调用方 MaterialFlowApi.listTransferRequests 负责）。 */
     fun parseTransferRequestList(json: String, statusFilter: String? = null): TransferRequestPage {
         val root = JSONObject(json)
         val items = mutableListOf<TransferRequest>()

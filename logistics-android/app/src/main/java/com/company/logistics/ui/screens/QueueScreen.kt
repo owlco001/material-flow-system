@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -59,6 +60,8 @@ fun QueueScreen(
     readOnly: Boolean = false,
     onSync: () -> Unit,
     onClearSynced: () -> Unit,
+    onRetry: (String) -> Unit = {},
+    onDiscard: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val pending = queue.count { it.status == SyncStatus.PENDING || it.status == SyncStatus.FAILED }
@@ -143,7 +146,12 @@ fun QueueScreen(
         VSpace(Spacing.sm)
 
         queue.forEach { op ->
-            QueueItemCard(op)
+            QueueItemCard(
+                op = op,
+                readOnly = readOnly,
+                onRetry = onRetry,
+                onDiscard = onDiscard,
+            )
             VSpace(Spacing.sm)
         }
 
@@ -152,7 +160,12 @@ fun QueueScreen(
 }
 
 @Composable
-private fun QueueItemCard(op: OfflineOperation) {
+private fun QueueItemCard(
+    op: OfflineOperation,
+    readOnly: Boolean,
+    onRetry: (String) -> Unit,
+    onDiscard: (String) -> Unit,
+) {
     val statusColor = op.status.color
     val timeText = remember(op.createdAt) {
         SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(op.createdAt))
@@ -244,6 +257,31 @@ private fun QueueItemCard(op: OfflineOperation) {
                         fontSize = 12.sp,
                         color = statusColor,
                         fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            // 失败 / 冲突不静默丢弃：用户可手动重试（回 PENDING 等待重放）或放弃（删除）。
+            VSpace(Spacing.sm)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+            ) {
+                SecondaryButton(
+                    text = "重试",
+                    onClick = { onRetry(op.id) },
+                    enabled = !readOnly,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = { onDiscard(op.id) },
+                    enabled = !readOnly,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        "放弃",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LogisticsTheme.colors.danger,
                     )
                 }
             }

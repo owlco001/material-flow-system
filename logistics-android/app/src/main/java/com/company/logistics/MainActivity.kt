@@ -16,6 +16,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.company.logistics.data.CameraXScannerRepository
 import com.company.logistics.data.EndpointStore
 import com.company.logistics.data.LogisticsRepository
+import com.company.logistics.data.OfflineSyncScheduler
 import com.company.logistics.data.SessionStore
 import com.company.logistics.data.remote.ApiConfig
 import com.company.logistics.ui.LogisticsApp
@@ -45,6 +46,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val repository = LogisticsRepository.get(applicationContext)
+        // 进程启动时调度一次离线同步（唯一任务，重复调用无副作用）。
+        // Repository.get() 内已恢复卡死的 SYNCING 并调度，这里再保底一次，
+        // 覆盖 Activity 重建但 Repository 单例已存在的场景。
+        OfflineSyncScheduler.enqueue(applicationContext)
         com.company.logistics.ui.DeviceId.value = SessionStore.get(applicationContext).deviceIdOrCreate()
         // 系统「减少动画」开关：为 0 表示用户关闭了动画，开机动画应直接呈现终态
         val animatorScale = Settings.Global.getFloat(

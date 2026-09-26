@@ -31,12 +31,14 @@ import com.company.logistics.model.RoleWorkspaceRepository
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestPage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 /**
@@ -53,7 +55,12 @@ import java.util.UUID
 open class LogisticsRepository(
     private val api: MaterialFlowApi,
     private val dao: OfflineOperationDao,
-    private val sessionStore: SessionStore? = null
+    private val sessionStore: SessionStore? = null,
+    /**
+     * 可选的应用 Context：仅用于离线入队后调度 WorkManager 自动同步。
+     * 为 null 时不调度（单测保持 LogisticsRepository(api, dao) 可编译、无 Android 依赖）。
+     */
+    private val appContext: Context? = null
 ) : RoleWorkspaceRepository {
     var onSessionExpired: (() -> Unit)? = null
 
@@ -537,6 +544,9 @@ open class LogisticsRepository(
                 errorMessage = error
             )
         )
+        // 入队即调度：WorkManager 在网络恢复时自动重放（网络约束 + 指数退避）。
+        // 以前入队后没人调度，队列只能靠用户手动点「立即同步」。
+        appContext?.let { OfflineSyncScheduler.enqueue(it) }
     }
 
     // ==================== 离线队列 ====================
@@ -605,6 +615,33 @@ open class LogisticsRepository(
     /** 清理已同步记录 */
     suspend fun clearSynced() = dao.clearSynced()
 
+    /**
+     * 恢复上次进程被杀时卡在 SYNCING 的记录：改回 PENDING 等待重放。
+     * 返回恢复的条数。由 Repository.get() 在 IO 线程调用一次。
+     */
+    suspend fun resetStuckSyncing(): Int = dao.resetStuckSyncing()
+
+    /**
+     * 重试单条失败/冲突记录：改回 PENDING 并重新调度自动同步。
+     * 返回 true 表示该记录存在并已重置。
+     */
+    suspend fun retryOperation(id: String): Boolean {
+        if (dao.findById(id) == null) return false
+        dao.resetToPending(id)
+        appContext?.let { OfflineSyncScheduler.enqueue(it) }
+        return true
+    }
+
+    /**
+     * 放弃单条失败/冲突记录：直接删除，不再重放。
+     * 返回 true 表示该记录存在并已删除。
+     */
+    suspend fun discardOperation(id: String): Boolean {
+        if (dao.findById(id) == null) return false
+        dao.deleteById(id)
+        return true
+    }
+
     /** Result 不应吞掉 CancellationException，否则页面离开后旧请求仍会写回 UI 状态。 */
     private suspend fun <T> resultOf(block: suspend () -> T): Result<T> = try {
         Result.success(block())
@@ -627,8 +664,17 @@ open class LogisticsRepository(
             instance ?: LogisticsRepository(
                 api = MaterialFlowApi(),
                 dao = DatabaseProvider.get(context).offlineOperationDao(),
-                sessionStore = SessionStore.get(context)
-            ).also { instance = it }
+                sessionStore = SessionStore.get(context),
+                appContext = context.applicationContext
+            ).also { repo ->
+                instance = repo
+                // 进程启动时恢复一次：上次被杀时卡在 SYNCING 的记录改回 PENDING，
+                // 然后调度一次自动同步（唯一任务，重复调用无副作用）。
+                CoroutineScope(Dispatchers.IO).launch {
+                    runCatching { repo.resetStuckSyncing() }
+                    repo.appContext?.let { OfflineSyncScheduler.enqueue(it) }
+                }
+            }
         }
     }
 }

@@ -12,13 +12,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.company.logistics.Model3dActivity
+import com.company.logistics.model.DeviceModelMap
 import com.company.logistics.model.UserRole
 
 @Composable
 fun ProductionManagementScreen(role: UserRole, loading: Boolean, error: String?, onCreateOrder: (String,String,Int,String,String,String,Int,String) -> Unit, onCreateDevice: (String,String,String,String?) -> Unit, onAssignDevice: (String,String,String,Int) -> Unit, onBack: () -> Unit) {
     var orderNo by remember { mutableStateOf("") }; var product by remember { mutableStateOf("") }; var model by remember { mutableStateOf("") }; var bom by remember { mutableStateOf("") }
     var deviceId by remember { mutableStateOf("") }; var deviceNo by remember { mutableStateOf("") }; var deviceName by remember { mutableStateOf("") }; var workshop by remember { mutableStateOf("") }
+    var viewDeviceNo by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val viewModelCode = remember(viewDeviceNo) { DeviceModelMap.modelCodeFor("", viewDeviceNo) }
     Column(Modifier.padding(16.dp)) {
         Text("订单 / 机台管理")
         if (role == UserRole.ADMIN || role == UserRole.PLANNER) {
@@ -30,6 +36,16 @@ fun ProductionManagementScreen(role: UserRole, loading: Boolean, error: String?,
             Button({ onCreateDevice(deviceNo, deviceName, workshop, model.ifBlank { null }) }, enabled = !loading && deviceNo.isNotBlank()) { Text("创建机台") }
             Button({ onAssignDevice(orderNo, model, deviceId, 1) }, enabled = !loading && orderNo.isNotBlank() && model.isNotBlank() && deviceId.isNotBlank()) { Text("绑定机台") }
         }
+        Text("3D 模型查看")
+        OutlinedTextField(viewDeviceNo, { viewDeviceNo = it }, Modifier.fillMaxWidth(), label = { Text("机台编号（如 ROBOT-TEST-01）") })
+        Button(
+            {
+                val code = viewModelCode ?: return@Button
+                context.startActivity(Model3dActivity.intent(context, code, "机台 $viewDeviceNo", viewDeviceNo))
+            },
+            enabled = viewDeviceNo.isNotBlank() && viewModelCode != null,
+        ) { Text("查看 3D 模型") }
+        if (viewDeviceNo.isNotBlank() && viewModelCode == null) { Text("该机型暂无 3D 模型") }
         error?.let { Text(it) }; Button(onBack) { Text("返回") }
     }
 }

@@ -112,6 +112,7 @@ fun LogisticsApp(
                         onEndpointChanged = onEndpointChanged,
                         onBack = { showUnauthenticatedEndpointConfig = false },
                         onOpenActivation = { showAdminActivation = true },
+                        onLogout = { viewModel.logout() },
                     )
                 } else {
                     LoginScreen(
@@ -200,97 +201,10 @@ fun LogisticsApp(
                 }
 
                 when (state.screen) {
-                    Screen.WORKSPACE -> WorkspaceScreen(
-                        role = state.workspaceRole,
-                        authenticatedRole = state.role,
-                        previewRole = state.previewRole,
-                        summary = state.workspaceSummary,
-                        items = state.workspaceItems,
-                        summaryState = state.workspaceSummaryState,
-                        summaryError = state.workspaceSummaryError,
-                        summaryUnavailable = state.workspaceSummaryUnavailable,
-                        itemsState = state.workspaceItemsState,
-                        itemsError = state.workspaceItemsError,
-                        itemsUnavailable = state.workspaceItemsUnavailable,
-                        page = state.workspacePage,
-                        pageSize = state.workspacePageSize,
-                        total = state.workspaceTotal,
-                        totalPages = state.workspaceTotalPages,
-                        serverTime = state.workspaceServerTime,
-                        onRefresh = { viewModel.refreshWorkspace() },
-                        onPageSizeChange = { viewModel.setWorkspacePageSize(it) },
-                        onNextPage = { viewModel.loadNextWorkspacePage() },
-                        onPreviousPage = { viewModel.loadPreviousWorkspacePage() },
-                        onOpenApproval = { viewModel.navigate(Screen.APPROVAL) },
-                        onOpenAudit = { viewModel.navigate(Screen.AUDIT) },
-                        currentUserId = state.currentUserId,
-                        timelineItemId = state.workspaceTimelineItemId,
-                        timeline = state.workspaceTimeline,
-                        timelineState = state.workspaceTimelineState,
-                        timelineError = state.workspaceTimelineError,
-                        handoverSubmittingId = state.handoverSubmittingId,
-                        onOpenTimeline = { viewModel.openHandoverTimeline(it) },
-                        onRetryTimeline = { viewModel.retryHandoverTimeline() },
-                        onHandoverAction = { item, action, reason ->
-                            viewModel.decideHandover(item, action, reason)
-                        },
-                        onCreateHandover = { item, quantity, fromLocation, remark ->
-                            viewModel.createHandover(item, quantity, fromLocation, remark)
-                        },
-                        onEnterPreview = { viewModel.enterRolePreview(it) },
-                        onExitPreview = { viewModel.exitRolePreview() },
-                        onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
-                        endpointConfigured = endpointStore.isConfigured,
-                        assemblyTasks = state.assemblyTasks,
-                        assemblyTaskState = state.assemblyTaskState,
-                        assemblyTaskError = state.assemblyTaskError,
-                        assemblyTaskUnavailable = state.assemblyTaskUnavailable,
-                        assemblyTaskPage = state.assemblyTaskPage,
-                        assemblyTaskPageSize = state.assemblyTaskPageSize,
-                        assemblyTaskTotal = state.assemblyTaskTotal,
-                        assemblyTaskTotalPages = state.assemblyTaskTotalPages,
-                        assemblyDeviceFilter = state.assemblyDeviceFilter,
-                        assemblyMaterialStatus = state.assemblyMaterialStatus,
-                        assemblyMaterialState = state.assemblyMaterialState,
-                        assemblyMaterialError = state.assemblyMaterialError,
-                        assemblySubmittingTaskId = state.assemblySubmittingTaskId,
-                        assemblySubmittingAction = state.assemblySubmittingAction,
-                        assemblyActiveLabor = state.assemblyActiveLabor,
-                        assemblyLaborSummary = state.assemblyLaborSummary,
-                        temporaryTransfer = state.temporaryTransfer,
-                        lastCompletedTemporaryTransfer = state.lastCompletedTemporaryTransfer,
-                        temporaryTransferSourceTaskId = state.temporaryTransferSourceTaskId,
-                        temporaryTransferSubmitting = state.temporaryTransferSubmitting,
-                        workshopProgressSummary = state.workshopProgressSummary,
-                        workshopSummaryState = state.workshopSummaryState,
-                        workshopSummaryError = state.workshopSummaryError,
-                        workshopSummaryUnavailable = state.workshopSummaryUnavailable,
-                        workshopMachineProgress = state.workshopMachineProgress,
-                        workshopMachineState = state.workshopMachineState,
-                        workshopMachineError = state.workshopMachineError,
-                        workshopMachineUnavailable = state.workshopMachineUnavailable,
-                        workshopMachinePage = state.workshopMachinePage,
-                        workshopMachinePageSize = state.workshopMachinePageSize,
-                        workshopMachineHasNext = state.workshopMachineHasNext,
-                        workshopLaborSummary = state.workshopLaborSummary,
-                        workshopLaborState = state.workshopLaborState,
-                        workshopLaborError = state.workshopLaborError,
-                        workshopLaborDeviceFilter = state.workshopLaborDeviceFilter,
-                        onRefreshWorkshopLabor = { viewModel.refreshWorkshopLabor(it) },
-                        onAcceptAssemblyMaterial = { viewModel.acceptAssemblyMaterial(it) },
-                        onStartAssemblyWork = { viewModel.startAssemblyWork(it) },
-                        onSubmitAssemblyProgress = { task, stage -> viewModel.submitAssemblyProgress(task, stage) },
-                        onCompleteAssemblyWork = { viewModel.completeAssemblyWork(it) },
-                        onStartAssemblyStage = { task, stage -> viewModel.startAssemblyStage(task, stage) },
-                        onCompleteAssemblyStage = { task, stage -> viewModel.completeAssemblyStage(task, stage) },
-                        onReworkAssemblyStage = { task, stage, reason -> viewModel.reworkAssemblyStage(task, stage, reason) },
-                        onStartTemporaryTransfer = { taskId, remark -> viewModel.startTemporaryTransfer(taskId, remark) },
-                        onCompleteTemporaryTransfer = { remark -> viewModel.completeTemporaryTransfer(remark) },
-                        onScanAssemblyDevice = { viewModel.navigate(Screen.SCANNER) },
-                        onAssignAssemblyMembers = { task, ids -> viewModel.assignAssemblyMembers(task, ids) },
-                        onRemoveAssemblyMember = { task, assemblerId -> viewModel.removeAssemblyMember(task, assemblerId) },
-                        onSubmitException = { item, type, actual, description -> viewModel.submitException(item, type, actual, description) },
-                        exceptionSubmitting = state.exceptionSubmitting,
+                    Screen.WORKSPACE -> WorkspaceRoute(
+                        viewModel = viewModel,
+                        state = state,
+                        endpointStore = endpointStore,
                     )
 
                     Screen.SCANNER -> ScannerScreen(
@@ -336,7 +250,9 @@ fun LogisticsApp(
                         syncing = state.syncing,
                         readOnly = state.preview,
                         onSync = { viewModel.syncNow() },
-                        onClearSynced = { viewModel.clearSynced() }
+                        onClearSynced = { viewModel.clearSynced() },
+                        onRetry = { viewModel.retryQueuedOperation(it) },
+                        onDiscard = { viewModel.discardQueuedOperation(it) }
                     )
 
                     Screen.APPROVAL -> ApprovalScreen(
@@ -406,7 +322,8 @@ fun LogisticsApp(
                     Screen.ENDPOINT_CONFIG -> EndpointConfigScreen(
                         store = endpointStore,
                         onEndpointChanged = onEndpointChanged,
-                        onBack = { viewModel.navigate(Screen.PROFILE) }
+                        onBack = { viewModel.navigate(Screen.PROFILE) },
+                        onLogout = { viewModel.logout() },
                     )
 
                     Screen.USER_MANAGEMENT -> {

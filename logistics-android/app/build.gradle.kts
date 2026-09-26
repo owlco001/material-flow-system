@@ -50,9 +50,11 @@ android {
         }
         release {
             isDebuggable = false
-            // Release remains buildable for packaging checks; production shrinking/signing is CI-owned.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // Release 开启 R8 混淆 + 资源压缩：减小包体积、提高逆向门槛。
+            // keep 规则见 app/proguard-rules.pro（Room/OkHttp；Filament 仅 debug 用，不进 release）。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }
@@ -75,8 +77,13 @@ dependencies {
     // Filament 1.71.5 is pinned and resolved from Maven Central (Google Maven stopped at 1.52.0).
     // 1.71.5 ships 16 KB-aligned arm64 shared objects; 1.52.0 was 4 KB-aligned and failed to load
     // on Android 15+ 16 KB-page devices, surfacing as FILAMENT_UNAVAILABLE in the debug panel.
+    // 3D 模型查看已转正（机台页面正式入口），release 需要 filament，用 implementation。
     implementation("com.google.android.filament:filament-android:1.71.5")
     implementation("com.google.android.filament:gltfio-android:1.71.5")
+
+    // 网络层：OkHttp（连接池 + HTTP/2 复用，扫码等高频请求不再每次重建 TLS）。
+    // 4.12.0 为 4.x 稳定版；MaterialFlowApi 仅用同步 execute()，无需协程扩展。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // ---- 摄像头扫码（版本锁定，不使用动态版本号）----
     // CameraX 1.3.4：兼容 compileSdk 34 / Compose BOM 2024.09.03

@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Release 网络安全基线：仅允许系统信任链上的 HTTPS。
-  Debug 变体使用 app/src/debug/res/xml/network_security_config.xml，
-  仅为受控内网真机验收临时允许 HTTP；变更后必须重新打包 APK。
+  Release 网络安全基线：
+  - 仅允许系统信任链上的 HTTPS；
+  - claws4u.com（含子域，如 test2.claws4u.com）额外做证书锁定（pinning），
+    防中间人：即使设备被装入恶意 CA，没有对应私钥也连不上。
+
+  Pin 说明（SPKI SHA-256，2026-09-26 实测）：
+  - 主 pin = 当前叶证书（CN=claws4u.com，由 Google Trust Services WE1 签发）
+  - 备用 pin = 中间证书 WE1（叶证书续期后通常仍由同一中间签发，保证轮换不断连）
+  轮换：证书续期后如更换中间/叶，需随版本更新 pin；expiration 给了 1 年缓冲，
+  过期后 pin 失效回退为普通系统信任链校验（不会直接断连，但请尽快发版更新）。
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -10,4 +17,17 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">claws4u.com</domain>
+        <pin-set expiration="2027-09-26">
+            <!-- 叶证书 claws4u.com -->
+            <pin digest="SHA-256">fwZuQD+iZI9WAaYylz/j8KBJi8pvaW5qZ/E70soc0hY=</pin>
+            <!-- 中间证书 Google Trust Services WE1（备用） -->
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
 </network-security-config>
