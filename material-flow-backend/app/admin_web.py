@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -582,6 +583,50 @@ TRANSFER_STATUS_LABELS = {
     "EXECUTED": "已执行",
 }
 
+TRANSFER_TYPE_LABELS = {
+    "INBOUND": "入库",
+    "OUTBOUND": "出库",
+    "TRANSFER": "调拨",
+    "STOCKTAKE": "盘点",
+}
+
+TRANSFER_EXECUTE_VERBS = {
+    "INBOUND": "执行入库",
+    "OUTBOUND": "执行出库",
+    "TRANSFER": "执行调拨",
+    "STOCKTAKE": "执行盘点",
+}
+
+HANDOVER_STATUS_LABELS = {
+    "PENDING": "待确认",
+    "CONFIRMED": "已确认",
+    "REJECTED": "已驳回",
+    "CANCELLED": "已取消",
+}
+
+_BEIJING = timezone(timedelta(hours=8))
+
+
+def _local_time(value: Any) -> Any:
+    """UTC 时间字符串转北京时间显示，如 2026-09-25T03:16:09Z -> 2026-09-25 11:16:09。"""
+    if not value:
+        return value
+    try:
+        s = str(value).strip()
+        dt = datetime.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return value
+
+
+def _user_display_name(c: sqlite3.Connection, user_id: Any) -> str:
+    if not user_id:
+        return "—"
+    row = c.execute("SELECT display_name FROM users WHERE id=?", (user_id,)).fetchone()
+    return row["display_name"] if row and row["display_name"] else str(user_id)
+
 
 def _manager_or_403(request: Request):
     user = _session_user(request)
@@ -617,6 +662,7 @@ def admin_flows_list(request: Request):
             "items": data["items"],
             "status_filter": status or "",
             "status_labels": TRANSFER_STATUS_LABELS,
+            "type_labels": TRANSFER_TYPE_LABELS,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
         },
     )
@@ -634,6 +680,29 @@ def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: st
             " FROM material_handovers WHERE transfer_request_id=? ORDER BY created_at",
             (rid,),
         ).fetchall()
+        created_by_name = _user_display_name(c, item.get("created_by"))
+        approved_by_name = _user_display_name(c, item.get("approved_by"))
+        payload_items: list[dict[str, Any]] = []
+        for p in (item.get("payload") or {}).get("items", []) or []:
+            mat_id = p.get("materialId")
+            mrow = c.execute(
+                "SELECT code, name, specification, unit FROM materials WHERE id=?", (mat_id,)
+            ).fetchone() if mat_id else None
+            payload_items.append({
+                "code": p.get("materialCode") or (mrow["code"] if mrow else None) or "—",
+                "name": (mrow["name"] if mrow else None) or "—",
+                "spec": (mrow["specification"] if mrow else None) or "",
+                "quantity": p.get("quantity"),
+                "unit": p.get("unit") or (mrow["unit"] if mrow else "") or "",
+            })
+        handover_views = [{
+            "id": h["id"],
+            "status": h["status"],
+            "status_label": HANDOVER_STATUS_LABELS.get(h["status"], h["status"]),
+            "quantity": h["quantity"],
+            "receiver_name": _user_display_name(c, h["receiver_user_id"]),
+            "created_at": _local_time(h["created_at"]),
+        } for h in handover_rows]
     finally:
         c.close()
     return templates.TemplateResponse(
@@ -643,7 +712,14 @@ def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: st
             "user": user,
             "csrf_token": user["csrf_token"],
             "item": item,
-            "handovers": handover_rows,
+            "created_by_name": created_by_name,
+            "approved_by_name": approved_by_name,
+            "created_at_local": _local_time(item.get("created_at")),
+            "approved_at_local": _local_time(item.get("approved_at")),
+            "payload_items": payload_items,
+            "type_label": TRANSFER_TYPE_LABELS.get(item.get("type"), item.get("type")),
+            "execute_verb": TRANSFER_EXECUTE_VERBS.get(item.get("type"), "执行"),
+            "handovers": handover_views,
             "error": error,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
             "can_approve": item.get("status") == "PENDING_APPROVAL",

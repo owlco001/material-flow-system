@@ -13,15 +13,23 @@
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <div class="card">
-  <p>申请单：{{ item.id }}</p>
-  <p>类型：{{ item.type }} · 状态：{{ status_labels.get(item.status, item.status) }}</p>
-  <p>单据号：{{ item.document_no or "—" }}</p>
-  <p>创建：{{ item.created_by }} @ {{ item.created_at or "—" }}</p>
+  <p>申请单：{{ item.document_no or item.id }}</p>
+  <p>类型：{{ type_label }} · 状态：{{ status_labels.get(item.status, item.status) }}</p>
+  <p>创建：{{ created_by_name }} @ {{ created_at_local or "—" }}</p>
   {% if item.approved_by %}
-  <p>审批：{{ item.approved_by }} @ {{ item.approved_at or "—" }}
+  <p>审批：{{ approved_by_name }} @ {{ approved_at_local or "—" }}
      {% if item.rejection_reason %}· 驳回原因：{{ item.rejection_reason }}{% endif %}</p>
   {% endif %}
-  <pre style="background:#f5f6f8;padding:8px;overflow:auto">{{ item.payload | tojson(indent=2) if item.payload else "（无载荷）" }}</pre>
+  {% if payload_items %}
+  <table style="margin-top:8px">
+    <tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>数量</th></tr>
+    {% for p in payload_items %}
+    <tr><td>{{ p.code }}</td><td>{{ p.name }}</td><td>{{ p.spec or "—" }}</td><td>{{ p.quantity }}{{ p.unit }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p style="color:#888">（无物料明细）</p>
+  {% endif %}
 </div>
 
 {% if can_approve %}
@@ -44,11 +52,11 @@
 
 {% if can_execute %}
 <div class="card" style="margin-top:16px;max-width:520px">
-  <h3>执行出库</h3>
+  <h3>{{ execute_verb }}</h3>
   <form method="post" action="/admin/flows/{{ item.id }}/execute">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="clientOperationId" value="{{ execute_op }}">
-    <button type="submit">执行出库变更</button>
+    <button type="submit">{{ execute_verb }}变更</button>
   </form>
 </div>
 {% endif %}
@@ -59,8 +67,8 @@
     <tr><th>交接单</th><th>状态</th><th>数量</th><th>接收人</th><th>时间</th><th>留痕</th></tr>
     {% for h in handovers %}
     <tr>
-      <td>{{ h.id }}</td><td>{{ h.status }}</td><td>{{ h.quantity }}</td>
-      <td>{{ h.receiver_user_id or "—" }}</td><td>{{ h.created_at }}</td>
+      <td>{{ h.id }}</td><td>{{ h.status_label }}</td><td>{{ h.quantity }}</td>
+      <td>{{ h.receiver_name }}</td><td>{{ h.created_at }}</td>
       <td><a href="/admin/handovers/{{ h.id }}">时间线</a></td>
     </tr>
     {% else %}
