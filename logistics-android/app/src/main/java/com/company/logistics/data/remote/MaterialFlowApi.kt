@@ -351,7 +351,7 @@ open class MaterialFlowApi(
 
     /** GET /api/v1/devices/{id}：机台详情 */
     suspend fun getDeviceDetail(deviceId: String): DeviceDetail = withContext(Dispatchers.IO) {
-        ApiParser.parseDeviceDetail(request("GET", "/api/v1/devices/$deviceId"))
+        ApiParser.parseDeviceDetail(request("GET", "/api/v1/devices/$deviceId", null))
     }
 
     /** POST /api/v1/exceptions；服务端创建待审批异常，不在客户端伪造成功。 */

@@ -1,6 +1,7 @@
 package com.company.logistics.data.remote
 
 import com.company.logistics.model.ApprovalStatus
+import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.AuditLog
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.FlowStatus
