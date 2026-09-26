@@ -4722,7 +4722,20 @@ def approve(
 @app.get("/api/v1/transfer-requests")
 def list_transfers(
     status: str | None = Query(default=None, max_length=32),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100, alias="pageSize"),
     user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    # FastAPI 解析后的 page/page_size 已是 int；直接走内部实现。
+    # 注意：Query 默认值对象不能直接做算术，内部调用方（admin_web）请调 _list_transfers。
+    return _list_transfers(status=status, page=page, page_size=page_size, user=user)
+
+
+def _list_transfers(
+    status: str | None,
+    page: int,
+    page_size: int,
+    user: sqlite3.Row,
 ) -> dict[str, Any]:
     c = db()
     if status is not None:
@@ -4738,10 +4751,18 @@ def list_transfers(
     if status:
         query += " AND t.status=?"
         args.append(status)
-    rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT 100", args).fetchall()
+    total = c.execute("SELECT COUNT(*) FROM transfer_requests t WHERE " + scope +
+                      (" AND t.status=?" if status else ""), args).fetchone()[0]
+    offset = (page - 1) * page_size
+    rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
+                     args + [page_size, offset]).fetchall()
     items = [_public_transfer(c, row) for row in rows]
     c.close()
-    return {"items": items, "serverTime": now()}
+    total_pages = (total + page_size - 1) // page_size
+    # 向后兼容：老客户端不传 page/pageSize 时默认 page=1&pageSize=100，
+    # 响应仍是 items + serverTime，只追加分页元数据。
+    return {"items": items, "serverTime": now(),
+            "page": page, "pageSize": page_size, "total": total, "totalPages": total_pages}
 
 
 def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,

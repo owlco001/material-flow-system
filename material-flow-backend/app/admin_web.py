@@ -51,6 +51,7 @@ from app.main import (
     handover_timeline,
     inventory as api_inventory,
     list_transfers,
+    _list_transfers,
     list_exceptions as api_list_exceptions,
     list_stocktakes as api_list_stocktakes,
     list_bom_versions as api_bom_versions,
@@ -650,7 +651,7 @@ def admin_flows_list(request: Request):
         return denied
     status = request.query_params.get("status") or None
     try:
-        data = list_transfers(status=status, user=user)
+        data = _list_transfers(status=status, page=1, page_size=100, user=user)
     except HTTPException as exc:
         return _api_http_error_response(exc)
     return templates.TemplateResponse(
