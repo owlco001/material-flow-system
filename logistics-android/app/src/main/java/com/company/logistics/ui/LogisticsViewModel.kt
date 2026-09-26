@@ -2185,7 +2185,12 @@ class LogisticsViewModel(
                         }
                         ScanType.FLOW_NO -> {
                             _state.update {
-                                it.copy(loading = false, message = "流转单 ${scan.normalizedValue} 暂未接入详情查询，请使用订单或物料码")
+                                it.copy(loading = false, message = "已识别流转单 ${scan.normalizedValue}")
+                            }
+                        }
+                        ScanType.DEVICE_CODE -> {
+                            _state.update {
+                                it.copy(loading = false, message = "已识别机台 ${scan.normalizedValue}")
                             }
                         }
                         ScanType.UNKNOWN -> _state.update {

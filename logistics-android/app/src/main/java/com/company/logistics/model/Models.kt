@@ -207,6 +207,7 @@ enum class ScanType(val code: String, val label: String) {
     MATERIAL_CODE("MATERIAL_CODE", "料号"),
     LOCATION_CODE("LOCATION_CODE", "库位码"),
     FLOW_NO("FLOW_NO", "流转单号"),
+    DEVICE_CODE("DEVICE_CODE", "机台码"),
     UNKNOWN("UNKNOWN", "未识别");
 
     val isKnown: Boolean get() = this != UNKNOWN

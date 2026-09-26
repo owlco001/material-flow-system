@@ -80,7 +80,7 @@ _ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32,
 # ==================== 契约常量 ====================
 # 依据《物料流转系统-V1-API契约冻结补遗》，本文件覆盖旧文档中的冲突定义。
 
-SCAN_TYPES = ("PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "UNKNOWN")
+SCAN_TYPES = ("PRODUCTION_ORDER", "FLOW_NO", "MATERIAL_CODE", "LOCATION_CODE", "DEVICE_CODE", "UNKNOWN")
 # 禁止使用的历史枚举，收到即拒绝
 FORBIDDEN_SCAN_TYPES = ("ORDER_NO", "LOGISTICS_NO", "ORDER", "LOGISTICS")
 
@@ -2460,17 +2460,20 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
         order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (upper,)).fetchone()
         material = c.execute("SELECT id FROM materials WHERE code=?", (upper,)).fetchone()
         location = c.execute("SELECT id FROM locations WHERE code=?", (upper,)).fetchone()
-        device = c.execute("SELECT id FROM order_devices WHERE device_no=?", (upper,)).fetchone()
+        device = c.execute("SELECT id FROM devices WHERE device_no=?", (upper,)).fetchone()
+        flow = c.execute("SELECT id FROM transfer_requests WHERE document_no=?", (upper,)).fetchone()
     finally:
         c.close()
     if order:
         typ, resource_id = "PRODUCTION_ORDER", order["id"]
-    # 设备码没有冻结的扫码枚举；即使命中数据库，也必须保持 UNKNOWN，
-    # 不能把内部设备类型泄露成运行时契约。
     elif material:
         typ, resource_id = "MATERIAL_CODE", material["id"]
     elif location:
         typ, resource_id = "LOCATION_CODE", location["id"]
+    elif device:
+        typ, resource_id = "DEVICE_CODE", device["id"]
+    elif flow:
+        typ, resource_id = "FLOW_NO", flow["id"]
     elif re.match(r"^MTR-[A-Z0-9-]+$", upper):
         typ = "MATERIAL_CODE"
     elif re.match(r"^(SO|PO)\d+$", upper):
