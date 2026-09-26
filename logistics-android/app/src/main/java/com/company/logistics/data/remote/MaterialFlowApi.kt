@@ -2,6 +2,7 @@ package com.company.logistics.data.remote
 
 import com.company.logistics.BuildConfig
 import com.company.logistics.model.MaterialInventory
+import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.ScanResult
 import com.company.logistics.model.HandoverAction
@@ -346,6 +347,11 @@ open class MaterialFlowApi(
             put("clientOperationId", UUID.randomUUID().toString())
         }
         ApiParser.parseScanResolve(request("POST", "/api/v1/scan/resolve", body.toString()))
+    }
+
+    /** GET /api/v1/devices/{id}：机台详情 */
+    suspend fun getDeviceDetail(deviceId: String): DeviceDetail = withContext(Dispatchers.IO) {
+        ApiParser.parseDeviceDetail(request("GET", "/api/v1/devices/$deviceId"))
     }
 
     /** POST /api/v1/exceptions；服务端创建待审批异常，不在客户端伪造成功。 */

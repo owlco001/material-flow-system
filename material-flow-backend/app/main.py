@@ -2175,6 +2175,37 @@ def create_device(body: DeviceCreate, user: sqlite3.Row = Depends(current_user),
     finally: c.close()
 
 
+@app.get("/api/v1/devices/{device_id}")
+def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    """机台详情：扫码机台码后跳转用。"""
+    c = db()
+    try:
+        d = c.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        if not d:
+            # 也支持用 device_no 查询
+            d = c.execute("SELECT * FROM devices WHERE device_no=?", (device_id,)).fetchone()
+        if not d:
+            raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在")
+        # 关联的生产订单
+        orders = c.execute("""
+            SELECT po.order_no, po.product_name, od.status as assign_status
+            FROM order_devices od
+            JOIN production_orders po ON po.id = od.order_id
+            WHERE od.device_id = ?
+        """, (d["id"],)).fetchall()
+        return {
+            "deviceId": d["id"],
+            "deviceNo": d["device_no"],
+            "deviceName": d["device_name"],
+            "workshop": d["workshop"],
+            "modelCapability": d["model_capability"],
+            "status": d["status"],
+            "orders": [{"orderNo": o["order_no"], "productName": o["product_name"], "assignStatus": o["assign_status"]} for o in orders],
+        }
+    finally:
+        c.close()
+
+
 @app.post("/api/v1/production-orders/{order_no}/models/{model_code}/assign-device")
 def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, user: sqlite3.Row = Depends(current_user),
                   x_request_id: str | None = Header(default=None),

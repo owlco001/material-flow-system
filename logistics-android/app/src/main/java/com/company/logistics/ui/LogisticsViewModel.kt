@@ -8,6 +8,7 @@ import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.AuditLog
+import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.AssemblyAction
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.HandoverAction
@@ -68,7 +69,8 @@ enum class Screen(val title: String) {
     CHANGE_PASSWORD("首次登录改密"),
     USER_MANAGEMENT("用户管理"),
     BOM_IMPORT("BOM 导入"),
-    PRODUCTION_MANAGEMENT("订单与机台")
+    PRODUCTION_MANAGEMENT("订单与机台"),
+    DEVICE_DETAIL("机台详情")
 }
 
 /**
@@ -135,6 +137,7 @@ data class LogisticsUiState(
     val orderStatus: OrderMaterialStatus? = null,
     val orderDetail: OrderDetail? = null,
     val orderResourceId: String? = null,
+    val deviceDetail: DeviceDetail? = null,
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
@@ -2189,13 +2192,8 @@ class LogisticsViewModel(
                             }
                         }
                         ScanType.DEVICE_CODE -> {
-                            _state.update {
-                                it.copy(
-                                    loading = false,
-                                    screen = Screen.PRODUCTION_MANAGEMENT,
-                                    message = "已识别机台 ${scan.normalizedValue}"
-                                )
-                            }
+                            val deviceId = scan.resourceId ?: scan.normalizedValue
+                            openDeviceDetail(deviceId)
                         }
                         ScanType.UNKNOWN -> _state.update {
                             it.copy(loading = false, error = "无法识别该条码")
@@ -2315,6 +2313,27 @@ class LogisticsViewModel(
         multiOrderDetails.select(orderNo)
         publishMultiOrderState()
         refreshOrderDetail(orderNo)
+    }
+
+    fun openDeviceDetail(deviceId: String) {
+        if (deviceId.isBlank()) return
+        viewModelScope.launch {
+            _state.update { it.copy(loading = true, error = null, deviceDetail = null) }
+            repo.deviceDetail(deviceId)
+                .onSuccess { detail ->
+                    _state.update {
+                        it.copy(deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false)
+                    }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            error = if (e is ApiException) e.safeMessage("机台查询失败") else "网络不可用",
+                        )
+                    }
+                }
+        }
     }
 
     fun selectOrder(orderNo: String) {

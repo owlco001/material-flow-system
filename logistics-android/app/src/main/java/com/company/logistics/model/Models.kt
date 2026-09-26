@@ -895,3 +895,20 @@ data class OfflineOperation(
     val serverTime: String? = null,
     val errorMessage: String? = null
 )
+
+/** 机台详情 */
+data class DeviceDetail(
+    val deviceId: String,
+    val deviceNo: String,
+    val deviceName: String,
+    val workshop: String?,
+    val modelCapability: String?,
+    val status: String,
+    val orders: List<DeviceOrder> = emptyList()
+)
+
+data class DeviceOrder(
+    val orderNo: String,
+    val productName: String?,
+    val assignStatus: String?
+)

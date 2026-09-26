@@ -184,6 +184,30 @@ object ApiParser {
         )
     }
 
+    /** 机台详情 */
+    fun parseDeviceDetail(json: String): DeviceDetail {
+        val root = JSONObject(json)
+        val orders = mutableListOf<DeviceOrder>()
+        val arr = root.optJSONArray("orders") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            orders.add(DeviceOrder(
+                orderNo = o.optString("orderNo"),
+                productName = o.optString("productName").takeIf { it.isNotBlank() },
+                assignStatus = o.optString("assignStatus").takeIf { it.isNotBlank() }
+            ))
+        }
+        return DeviceDetail(
+            deviceId = root.optString("deviceId"),
+            deviceNo = root.optString("deviceNo"),
+            deviceName = root.optString("deviceName"),
+            workshop = root.optString("workshop").takeIf { it.isNotBlank() },
+            modelCapability = root.optString("modelCapability").takeIf { it.isNotBlank() },
+            status = root.optString("status"),
+            orders = orders
+        )
+    }
+
     /** 契约 4.4 料号库存 */
     fun parseMaterialInventory(json: String): MaterialInventory {
         val root = JSONObject(json)

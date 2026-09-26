@@ -6,6 +6,7 @@ import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.TransferItem
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.LoginResult
+import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.AuditLogPage
 import com.company.logistics.model.AssemblyTaskPage
 import com.company.logistics.model.AssemblyAssignmentResponse
@@ -214,6 +215,10 @@ open class LogisticsRepository(
 
     open suspend fun orderDetail(orderNo: String, page: Int = 1, pageSize: Int = 20): Result<OrderDetail> = resultOf {
         api.orderDetail(orderNo, page, pageSize)
+    }
+
+    open suspend fun deviceDetail(deviceId: String): Result<DeviceDetail> = resultOf {
+        api.getDeviceDetail(deviceId)
     }
 
     open suspend fun createException(
