@@ -2190,7 +2190,11 @@ class LogisticsViewModel(
                         }
                         ScanType.DEVICE_CODE -> {
                             _state.update {
-                                it.copy(loading = false, message = "已识别机台 ${scan.normalizedValue}")
+                                it.copy(
+                                    loading = false,
+                                    screen = Screen.PRODUCTION_MANAGEMENT,
+                                    message = "已识别机台 ${scan.normalizedValue}"
+                                )
                             }
                         }
                         ScanType.UNKNOWN -> _state.update {
