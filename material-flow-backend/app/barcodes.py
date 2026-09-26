@@ -26,6 +26,13 @@ ENTITIES: dict[str, tuple[str, str, str]] = {
     "material": ("materials", "code", "物料"),
 }
 
+# 机台条码的查找顺序：机台主数据（devices）优先，订单机台（order_devices）兜底。
+# 批量机台码页列的是订单装配任务的机台号，只存在于后者。
+_DEVICE_TABLES: tuple[tuple[str, str], ...] = (
+    ("devices", "device_no"),
+    ("order_devices", "device_no"),
+)
+
 KINDS = ("qr", "code128")
 IMAGES = ("png", "svg")
 
@@ -49,11 +56,16 @@ class _NoTextImageWriter(ImageWriter):
 def resolve_payload(entity: str, key: str, conn) -> str | None:
     """按实体类型与编号查出应编码的规范编号；不存在返回 None。"""
     table, column, _ = ENTITIES[entity]
-    row = conn.execute(
-        f"SELECT {column} FROM {table} WHERE {column}=? COLLATE NOCASE",
-        (key.strip(),),
-    ).fetchone()
-    return row[column] if row else None
+    tables = _DEVICE_TABLES if entity == "device" else ((table, column),)
+    key = key.strip()
+    for t, col in tables:
+        row = conn.execute(
+            f"SELECT {col} FROM {t} WHERE {col}=? COLLATE NOCASE",
+            (key,),
+        ).fetchone()
+        if row:
+            return row[col]
+    return None
 
 
 def _check_code128_text(text: str) -> None:
