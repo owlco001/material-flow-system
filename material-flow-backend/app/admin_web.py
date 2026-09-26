@@ -72,6 +72,7 @@ from app.main import (
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
+    WORKSPACE_STATUS_LABELS,
 )
 
 router = APIRouter()
@@ -1007,6 +1008,7 @@ def admin_orders(request: Request):
             "order_no": order_no,
             "detail": detail,
             "error": error,
+            "status_labels": WORKSPACE_STATUS_LABELS,
         },
     )
 

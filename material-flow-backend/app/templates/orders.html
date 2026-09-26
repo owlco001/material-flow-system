@@ -59,7 +59,8 @@
       <td>{{ m.get("requiredQuantity") or m.get("required_quantity") }}</td>
       <td>{{ m.get("arrivedQuantity") or m.get("arrived_quantity") }}</td>
       <td>{{ m.get("inStockQuantity") or m.get("in_stock_quantity") }}</td>
-      <td>{{ m.get("statusCode") or m.get("status_code") or m.get("status") }}</td>
+      {% set st = m.get("statusCode") or m.get("status_code") or m.get("status") %}
+      <td>{{ status_labels.get(st, st) if status_labels else st }}</td>
     </tr>
     {% else %}
     <tr><td colspan="5">暂无物料需求（或不在您的可见范围内）</td></tr>
