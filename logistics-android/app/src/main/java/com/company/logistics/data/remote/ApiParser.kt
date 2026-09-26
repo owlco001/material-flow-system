@@ -65,6 +65,42 @@ import org.json.JSONObject
  */
 object ApiParser {
 
+    /** 解析流转单交接记录（留痕）。 */
+    fun parseTransferHandoverRecords(json: String): List<TransferHandoverRecord> {
+        val root = JSONObject(json)
+        val arr = root.optJSONArray("items") ?: JSONArray()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val detailArr = o.optJSONArray("items") ?: JSONArray()
+                val detail = buildList {
+                    for (j in 0 until detailArr.length()) {
+                        val d = detailArr.optJSONObject(j) ?: continue
+                        add(
+                            TransferHandoverItemRecord(
+                                materialId = nullableStringAny(d, "materialId", "material_id").orEmpty(),
+                                quantity = d.optInt("quantity", 0),
+                            )
+                        )
+                    }
+                }
+                add(
+                    TransferHandoverRecord(
+                        handoverId = nullableStringAny(o, "handoverId", "handover_id").orEmpty(),
+                        quantity = o.optInt("quantity", 0),
+                        fromLocation = nullableStringAny(o, "fromLocation", "from_location"),
+                        receiverName = nullableStringAny(o, "receiverName", "receiver_name"),
+                        remark = nullableStringAny(o, "remark"),
+                        status = nullableStringAny(o, "status").orEmpty(),
+                        createdByName = nullableStringAny(o, "createdByName", "created_by_name"),
+                        createdAt = nullableStringAny(o, "createdAt", "created_at"),
+                        items = detail,
+                    )
+                )
+            }
+        }
+    }
+
     fun parseSetupStatus(json: String): SetupStatusDto {
         val root = JSONObject(json)
         return SetupStatusDto(root.optBoolean("initialized"), root.optString("admin_username", root.optString("adminUsername")), root.optBoolean("must_change_password", root.optBoolean("mustChangePassword")), root.optString("server_time", root.optString("serverTime")))
@@ -562,6 +598,8 @@ object ApiParser {
             executedAt = nullableStringAny(json, "executedAt", "executed_at"),
             serverTime = nullableStringAny(json, "serverTime", "server_time"),
             traceId = nullableStringAny(json, "traceId", "trace_id"),
+            handoverStatus = nullableStringAny(json, "handoverStatus", "handover_status"),
+            lastHandoverId = nullableStringAny(json, "lastHandoverId", "last_handover_id"),
         )
     }
 

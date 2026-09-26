@@ -70,7 +70,9 @@ enum class Screen(val title: String) {
     USER_MANAGEMENT("用户管理"),
     BOM_IMPORT("BOM 导入"),
     PRODUCTION_MANAGEMENT("订单与机台"),
-    DEVICE_DETAIL("机台详情")
+    DEVICE_DETAIL("机台详情"),
+    FLOW_DETAIL("流转单详情"),
+    FLOW_HANDOVER("扫码交接")
 }
 
 /**
@@ -210,6 +212,12 @@ data class LogisticsUiState(
     val transferRequestDetail: TransferRequest? = null,
     val transferRequestDetailState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val transferRequestDetailError: String? = null,
+    /** 扫码交接提交状态。 */
+    val transferHandoverSubmitting: Boolean = false,
+    val transferHandoverError: String? = null,
+    /** 流转单交接记录（留痕）。 */
+    val transferHandoverRecords: List<TransferHandoverRecord> = emptyList(),
+    val transferHandoverRecordsState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val auditLogs: List<AuditLog> = emptyList(),
     val auditState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val auditError: String? = null,
@@ -2105,9 +2113,163 @@ class LogisticsViewModel(
         }
     }
 
+    /**
+     * 从流转单详情直接确认交接（扫码直达场景）。
+     * 权限与服务端一致：OPERATOR / WAREHOUSE_ADMIN / ADMIN 可确认。
+     */
+    fun confirmHandoverById(handoverId: String) {
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能确认交接") }
+            return
+        }
+        if (current.role !in setOf(UserRole.OPERATOR, UserRole.WAREHOUSE_ADMIN, UserRole.ADMIN)) {
+            _state.update { it.copy(error = "当前角色无权确认交接") }
+            return
+        }
+        if (handoverId.isBlank() || current.handoverSubmittingId != null) return
+        val operationKey = "CONFIRM|$handoverId"
+        val operationId = operationIdFor(operationKey)
+        val requestId = requestIdFor(operationKey)
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    handoverSubmittingId = handoverId,
+                    handoverPendingOperationKey = operationKey,
+                    handoverClientOperationId = operationId,
+                    handoverRequestId = requestId,
+                    error = null,
+                    message = null,
+                )
+            }
+            repo.decideHandover(
+                handoverId = handoverId,
+                action = HandoverAction.CONFIRM,
+                clientOperationId = operationId,
+                reason = null,
+                requestId = requestId,
+            ).onSuccess { result ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = null,
+                        handoverClientOperationId = null,
+                        handoverRequestId = null,
+                        message = if (result.idempotent) "交接已确认（幂等）" else "交接确认成功",
+                    )
+                }
+                // 刷新流转单详情，展示最新交接状态
+                current.transferRequestDetail?.id?.let { selectTransferRequest(it) }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        handoverSubmittingId = null,
+                        handoverPendingOperationKey = if (canRetryHandover(error)) operationKey else null,
+                        handoverClientOperationId = if (canRetryHandover(error)) operationId else null,
+                        handoverRequestId = if (canRetryHandover(error)) requestId else null,
+                        error = handoverErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
     private fun refreshWorkspaceAfterHandover(itemId: String) {
         loadWorkspacePage(resetToFirstPage = true)
         loadHandoverTimeline(itemId)
+    }
+
+    /**
+     * 扫码交接：交接方勾选物料后一次性确认，交接即留痕。
+     * 仅已审核通过的出库流转单可交接，服务端会二次校验。
+     */
+    fun submitTransferHandover(selected: List<Pair<String, Int>>) {
+        val current = _state.value
+        if (current.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能交接") }
+            return
+        }
+        val detail = current.transferRequestDetail
+        if (detail == null || current.transferHandoverSubmitting) return
+        if (selected.isEmpty()) {
+            _state.update { it.copy(transferHandoverError = "请先勾选要交接的物料") }
+            return
+        }
+        val operationKey = "TRANSFER_HANDOVER|${detail.id}|${selected.hashCode()}"
+        val operationId = operationIdFor(operationKey)
+        val requestId = requestIdFor(operationKey)
+        operationScope.launch {
+            _state.update {
+                it.copy(
+                    transferHandoverSubmitting = true,
+                    transferHandoverError = null,
+                    error = null,
+                    message = null,
+                )
+            }
+            repo.transferHandover(
+                transferRequestId = detail.id,
+                items = selected,
+                fromLocation = null,
+                receiverUserId = null,
+                remark = null,
+                clientOperationId = operationId,
+            ).onSuccess { response ->
+                val idempotent = response.optBoolean("idempotent", false)
+                _state.update {
+                    it.copy(
+                        transferHandoverSubmitting = false,
+                        transferHandoverError = null,
+                        message = if (idempotent) "交接已提交（幂等）" else "交接成功，已留痕",
+                    )
+                }
+                // 刷新详情与交接记录
+                selectTransferRequest(detail.id)
+                loadTransferHandoverRecords(detail.id)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        transferHandoverSubmitting = false,
+                        transferHandoverError = transferRequestErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    /** 加载流转单交接记录（留痕查看）。 */
+    fun loadTransferHandoverRecords(requestId: String) {
+        if (requestId.isBlank()) return
+        val generation = ++transferRequestDetailGeneration
+        val currentSession = sessionGeneration
+        operationScope.launch {
+            if (!isSessionActive(currentSession)) return@launch
+            _state.update {
+                it.copy(
+                    transferHandoverRecordsState = WorkspaceLoadState.LOADING,
+                )
+            }
+            repo.transferHandoverRecords(requestId)
+                .onSuccess { json ->
+                    if (generation != transferRequestDetailGeneration || !isSessionActive(currentSession)) {
+                        return@onSuccess
+                    }
+                    _state.update {
+                        it.copy(
+                            transferHandoverRecords = ApiParser.parseTransferHandoverRecords(json.toString()),
+                            transferHandoverRecordsState = WorkspaceLoadState.CONTENT,
+                        )
+                    }
+                }
+                .onFailure {
+                    if (generation != transferRequestDetailGeneration || !isSessionActive(currentSession)) {
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(transferHandoverRecordsState = WorkspaceLoadState.IDLE)
+                    }
+                }
+        }
     }
 
     private fun operationIdFor(operationKey: String): String {
@@ -2187,9 +2349,14 @@ class LogisticsViewModel(
                             }
                         }
                         ScanType.FLOW_NO -> {
-                            _state.update {
-                                it.copy(loading = false, message = "已识别流转单 ${scan.normalizedValue}")
-                            }
+                            // 真实场景：扫流转码直达流转单详情（带入 transfer_request_id），
+                            // 而不是只显示一句提示让用户自己去翻找。
+                            val requestId = scan.resourceId?.takeIf { it.isNotBlank() }
+                                ?: scan.normalizedValue
+                            _state.update { it.copy(loading = false) }
+                            navigate(Screen.FLOW_DETAIL)
+                            _state.update { it.copy(message = "已识别流转单 ${scan.normalizedValue}") }
+                            selectTransferRequest(requestId)
                         }
                         ScanType.DEVICE_CODE -> {
                             val deviceId = scan.resourceId ?: scan.normalizedValue
@@ -2607,6 +2774,7 @@ class LogisticsViewModel(
             Screen.BOM_IMPORT -> role in setOf(UserRole.ADMIN, UserRole.PLANNER, UserRole.WORKSHOP_SUPERVISOR)
             Screen.PRODUCTION_MANAGEMENT -> role == UserRole.ADMIN || role == UserRole.PLANNER || role == UserRole.WORKSHOP_SUPERVISOR
             Screen.CHANGE_PASSWORD -> true
+            Screen.FLOW_DETAIL, Screen.FLOW_HANDOVER -> true
             Screen.LOGIN -> false
             else -> true
         }

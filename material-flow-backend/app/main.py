@@ -765,6 +765,11 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     if "rejection_reason" not in transfer_cols:
         c.execute("ALTER TABLE transfer_requests ADD COLUMN rejection_reason TEXT")
 
+    # 扫码交接留痕：交接记录关联的物料明细（JSON 数组）
+    handover_cols = {r["name"] for r in c.execute("PRAGMA table_info(material_handovers)").fetchall()}
+    if "items_json" not in handover_cols:
+        c.execute("ALTER TABLE material_handovers ADD COLUMN items_json TEXT")
+
     exception_cols = {r["name"] for r in c.execute("PRAGMA table_info(exceptions)").fetchall()}
     if "order_no" not in exception_cols:
         c.execute("ALTER TABLE exceptions ADD COLUMN order_no TEXT")
@@ -1093,6 +1098,24 @@ class HandoverCreate(BaseModel):
     quantity: int = Field(ge=1)
     fromLocation: str = Field(min_length=1, max_length=128)
     deviceId: str | None = Field(default=None, max_length=128)
+    receiverUserId: str | None = Field(default=None, max_length=128)
+    remark: str | None = Field(default=None, max_length=500)
+    clientOperationId: uuid.UUID
+
+
+class TransferHandoverItem(BaseModel):
+    """扫码交接时勾选的物料明细。"""
+
+    materialId: str = Field(min_length=1, max_length=128)
+    quantity: int = Field(ge=1)
+
+
+class TransferHandoverCreate(BaseModel):
+    """按流转单扫码交接：交接方勾选物料后一次性确认，交接即留痕。"""
+
+    transferRequestId: str = Field(min_length=1, max_length=128)
+    items: list[TransferHandoverItem] = Field(min_length=1, max_length=100)
+    fromLocation: str | None = Field(default=None, max_length=128)
     receiverUserId: str | None = Field(default=None, max_length=128)
     remark: str | None = Field(default=None, max_length=500)
     clientOperationId: uuid.UUID
@@ -2541,7 +2564,7 @@ def barcode_image(
     user: sqlite3.Row = Depends(current_user),
 ) -> Response:
     if entity not in _barcodes.ENTITIES:
-        raise HTTPException(404, "不支持的条码实体：仅支持 order / device / material")
+        raise HTTPException(404, "不支持的条码实体：仅支持 order / device / material / transfer")
     c = db()
     try:
         payload = _barcodes.resolve_payload(entity, key, c)
@@ -5344,8 +5367,7 @@ def reject_handover(hid: str, body: HandoverDecision, request: Request, user: sq
 
 
 @app.post("/api/v1/handovers/{hid}/cancel")
-def cancel_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
-    return _decide_handover(hid, body, request, user, x_request_id, idempotency_key, "CANCELLED")
+def cancel_handover(hid: str, body: HandoverDecision, request: Request, user: sqlite3.Row = Depends(current_user), x_request_id: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:    return _decide_handover(hid, body, request, user, x_request_id, idempotency_key, "CANCELLED")
 
 
 @app.get("/api/v1/handovers/{hid}/timeline")
@@ -5405,10 +5427,194 @@ def handover_timeline(hid: str, user: sqlite3.Row = Depends(current_user)) -> di
     }
 
 
+@app.post("/api/v1/transfer-handovers")
+def create_transfer_handover(
+    body: TransferHandoverCreate,
+    request: Request,
+    user: sqlite3.Row = Depends(current_user),
+    x_request_id: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    """扫码交接：交接方扫流转码后，勾选实际交接的物料并一次性确认，交接即留痕。
+
+    仅允许已审核通过的出库流转单。交接人即为当前扫码用户，交接直接 CONFIRMED。
+    """
+    trace_id = require_request_id(x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    if user["role"] not in {"MATERIAL", "OPERATOR", "WAREHOUSE_ADMIN", "ADMIN"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无交接权限", trace_id=trace_id)
+    operation_id = str(body.clientOperationId)
+    operation_payload = body.model_dump_json()
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute(
+            "SELECT * FROM handover_operations WHERE client_operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if prior:
+            if _payload_digest(prior["payload_json"]) != _payload_digest(operation_payload):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
+                               "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            c.rollback()
+            c.close()
+            result["idempotent"] = True
+            result["traceId"] = trace_id
+            return result
+
+        transfer = c.execute(
+            "SELECT id,type,status,document_no,payload_json FROM transfer_requests WHERE id=?",
+            (body.transferRequestId,),
+        ).fetchone()
+        if not transfer:
+            raise ApiError(404, CODE_VALIDATION_ERROR, "流转单不存在", trace_id=trace_id)
+        if transfer["type"] != "OUTBOUND":
+            raise ApiError(400, CODE_VALIDATION_ERROR, "仅出库流转单支持扫码交接", trace_id=trace_id)
+        if transfer["status"] not in {"APPROVED", "EXECUTED"}:
+            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
+                           "流转单尚未审核通过，无法交接", trace_id=trace_id)
+
+        # 校验勾选的物料都在流转单明细内，且数量不超过申请数量
+        try:
+            payload = json.loads(transfer["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        allowed: dict[str, int] = {}
+        for it in payload.get("items", []) or []:
+            mid = str(it.get("materialId") or it.get("material_id") or "")
+            if mid:
+                allowed[mid] = int(it.get("quantity") or 0)
+        seen: set[str] = set()
+        items_out: list[dict[str, Any]] = []
+        for it in body.items:
+            if it.materialId in seen:
+                raise ApiError(400, CODE_VALIDATION_ERROR,
+                               f"物料 {it.materialId} 重复勾选", trace_id=trace_id)
+            seen.add(it.materialId)
+            if it.materialId not in allowed:
+                raise ApiError(400, CODE_VALIDATION_ERROR,
+                               f"物料 {it.materialId} 不在流转单明细内", trace_id=trace_id)
+            if allowed[it.materialId] > 0 and it.quantity > allowed[it.materialId]:
+                raise ApiError(400, CODE_VALIDATION_ERROR,
+                               f"物料 {it.materialId} 交接数量超过申请数量", trace_id=trace_id)
+            items_out.append({"materialId": it.materialId, "quantity": it.quantity})
+
+        hid = "h_" + uuid.uuid4().hex
+        total_qty = sum(i["quantity"] for i in items_out)
+        ts = now()
+        from_loc = (body.fromLocation or "").strip() or "扫码交接"
+        c.execute(
+            """INSERT INTO material_handovers
+               (id,work_item_id,transfer_request_id,quantity,from_location,device_id,
+                receiver_user_id,remark,client_operation_id,status,created_by,created_at,
+                confirmed_by,confirmed_at,decision_reason,items_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (hid, "", transfer["id"], total_qty, from_loc, None,
+             body.receiverUserId, (body.remark or "").strip() or None, operation_id,
+             "CONFIRMED", user["id"], ts, user["id"], ts, None,
+             json.dumps(items_out, ensure_ascii=False)),
+        )
+        audit(c, user["id"], user["role"], "TRANSFER_HANDOVER", "HANDOVER", hid,
+              "SUCCESS", trace_id)
+        _audit_event(
+            c, "TRANSFER_HANDOVER_CONFIRMED", hid, user, trace_id, operation_id,
+            {"status": "PENDING"},
+            {"status": "CONFIRMED", "transferRequestId": transfer["id"],
+             "items": items_out},
+            request, entity_type="HANDOVER",
+        )
+        result = {
+            "handoverId": hid,
+            "transferRequestId": transfer["id"],
+            "documentNo": transfer["document_no"],
+            "status": "CONFIRMED",
+            "items": items_out,
+            "serverTime": ts,
+            "traceId": trace_id,
+        }
+        c.execute(
+            "INSERT INTO handover_operations VALUES(?,?,?,?,?,?)",
+            (operation_id, hid, "TRANSFER_HANDOVER", operation_payload,
+             json.dumps(result, ensure_ascii=False), ts),
+        )
+        c.commit()
+    except ApiError:
+        c.rollback()
+        c.close()
+        raise
+    except Exception:
+        c.rollback()
+        c.close()
+        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "扫码交接失败",
+                       retryable=True, trace_id=trace_id) from None
+    c.close()
+    return result
+
+
+@app.get("/api/v1/transfer-requests/{rid}/handovers")
+def transfer_handover_records(rid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+    """流转单的交接记录（留痕查看）。"""
+    c = db()
+    try:
+        transfer = c.execute(
+            "SELECT id, document_no FROM transfer_requests WHERE id=?", (rid,)
+        ).fetchone()
+        if not transfer:
+            # 兼容按单号查询
+            transfer = c.execute(
+                "SELECT id, document_no FROM transfer_requests WHERE document_no=?",
+                (rid.strip().upper(),),
+            ).fetchone()
+        if not transfer:
+            raise HTTPException(404, "流转单不存在")
+        rows = c.execute(
+            """SELECT h.id,h.quantity,h.from_location,h.receiver_user_id,h.remark,
+                      h.status,h.created_by,h.created_at,h.confirmed_by,h.confirmed_at,
+                      h.items_json,u.display_name AS created_by_name,r.display_name AS receiver_name
+                 FROM material_handovers h
+                 LEFT JOIN users u ON u.id=h.created_by
+                 LEFT JOIN users r ON r.id=h.receiver_user_id
+                WHERE h.transfer_request_id=?
+                ORDER BY h.created_at, h.id""",
+            (transfer["id"],),
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                detail = json.loads(r["items_json"]) if r["items_json"] else []
+            except Exception:
+                detail = []
+            items.append({
+                "handoverId": r["id"],
+                "quantity": r["quantity"],
+                "fromLocation": r["from_location"],
+                "receiverUserId": r["receiver_user_id"],
+                "receiverName": r["receiver_name"],
+                "remark": r["remark"],
+                "status": r["status"],
+                "createdBy": r["created_by"],
+                "createdByName": r["created_by_name"],
+                "createdAt": r["created_at"],
+                "confirmedBy": r["confirmed_by"],
+                "confirmedAt": r["confirmed_at"],
+                "items": detail,
+            })
+    finally:
+        c.close()
+    return {"transferRequestId": transfer["id"], "documentNo": transfer["document_no"],
+            "items": items, "serverTime": now()}
+
+
 @app.get("/api/v1/transfer-requests/{rid}")
 def get_transfer(rid: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
     c = db()
     row = c.execute("SELECT * FROM transfer_requests WHERE id=?", (rid,)).fetchone()
+    if not row:
+        # 扫码时 resourceId 可能是单号本身，按 document_no 再查一次
+        row = c.execute(
+            "SELECT * FROM transfer_requests WHERE document_no=?", (rid.strip().upper(),)
+        ).fetchone()
     if not row:
         c.close()
         raise HTTPException(404, "申请不存在")

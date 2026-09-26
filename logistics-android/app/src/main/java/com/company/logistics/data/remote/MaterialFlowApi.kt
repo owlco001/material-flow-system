@@ -853,6 +853,34 @@ open class MaterialFlowApi(
         )
     }
 
+    /** 扫码交接：按流转单勾选物料并一次性确认。 */
+    suspend fun transferHandover(
+        transferRequestId: String,
+        items: List<Pair<String, Int>>,
+        fromLocation: String?,
+        receiverUserId: String?,
+        remark: String?,
+        clientOperationId: String
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("transferRequestId", transferRequestId)
+            put("items", JSONArray(items.map { (mid, qty) ->
+                JSONObject().apply { put("materialId", mid); put("quantity", qty) }
+            }))
+            if (fromLocation != null) put("fromLocation", fromLocation)
+            if (receiverUserId != null) put("receiverUserId", receiverUserId)
+            if (remark != null) put("remark", remark)
+            put("clientOperationId", clientOperationId)
+        }
+        request("POST", "/api/v1/transfer-handovers", body.toString(), idempotencyKey = clientOperationId)
+    }
+
+    /** 流转单交接记录（留痕）。 */
+    suspend fun transferHandoverRecords(transferRequestId: String): JSONObject = withContext(Dispatchers.IO) {
+        require(transferRequestId.isNotBlank()) { "transferRequestId 不能为空" }
+        request("GET", "/api/v1/transfer-requests/${encodeQuery(transferRequestId)}/handovers", null)
+    }
+
     /** 管理员只读审计分页；服务端返回多少条就展示多少条，不在客户端聚合全量。 */
     suspend fun auditLogs(page: Int = 1, pageSize: Int = 50): AuditLogPage = withContext(Dispatchers.IO) {
         require(page >= 1) { "page 必须从 1 开始" }

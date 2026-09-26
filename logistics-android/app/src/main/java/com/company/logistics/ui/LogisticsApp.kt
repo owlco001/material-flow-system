@@ -57,6 +57,8 @@ import com.company.logistics.ui.screens.WorkspaceScreen
 import com.company.logistics.ui.screens.BomImportScreen
 import com.company.logistics.ui.screens.ProductionManagementScreen
 import com.company.logistics.ui.screens.DeviceDetailScreen
+import com.company.logistics.ui.screens.FlowDetailScreen
+import com.company.logistics.ui.screens.FlowHandoverScreen
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsTypography
@@ -278,6 +280,39 @@ fun LogisticsApp(
                         onApprove = { viewModel.approveTransferRequest(it, true) },
                         onReject = { id, reason -> viewModel.approveTransferRequest(id, false, reason) },
                         onExecute = { viewModel.executeTransferRequest(it) },
+                    )
+
+                    Screen.FLOW_DETAIL -> FlowDetailScreen(
+                        role = state.role,
+                        detail = state.transferRequestDetail,
+                        detailState = state.transferRequestDetailState,
+                        detailError = state.transferRequestDetailError,
+                        handoverSubmitting = state.handoverSubmittingId != null,
+                        handoverRecords = state.transferHandoverRecords,
+                        handoverRecordsState = state.transferHandoverRecordsState,
+                        onBack = {
+                            viewModel.closeTransferRequestDetail()
+                            viewModel.navigate(Screen.WORKSPACE)
+                        },
+                        onRetry = { viewModel.retryTransferRequestDetail() },
+                        onConfirmHandover = { viewModel.confirmHandoverById(it) },
+                        onStartHandover = { viewModel.navigate(Screen.FLOW_HANDOVER) },
+                        onLoadHandoverRecords = {
+                            state.selectedTransferRequestId?.let { viewModel.loadTransferHandoverRecords(it) }
+                        },
+                    )
+
+                    Screen.FLOW_HANDOVER -> FlowHandoverScreen(
+                        detail = state.transferRequestDetail,
+                        detailState = state.transferRequestDetailState,
+                        detailError = state.transferRequestDetailError,
+                        submitting = state.transferHandoverSubmitting,
+                        submitError = state.transferHandoverError,
+                        onBack = { viewModel.navigate(Screen.FLOW_DETAIL) },
+                        onRetry = { viewModel.retryTransferRequestDetail() },
+                        onConfirm = {
+                            viewModel.submitTransferHandover(it)
+                        },
                     )
 
                     Screen.AUDIT -> AuditScreen(

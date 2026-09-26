@@ -334,6 +334,23 @@ open class LogisticsRepository(
         api.transferRequestDetail(requestId)
     }
 
+    /** 扫码交接：按流转单勾选物料并一次性确认。 */
+    open suspend fun transferHandover(
+        transferRequestId: String,
+        items: List<Pair<String, Int>>,
+        fromLocation: String?,
+        receiverUserId: String?,
+        remark: String?,
+        clientOperationId: String,
+    ): Result<org.json.JSONObject> = resultOf {
+        api.transferHandover(transferRequestId, items, fromLocation, receiverUserId, remark, clientOperationId)
+    }
+
+    /** 流转单交接记录（留痕）。 */
+    open suspend fun transferHandoverRecords(transferRequestId: String): Result<org.json.JSONObject> = resultOf {
+        api.transferHandoverRecords(transferRequestId)
+    }
+
     /** 管理员只读审计分页。 */
     open suspend fun auditLogs(page: Int = 1, pageSize: Int = 50): Result<AuditLogPage> = resultOf {
         api.auditLogs(page, pageSize)

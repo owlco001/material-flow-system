@@ -487,6 +487,9 @@ data class TransferRequest(
     val executedAt: String? = null,
     val serverTime: String? = null,
     val traceId: String? = null,
+    /** 关联交接状态（PENDING/CONFIRMED/REJECTED/CANCELLED），扫码直达详情后用于闭环确认。 */
+    val handoverStatus: String? = null,
+    val lastHandoverId: String? = null,
 ) {
     val requestId: String get() = id
 
@@ -911,4 +914,23 @@ data class DeviceOrder(
     val orderNo: String,
     val productName: String?,
     val assignStatus: String?
+)
+
+/** 扫码交接勾选的物料明细。 */
+data class TransferHandoverItemRecord(
+    val materialId: String,
+    val quantity: Int,
+)
+
+/** 流转单交接记录（留痕）：谁、何时、交接了哪些物料。 */
+data class TransferHandoverRecord(
+    val handoverId: String,
+    val quantity: Int,
+    val fromLocation: String?,
+    val receiverName: String?,
+    val remark: String?,
+    val status: String,
+    val createdByName: String?,
+    val createdAt: String?,
+    val items: List<TransferHandoverItemRecord> = emptyList(),
 )

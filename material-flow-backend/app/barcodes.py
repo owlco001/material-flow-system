@@ -24,6 +24,7 @@ ENTITIES: dict[str, tuple[str, str, str]] = {
     "order": ("production_orders", "order_no", "生产订单"),
     "device": ("devices", "device_no", "机台"),
     "material": ("materials", "code", "物料"),
+    "transfer": ("transfer_requests", "document_no", "流转单"),
 }
 
 # 机台条码的查找顺序：机台主数据（devices）优先，订单机台（order_devices）兜底。
