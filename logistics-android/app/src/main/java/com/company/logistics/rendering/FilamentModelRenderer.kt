@@ -18,11 +18,13 @@ import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.google.android.filament.EntityManager
 import com.google.android.filament.LightManager
+import com.google.android.filament.TransformManager
 import java.io.File
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /** Real Filament GLB renderer; all Filament objects are owned and released here. */
 class FilamentModelRenderer(
@@ -36,6 +38,10 @@ class FilamentModelRenderer(
     override val camera = OrbitCameraState(minDistance = 0.1f, maxDistance = 2000f)
     private var modelCenter = floatArrayOf(0f, 0f, 0f)
     private var modelRadius = 1f
+    // 爆炸图：每个零件的原始局部中心（模型空间），用于计算爆炸方向
+    private var partCenters = mutableListOf<FloatArray>()
+    private var partEntities = mutableListOf<Int>()
+    private var explosionFactor = 0f
     private val backgroundR = RenderMath.srgbToLinear(((backgroundArgb shr 16) and 0xFF) / 255f)
     private val backgroundG = RenderMath.srgbToLinear(((backgroundArgb shr 8) and 0xFF) / 255f)
     private val backgroundB = RenderMath.srgbToLinear((backgroundArgb and 0xFF) / 255f)
@@ -197,8 +203,14 @@ class FilamentModelRenderer(
             asset = candidate
             activeScene.addEntities(candidate!!.entities)
             val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
-            modelCenter = candidate!!.boundingBox.center
+            // 中心校正：把包围盒中心移到原点，旋转围绕真中心，不会"飞"
+            val bboxCenter = candidate!!.boundingBox.center
+            modelCenter = floatArrayOf(0f, 0f, 0f)
             modelRadius = if (radius > 0f) radius else 1f
+            // 收集零件中心（用于爆炸图）
+            collectPartCenters(candidate!!, bboxCenter)
+            // 应用中心校正 + 当前爆炸系数
+            applyPartTransforms()
             camera.fit(
                 radius = modelRadius,
                 aspect = viewportWidth.toFloat() / viewportHeight.toFloat(),
@@ -248,6 +260,67 @@ class FilamentModelRenderer(
     override fun resetCamera() {
         camera.reset()
         applyCamera()
+    }
+
+    /** 爆炸图：0=装配状态，1=完全散开 */
+    override fun setExploded(factor: Float) {
+        explosionFactor = factor.coerceIn(0f, 1f)
+        applyPartTransforms()
+    }
+
+    /** 收集每个可渲染零件的世界中心（模型空间），爆炸时沿中心向外散开 */
+    private fun collectPartCenters(asset: FilamentAsset, bboxCenter: FloatArray) {
+        partCenters.clear()
+        partEntities.clear()
+        val eng = engine ?: return
+        val tm = eng.transformManager
+        val renderableManager = eng.renderableManager
+        for (entity in asset.entities) {
+            if (!renderableManager.hasComponent(entity)) continue
+            val instance = tm.getInstance(entity)
+            if (instance == 0) continue
+            // 取该零件的世界变换，提取平移部分作为近似中心
+            val m = FloatArray(16)
+            tm.getTransform(instance, m)
+            // 中心校正：减去包围盒中心，移到以原点为中心的空间
+            partCenters.add(floatArrayOf(m[12] - bboxCenter[0], m[13] - bboxCenter[1], m[14] - bboxCenter[2]))
+            partEntities.add(entity)
+        }
+    }
+
+    /** 应用中心校正 + 爆炸位移 */
+    private fun applyPartTransforms() {
+        val eng = engine ?: return
+        val tm = eng.transformManager
+        // 爆炸距离：按模型半径缩放，保证大小模型都合适
+        val explodeDistance = explosionFactor * modelRadius * 1.5f
+        for (i in partEntities.indices) {
+            val entity = partEntities[i]
+            val instance = tm.getInstance(entity)
+            if (instance == 0) continue
+            val c = partCenters[i]
+            // 方向：从原点（模型中心）指向零件中心
+            val len = sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2])
+            val (dx, dy, dz) = if (len > 1e-6f) {
+                Triple(c[0] / len, c[1] / len, c[2] / len)
+            } else {
+                // 中心处的零件沿 Y 轴散开
+                Triple(0f, 1f, 0f)
+            }
+            // 最终位移 = 中心校正(-bboxCenter) + 爆炸位移
+            // 注意 partCenters 已做过中心校正，这里只需加爆炸位移
+            // 但原始变换的平移部分需要保留，所以重新计算
+            val m = FloatArray(16)
+            tm.getTransform(instance, m)
+            // 爆炸：在当前变换基础上叠加位移
+            // 为避免累积，先恢复到收集时的状态再叠加
+            // 简化：直接设置平移 = 原始平移 - bboxCenter + 爆炸位移
+            // 原始平移 = partCenters[i] + bboxCenter
+            m[12] = partCenters[i][0] + dx * explodeDistance
+            m[13] = partCenters[i][1] + dy * explodeDistance
+            m[14] = partCenters[i][2] + dz * explodeDistance
+            tm.setTransform(instance, m)
+        }
     }
 
     fun release() {

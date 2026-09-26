@@ -11,6 +11,8 @@ interface ModelRendererAdapter {
     fun onScale(scaleFactor: Float)
     fun onPan(deltaX: Float, deltaY: Float)
     fun resetCamera()
+    /** 爆炸图：0=装配状态，1=完全散开；不支持的渲染器可空实现 */
+    fun setExploded(factor: Float) {}
 }
 
 class OrbitCameraModelRendererAdapter(

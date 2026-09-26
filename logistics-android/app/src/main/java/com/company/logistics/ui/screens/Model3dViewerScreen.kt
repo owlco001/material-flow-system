@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -149,6 +150,27 @@ fun Model3dViewerScreen(
                     OutlinedButton(onClick = renderer::resetCamera) {
                         Text("重置视角", fontSize = 13.sp)
                     }
+                }
+                // 爆炸图滑杆
+                var explode by remember { mutableStateOf(0f) }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("爆炸图", fontSize = 12.sp, color = Color(0xFF8A8F98))
+                    Slider(
+                        value = explode,
+                        onValueChange = {
+                            explode = it
+                            renderer.setExploded(it)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp),
+                    )
+                    Text("${(explode * 100).toInt()}%", fontSize = 12.sp, color = Color(0xFF8A8F98))
                 }
             }
         }
