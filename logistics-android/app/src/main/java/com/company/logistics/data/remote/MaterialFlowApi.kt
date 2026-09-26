@@ -168,7 +168,7 @@ open class MaterialFlowApi(
                 .build()
             try {
                 val (code, text) = httpClient.newCall(httpRequest).execute().use { response ->
-                    response.code to response.body.string()
+                    response.code to response.body?.string() ?: ""
                 }
                 if (code !in 200..299) {
                     // 4xx 表示 refresh token 已失效；5xx/网关错误仍可重试，不能把用户
@@ -299,7 +299,7 @@ open class MaterialFlowApi(
             .post(multipart)
             .build()
         val (code, text) = httpClient.newCall(httpRequest).execute().use { response ->
-            response.code to response.body.string()
+            response.code to response.body?.string() ?: ""
         }
         if (code !in 200..299) throw ApiParser.parseError(code, text)
         val root = JSONObject(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true) })
@@ -612,9 +612,9 @@ open class MaterialFlowApi(
             .build()
         httpClient.newCall(httpRequest).execute().use { response ->
             if (response.code !in 200..299) {
-                throw ApiParser.parseError(response.code, response.body.string())
+                throw ApiParser.parseError(response.code, response.body?.string() ?: "")
             }
-            response.body.byteStream().use { input ->
+            response.body!!.byteStream().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 var received = 0L
                 while (true) {
@@ -929,7 +929,7 @@ open class MaterialFlowApi(
      */
     private fun executeOnce(httpRequest: Request): Pair<Int, String> =
         httpClient.newCall(httpRequest).execute().use { response ->
-            response.code to response.body.string()
+            response.code to response.body?.string() ?: ""
         }
 
     private suspend fun request(

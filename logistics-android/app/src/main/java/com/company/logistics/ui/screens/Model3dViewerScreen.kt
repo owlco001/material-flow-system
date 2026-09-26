@@ -54,7 +54,7 @@ fun Model3dViewerScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val renderer = remember { FilamentModelRenderer(context) }
+    val renderer = remember { FilamentModelRenderer() }
     var renderStatus by remember { mutableStateOf("") }
 
     DisposableEffect(renderer) {
