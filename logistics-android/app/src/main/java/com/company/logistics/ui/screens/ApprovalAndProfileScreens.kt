@@ -1,7 +1,11 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,11 +16,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,9 +33,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.OfflineOperation
@@ -49,6 +58,7 @@ import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
@@ -101,32 +111,63 @@ fun ApprovalScreen(
             return@Column
         }
 
-        AppCard(accentColor = LogisticsTheme.colors.warning) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "流转申请",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LogisticsTheme.colors.textPrimary,
+        // ---- 渐变横幅头图 ----
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            shadowElevation = 4.dp,
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        ),
                     )
-                    VSpace(6.dp)
-                    Text(
-                        "按钮只根据服务端状态出现；拒绝必须填写原因，执行前仍由服务端校验审批人隔离",
-                        fontSize = 12.sp,
-                        color = LogisticsTheme.colors.textSecondary,
-                    )
+                    .padding(18.dp),
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "流转审批",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                            )
+                            VSpace(4.dp)
+                            Text(
+                                "按钮只根据服务端状态出现；拒绝必须填写原因",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.78f),
+                            )
+                        }
+                        val refreshEnabled = requestState != WorkspaceLoadState.LOADING
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)),
+                            color = Color.Transparent,
+                            modifier = Modifier.clickable(enabled = refreshEnabled, onClick = onRefresh),
+                        ) {
+                            Text(
+                                "刷新",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White.copy(alpha = if (refreshEnabled) 1f else 0.5f),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    serverTime?.let {
+                        VSpace(Spacing.sm)
+                        Text(
+                            "服务端时间 $it",
+                            fontSize = 11.sp,
+                            fontFamily = LogisticsType.MonoFamily,
+                            color = Color.White.copy(alpha = 0.72f),
+                        )
+                    }
                 }
-                SecondaryButton(
-                    text = "刷新",
-                    onClick = onRefresh,
-                    enabled = requestState != WorkspaceLoadState.LOADING,
-                    modifier = Modifier.width(88.dp),
-                )
-            }
-            serverTime?.let {
-                VSpace(Spacing.sm)
-                Text("服务端时间 $it", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
             }
         }
 
@@ -134,7 +175,7 @@ fun ApprovalScreen(
         SectionTitle("状态筛选")
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             listOf(
                 null to "全部",
@@ -143,17 +184,31 @@ fun ApprovalScreen(
                 "REJECTED" to "已驳回",
                 "EXECUTED" to "已执行",
             ).forEach { (status, label) ->
-                TextButton(
-                    onClick = { onFilter(status) },
-                    enabled = requestState != WorkspaceLoadState.LOADING,
-                    modifier = Modifier.weight(1f),
+                val selected = requestFilter == status
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) LogisticsTheme.colors.primaryContainer
+                    else LogisticsTheme.colors.cardBackground,
+                    border = BorderStroke(
+                        1.dp,
+                        if (selected) LogisticsColors.Primary
+                        else LogisticsTheme.colors.border,
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(
+                            enabled = requestState != WorkspaceLoadState.LOADING,
+                            onClick = { onFilter(status) },
+                        ),
                 ) {
                     Text(
                         label,
                         fontSize = 11.sp,
-                        fontWeight = if (requestFilter == status) FontWeight.Bold else FontWeight.Normal,
-                        color = if (requestFilter == status) MaterialTheme.colorScheme.primary
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected) LogisticsColors.PrimaryDark
                         else LogisticsTheme.colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 8.dp),
                     )
                 }
             }
@@ -224,7 +279,16 @@ fun ApprovalScreen(
 
         VSpace(Spacing.lg)
         AppCard {
-            Text("权限边界", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 4.dp, height = 16.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(LogisticsColors.Primary),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("权限边界", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LogisticsTheme.colors.textPrimary)
+            }
             VSpace(Spacing.sm)
             Text(
                 "同一用户默认不得既审批又执行同一单据；最终权限、状态和幂等结果以服务端响应为准。",
