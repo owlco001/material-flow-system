@@ -1621,7 +1621,11 @@ class LogisticsViewModel(
     }
 
     fun selectTransferRequest(requestId: String) {
-        if (!_state.value.loggedIn || !_state.value.role.canApprove || requestId.isBlank()) return
+        // 流转单详情：审批与扫码交接共用，允许交接相关角色查看；按钮仍按角色与状态单独控制。
+        val canView = _state.value.role in setOf(
+            UserRole.MATERIAL, UserRole.OPERATOR, UserRole.WAREHOUSE_ADMIN, UserRole.ADMIN
+        )
+        if (!_state.value.loggedIn || !canView || requestId.isBlank()) return
         val generation = ++transferRequestDetailGeneration
         val currentSession = sessionGeneration
         operationScope.launch {
