@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.Spacing
 
@@ -162,7 +163,7 @@ fun ScannerViewfinder(
                 ) {
                     Text(
                         text = scanTypeLabel,
-                        color = Color(0xFFF5C462),
+                        color = LogisticsColors.Warning,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
@@ -263,17 +264,17 @@ fun OfflineBanner(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("!", color = Color(0xFFB8791A), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("!", color = LogisticsColors.Warning, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(Spacing.sm))
             Text(
                 text = if (syncing) "同步中 · 剩余 $pendingCount 条"
                 else "离线中 · $pendingCount 条待同步",
-                color = Color(0xFFB8791A),
+                color = LogisticsColors.Warning,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.weight(1f))
-            Text("查看 ›", color = Color(0xFFB8791A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("查看 ›", color = LogisticsColors.Warning, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
