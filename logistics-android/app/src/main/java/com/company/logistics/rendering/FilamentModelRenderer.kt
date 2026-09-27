@@ -1,14 +1,21 @@
 package com.company.logistics.rendering
 
+import android.content.res.AssetManager
 import android.view.Choreographer
 import android.view.Surface
+import com.google.android.filament.Box
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
 import com.google.android.filament.Filament
+import com.google.android.filament.IndexBuffer
+import com.google.android.filament.Material
+import com.google.android.filament.MaterialInstance
+import com.google.android.filament.RenderableManager
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.Skybox
 import com.google.android.filament.SwapChain
+import com.google.android.filament.VertexBuffer
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.gltfio.AssetLoader
@@ -20,6 +27,10 @@ import com.google.android.filament.EntityManager
 import com.google.android.filament.LightManager
 import com.google.android.filament.TransformManager
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.nio.ShortBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import kotlin.math.cos
@@ -41,7 +52,23 @@ class FilamentModelRenderer(
     // 爆炸图：每个零件的原始局部中心（模型空间），用于计算爆炸方向
     private var partCenters = mutableListOf<FloatArray>()
     private var partEntities = mutableListOf<Int>()
+    private var partNames = mutableListOf<String?>()
     private var explosionFactor = 0f
+    // ---- 零件隔离（点选后其余零件半透明）：ghost 材质 + 原始实例缓存 ----
+    private var ghostMaterial: Material? = null
+    private val ghostInstances = mutableMapOf<String, MaterialInstance>()
+    private val originalInstances = mutableMapOf<Int, Array<MaterialInstance?>>()
+    private var isolatedName: String? = null
+    private var isolatedEntity: Int = 0
+    // ---- 剖面（零件级裁剪 + 蓝色切面指示）----
+    private var sectionEnabled = false
+    private var sectionAxis = 1 // 0=X 1=Y 2=Z
+    private var sectionPos = 0f // [-1,1]，相对模型半径
+    private var sectionPlaneEntity: Int = 0
+    private var sectionPlaneAxis: Int = -1
+    private var sectionPlaneVb: VertexBuffer? = null
+    private var sectionPlaneIb: IndexBuffer? = null
+    private val hiddenBySection = mutableSetOf<Int>()
     private val backgroundR = RenderMath.srgbToLinear(((backgroundArgb shr 16) and 0xFF) / 255f)
     private val backgroundG = RenderMath.srgbToLinear(((backgroundArgb shr 8) and 0xFF) / 255f)
     private val backgroundB = RenderMath.srgbToLinear((backgroundArgb and 0xFF) / 255f)
@@ -200,6 +227,7 @@ class FilamentModelRenderer(
                 activeScene.removeEntities(previous.entities)
                 activeAssetLoader.destroyAsset(previous)
             }
+            resetAppearanceState()
             asset = candidate
             activeScene.addEntities(candidate!!.entities)
             val radius = candidate!!.boundingBox.halfExtent.maxOrNull() ?: 1f
@@ -268,22 +296,216 @@ class FilamentModelRenderer(
         applyPartTransforms()
     }
 
-    /** 点选零件：返回零件名称（GLB节点名），无命中返回null */
-    fun pickPart(x: Float, y: Float, onResult: (String?) -> Unit) {
-        val vw = view ?: run { onResult(null); return }
+    /** 点选零件：返回零件名称（GLB节点名）与命中实体；点空返回 (null, 0) */
+    fun pickPart(x: Float, y: Float, onResult: (name: String?, entity: Int) -> Unit) {
+        val vw = view ?: run { onResult(null, 0); return }
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         vw.pick(x.toInt(), viewportHeight - y.toInt(), handler) { result: View.PickingQueryResult ->
-            val name = if (result.renderable != 0) {
-                try { asset?.getName(result.renderable) } catch (_: Exception) { null }
-            } else null
-            onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.renderable}")
+            if (result.renderable != 0) {
+                val name = try { asset?.getName(result.renderable) } catch (_: Exception) { null }
+                onResult(name?.takeIf { it.isNotBlank() } ?: "零件 #${result.renderable}", result.renderable)
+            } else {
+                onResult(null, 0)
+            }
         }
+    }
+
+    /**
+     * 加载半透明 ghost 材质（幂等，失败返回 false，isolate/section 将静默不生效）。
+     * 需在点选隔离或剖面前调用一次；filamat 来自 assets/ghost.filamat（matc 预编译）。
+     */
+    fun ensureGhostMaterial(assetManager: AssetManager): Boolean {
+        if (ghostMaterial != null) return true
+        if (released || initializationError != null) return false
+        val eng = engine ?: return false
+        return try {
+            val bytes = assetManager.open("ghost.filamat").use { it.readBytes() }
+            val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
+            buffer.put(bytes)
+            buffer.flip()
+            ghostMaterial = Material.Builder().payload(buffer, buffer.remaining()).build(eng)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** 点选隔离：保留 [name]/[entity] 对应的零件，其余零件半透明化 */
+    fun setIsolatedPart(name: String?, entity: Int) {
+        isolatedName = name
+        isolatedEntity = entity
+        applyAppearance()
+    }
+
+    /** 取消隔离，恢复全部零件 */
+    fun clearIsolation() {
+        isolatedName = null
+        isolatedEntity = 0
+        applyAppearance()
+    }
+
+    /**
+     * 剖面：零件级裁剪。
+     * @param axis 0=X 1=Y 2=Z；@param position ∈ [-1,1]，切面位置（相对模型半径）
+     * 完全位于切面负侧的零件隐藏，与切面相交的零件半透明，并显示蓝色半透明切面。
+     */
+    fun setSection(enabled: Boolean, axis: Int = 1, position: Float = 0f) {
+        sectionEnabled = enabled
+        sectionAxis = axis.coerceIn(0, 2)
+        sectionPos = position.coerceIn(-1f, 1f)
+        applyAppearance()
+    }
+
+    /** 按当前隔离/剖面状态刷新每个零件的材质与可见性 */
+    private fun applyAppearance() {
+        val eng = engine ?: return
+        val rm = eng.renderableManager
+        val scn = scene ?: return
+        val tm = eng.transformManager
+        if (asset == null) return
+        val ghostSoft = ghostInstance(0.55f, 0.65f, 0.85f, 0.16f) // 隔离：淡蓝半透明
+        val ghostMid = ghostInstance(0.45f, 0.60f, 0.95f, 0.38f) // 剖面相交：稍深
+        val isolating = isolatedName != null || isolatedEntity != 0
+        for (i in partEntities.indices) {
+            val entity = partEntities[i]
+            val instance = tm.getInstance(entity)
+            if (instance == 0) continue
+            val primitiveCount = rm.getPrimitiveCount(instance)
+            var hidden = false
+            var ghost: MaterialInstance? = null
+            if (sectionEnabled) {
+                val box = rm.getAxisAlignedBoundingBox(instance)
+                val c = box.center[sectionAxis]
+                val h = box.halfExtent[sectionAxis]
+                val p = sectionPos * modelRadius
+                when {
+                    c + h < p -> hidden = true
+                    c - h < p -> ghost = ghostMid
+                }
+            }
+            if (!hidden && isolating) {
+                val inPart = (isolatedName != null && partNames[i] == isolatedName) ||
+                    (isolatedEntity != 0 && entity == isolatedEntity)
+                if (!inPart && ghostSoft != null) ghost = ghostSoft
+            }
+            if (hidden) {
+                if (hiddenBySection.add(entity)) scn.removeEntity(entity)
+            } else {
+                if (hiddenBySection.remove(entity)) scn.addEntity(entity)
+                setGhost(entity, instance, primitiveCount, ghost)
+            }
+        }
+        updateSectionPlane()
+    }
+
+    private fun ghostInstance(tintR: Float, tintG: Float, tintB: Float, opacity: Float): MaterialInstance? {
+        val mat = ghostMaterial ?: return null
+        val key = "$tintR,$tintG,$tintB,$opacity"
+        return ghostInstances.getOrPut(key) {
+            mat.createInstance().also {
+                it.setParameter("tint", tintR, tintG, tintB)
+                it.setParameter("opacity", opacity)
+            }
+        }
+    }
+
+    /** ghost 为 null 时恢复该零件的原始材质实例 */
+    private fun setGhost(entity: Int, instance: Int, primitiveCount: Int, ghost: MaterialInstance?) {
+        val eng = engine ?: return
+        val rm = eng.renderableManager
+        if (ghost == null) {
+            val originals = originalInstances.remove(entity) ?: return
+            for (pi in 0 until primitiveCount) {
+                originals.getOrNull(pi)?.let { rm.setMaterialInstanceAt(entity, pi, it) }
+            }
+        } else {
+            val originals = originalInstances.getOrPut(entity) {
+                Array(primitiveCount) { pi -> rm.getMaterialInstanceAt(entity, pi) }
+            }
+            for (pi in 0 until primitiveCount) rm.setMaterialInstanceAt(entity, pi, ghost)
+        }
+    }
+
+    private fun updateSectionPlane() {
+        val eng = engine ?: return
+        if (!sectionEnabled || released || asset == null) {
+            destroySectionPlane()
+            return
+        }
+        if (sectionPlaneEntity == 0 || sectionPlaneAxis != sectionAxis) {
+            destroySectionPlane()
+            createSectionPlane(eng)
+        }
+        val inst = eng.transformManager.getInstance(sectionPlaneEntity)
+        if (inst != 0) {
+            val m = FloatArray(16) { if (it % 5 == 0) 1f else 0f }
+            m[12 + sectionAxis] = sectionPos * modelRadius
+            eng.transformManager.setTransform(inst, m)
+        }
+    }
+
+    /** 创建蓝色半透明切面指示（与轴向垂直的大 quad） */
+    private fun createSectionPlane(eng: Engine) {
+        val em = entityManager ?: return
+        val scn = scene ?: return
+        val planeMat = ghostInstance(0.35f, 0.55f, 1.0f, 0.20f) ?: return
+        val s = modelRadius * 2.2f
+        val verts = when (sectionAxis) {
+            0 -> floatArrayOf(0f, -s, -s, 0f, -s, s, 0f, s, s, 0f, s, -s) // YZ 平面
+            2 -> floatArrayOf(-s, -s, 0f, s, -s, 0f, s, s, 0f, -s, s, 0f) // XY 平面
+            else -> floatArrayOf(-s, 0f, -s, s, 0f, -s, s, 0f, s, -s, 0f, s) // XZ 平面
+        }
+        val vb = VertexBuffer.Builder().vertexCount(4).bufferCount(1)
+            .attribute(VertexBuffer.VertexAttribute.POSITION, 0, VertexBuffer.AttributeType.FLOAT3, 0, 12)
+            .build(eng)
+        vb.setBufferAt(eng, 0, FloatBuffer.wrap(verts))
+        val ib = IndexBuffer.Builder().indexCount(6)
+            .bufferType(IndexBuffer.Builder.IndexType.USHORT).build(eng)
+        ib.setBufferAt(eng, ShortBuffer.wrap(shortArrayOf(0, 1, 2, 0, 2, 3)))
+        val e = em.create()
+        RenderableManager.Builder(1)
+            .boundingBox(Box().apply { setCenter(0f, 0f, 0f); setHalfExtent(s, s, s) })
+            .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, vb, ib)
+            .material(0, planeMat)
+            .culling(false)
+            .castShadows(false)
+            .receiveShadows(false)
+            .build(eng, e)
+        scn.addEntity(e)
+        sectionPlaneEntity = e
+        sectionPlaneVb = vb
+        sectionPlaneIb = ib
+        sectionPlaneAxis = sectionAxis
+    }
+
+    private fun destroySectionPlane() {
+        val eng = engine ?: return
+        if (sectionPlaneEntity != 0) {
+            scene?.removeEntity(sectionPlaneEntity)
+            eng.renderableManager.destroy(sectionPlaneEntity)
+            entityManager?.destroy(sectionPlaneEntity)
+            sectionPlaneEntity = 0
+        }
+        sectionPlaneVb?.let { eng.destroyVertexBuffer(it); sectionPlaneVb = null }
+        sectionPlaneIb?.let { eng.destroyIndexBuffer(it); sectionPlaneIb = null }
+        sectionPlaneAxis = -1
+    }
+
+    /** 新模型加载时重置隔离/剖面状态（旧实体已销毁） */
+    private fun resetAppearanceState() {
+        originalInstances.clear()
+        hiddenBySection.clear()
+        isolatedName = null
+        isolatedEntity = 0
+        sectionEnabled = false
+        destroySectionPlane()
     }
 
     /** 收集每个可渲染零件的世界中心（模型空间），爆炸时沿中心向外散开 */
     private fun collectPartCenters(asset: FilamentAsset, bboxCenter: FloatArray) {
         partCenters.clear()
         partEntities.clear()
+        partNames.clear()
         val eng = engine ?: return
         val tm = eng.transformManager
         val renderableManager = eng.renderableManager
@@ -297,6 +519,7 @@ class FilamentModelRenderer(
             // 中心校正：减去包围盒中心，移到以原点为中心的空间
             partCenters.add(floatArrayOf(m[12] - bboxCenter[0], m[13] - bboxCenter[1], m[14] - bboxCenter[2]))
             partEntities.add(entity)
+            partNames.add(try { asset.getName(entity) } catch (_: Exception) { null })
         }
     }
 
@@ -339,6 +562,13 @@ class FilamentModelRenderer(
         if (released) return
         released = true
         detachSurface()
+        destroySectionPlane()
+        ghostInstances.values.forEach { engine?.destroyMaterialInstance(it) }
+        ghostInstances.clear()
+        ghostMaterial?.let { engine?.destroyMaterial(it) }
+        ghostMaterial = null
+        originalInstances.clear()
+        hiddenBySection.clear()
         asset?.let { current ->
             scene?.removeEntities(current.entities)
             assetLoader?.destroyAsset(current)

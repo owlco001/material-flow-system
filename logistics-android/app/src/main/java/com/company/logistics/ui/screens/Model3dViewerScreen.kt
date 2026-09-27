@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -25,7 +27,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,9 +70,17 @@ fun Model3dViewerScreen(
     val context = LocalContext.current
     val renderer = remember { FilamentModelRenderer() }
     var renderStatus by remember { mutableStateOf("") }
+    // 剖面控制状态
+    var sectionOn by remember { mutableStateOf(false) }
+    var sectionAxis by remember { mutableIntStateOf(1) }
+    var sectionPos by remember { mutableFloatStateOf(0f) }
 
     DisposableEffect(renderer) {
         onDispose { renderer.release() }
+    }
+    // 半透明隔离 / 剖面依赖的 ghost 材质，提前加载一次
+    LaunchedEffect(renderer) {
+        renderer.ensureGhostMaterial(context.assets)
     }
 
     Column(
@@ -92,7 +105,7 @@ fun Model3dViewerScreen(
             error != null -> ErrorState(error, onRetry, Modifier.weight(1f))
             glbFile == null -> EmptyState(Modifier.weight(1f))
             else -> {
-                var pickedPart by remember { mutableStateOf<String?>(null) }
+                var pickedPart by remember { mutableStateOf<Pair<String, Int>?>(null) }
                 Box(Modifier.weight(1f)) {
                     AndroidView(
                         modifier = Modifier
@@ -107,8 +120,15 @@ fun Model3dViewerScreen(
                             .pointerInput(renderer) {
                                 detectTapGestures(
                                     onTap = { offset ->
-                                        renderer.pickPart(offset.x, offset.y) { name ->
-                                            pickedPart = name
+                                        renderer.pickPart(offset.x, offset.y) { name, entity ->
+                                            if (name == null) {
+                                                // 点空处：取消隔离
+                                                pickedPart = null
+                                                renderer.clearIsolation()
+                                            } else {
+                                                pickedPart = name to entity
+                                                renderer.setIsolatedPart(name, entity)
+                                            }
                                         }
                                     }
                                 )
@@ -155,8 +175,8 @@ fun Model3dViewerScreen(
                                 .padding(8.dp),
                         )
                     }
-                    // 点选零件信息
-                    pickedPart?.let { partName ->
+                    // 点选零件信息 + 隔离状态
+                    pickedPart?.let { (partName, _) ->
                         Row(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
@@ -165,9 +185,19 @@ fun Model3dViewerScreen(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(partName, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { pickedPart = null }) {
-                                Text("关闭", color = Color(0xFF8AB4FF), fontSize = 13.sp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(partName, color = Color.White, fontSize = 13.sp)
+                                Text(
+                                    "已隔离 · 其余零件半透明",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 11.sp,
+                                )
+                            }
+                            TextButton(onClick = {
+                                pickedPart = null
+                                renderer.clearIsolation()
+                            }) {
+                                Text("取消隔离", color = Color(0xFF8AB4FF), fontSize = 13.sp)
                             }
                         }
                     }
@@ -197,10 +227,92 @@ fun Model3dViewerScreen(
                             modifier = Modifier.weight(1f),
                         )
                         OutlinedButton(
+                            onClick = {
+                                sectionOn = !sectionOn
+                                renderer.setSection(sectionOn, sectionAxis, sectionPos)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (sectionOn) LogisticsColors.Info
+                                else Color.White.copy(alpha = 0.35f),
+                            ),
+                        ) {
+                            Text(
+                                "剖面",
+                                fontSize = 13.sp,
+                                color = if (sectionOn) LogisticsColors.Info else Color.White,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(
                             onClick = renderer::resetCamera,
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
                         ) {
                             Text("重置视角", fontSize = 13.sp, color = Color.White)
+                        }
+                    }
+                    // 剖面控制：轴向 + 切面位置
+                    if (sectionOn) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            listOf("X 轴" to 0, "Y 轴" to 1, "Z 轴" to 2).forEach { (label, axis) ->
+                                FilterChip(
+                                    selected = sectionAxis == axis,
+                                    onClick = {
+                                        sectionAxis = axis
+                                        renderer.setSection(true, sectionAxis, sectionPos)
+                                    },
+                                    label = { Text(label, fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = Color.White.copy(alpha = 0.08f),
+                                        labelColor = Color.White.copy(alpha = 0.7f),
+                                        selectedContainerColor = LogisticsColors.Info.copy(alpha = 0.25f),
+                                        selectedLabelColor = Color.White,
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = sectionAxis == axis,
+                                        borderColor = Color.White.copy(alpha = 0.25f),
+                                        selectedBorderColor = LogisticsColors.Info,
+                                        borderWidth = 1.dp,
+                                        selectedBorderWidth = 1.dp,
+                                    ),
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("切面", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
+                            Slider(
+                                value = sectionPos,
+                                onValueChange = {
+                                    sectionPos = it
+                                    renderer.setSection(true, sectionAxis, sectionPos)
+                                },
+                                valueRange = -1f..1f,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color.White,
+                                    activeTrackColor = LogisticsColors.Info,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.22f),
+                                ),
+                            )
+                            Text(
+                                "${(sectionPos * 100).toInt()}%",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.75f),
+                                modifier = Modifier.width(44.dp),
+                                textAlign = TextAlign.End,
+                            )
                         }
                     }
                     // 爆炸图滑杆
