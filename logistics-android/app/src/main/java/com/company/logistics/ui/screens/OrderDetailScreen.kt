@@ -76,6 +76,7 @@ fun OrderDetailScreen(
     onBack: () -> Unit = {},
     multiOrder: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     onSelectOrder: (String) -> Unit = {},
+    onOpenDevice: (deviceId: String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
@@ -268,15 +269,8 @@ fun OrderDetailScreen(
             VSpace(Spacing.md)
             SectionTitle("装配任务（${aggregate.assemblyTasks.size}/${aggregate.total}）")
             aggregate.assemblyTasks.forEach { task ->
-                val taskModelCode = remember(task.deviceNo) { DeviceModelMap.modelCodeFor("", task.deviceNo) }
                 AppCard(
-                    modifier = Modifier.clickable(enabled = taskModelCode != null) {
-                        taskModelCode?.let { code ->
-                            context.startActivity(
-                                Model3dActivity.intent(context, code, "机台 ${task.deviceNo}", task.deviceNo)
-                            )
-                        }
-                    }
+                    modifier = Modifier.clickable { onOpenDevice(task.deviceId) }
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -284,14 +278,12 @@ fun OrderDetailScreen(
                             Text("进度阶段：${task.progressStage}  版本：${task.taskVersion}", fontSize = 12.sp)
                             Text("责任人：${task.assignedAssemblerId ?: "服务端未提供"}", fontSize = 12.sp)
                         }
-                        if (taskModelCode != null) {
-                            Text(
-                                "3D ›",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
+                        Text(
+                            "›",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
                 VSpace(Spacing.sm)

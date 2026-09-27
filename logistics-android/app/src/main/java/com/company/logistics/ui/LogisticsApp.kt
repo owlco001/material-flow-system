@@ -246,6 +246,7 @@ fun LogisticsApp(
                         onRefresh = { viewModel.refreshOrderDetail() },
                         multiOrder = state.multiOrderSnapshot,
                         onSelectOrder = { viewModel.selectOrder(it) },
+                        onOpenDevice = { viewModel.openDeviceDetail(it) },
                     )
 
                     Screen.QUEUE -> QueueScreen(
