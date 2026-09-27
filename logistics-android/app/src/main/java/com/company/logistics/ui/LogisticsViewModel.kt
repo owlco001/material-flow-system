@@ -21,6 +21,7 @@ import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.MachineProgress
 import com.company.logistics.model.OfflineOperation
+import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.RoleWorkspaceSummary
@@ -142,6 +143,11 @@ data class LogisticsUiState(
     val orderDetail: OrderDetail? = null,
     val orderResourceId: String? = null,
     val deviceDetail: DeviceDetail? = null,
+    /** 机台页聚合数据：装配任务（进度/人员）、物料情况、流转申请、工时。 */
+    val deviceAssemblyTasks: List<AssemblyTask> = emptyList(),
+    val deviceMaterials: List<OrderMaterialItem> = emptyList(),
+    val deviceTransferRequests: List<TransferRequest> = emptyList(),
+    val deviceLabor: LaborSummaryPage? = null,
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
@@ -2491,12 +2497,19 @@ class LogisticsViewModel(
     fun openDeviceDetail(deviceId: String) {
         if (deviceId.isBlank()) return
         viewModelScope.launch {
-            _state.update { it.copy(loading = true, error = null, deviceDetail = null) }
+            _state.update {
+                it.copy(
+                    loading = true, error = null, deviceDetail = null,
+                    deviceAssemblyTasks = emptyList(), deviceMaterials = emptyList(),
+                    deviceTransferRequests = emptyList(), deviceLabor = null,
+                )
+            }
             repo.deviceDetail(deviceId)
                 .onSuccess { detail ->
                     _state.update {
                         it.copy(deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false)
                     }
+                    loadDeviceAggregate(detail)
                 }
                 .onFailure { e ->
                     _state.update {
@@ -2506,6 +2519,43 @@ class LogisticsViewModel(
                         )
                     }
                 }
+        }
+    }
+
+    /**
+     * 机台页聚合数据：装配任务（进度/人员）、物料情况、物料流转申请、工时。
+     * 全部使用现有只读接口，任一失败不阻塞页面主体展示。
+     */
+    private fun loadDeviceAggregate(detail: DeviceDetail) {
+        viewModelScope.launch {
+            val deviceId = detail.deviceId
+            val deviceNo = detail.deviceNo
+            // 装配任务：进度、人员
+            val tasks = repo.assemblyTaskPage(1, 20).getOrNull()?.items
+                ?.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
+                .orEmpty()
+            // 物料情况：逐订单取物料状态，按机台过滤
+            val materials = mutableListOf<OrderMaterialItem>()
+            for (order in detail.orders) {
+                repo.orderMaterialStatus(order.orderNo).getOrNull()?.let { status ->
+                    materials += status.items.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
+                }
+            }
+            // 物料流转申请：流转单 documentNo 即订单号，按机台关联订单过滤
+            val orderNos = detail.orders.map { it.orderNo }.toSet()
+            val transfers = repo.transferRequests().getOrNull()?.items
+                ?.filter { it.documentNo in orderNos }
+                .orEmpty()
+            // 工时：服务端按机台过滤
+            val labor = repo.workshopLaborSummary(deviceId = deviceId).getOrNull()
+            _state.update {
+                it.copy(
+                    deviceAssemblyTasks = tasks,
+                    deviceMaterials = materials,
+                    deviceTransferRequests = transfers,
+                    deviceLabor = labor,
+                )
+            }
         }
     }
 

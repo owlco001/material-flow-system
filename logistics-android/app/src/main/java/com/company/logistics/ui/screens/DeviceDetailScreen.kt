@@ -16,10 +16,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,11 +33,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.Model3dActivity
+import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.DeviceModelMap
+import com.company.logistics.model.LaborSummaryPage
+import com.company.logistics.model.OrderMaterialItem
+import com.company.logistics.model.TransferRequest
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
-import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsColors
@@ -46,13 +51,18 @@ import com.company.logistics.ui.theme.Spacing
 /**
  * 机台详情页。
  *
- * 视觉：渐变横幅头图（机台编号 + 名称 + 状态徽章）+ 分区卡片 + 关联订单卡片。
+ * 视觉：渐变横幅头图（机台编号 + 名称 + 状态徽章 + 3D 入口）+ 分区卡片：
+ * 基本信息 / 物料情况 / 物料流转申请 / 装配进度 / 工时 / 人员 / 关联订单。
  */
 @Composable
 fun DeviceDetailScreen(
     detail: DeviceDetail?,
     loading: Boolean,
     error: String?,
+    assemblyTasks: List<AssemblyTask>,
+    materials: List<OrderMaterialItem>,
+    transferRequests: List<TransferRequest>,
+    labor: LaborSummaryPage?,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -85,7 +95,8 @@ fun DeviceDetailScreen(
                 description = "请返回后重新选择机台",
             )
             else -> {
-                // ---- 渐变横幅头图 ----
+                // ---- 渐变横幅头图 + 3D 入口 ----
+                val modelCode = remember(detail.deviceNo) { DeviceModelMap.modelCodeFor("", detail.deviceNo) }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(22.dp),
@@ -126,17 +137,37 @@ fun DeviceDetailScreen(
                                 }
                             }
                             VSpace(Spacing.sm)
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = Color.White,
-                            ) {
-                                Text(
-                                    detail.status,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = LogisticsColors.BrandNavyDark,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color.White,
+                                ) {
+                                    Text(
+                                        detail.status,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = LogisticsColors.BrandNavyDark,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    )
+                                }
+                                Spacer(Modifier.width(Spacing.sm))
+                                if (modelCode != null) {
+                                    TextButton(
+                                        onClick = {
+                                            context.startActivity(
+                                                Model3dActivity.intent(context, modelCode, "机台 ${detail.deviceNo}", detail.deviceNo)
+                                            )
+                                        }
+                                    ) {
+                                        Text("3D 模型 ›", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                } else {
+                                    Text(
+                                        "暂无 3D 模型",
+                                        fontSize = 12.sp,
+                                        color = Color.White.copy(alpha = 0.6f),
+                                    )
+                                }
                             }
                         }
                     }
@@ -156,23 +187,269 @@ fun DeviceDetailScreen(
 
                 VSpace(Spacing.md)
 
-                // ---- 3D 模型 ----
-                val modelCode = DeviceModelMap.modelCodeFor("", detail.deviceNo)
-                if (modelCode != null) {
-                    PrimaryButton(
-                        text = "查看 3D 模型",
-                        onClick = {
-                            context.startActivity(
-                                Model3dActivity.intent(context, modelCode, "机台 ${detail.deviceNo}", detail.deviceNo)
-                            )
-                        },
-                    )
-                } else {
-                    Text(
-                        "该机型暂无 3D 模型",
-                        fontSize = 12.sp,
-                        color = LogisticsTheme.colors.textTertiary,
-                    )
+                // ---- 物料情况 ----
+                AppCard {
+                    SectionBarTitle("物料情况（${materials.size}）")
+                    VSpace(Spacing.sm)
+                    if (materials.isEmpty()) {
+                        Text(
+                            "该机台暂无关联物料",
+                            fontSize = 13.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    } else {
+                        materials.forEachIndexed { index, m ->
+                            if (index > 0) VSpace(Spacing.sm)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(LogisticsTheme.colors.cardBackground)
+                                    .padding(12.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            m.name,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = LogisticsTheme.colors.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            m.materialCode,
+                                            fontSize = 12.sp,
+                                            fontFamily = LogisticsType.MonoFamily,
+                                            color = LogisticsTheme.colors.textSecondary,
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = LogisticsColors.Primary.copy(alpha = 0.12f),
+                                    ) {
+                                        Text(
+                                            m.label,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = LogisticsColors.PrimaryDark,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        )
+                                    }
+                                }
+                                m.specification?.takeIf { it.isNotBlank() }?.let {
+                                    VSpace(4.dp)
+                                    Text("规格：$it", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+                                }
+                                VSpace(4.dp)
+                                Text(
+                                    "需求 ${m.requiredQuantity} · 已到 ${m.arrivedQuantity} · 在库 ${m.inStockQuantity}",
+                                    fontSize = 12.sp,
+                                    color = LogisticsTheme.colors.textSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                VSpace(Spacing.md)
+
+                // ---- 物料流转申请 ----
+                AppCard {
+                    SectionBarTitle("物料流转申请（${transferRequests.size}）")
+                    VSpace(Spacing.sm)
+                    if (transferRequests.isEmpty()) {
+                        Text(
+                            "该机台关联订单暂无流转申请",
+                            fontSize = 13.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    } else {
+                        transferRequests.forEachIndexed { index, t ->
+                            if (index > 0) VSpace(Spacing.sm)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(LogisticsTheme.colors.cardBackground)
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        t.documentNo ?: t.id,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = LogisticsType.MonoFamily,
+                                        color = LogisticsTheme.colors.textPrimary,
+                                    )
+                                    VSpace(2.dp)
+                                    Text(
+                                        "类型 ${t.type}" + (t.createdAt?.let { " · $it" } ?: ""),
+                                        fontSize = 12.sp,
+                                        color = LogisticsTheme.colors.textSecondary,
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = LogisticsColors.Primary.copy(alpha = 0.12f),
+                                ) {
+                                    Text(
+                                        t.displayStatusLabel,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = LogisticsColors.PrimaryDark,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VSpace(Spacing.md)
+
+                // ---- 装配进度 ----
+                AppCard {
+                    SectionBarTitle("装配进度（${assemblyTasks.size}）")
+                    VSpace(Spacing.sm)
+                    if (assemblyTasks.isEmpty()) {
+                        Text(
+                            "该机台暂无装配任务",
+                            fontSize = 13.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    } else {
+                        assemblyTasks.forEachIndexed { index, task ->
+                            if (index > 0) VSpace(Spacing.sm)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(LogisticsTheme.colors.cardBackground)
+                                    .padding(12.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            "订单 ${task.orderNo.ifBlank { "—" }}",
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = LogisticsType.MonoFamily,
+                                            color = LogisticsTheme.colors.textPrimary,
+                                        )
+                                        Text(
+                                            task.status.label,
+                                            fontSize = 12.sp,
+                                            color = LogisticsTheme.colors.textSecondary,
+                                        )
+                                    }
+                                    Text(
+                                        "阶段 ${task.progressStage}/3",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = LogisticsColors.PrimaryDark,
+                                    )
+                                }
+                                VSpace(Spacing.sm)
+                                LinearProgressIndicator(
+                                    progress = { (task.progressStage.coerceIn(0, 3) / 3f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                )
+                                if (task.stages.isNotEmpty()) {
+                                    VSpace(Spacing.sm)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        task.stages.forEach { stage ->
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = LogisticsTheme.colors.primaryContainer,
+                                            ) {
+                                                Text(
+                                                    "S${stage.stageNo} ${stage.status.label}",
+                                                    fontSize = 11.sp,
+                                                    color = LogisticsColors.PrimaryDark,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VSpace(Spacing.md)
+
+                // ---- 工时 ----
+                val laborItems = labor?.items.orEmpty()
+                val totalMinutes = laborItems.sumOf { it.totalLaborMinutes ?: 0 }
+                val assemblyMinutes = laborItems.sumOf { it.assemblyLaborMinutes ?: 0 }
+                val transferMinutes = laborItems.sumOf { it.temporaryTransferLaborMinutes ?: 0 }
+                AppCard {
+                    SectionBarTitle("工时")
+                    VSpace(Spacing.sm)
+                    if (labor == null || laborItems.isEmpty()) {
+                        Text(
+                            "该机台暂无工时记录",
+                            fontSize = 13.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    } else {
+                        DeviceKv("总工时", formatMinutes(totalMinutes))
+                        DeviceKv("装配工时", formatMinutes(assemblyMinutes))
+                        DeviceKv("调拨工时", formatMinutes(transferMinutes))
+                    }
+                }
+
+                VSpace(Spacing.md)
+
+                // ---- 人员 ----
+                val assemblerNames = remember(assemblyTasks) {
+                    assemblyTasks.flatMap { task ->
+                        listOfNotNull(task.assignedAssemblerName?.takeIf { it.isNotBlank() }) +
+                            task.members.mapNotNull { it.assemblerId.takeIf { id -> id.isNotBlank() } }
+                    }.distinct()
+                }
+                AppCard {
+                    SectionBarTitle("人员（${assemblerNames.size}）")
+                    VSpace(Spacing.sm)
+                    if (assemblerNames.isEmpty()) {
+                        Text(
+                            "该机台暂无指派人员",
+                            fontSize = 13.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    } else {
+                        assemblerNames.forEachIndexed { index, name ->
+                            if (index > 0) VSpace(4.dp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(LogisticsTheme.colors.primaryContainer),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        name.first().toString(),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = LogisticsColors.PrimaryDark,
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    name,
+                                    fontSize = 14.sp,
+                                    color = LogisticsTheme.colors.textPrimary,
+                                )
+                            }
+                        }
+                    }
                 }
 
                 VSpace(Spacing.md)
@@ -256,6 +533,13 @@ fun DeviceDetailScreen(
         }
         VSpace(Spacing.xxl)
     }
+}
+
+private fun formatMinutes(minutes: Int): String {
+    if (minutes <= 0) return "0 分钟"
+    val h = minutes / 60
+    val m = minutes % 60
+    return if (h > 0) "${h}小时${m}分钟" else "${m}分钟"
 }
 
 @Composable
