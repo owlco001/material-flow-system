@@ -13,27 +13,30 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.ui.components.AppCard
-import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
@@ -67,67 +70,73 @@ fun MaterialDetailScreen(
     ) {
         Spacer(Modifier.height(Spacing.sm))
 
-        // 识别成功提示
-        AppCard(
-            accentColor = LogisticsTheme.colors.success
+        // 料号主横幅（渐变）
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            shadowElevation = 4.dp,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(22.dp)
-                        .background(LogisticsTheme.colors.success, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        imageVector = LogisticsIcons.Check,
-                        contentDescription = null,
-                        colorFilter = ColorFilter.tint(Color.White),
-                        modifier = Modifier.size(13.dp)
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        ),
                     )
+                    .padding(18.dp),
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "料号 PART NO.",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.72f),
+                                letterSpacing = 0.5.sp,
+                            )
+                            VSpace(4.dp)
+                            Text(
+                                text = m.code,
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = LogisticsType.MonoFamily,
+                                letterSpacing = 0.5.sp,
+                                color = Color.White,
+                            )
+                        }
+                        androidx.compose.material3.TextButton(onClick = onBack) {
+                            Text("返回", fontSize = 14.sp, color = Color.White)
+                        }
+                    }
+                    VSpace(Spacing.sm)
+                    Text(
+                        m.name,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White.copy(alpha = 0.92f),
+                    )
+                    if (!m.specification.isNullOrBlank()) {
+                        VSpace(4.dp)
+                        Text(
+                            "规格：${m.specification}",
+                            fontSize = 13.sp,
+                            color = Color.White.copy(alpha = 0.78f),
+                        )
+                    }
+                    VSpace(Spacing.sm)
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color.White,
+                    ) {
+                        Text(
+                            "✓ 扫码成功 · 已获取库存",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = LogisticsTheme.colors.success,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.width(Spacing.sm))
-                Text(
-                    "扫码成功 · 已获取库存",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = LogisticsTheme.colors.success
-                )
-            }
-        }
-
-        VSpace(Spacing.md)
-
-        // 料号主卡
-        AppCard(accentColor = MaterialTheme.colorScheme.primary) {
-            Text(
-                "料号 PART NO.",
-                fontSize = 11.sp,
-                color = LogisticsTheme.colors.textTertiary,
-                letterSpacing = 0.5.sp
-            )
-            VSpace(4.dp)
-            Text(
-                text = m.code,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = LogisticsType.MonoFamily,
-                letterSpacing = 0.5.sp,
-                color = LogisticsTheme.colors.textPrimary
-            )
-            VSpace(Spacing.sm)
-            Text(
-                m.name,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = LogisticsTheme.colors.textPrimary
-            )
-            if (!m.specification.isNullOrBlank()) {
-                VSpace(4.dp)
-                Text(
-                    "规格：${m.specification}",
-                    fontSize = 13.sp,
-                    color = LogisticsTheme.colors.textSecondary
-                )
             }
         }
 
@@ -153,11 +162,21 @@ fun MaterialDetailScreen(
         VSpace(Spacing.md)
 
         AppCard {
-            Text(
-                "库位分布",
-                fontSize = 11.sp,
-                color = LogisticsTheme.colors.textTertiary
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 4.dp, height = 16.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(LogisticsColors.Primary),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "库位分布",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LogisticsTheme.colors.textPrimary,
+                )
+            }
             VSpace(Spacing.sm)
             if (inv.locations.isEmpty()) {
                 Text(
@@ -182,16 +201,22 @@ fun MaterialDetailScreen(
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = LogisticsType.MonoFamily,
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
                         )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            "${loc.quantity} ${m.unit}",
-                            fontSize = 14.sp,
-                            fontFamily = LogisticsType.MonoFamily,
-                            fontWeight = FontWeight.SemiBold,
-                            color = LogisticsTheme.colors.textPrimary
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(9.dp),
+                            color = LogisticsTheme.colors.primaryContainer,
+                        ) {
+                            Text(
+                                "${loc.quantity} ${m.unit}",
+                                fontSize = 12.sp,
+                                fontFamily = LogisticsType.MonoFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = LogisticsColors.PrimaryDark,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            )
+                        }
                     }
                 }
             }
