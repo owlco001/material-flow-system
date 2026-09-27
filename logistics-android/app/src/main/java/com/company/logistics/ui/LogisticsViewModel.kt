@@ -35,6 +35,7 @@ import com.company.logistics.model.InMemoryAdminRolePreviewController
 import com.company.logistics.model.WorkspaceQueryContext
 import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.model.WorkshopProgressSummary
+import com.company.logistics.model.TransferHandoverRecord
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.TransferRequestAction
 import com.company.logistics.model.TransferRequestActionPolicy
@@ -2215,7 +2216,7 @@ class LogisticsViewModel(
                 remark = null,
                 clientOperationId = operationId,
             ).onSuccess { response ->
-                val idempotent = response.optBoolean("idempotent", false)
+                val idempotent = runCatching { org.json.JSONObject(response).optBoolean("idempotent", false) }.getOrDefault(false)
                 _state.update {
                     it.copy(
                         transferHandoverSubmitting = false,
@@ -2256,7 +2257,7 @@ class LogisticsViewModel(
                     }
                     _state.update {
                         it.copy(
-                            transferHandoverRecords = ApiParser.parseTransferHandoverRecords(json.toString()),
+                            transferHandoverRecords = ApiParser.parseTransferHandoverRecords(json),
                             transferHandoverRecordsState = WorkspaceLoadState.CONTENT,
                         )
                     }

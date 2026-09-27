@@ -10,6 +10,8 @@ import com.company.logistics.model.FlowType
 import com.company.logistics.model.Inventory
 import com.company.logistics.model.LocationStock
 import com.company.logistics.model.LoginResult
+import com.company.logistics.model.TransferHandoverItemRecord
+import com.company.logistics.model.TransferHandoverRecord
 import com.company.logistics.model.Material
 import com.company.logistics.model.MaterialInventory
 import com.company.logistics.model.MaterialStatusCode

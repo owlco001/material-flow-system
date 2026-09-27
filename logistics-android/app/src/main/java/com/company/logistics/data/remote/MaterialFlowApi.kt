@@ -861,7 +861,7 @@ open class MaterialFlowApi(
         receiverUserId: String?,
         remark: String?,
         clientOperationId: String
-    ): JSONObject = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("transferRequestId", transferRequestId)
             put("items", JSONArray(items.map { (mid, qty) ->
@@ -876,7 +876,7 @@ open class MaterialFlowApi(
     }
 
     /** 流转单交接记录（留痕）。 */
-    suspend fun transferHandoverRecords(transferRequestId: String): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun transferHandoverRecords(transferRequestId: String): String = withContext(Dispatchers.IO) {
         require(transferRequestId.isNotBlank()) { "transferRequestId 不能为空" }
         request("GET", "/api/v1/transfer-requests/${encodeQuery(transferRequestId)}/handovers", null)
     }

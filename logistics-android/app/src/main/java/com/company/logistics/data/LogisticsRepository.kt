@@ -342,12 +342,12 @@ open class LogisticsRepository(
         receiverUserId: String?,
         remark: String?,
         clientOperationId: String,
-    ): Result<org.json.JSONObject> = resultOf {
+    ): Result<String> = resultOf {
         api.transferHandover(transferRequestId, items, fromLocation, receiverUserId, remark, clientOperationId)
     }
 
     /** 流转单交接记录（留痕）。 */
-    open suspend fun transferHandoverRecords(transferRequestId: String): Result<org.json.JSONObject> = resultOf {
+    open suspend fun transferHandoverRecords(transferRequestId: String): Result<String> = resultOf {
         api.transferHandoverRecords(transferRequestId)
     }
 
