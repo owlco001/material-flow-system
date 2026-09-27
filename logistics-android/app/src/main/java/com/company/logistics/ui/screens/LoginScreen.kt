@@ -90,7 +90,7 @@ fun LoginScreen(
                 .clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
                 .background(
                     Brush.linearGradient(
-                        colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                     ),
                 )
                 .padding(top = 64.dp, bottom = 36.dp, start = 24.dp, end = 24.dp),

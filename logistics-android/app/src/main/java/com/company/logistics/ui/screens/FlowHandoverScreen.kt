@@ -209,7 +209,7 @@ private fun HandoverBanner(
             modifier = Modifier
                 .background(
                     Brush.linearGradient(
-                        colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                     ),
                 )
                 .padding(18.dp),

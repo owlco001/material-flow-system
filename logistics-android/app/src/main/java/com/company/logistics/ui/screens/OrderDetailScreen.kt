@@ -148,7 +148,7 @@ fun OrderDetailScreen(
                 modifier = Modifier
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                            colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                         ),
                     )
                     .padding(18.dp),
@@ -189,7 +189,7 @@ fun OrderDetailScreen(
                                 status.orderStatus ?: "服务端未提供",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = LogisticsColors.PrimaryDark,
+                                color = LogisticsColors.BrandNavyDark,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                             )
                         }

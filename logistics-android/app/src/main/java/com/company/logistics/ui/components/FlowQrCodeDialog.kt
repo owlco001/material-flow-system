@@ -95,7 +95,7 @@ fun FlowQrCodeDialog(
                         .fillMaxWidth()
                         .background(
                             Brush.linearGradient(
-                                colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                                colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                             ),
                         )
                         .padding(horizontal = 20.dp, vertical = 18.dp),

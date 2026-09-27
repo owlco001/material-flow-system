@@ -23,6 +23,10 @@ object LogisticsColors {
     val PrimaryDark = Color(0xFF0A47A3)
     /** 选中背景 / 浅色填充 */
     val PrimaryLight = Color(0xFFE8F0FE)
+    /** 品牌藏青：开机动画底色，大横幅专用（#0B2E6F → #08214F） */
+    val BrandNavy = Color(0xFF0B2E6F)
+    /** 品牌藏青深色：开机动画底色深端，大横幅渐变终点 */
+    val BrandNavyDark = Color(0xFF08214F)
 
     // ========== 语义色 ==========
     val Success = Color(0xFF00A870)

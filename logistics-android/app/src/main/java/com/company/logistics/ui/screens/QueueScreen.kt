@@ -100,7 +100,7 @@ fun QueueScreen(
                 modifier = Modifier
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                            colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                         ),
                     )
                     .padding(18.dp),
@@ -153,7 +153,7 @@ fun QueueScreen(
                             if (syncing) "同步中…" else "立即同步",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = LogisticsColors.PrimaryDark.copy(
+                            color = LogisticsColors.BrandNavyDark.copy(
                                 alpha = if (syncEnabled) 1f else 0.4f,
                             ),
                             textAlign = TextAlign.Center,

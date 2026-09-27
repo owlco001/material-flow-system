@@ -95,7 +95,7 @@ fun DeviceDetailScreen(
                         modifier = Modifier
                             .background(
                                 Brush.linearGradient(
-                                    colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                                    colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                                 ),
                             )
                             .padding(18.dp),
@@ -134,7 +134,7 @@ fun DeviceDetailScreen(
                                     detail.status,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = LogisticsColors.PrimaryDark,
+                                    color = LogisticsColors.BrandNavyDark,
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                                 )
                             }

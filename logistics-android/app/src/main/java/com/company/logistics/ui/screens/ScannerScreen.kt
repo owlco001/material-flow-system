@@ -226,7 +226,7 @@ fun ScannerScreen(
                 modifier = Modifier
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                            colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
                         ),
                     )
                     .padding(horizontal = 16.dp, vertical = 14.dp),
