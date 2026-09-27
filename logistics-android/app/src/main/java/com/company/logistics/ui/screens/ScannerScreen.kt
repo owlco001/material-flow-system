@@ -1,6 +1,6 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.company.logistics.ui.screens
 
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 import android.Manifest
 import android.content.Intent
