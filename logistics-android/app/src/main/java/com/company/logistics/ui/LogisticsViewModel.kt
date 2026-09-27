@@ -6,6 +6,7 @@ import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
+import com.company.logistics.data.remote.ApiParser
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.AuditLog
 import com.company.logistics.model.DeviceDetail
