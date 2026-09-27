@@ -96,7 +96,11 @@ fun DeviceDetailScreen(
             )
             else -> {
                 // ---- 渐变横幅头图 + 3D 入口 ----
-                val modelCode = remember(detail.deviceNo) { DeviceModelMap.modelCodeFor("", detail.deviceNo) }
+                // 优先使用后端绑定的 3D 模型，未绑定时按 App 内置映射表兜底
+                val modelCode = remember(detail.deviceNo, detail.model3dCode) {
+                    detail.model3dCode?.takeIf { it.isNotBlank() }
+                        ?: DeviceModelMap.modelCodeFor("", detail.deviceNo)
+                }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(22.dp),

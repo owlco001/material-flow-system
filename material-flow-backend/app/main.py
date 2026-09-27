@@ -579,7 +579,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS stocktakes(id TEXT PRIMARY KEY, material_id TEXT NOT NULL, location_id TEXT, book_quantity INTEGER NOT NULL, actual_quantity INTEGER NOT NULL CHECK(actual_quantity >= 0), difference INTEGER NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_by TEXT, confirmed_at TEXT);
     CREATE TABLE IF NOT EXISTS production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE NOT NULL, product_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'IN_PROGRESS', created_at TEXT NOT NULL, updated_at TEXT);
     CREATE TABLE IF NOT EXISTS production_order_models(id TEXT PRIMARY KEY, order_id TEXT REFERENCES production_orders(id) ON DELETE CASCADE, model_code TEXT NOT NULL UNIQUE, model_name TEXT NOT NULL DEFAULT '', bom_version_id TEXT, planned_quantity INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, device_no TEXT UNIQUE NOT NULL, device_name TEXT NOT NULL, workshop TEXT NOT NULL, model_capability TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED','MAINTENANCE')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, device_no TEXT UNIQUE NOT NULL, device_name TEXT NOT NULL, workshop TEXT NOT NULL, model_capability TEXT, model_3d_code TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED','MAINTENANCE')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS production_model_devices(id TEXT PRIMARY KEY, order_model_id TEXT NOT NULL REFERENCES production_order_models(id) ON DELETE CASCADE, device_id TEXT NOT NULL REFERENCES devices(id), status TEXT NOT NULL CHECK(status IN ('ASSIGNED','RELEASED','CLOSED')), assigned_by TEXT NOT NULL, assigned_at TEXT NOT NULL, UNIQUE(order_model_id, device_id));
     CREATE TABLE IF NOT EXISTS production_order_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS device_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -812,6 +812,9 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     if model_version_cols and "idempotency_key" not in model_version_cols:
         c.execute("ALTER TABLE assembly_model_versions ADD COLUMN idempotency_key TEXT")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_assembly_model_versions_idempotency ON assembly_model_versions(idempotency_key)")
+    device_cols = {r["name"] for r in c.execute("PRAGMA table_info(devices)").fetchall()}
+    if device_cols and "model_3d_code" not in device_cols:
+        c.execute("ALTER TABLE devices ADD COLUMN model_3d_code TEXT")
 
 
 def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
@@ -2124,6 +2127,7 @@ class DeviceCreate(BaseModel):
     deviceName: str = Field(min_length=1, max_length=128)
     workshop: str = Field(min_length=1, max_length=128)
     modelCapability: str | None = Field(default=None, max_length=128)
+    model3dCode: str | None = Field(default=None, max_length=128)
 
 class AssignDeviceRequest(BaseModel):
     clientOperationId: uuid.UUID
@@ -2188,8 +2192,8 @@ def create_device(body: DeviceCreate, user: sqlite3.Row = Depends(current_user),
         if replay: c.rollback(); return replay
         if c.execute("SELECT 1 FROM devices WHERE device_no=?", (body.deviceNo,)).fetchone(): raise ApiError(409, "DEVICE_NO_CONFLICT", "机台编号已存在", trace_id=trace_id)
         ts = now(); did = "dev_" + uuid.uuid4().hex
-        c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?)", (did, body.deviceNo, body.deviceName, body.workshop, body.modelCapability, "ACTIVE", user["id"], ts, ts))
-        result = {"deviceId": did, "deviceNo": body.deviceNo, "deviceName": body.deviceName, "workshop": body.workshop, "modelCapability": body.modelCapability, "status": "ACTIVE", "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO devices(id, device_no, device_name, workshop, model_capability, model_3d_code, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (did, body.deviceNo, body.deviceName, body.workshop, body.modelCapability, body.model3dCode, "ACTIVE", user["id"], ts, ts))
+        result = {"deviceId": did, "deviceNo": body.deviceNo, "deviceName": body.deviceName, "workshop": body.workshop, "modelCapability": body.modelCapability, "model3dCode": body.model3dCode, "status": "ACTIVE", "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO device_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "DEVICE", did, "SUCCESS", trace_id); c.commit(); return result
     except ApiError: c.rollback(); raise
     except Exception:
@@ -2222,9 +2226,46 @@ def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dic
             "deviceName": d["device_name"],
             "workshop": d["workshop"],
             "modelCapability": d["model_capability"],
+            "model3dCode": d["model_3d_code"] if "model_3d_code" in d.keys() else None,
             "status": d["status"],
             "orders": [{"orderNo": o["order_no"], "productName": o["product_name"], "assignStatus": None} for o in orders],
         }
+    finally:
+        c.close()
+
+
+class DeviceModel3dBind(BaseModel):
+    clientOperationId: uuid.UUID
+    model3dCode: str | None = Field(default=None, max_length=128)
+
+
+@app.put("/api/v1/devices/{device_id}/model-3d")
+def bind_device_model_3d(device_id: str, body: DeviceModel3dBind, user: sqlite3.Row = Depends(current_user),
+                         x_request_id: str | None = Header(default=None),
+                         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    """绑定 / 解绑机台的 3D 装配模型（model3dCode 为空表示解绑）。"""
+    trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
+    c = db()
+    try:
+        d = c.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        if not d:
+            d = c.execute("SELECT * FROM devices WHERE device_no=?", (device_id,)).fetchone()
+        if not d:
+            raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在", trace_id=trace_id)
+        code = (body.model3dCode or "").strip() or None
+        if code:
+            pub = c.execute("SELECT 1 FROM assembly_model_versions WHERE model_code=? AND status='PUBLISHED'", (code,)).fetchone()
+            if not pub:
+                raise ApiError(422, "MODEL_3D_NOT_PUBLISHED", "该机型码没有已发布的 3D 模型", trace_id=trace_id)
+        ts = now()
+        c.execute("UPDATE devices SET model_3d_code=?, updated_at=? WHERE id=?", (code, ts, d["id"]))
+        audit(c, user["id"], user["role"], "UPDATE", "DEVICE_MODEL_3D", d["id"], "SUCCESS", trace_id)
+        c.commit()
+        return {"deviceId": d["id"], "deviceNo": d["device_no"], "model3dCode": code, "serverTime": ts, "traceId": trace_id}
+    except ApiError:
+        c.rollback(); raise
+    except Exception:
+        c.rollback(); raise
     finally:
         c.close()
 

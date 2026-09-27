@@ -906,6 +906,7 @@ data class DeviceDetail(
     val deviceName: String,
     val workshop: String?,
     val modelCapability: String?,
+    val model3dCode: String? = null,
     val status: String,
     val orders: List<DeviceOrder> = emptyList()
 )

@@ -66,4 +66,32 @@
   <tr><td colspan="10">暂无数据</td></tr>
   {% endfor %}
 </table>
+
+<h3 style="margin-top:24px">机台 3D 模型绑定</h3>
+<p style="color:#666;font-size:13px">给机台绑定 3D 装配模型后，App 机台详情页头图的 3D 入口即打开该模型；未绑定的机台仍按 App 内置映射表兜底。</p>
+<table>
+  <tr><th>机台编号</th><th>机台名称</th><th>已绑定模型</th><th>绑定 / 解绑</th></tr>
+  {% for d in devices %}
+  <tr>
+    <td>{{ d.device_no }}</td>
+    <td>{{ d.device_name }}</td>
+    <td>{{ d.model_3d_code or "—" }}</td>
+    <td>
+      <form method="post" action="/admin/models/bind-device" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="deviceId" value="{{ d.id }}">
+        <select name="model3dCode">
+          <option value="">— 解绑 —</option>
+          {% for mc in published_codes %}
+          <option value="{{ mc }}" {% if mc == d.model_3d_code %}selected{% endif %}>{{ mc }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">保存</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">暂无机台</td></tr>
+  {% endfor %}
+</table>
 {% endblock %}

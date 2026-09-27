@@ -243,6 +243,7 @@ object ApiParser {
             deviceName = root.optString("deviceName"),
             workshop = root.optString("workshop").takeIf { it.isNotBlank() },
             modelCapability = root.optString("modelCapability").takeIf { it.isNotBlank() },
+            model3dCode = root.optString("model3dCode").takeIf { it.isNotBlank() },
             status = root.optString("status"),
             orders = orders
         )

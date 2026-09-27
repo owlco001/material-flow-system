@@ -62,6 +62,8 @@ from app.main import (
     reset_employee_password,
     review_exception as api_review_exception,
     upload_assembly_model as api_upload_model,
+    bind_device_model_3d as api_bind_device_model_3d,
+    DeviceModel3dBind,
     create_order as api_create_order,
     OrderCreateRequest,
     OrderModelCreate,
@@ -318,6 +320,8 @@ NOTICE_TEXTS = {
     "order_status_changed": "订单状态已推进",
     "sessions_revoked": "该用户会话已全部强制下线",
     "task_created": "机台任务已创建",
+    "model_bound": "机台 3D 模型绑定已保存",
+    "bind_failed": "绑定失败：请检查机台与模型",
 }
 
 
@@ -982,6 +986,33 @@ def admin_models_list(request: Request):
             )
         except HTTPException as exc:
             published_error = f"{exc.status_code}：{exc.detail}"
+    # 机台 3D 模型绑定：机台列表 + 已发布模型码
+    c = db()
+    try:
+        device_cols = {r["name"] for r in c.execute("PRAGMA table_info(devices)").fetchall()}
+        has_3d_col = "model_3d_code" in device_cols
+        col = "model_3d_code" if has_3d_col else "NULL AS model_3d_code"
+        device_rows = c.execute(
+            f"SELECT id, device_no, device_name, {col} FROM devices"
+            " ORDER BY device_no LIMIT 500"
+        ).fetchall()
+        published_codes = [
+            r["model_code"] for r in c.execute(
+                "SELECT DISTINCT model_code FROM assembly_model_versions"
+                " WHERE status='PUBLISHED' ORDER BY model_code"
+            ).fetchall()
+        ]
+    finally:
+        c.close()
+    devices = [
+        {
+            "id": r["id"],
+            "device_no": r["device_no"],
+            "device_name": r["device_name"],
+            "model_3d_code": r["model_3d_code"],
+        }
+        for r in device_rows
+    ]
     return templates.TemplateResponse(
         request,
         "models.html",
@@ -993,6 +1024,9 @@ def admin_models_list(request: Request):
             "published": published,
             "published_error": published_error,
             "status_labels": MODEL_STATUS_LABELS,
+            "devices": devices,
+            "published_codes": published_codes,
+            "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
         },
     )
 
@@ -1691,6 +1725,31 @@ async def admin_model_upload(request: Request):
         notice = MODEL_UPLOAD_NOTICE.get(str(getattr(exc, "detail", "")), "upload_failed")
         return _see_other(f"/admin/models?notice={notice}")
     return _see_other("/admin/models?notice=model_uploaded")
+
+
+@router.post("/admin/models/bind-device")
+async def admin_device_bind_model(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    device_id = str(form.get("deviceId", "")).strip()
+    model_code = str(form.get("model3dCode", "")).strip() or None
+    if not device_id:
+        return _see_other("/admin/models?notice=bind_failed")
+    try:
+        api_bind_device_model_3d(
+            device_id,
+            DeviceModel3dBind(clientOperationId=uuid.uuid4(), model3dCode=model_code),
+            user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    except (ApiError, ValidationError, HTTPException):
+        return _see_other("/admin/models?notice=bind_failed")
+    return _see_other("/admin/models?notice=model_bound")
 
 
 # ==================== S15：CSV 数据导出（契约 §6.14）====================
