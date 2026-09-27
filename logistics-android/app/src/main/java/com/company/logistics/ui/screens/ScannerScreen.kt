@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.relocation.rememberBringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -820,7 +819,7 @@ private fun ManualInputField(
 ) {
     // Activity 已用 adjustResize 缩小窗口，此处不再加 imePadding（否则双重偏移把按钮顶出可视区）。
     // 键盘弹起时自动把「解析条码」按钮滚入可视区。
-    val buttonBiv = rememberBringIntoViewRequester()
+    val buttonBiv = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
     Column {
         OutlinedTextField(

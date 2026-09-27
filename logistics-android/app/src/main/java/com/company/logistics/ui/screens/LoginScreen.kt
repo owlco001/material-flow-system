@@ -20,7 +20,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.relocation.rememberBringIntoViewRequester
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.focus.onFocusChanged
 import kotlinx.coroutines.delay
@@ -84,7 +83,7 @@ fun LoginScreen(
     var rememberLogin by remember { mutableStateOf(true) }
 
     // 键盘弹起时自动把登录按钮滚入可视区，避免被键盘挡住
-    val loginButtonBiv = rememberBringIntoViewRequester()
+    val loginButtonBiv = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
     fun revealLoginButton() {
         scope.launch {
