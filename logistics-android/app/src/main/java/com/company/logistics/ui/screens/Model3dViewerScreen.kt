@@ -3,6 +3,7 @@ package com.company.logistics.ui.screens
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -17,9 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,14 +31,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.company.logistics.rendering.FilamentModelRenderer
+import com.company.logistics.ui.theme.LogisticsColors
 import java.io.File
 
 /**
@@ -45,6 +49,8 @@ import java.io.File
  *
  * 机台页的「3D 模型」入口进入。模型由调用方（Model3dActivity）按机台
  * 映射的 modelCode 从服务端下载并缓存好后传入。
+ *
+ * 视觉：深色沉浸式，与开机动画的藏青（#0B2E6F → #08214F）保持一致。
  */
 @Composable
 fun Model3dViewerScreen(
@@ -64,16 +70,19 @@ fun Model3dViewerScreen(
         onDispose { renderer.release() }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(LogisticsColors.BrandNavyDark),
+    ) {
         TopBar(title, onBack)
         if (subtitle.isNotBlank()) {
             Text(
                 subtitle,
                 fontSize = 12.sp,
-                color = Color(0xFF8A8F98),
+                color = Color.White.copy(alpha = 0.6f),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFFF3F4F6))
                     .padding(horizontal = 16.dp, vertical = 6.dp),
             )
         }
@@ -152,7 +161,7 @@ fun Model3dViewerScreen(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
                                 .padding(top = 8.dp)
-                                .background(Color(0xCC1A1D21), RoundedCornerShape(8.dp))
+                                .background(Color(0xCC1A1D21), RoundedCornerShape(12.dp))
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -163,42 +172,69 @@ fun Model3dViewerScreen(
                         }
                     }
                 }
-                Row(
-                    Modifier
+                // 底部控制区：深色
+                Column(
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color(0xFF060F24),
+                                ),
+                            ),
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
-                    Text(
-                        "单指旋转 · 双指缩放/平移",
-                        fontSize = 12.sp,
-                        color = Color(0xFF8A8F98),
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedButton(onClick = renderer::resetCamera) {
-                        Text("重置视角", fontSize = 13.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "单指旋转 · 双指缩放/平移",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.55f),
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(
+                            onClick = renderer::resetCamera,
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                        ) {
+                            Text("重置视角", fontSize = 13.sp, color = Color.White)
+                        }
                     }
-                }
-                // 爆炸图滑杆
-                var explode by remember { mutableStateOf(0f) }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("爆炸图", fontSize = 12.sp, color = Color(0xFF8A8F98))
-                    Slider(
-                        value = explode,
-                        onValueChange = {
-                            explode = it
-                            renderer.setExploded(it)
-                        },
+                    // 爆炸图滑杆
+                    var explode by remember { mutableStateOf(0f) }
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 8.dp),
-                    )
-                    Text("${(explode * 100).toInt()}%", fontSize = 12.sp, color = Color(0xFF8A8F98))
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("爆炸图", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
+                        Slider(
+                            value = explode,
+                            onValueChange = {
+                                explode = it
+                                renderer.setExploded(it)
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = LogisticsColors.Info,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.22f),
+                            ),
+                        )
+                        Text(
+                            "${(explode * 100).toInt()}%",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.75f),
+                            modifier = Modifier.width(40.dp),
+                            textAlign = TextAlign.End,
+                        )
+                    }
                 }
             }
         }
@@ -217,15 +253,20 @@ private fun TopBar(title: String, onBack: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .background(Color.White)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
+                ),
+            )
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(onClick = onBack) { Text("返回", fontSize = 14.sp) }
+        TextButton(onClick = onBack) { Text("返回", fontSize = 14.sp, color = Color.White) }
         Text(
             title,
             fontSize = 16.sp,
-            color = Color(0xFF1A1D21),
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
             modifier = Modifier.weight(1f),
             textAlign = TextAlign.Center,
         )
@@ -237,8 +278,13 @@ private fun TopBar(title: String, onBack: () -> Unit) {
 private fun LoadingState(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(Modifier.size(40.dp), color = MaterialTheme.colorScheme.primary)
-            Text("模型加载中…", fontSize = 14.sp, color = Color(0xFF8A8F98), modifier = Modifier.padding(top = 12.dp))
+            CircularProgressIndicator(Modifier.size(40.dp), color = Color.White)
+            Text(
+                "模型加载中…",
+                fontSize = 14.sp,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 12.dp),
+            )
         }
     }
 }
@@ -250,9 +296,13 @@ private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier 
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(horizontal = 32.dp),
         ) {
-            Text(message, fontSize = 14.sp, color = Color(0xFF5A5F66), textAlign = TextAlign.Center)
-            OutlinedButton(onClick = onRetry, modifier = Modifier.padding(top = 16.dp)) {
-                Text("重试", fontSize = 14.sp)
+            Text(message, fontSize = 14.sp, color = Color.White.copy(alpha = 0.75f), textAlign = TextAlign.Center)
+            OutlinedButton(
+                onClick = onRetry,
+                modifier = Modifier.padding(top = 16.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+            ) {
+                Text("重试", fontSize = 14.sp, color = Color.White)
             }
         }
     }
@@ -261,6 +311,6 @@ private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier 
 @Composable
 private fun EmptyState(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("暂无模型", fontSize = 14.sp, color = Color(0xFF8A8F98))
+        Text("暂无模型", fontSize = 14.sp, color = Color.White.copy(alpha = 0.6f))
     }
 }
