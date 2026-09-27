@@ -219,6 +219,14 @@ fun LoginScreen(
                 enabled = username.isNotBlank() && password.isNotBlank()
             )
 
+            Spacer(Modifier.height(Spacing.sm))
+            Text(
+                "首次使用请联系管理员开通账号",
+                fontSize = 12.sp,
+                color = LogisticsTheme.colors.textTertiary,
+                textAlign = TextAlign.Center,
+            )
+
             Spacer(Modifier.height(Spacing.md))
             PrimaryButton(
                 text = if (endpointConfigured) "后端设置" else "立即设置后端",
