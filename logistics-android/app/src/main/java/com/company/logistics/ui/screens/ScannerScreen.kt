@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +37,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,8 +51,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -75,6 +80,7 @@ import com.company.logistics.ui.components.ScannerViewfinder
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.theme.Dimens
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
@@ -209,7 +215,44 @@ fun ScannerScreen(
             .padding(horizontal = Dimens.PagePadding),
     ) {
         Spacer(Modifier.height(Spacing.sm))
-        TextButton(onClick = onBack) { Text("返回工作台") }
+
+        // ---- 顶部渐变横幅 ----
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 3.dp,
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        ),
+                    )
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "扫码",
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "对准条码自动识别，也可手动输入",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.78f),
+                        )
+                    }
+                    TextButton(onClick = onBack) {
+                        Text("返回", fontSize = 14.sp, color = Color.White)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(Spacing.sm))
 
         // ---------- 取景区 ----------
         val state = uiState
@@ -396,60 +439,65 @@ private fun CameraPreviewPanel(
     statusText: String,
     statusColor: Color,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(CAMERA_PREVIEW_ASPECT_RATIO)
-            .clip(RoundedCornerShape(Dimens.CardCorner))
-            .background(Color.Black),
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(Dimens.CardCorner),
+        shadowElevation = 6.dp,
+        color = Color.Black,
     ) {
-        AndroidView(
-            factory = { ctx ->
-                PreviewView(ctx).apply {
-                    // FILL_CENTER：取景区域固定，不因文字或状态变化跳动（规格 5 节）
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                    previewFactory(this)
-                }
-            },
-            modifier = Modifier.fillMaxSize(),
-        )
-
-        // 固定取景框
-        ScanFrameOverlay()
-
-        // 顶部：状态 + 闪光灯
-        Row(
+        Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(Spacing.md),
-            verticalAlignment = Alignment.CenterVertically,
+                .aspectRatio(CAMERA_PREVIEW_ASPECT_RATIO),
         ) {
-            Box(
+            AndroidView(
+                factory = { ctx ->
+                    PreviewView(ctx).apply {
+                        // FILL_CENTER：取景区域固定，不因文字或状态变化跳动（规格 5 节）
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        previewFactory(this)
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            // 固定取景框（四角角标 + 扫描线）
+            ScanFrameOverlay()
+
+            // 顶部：状态 + 闪光灯
+            Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(Dimens.PillCorner))
-                    .background(statusColor.copy(alpha = 0.92f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    statusText,
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Dimens.PillCorner))
+                        .background(statusColor.copy(alpha = 0.92f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        statusText,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TorchButton(
+                    enabled = torchAvailable,
+                    on = torchOn,
+                    onClick = onToggleTorch,
                 )
             }
-            Spacer(Modifier.weight(1f))
-            TorchButton(
-                enabled = torchAvailable,
-                on = torchOn,
-                onClick = onToggleTorch,
-            )
         }
     }
 }
 
-/** 固定取景框：四角高亮 + 扫描线动效 */
+/** 固定取景框：四角角标 + 扫描线动效 */
 @Composable
 private fun ScanFrameOverlay() {
     val accent = LogisticsTheme.colors.primary
@@ -469,10 +517,24 @@ private fun ScanFrameOverlay() {
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(
-            modifier = Modifier
-                .fillMaxSize(0.68f)
-                .border(2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(18.dp)),
+            modifier = Modifier.fillMaxSize(0.68f),
         ) {
+            // 四角角标（Canvas 绘制，与流转码弹窗取景框风格统一）
+            Canvas(Modifier.matchParentSize()) {
+                val armLen = 30.dp.toPx()
+                val stroke = 4.dp.toPx()
+                val w = size.width
+                val h = size.height
+
+                fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+                    drawLine(accent, Offset(x, y), Offset(x + dx * armLen, y), stroke, StrokeCap.Round)
+                    drawLine(accent, Offset(x, y), Offset(x, y + dy * armLen), stroke, StrokeCap.Round)
+                }
+                corner(0f, 0f, 1f, 1f)
+                corner(w, 0f, -1f, 1f)
+                corner(0f, h, 1f, -1f)
+                corner(w, h, -1f, -1f)
+            }
             // 扫描线
             Box(
                 modifier = Modifier
@@ -691,9 +753,13 @@ private fun ScanStatusBar(state: ScannerUiState) {
 
 @Composable
 private fun StatusLine(text: String, color: Color, loading: Boolean) {
-    AppCard(accentColor = color) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = color.copy(alpha = 0.1f),
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 语义色 + 文字双通道表达，避免只靠颜色传达状态（无障碍）
@@ -753,7 +819,7 @@ private fun ManualInputField(
             singleLine = true,
             enabled = !loading,
             isError = isError,
-            shape = MaterialTheme.shapes.small,
+            shape = RoundedCornerShape(14.dp),
             supportingText = if (isError) {
                 { Text("未匹配到该条码，请核对后重试", fontSize = 12.sp) }
             } else null,
