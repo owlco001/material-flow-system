@@ -20,12 +20,36 @@ object DeviceModelMap {
     /** 工人测试机（CesiumMan 样例模型）。 */
     const val MODEL_WORKER = "MACHINE-WORKER-01"
 
+    /** 小黄鸭测试机（Duck 样例模型）。 */
+    const val MODEL_DUCK = "MACHINE-DUCK-01"
+
+    /** 牛油果测试机（Avocado 样例模型）。 */
+    const val MODEL_AVOCADO = "MACHINE-AVOCADO-01"
+
+    /** 音箱测试机（BoomBox 样例模型）。 */
+    const val MODEL_BOOMBOX = "MACHINE-BOOMBOX-01"
+
+    /** 灯笼测试机（Lantern 样例模型）。 */
+    const val MODEL_LANTERN = "MACHINE-LANTERN-01"
+
+    /** 水瓶测试机（WaterBottle 样例模型）。 */
+    const val MODEL_BOTTLE = "MACHINE-BOTTLE-01"
+
+    /** 玩具车测试机（ToyCar 样例模型）。 */
+    const val MODEL_TOYCAR = "MACHINE-TOYCAR-01"
+
     /** 机台编号前缀 → modelCode。新增测试机型时在这里加一行即可。 */
     private val PREFIX_MAP = listOf(
         "ROBOT" to MODEL_ROBOT,
         "HELMET" to MODEL_HELMET,
         "WORKER" to MODEL_WORKER,
         "CESIUM" to MODEL_WORKER,
+        "DUCK" to MODEL_DUCK,
+        "AVOCADO" to MODEL_AVOCADO,
+        "BOOMBOX" to MODEL_BOOMBOX,
+        "LANTERN" to MODEL_LANTERN,
+        "BOTTLE" to MODEL_BOTTLE,
+        "TOYCAR" to MODEL_TOYCAR,
     )
 
     /**
