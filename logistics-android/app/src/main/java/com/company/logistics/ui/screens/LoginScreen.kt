@@ -18,6 +18,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BringIntoViewRequester
+import androidx.compose.foundation.bringIntoViewRequester
+import androidx.compose.foundation.rememberBringIntoViewRequester
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.focus.onFocusChanged
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -75,6 +82,16 @@ fun LoginScreen(
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var rememberLogin by remember { mutableStateOf(true) }
+
+    // 键盘弹起时自动把登录按钮滚入可视区，避免被键盘挡住
+    val loginButtonBiv = rememberBringIntoViewRequester()
+    val scope = rememberCoroutineScope()
+    fun revealLoginButton() {
+        scope.launch {
+            delay(350)
+            loginButtonBiv.bringIntoView()
+        }
+    }
 
     Column(
         modifier = modifier
@@ -147,7 +164,9 @@ fun LoginScreen(
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it.trim() },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { if (it.isFocused) revealLoginButton() },
                 singleLine = true,
                 placeholder = { Text("请输入工号 / 账号", color = LogisticsTheme.colors.textTertiary) },
                 enabled = !loading,
@@ -168,7 +187,9 @@ fun LoginScreen(
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { if (it.isFocused) revealLoginButton() },
                 singleLine = true,
                 placeholder = { Text("请输入密码", color = LogisticsTheme.colors.textTertiary) },
                 visualTransformation = PasswordVisualTransformation(),
@@ -215,6 +236,7 @@ fun LoginScreen(
             PrimaryButton(
                 text = "登 录",
                 onClick = { onLogin(username, password, deviceId, rememberLogin) },
+                modifier = Modifier.bringIntoViewRequester(loginButtonBiv),
                 loading = loading,
                 enabled = username.isNotBlank() && password.isNotBlank()
             )
