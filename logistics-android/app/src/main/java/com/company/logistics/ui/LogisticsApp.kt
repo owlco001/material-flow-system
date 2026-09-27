@@ -340,7 +340,15 @@ fun LogisticsApp(
 
                     Screen.PRODUCTION_MANAGEMENT -> ProductionManagementScreen(state.role, state.productionWriteLoading, state.productionWriteError, viewModel::createProductionOrder, viewModel::createDevice, viewModel::assignDevice) { viewModel.navigate(Screen.WORKSPACE) }
 
-                    Screen.DEVICE_DETAIL -> DeviceDetailScreen(state.deviceDetail, state.loading, state.error) { viewModel.navigate(Screen.SCANNER) }
+                    Screen.DEVICE_DETAIL -> DeviceDetailScreen(
+                        state.deviceDetail,
+                        state.loading,
+                        state.error,
+                        state.deviceAssemblyTasks,
+                        state.deviceMaterials,
+                        state.deviceTransferRequests,
+                        state.deviceLabor,
+                    ) { viewModel.navigate(Screen.SCANNER) }
 
                     Screen.INVENTORY -> InventoryScreen(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
