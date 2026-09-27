@@ -374,7 +374,7 @@ class FilamentModelRenderer(
             var hidden = false
             var ghost: MaterialInstance? = null
             if (sectionEnabled) {
-                val box = rm.getAxisAlignedBoundingBox(instance)
+                val box = rm.getAxisAlignedBoundingBox(instance, Box())
                 val c = box.center[sectionAxis]
                 val h = box.halfExtent[sectionAxis]
                 val p = sectionPos * modelRadius
@@ -461,7 +461,7 @@ class FilamentModelRenderer(
         vb.setBufferAt(eng, 0, FloatBuffer.wrap(verts))
         val ib = IndexBuffer.Builder().indexCount(6)
             .bufferType(IndexBuffer.Builder.IndexType.USHORT).build(eng)
-        ib.setBufferAt(eng, ShortBuffer.wrap(shortArrayOf(0, 1, 2, 0, 2, 3)))
+        ib.setBuffer(eng, ShortBuffer.wrap(shortArrayOf(0, 1, 2, 0, 2, 3)))
         val e = em.create()
         RenderableManager.Builder(1)
             .boundingBox(Box().apply { setCenter(0f, 0f, 0f); setHalfExtent(s, s, s) })
