@@ -18,9 +18,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.BringIntoViewRequester
-import androidx.compose.foundation.bringIntoViewRequester
-import androidx.compose.foundation.rememberBringIntoViewRequester
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.relocation.rememberBringIntoViewRequester
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.focus.onFocusChanged
 import kotlinx.coroutines.delay
