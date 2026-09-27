@@ -241,9 +241,9 @@ object ApiParser {
             deviceId = root.optString("deviceId"),
             deviceNo = root.optString("deviceNo"),
             deviceName = root.optString("deviceName"),
-            workshop = root.optString("workshop").takeIf { it.isNotBlank() },
-            modelCapability = root.optString("modelCapability").takeIf { it.isNotBlank() },
-            model3dCode = root.optString("model3dCode").takeIf { it.isNotBlank() },
+            workshop = nullableString(root, "workshop"),
+            modelCapability = nullableString(root, "modelCapability"),
+            model3dCode = nullableString(root, "model3dCode"),
             status = root.optString("status"),
             orders = orders
         )
