@@ -119,7 +119,7 @@ fun LoginScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    stringResource(R.string.brand_subtitle),
+                    "智慧工厂",
                     fontSize = 13.sp,
                     color = Color.White.copy(alpha = 0.78f),
                     textAlign = TextAlign.Center,
