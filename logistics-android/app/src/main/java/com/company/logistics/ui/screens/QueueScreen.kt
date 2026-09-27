@@ -1,7 +1,9 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,8 +16,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,7 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.OfflineOperation
@@ -38,6 +44,7 @@ import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
@@ -83,61 +90,107 @@ fun QueueScreen(
             return@Column
         }
 
-        // 概览卡
-        AppCard(
-            accentColor = if (conflicts > 0) LogisticsTheme.colors.warning
-            else MaterialTheme.colorScheme.primary
+        // 概览横幅（渐变）
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            shadowElevation = 4.dp,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "待同步 ${pending + conflicts} 条",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LogisticsTheme.colors.textPrimary
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        ),
                     )
-                    VSpace(3.dp)
-                    Text(
-                        buildString {
-                            append("共 ${queue.size} 条记录")
-                            if (conflicts > 0) append(" · 冲突 $conflicts 条")
-                        },
-                        fontSize = 12.sp,
-                        color = LogisticsTheme.colors.textSecondary
-                    )
+                    .padding(18.dp),
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "待同步 ${pending + conflicts} 条",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = Color.White,
+                            )
+                            VSpace(4.dp)
+                            Text(
+                                buildString {
+                                    append("共 ${queue.size} 条记录")
+                                    if (conflicts > 0) append(" · 冲突 $conflicts 条")
+                                },
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.78f),
+                            )
+                        }
+                        if (conflicts > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = LogisticsTheme.colors.danger,
+                            ) {
+                                Text(
+                                    "! 有冲突",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                        }
+                    }
+                    VSpace(Spacing.md)
+                    val syncEnabled = !readOnly && !syncing && (pending > 0 || conflicts > 0)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = syncEnabled, onClick = onSync),
+                    ) {
+                        Text(
+                            if (syncing) "同步中…" else "立即同步",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = LogisticsColors.PrimaryDark.copy(
+                                alpha = if (syncEnabled) 1f else 0.4f,
+                            ),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 13.dp),
+                        )
+                    }
+                    if (queue.any { it.status == SyncStatus.SYNCED }) {
+                        VSpace(Spacing.sm)
+                        val clearEnabled = !readOnly && !syncing
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)),
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = clearEnabled, onClick = onClearSynced),
+                        ) {
+                            Text(
+                                "清理已同步记录",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White.copy(alpha = if (clearEnabled) 1f else 0.5f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 12.dp),
+                            )
+                        }
+                    }
+                    if (readOnly) {
+                        VSpace(Spacing.sm)
+                        Text(
+                            "测试预览只读，不能同步或清理离线写操作",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
-                if (conflicts > 0) {
-                    StatusTag(
-                        label = "有冲突",
-                        color = MaterialTheme.colorScheme.error,
-                        containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.13f),
-                        symbol = "!"
-                    )
-                }
-            }
-            VSpace(Spacing.md)
-            PrimaryButton(
-                text = if (syncing) "同步中…" else "立即同步",
-                onClick = onSync,
-                loading = syncing,
-                enabled = !readOnly && !syncing && (pending > 0 || conflicts > 0)
-            )
-            if (queue.any { it.status == SyncStatus.SYNCED }) {
-                VSpace(Spacing.sm)
-                SecondaryButton(
-                    text = "清理已同步记录",
-                    onClick = onClearSynced,
-                    enabled = !readOnly && !syncing
-                )
-            }
-            if (readOnly) {
-                VSpace(Spacing.sm)
-                Text(
-                    "测试预览只读，不能同步或清理离线写操作",
-                    fontSize = 12.sp,
-                    color = LogisticsTheme.colors.warning,
-                    fontWeight = FontWeight.SemiBold,
-                )
             }
         }
 
