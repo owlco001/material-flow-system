@@ -1,12 +1,15 @@
 package com.company.logistics.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -15,10 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,6 +32,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +51,7 @@ import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.MultiOrderSnapshot
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
+import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
@@ -91,8 +99,6 @@ fun OrderDetailScreen(
     ) {
         Spacer(Modifier.height(Spacing.sm))
 
-        androidx.compose.material3.TextButton(onClick = onBack) { Text("返回扫码") }
-
         if (loading && status == null) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text("正在加载订单详情…", color = LogisticsTheme.colors.textSecondary)
@@ -132,79 +138,129 @@ fun OrderDetailScreen(
             VSpace(Spacing.sm)
         }
 
-        // 订单头卡
-        AppCard(accentColor = MaterialTheme.colorScheme.primary) {
-            Text(
-                "生产订单号",
-                fontSize = 11.sp,
-                color = LogisticsTheme.colors.textTertiary
-            )
-            VSpace(4.dp)
-            Text(
-                status.documentNo,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = LogisticsType.MonoFamily,
-                letterSpacing = 0.5.sp,
-                color = LogisticsTheme.colors.textPrimary
-            )
-            Text(
-                "订单状态：${status.orderStatus ?: "服务端未提供"}",
-                fontSize = 13.sp,
-                color = LogisticsTheme.colors.textSecondary,
-            )
-            status.productName?.takeIf { it.isNotBlank() }?.let {
-                Text("产品：$it", fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
-            }
-            Text("服务端时间：${status.serverTime ?: "未提供"}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
-            androidx.compose.material3.TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新订单事实") }
-            VSpace(Spacing.md)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "齐套率",
-                    fontSize = 12.sp,
-                    color = LogisticsTheme.colors.textSecondary
-                )
-                Spacer(Modifier.width(Spacing.sm))
-                Text(
-                    "${(status.fulfillmentRate * 100).toInt()}%",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = LogisticsType.MonoFamily,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.weight(1f))
-                if (status.shortageCount > 0) {
-                    StatusTag(
-                        label = "缺料 ${status.shortageCount} 项",
-                        color = MaterialStatusCode.OUT_OF_STOCK.color,
-                        containerColor = MaterialStatusCode.OUT_OF_STOCK.containerColor,
-                        symbol = "!"
+        // 订单头横幅（渐变）
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            shadowElevation = 4.dp,
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(LogisticsColors.Primary, LogisticsColors.PrimaryDark),
+                        ),
                     )
-                } else {
-                    StatusTag(
-                        label = "物料齐套",
-                        color = MaterialStatusCode.IN_STOCK.color,
-                        containerColor = MaterialStatusCode.IN_STOCK.containerColor,
-                        symbol = "✓"
+                    .padding(18.dp),
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "生产订单号",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.72f),
+                            )
+                            VSpace(4.dp)
+                            Text(
+                                status.documentNo,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = LogisticsType.MonoFamily,
+                                letterSpacing = 0.5.sp,
+                                color = Color.White,
+                            )
+                        }
+                        androidx.compose.material3.TextButton(onClick = onBack) {
+                            Text("返回", fontSize = 14.sp, color = Color.White)
+                        }
+                    }
+                    status.productName?.takeIf { it.isNotBlank() }?.let {
+                        VSpace(4.dp)
+                        Text("产品：$it", fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f))
+                    }
+                    VSpace(Spacing.sm)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.White,
+                        ) {
+                            Text(
+                                status.orderStatus ?: "服务端未提供",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = LogisticsColors.PrimaryDark,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(Spacing.sm))
+                        Text(
+                            "齐套率 ${(status.fulfillmentRate * 100).toInt()}%",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = LogisticsType.MonoFamily,
+                            color = Color.White,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (status.shortageCount > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = LogisticsTheme.colors.danger,
+                            ) {
+                                Text(
+                                    "缺料 ${status.shortageCount} 项",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color.White.copy(alpha = 0.22f),
+                            ) {
+                                Text(
+                                    "✓ 物料齐套",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                        }
+                    }
+                    VSpace(Spacing.sm)
+                    LinearProgressIndicator(
+                        progress = { status.fulfillmentRate },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                        color = Color.White,
+                        trackColor = Color.White.copy(alpha = 0.28f),
                     )
+                    VSpace(Spacing.sm)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "服务端时间：${status.serverTime ?: "未提供"}",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.72f),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(9.dp),
+                            border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
+                            color = Color.Transparent,
+                            modifier = Modifier.clickable(enabled = !loading, onClick = onRefresh),
+                        ) {
+                            Text(
+                                "刷新",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
                 }
-            }
-            VSpace(Spacing.sm)
-            LinearProgressIndicator(
-                progress = { status.fulfillmentRate },
-                modifier = Modifier.fillMaxWidth().height(6.dp),
-                color = if (status.shortageCount > 0) MaterialStatusCode.ARRIVED.color
-                else MaterialStatusCode.IN_STOCK.color,
-                trackColor = LogisticsTheme.colors.border
-            )
-            if (status.serverTime != null) {
-                VSpace(Spacing.sm)
-                Text(
-                    "服务端时间：${status.serverTime}",
-                    fontSize = 11.sp,
-                    color = LogisticsTheme.colors.textTertiary
-                )
             }
         }
 
@@ -226,8 +282,45 @@ fun OrderDetailScreen(
             }
             VSpace(Spacing.md)
             SectionTitle("流转时间线（${aggregate.timeline.size}）")
-            aggregate.timeline.forEach { event ->
-                Text("${event.serverTime ?: "服务端未提供"} · ${event.type} · ${event.status ?: "服务端未提供"} · ${event.actorId ?: "服务端未提供"}", fontSize = 12.sp)
+            aggregate.timeline.forEachIndexed { index, event ->
+                Row(modifier = Modifier.height(IntrinsicSize.Min)) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(LogisticsColors.Primary),
+                        )
+                        if (index != aggregate.timeline.lastIndex) {
+                            Box(
+                                modifier = Modifier
+                                    .width(2.dp)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 4.dp)
+                                    .clip(RoundedCornerShape(1.dp))
+                                    .background(LogisticsTheme.colors.border),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.padding(bottom = if (index == aggregate.timeline.lastIndex) 0.dp else 12.dp)) {
+                        Text(
+                            "${event.type}${event.status?.let { " · $it" } ?: ""}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LogisticsTheme.colors.textPrimary,
+                        )
+                        Text(
+                            "${event.serverTime ?: "服务端未提供"}${event.actorId?.let { " · $it" } ?: ""}",
+                            fontSize = 11.sp,
+                            fontFamily = LogisticsType.MonoFamily,
+                            color = LogisticsTheme.colors.textTertiary,
+                        )
+                    }
+                }
             }
         }
 
