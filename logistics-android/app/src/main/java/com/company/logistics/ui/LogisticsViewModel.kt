@@ -2632,6 +2632,40 @@ class LogisticsViewModel(
         }
     }
 
+    /**
+     * 机台详情页申请物料：OUTBOUND 流转申请，订单号写入 documentNo（机台详情按订单号筛申请），
+     * 机台信息写入 remark（后端 Transfer 无机台字段）。走离线优先，断网进队列。
+     */
+    fun submitDeviceMaterialRequest(material: com.company.logistics.model.OrderMaterialItem, orderNo: String, quantity: Int, remark: String) {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能申请物料") }
+            return
+        }
+        if (material.materialId.isBlank() || orderNo.isBlank() || quantity <= 0) {
+            _state.update { it.copy(error = "物料、订单与正整数数量均为必填") }
+            return
+        }
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            // 先查库存拿 version（创建流转申请必填 expectedInventoryVersion）
+            val inv = repo.materialInventory(material.materialCode).getOrNull()
+            if (inv == null) {
+                _state.update { it.copy(loading = false, error = "查不到该物料库存，无法申请") }
+                return@launch
+            }
+            val deviceNo = _state.value.deviceDetail?.deviceNo.orEmpty()
+            val fullRemark = buildString {
+                if (deviceNo.isNotBlank()) append("机台：$deviceNo；")
+                if (remark.isNotBlank()) append(remark)
+            }.ifBlank { null }
+            when (val r = repo.submitOutbound(material, inv, orderNo, quantity, fullRemark)) {
+                is SubmitResult.Success -> _state.update { it.copy(loading = false, message = "物料申请已提交") }
+                is SubmitResult.Queued -> _state.update { it.copy(loading = false, message = "网络不可用，申请已入队：${r.reason}") }
+                is SubmitResult.Failure -> _state.update { it.copy(loading = false, error = r.message) }
+            }
+        }
+    }
+
     fun createProductionOrder(orderNo: String, productName: String, quantity: Int, deliveryDate: String, modelCode: String, modelName: String, modelQuantity: Int, bomVersionId: String) {
         if (_state.value.role != UserRole.ADMIN && _state.value.role != UserRole.PLANNER) { _state.update { it.copy(productionWriteError = "当前角色无创建订单权限") }; return }
         val op = UUID.randomUUID().toString(); val models = org.json.JSONArray().put(org.json.JSONObject().apply { put("modelCode", modelCode); put("modelName", modelName); put("plannedQuantity", modelQuantity); put("bomVersionId", bomVersionId) })

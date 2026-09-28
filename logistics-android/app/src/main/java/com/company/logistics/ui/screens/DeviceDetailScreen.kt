@@ -15,13 +15,22 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,9 +72,11 @@ fun DeviceDetailScreen(
     materials: List<OrderMaterialItem>,
     transferRequests: List<TransferRequest>,
     labor: LaborSummaryPage?,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onSubmitMaterialRequest: (material: OrderMaterialItem, orderNo: String, quantity: Int, remark: String) -> Unit = { _, _, _, _ -> },
 ) {
     val context = LocalContext.current
+    var showMaterialRequestDialog by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxSize()
@@ -260,7 +271,20 @@ fun DeviceDetailScreen(
 
                 // ---- 物料流转申请 ----
                 AppCard {
-                    SectionBarTitle("物料流转申请（${transferRequests.size}）")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.weight(1f)) {
+                            SectionBarTitle("物料流转申请（${transferRequests.size}）")
+                        }
+                        TextButton(
+                            onClick = { showMaterialRequestDialog = true },
+                            enabled = materials.isNotEmpty(),
+                        ) {
+                            Text("申请物料", fontSize = 13.sp, color = LogisticsColors.PrimaryDark)
+                        }
+                    }
                     VSpace(Spacing.sm)
                     if (transferRequests.isEmpty()) {
                         Text(
@@ -537,6 +561,19 @@ fun DeviceDetailScreen(
         }
         VSpace(Spacing.xxl)
     }
+
+    // ---- 申请物料对话框 ----
+    if (showMaterialRequestDialog && detail != null) {
+        DeviceMaterialRequestDialog(
+            materials = materials,
+            orders = detail.orders,
+            onDismiss = { showMaterialRequestDialog = false },
+            onConfirm = { material, orderNo, qty, remark ->
+                onSubmitMaterialRequest(material, orderNo, qty, remark)
+                showMaterialRequestDialog = false
+            },
+        )
+    }
 }
 
 private fun formatMinutes(minutes: Int): String {
@@ -589,4 +626,100 @@ private fun DeviceKv(label: String, value: String, mono: Boolean = false) {
             thickness = 0.5.dp,
         )
     }
+}
+
+/**
+ * 机台详情申请物料对话框。
+ * 从本机物料清单下拉选物料；关联订单下拉选（订单号写入 documentNo，便于详情页筛出）；
+ * 填写数量与备注。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeviceMaterialRequestDialog(
+    materials: List<OrderMaterialItem>,
+    orders: List<com.company.logistics.model.DeviceOrder>,
+    onDismiss: () -> Unit,
+    onConfirm: (material: OrderMaterialItem, orderNo: String, quantity: Int, remark: String) -> Unit,
+) {
+    var selectedMaterial by remember(materials) { mutableStateOf(materials.firstOrNull()) }
+    var materialExpanded by remember { mutableStateOf(false) }
+    var selectedOrder by remember(orders) { mutableStateOf(orders.singleOrNull()?.orderNo ?: "") }
+    var orderExpanded by remember { mutableStateOf(false) }
+    var qtyText by remember { mutableStateOf("") }
+    var remark by remember { mutableStateOf("") }
+    val canConfirm = selectedMaterial != null && selectedOrder.isNotBlank() && (qtyText.toIntOrNull() ?: 0) > 0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("申请物料", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                ExposedDropdownMenuBox(expanded = materialExpanded, onExpandedChange = { materialExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedMaterial?.let { "${it.name}（${it.materialCode}）" } ?: "",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("物料") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(materialExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = materialExpanded, onDismissRequest = { materialExpanded = false }) {
+                        materials.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text("${m.name}（${m.materialCode}）", fontSize = 13.sp) },
+                                onClick = { selectedMaterial = m; materialExpanded = false },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                ExposedDropdownMenuBox(expanded = orderExpanded, onExpandedChange = { orderExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedOrder,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("关联订单") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(orderExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = orderExpanded, onDismissRequest = { orderExpanded = false }) {
+                        orders.forEach { o ->
+                            DropdownMenuItem(
+                                text = { Text(o.orderNo + (o.productName?.let { " · $it" } ?: ""), fontSize = 13.sp) },
+                                onClick = { selectedOrder = o.orderNo; orderExpanded = false },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = qtyText,
+                    onValueChange = { qtyText = it.filter { c -> c.isDigit() } },
+                    label = { Text("申请数量") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = remark,
+                    onValueChange = { remark = it },
+                    label = { Text("备注（可选）") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val m = selectedMaterial
+                    if (m != null) onConfirm(m, selectedOrder, qtyText.toIntOrNull() ?: 0, remark)
+                },
+                enabled = canConfirm,
+            ) {
+                Text("提交申请")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }

@@ -471,6 +471,43 @@ open class LogisticsRepository(
         }
     )
 
+    /**
+     * 提交厂内出库（领料）申请。documentNo 写入关联订单号，便于机台详情按订单筛出。
+     * 失败时按错误类型决定是否落本地队列。
+     */
+    suspend fun submitOutbound(
+        deviceMaterial: com.company.logistics.model.OrderMaterialItem,
+        inventory: MaterialInventory,
+        documentNo: String?,
+        quantity: Int,
+        remark: String?,
+        clientOperationId: String? = null
+    ): SubmitResult = submit(
+        opType = OfflineOpType.OUTBOUND,
+        materialCode = inventory.material.code,
+        materialId = inventory.material.id,
+        quantity = quantity,
+        targetLocation = null,
+        expectedInventoryVersion = inventory.version,
+        remark = remark,
+        clientOperationId = clientOperationId,
+        remoteCall = { clientOpId ->
+            api.createTransferRequest(
+                clientOperationId = clientOpId,
+                type = "OUTBOUND",
+                documentNo = documentNo,
+                items = listOf(
+                    TransferItem(
+                        materialId = inventory.material.id,
+                        quantity = quantity,
+                        expectedInventoryVersion = inventory.version
+                    )
+                ),
+                remark = remark
+            )
+        }
+    )
+
     /** 提交库位绑定（简化流程，无需审批） */
     suspend fun submitLocationBinding(
         materialCode: String,
