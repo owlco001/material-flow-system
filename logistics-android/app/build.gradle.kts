@@ -87,8 +87,9 @@ dependencies {
     // 1.71.5 ships 16 KB-aligned arm64 shared objects; 1.52.0 was 4 KB-aligned and failed to load
     // on Android 15+ 16 KB-page devices, surfacing as FILAMENT_UNAVAILABLE in the debug panel.
     // 3D 模型查看已转正（机台页面正式入口），release 需要 filament，用 implementation。
-    implementation("com.google.android.filament:filament-android:1.77.1")
-    implementation("com.google.android.filament:gltfio-android:1.77.1")
+    // 注意：filament 1.76.0+ 要求 compileSdk 37，项目当前为 34，故选用 1.75.x 中最高的 1.75.1。
+    implementation("com.google.android.filament:filament-android:1.75.1")
+    implementation("com.google.android.filament:gltfio-android:1.75.1")
 
     // 网络层：OkHttp（连接池 + HTTP/2 复用，扫码等高频请求不再每次重建 TLS）。
     // 4.12.0 为 4.x 稳定版；MaterialFlowApi 仅用同步 execute()，无需协程扩展。
