@@ -119,6 +119,8 @@ fun ScannerScreen(
     onOpenQueue: () -> Unit,
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
+    lastDevice: com.company.logistics.model.DeviceDetail? = null,
+    onReopenDevice: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -223,6 +225,43 @@ fun ScannerScreen(
             .padding(horizontal = Dimens.PagePadding),
     ) {
         Spacer(Modifier.height(Spacing.sm))
+
+        // ---- 上次查看的机台：快捷返回机台详情，无需重新扫码 ----
+        if (lastDevice != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                shadowElevation = 2.dp,
+                color = LogisticsTheme.colors.cardBackground,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "上次查看的机台",
+                            fontSize = 11.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "${lastDevice.deviceNo} · ${lastDevice.deviceName}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = LogisticsType.MonoFamily,
+                            color = LogisticsTheme.colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(onClick = onReopenDevice) {
+                        Text("继续查看", fontSize = 13.sp, color = LogisticsColors.PrimaryDark)
+                    }
+                }
+            }
+            Spacer(Modifier.height(Spacing.sm))
+        }
 
         // ---- 顶部渐变横幅 ----
         Surface(

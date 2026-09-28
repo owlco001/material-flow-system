@@ -218,7 +218,9 @@ fun LogisticsApp(
                         syncing = state.syncing,
                         onResolved = { viewModel.onScanned(it.normalizedValue) },
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
-                        onBack = { viewModel.navigate(Screen.WORKSPACE) }
+                        onBack = { viewModel.navigate(Screen.WORKSPACE) },
+                        lastDevice = state.deviceDetail,
+                        onReopenDevice = { viewModel.navigate(Screen.DEVICE_DETAIL) },
                     )
 
                     Screen.MATERIAL_DETAIL -> {
