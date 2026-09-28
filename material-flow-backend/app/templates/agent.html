@@ -1,0 +1,563 @@
+{% extends "base.html" %}
+{% block title %}智能助手 · 智慧工厂{% endblock %}
+{% block nav %}
+<a class="nav-link" href="/admin/">仪表盘</a>
+<a class="nav-link" href="/admin/orders">生产订单</a>
+<a class="nav-link" href="/admin/reports">车间概览</a>
+<form method="post" action="/admin/logout" class="logout-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
+</form>
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h2>智能助手</h2>
+  <p class="page-desc">数据分析对话与智能导入。所有操作经服务端鉴权，导入需预览确认后执行。</p>
+</div>
+
+<!-- LLM 设置 -->
+<div class="card" style="margin-bottom:16px">
+  <h3>LLM 设置</h3>
+  <p class="muted">选模型、填 API Key 即可用。设置存数据库，优先于环境变量。</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:720px">
+    <div>
+      <label>模型</label>
+      <select id="set-model">
+        <optgroup label="国产旗舰">
+        <option value="kimi-k3">Kimi K3（月之暗面，国产国际验证最强）</option>
+        <option value="mimo-v2.6-pro">MiMo V2.6 Pro（小米，开源最强+最便宜）</option>
+        <option value="mimo-v2.6-flash">MiMo V2.6 Flash（小米，极速便宜）</option>
+        <option value="deepseek-chat">DeepSeek V4（deepseek-chat）</option>
+        <option value="deepseek-reasoner">DeepSeek V4 推理版（deepseek-reasoner）</option>
+        <option value="qwen3.8-max">通义千问 Qwen3.8-Max</option>
+        <option value="glm-5.2">智谱 GLM-5.2（编程最强）</option>
+        <option value="doubao-2.1-pro">豆包 2.1 Pro（字节）</option>
+        <option value="minimax-m3">MiniMax M3</option>
+        </optgroup>
+        <optgroup label="国际旗舰">
+        <option value="claude-fable-5">Claude Fable 5（最强）</option>
+        <option value="claude-opus-4.8">Claude Opus 4.8</option>
+        <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+        <option value="gpt-5.5">GPT-5.5</option>
+        <option value="gpt-5.6">GPT-5.6</option>
+        <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
+        <option value="grok-4.7">Grok 4.7</option>
+        </optgroup>
+      </select>
+    </div>
+    <div>
+      <label>Base URL</label>
+      <input id="set-base-url" placeholder="https://api.deepseek.com">
+    </div>
+    <div>
+      <label>API Key</label>
+      <input id="set-api-key" type="password" placeholder="sk-...">
+    </div>
+    <div>
+      <label>状态</label>
+      <select id="set-enabled"><option value="1">启用</option><option value="0">禁用</option></select>
+    </div>
+  </div>
+  <div class="btn-row" style="margin-top:12px"><button onclick="saveSettings()" class="btn">保存</button></div>
+  <p id="settings-msg" class="muted"></p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+<!-- 数据分析对话 -->
+<div class="card">
+  <h3>数据分析对话</h3>
+  <div id="chat-box" style="height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafbfc">
+    <p class="muted" style="text-align:center">在下方输入问题，例如：查询库存不足的物料、统计本月流转单数量</p>
+  </div>
+  <div style="display:flex;gap:8px">
+    <input id="chat-input" placeholder="输入问题…" style="flex:1" onkeydown="if(event.key==='Enter')sendChat()">
+    <button id="chat-send-btn" onclick="sendChat()" class="btn">发送</button>
+    <button onclick="newChatSession()" class="btn btn-sm" title="新会话">新会话</button>
+  </div>
+</div>
+
+<!-- 智能导入 -->
+<div class="card">
+  <h3>智能导入</h3>
+  <p class="muted">支持物料 / 库存 / 订单，CSV 或 Excel，先预览确认再提交。</p>
+  <form id="import-form" enctype="multipart/form-data">
+    <label>导入类型</label>
+    <select id="import-type" name="kind" onchange="toggleBomField()">
+      <option value="materials">物料</option>
+      <option value="inventory">库存</option>
+      <option value="orders">订单</option>
+      <option value="bom">BOM 清单</option>
+    </select>
+    <div id="bom-model-wrap" style="display:none;margin-top:8px">
+      <label>机型码</label>
+      <input id="bom-model-code" placeholder="如 MODEL-001">
+    </div>
+    <label>文件（CSV / XLSX）</label>
+    <input type="file" id="import-file" name="file" accept=".csv,.xlsx,.xls">
+    <div class="btn-row" style="margin-top:12px">
+      <button type="button" onclick="previewImport()" class="btn">预览</button>
+    </div>
+  </form>
+  <div id="import-preview" style="margin-top:12px"></div>
+</div>
+</div>
+
+<!-- 多机型 BOM 聚合 -->
+<div class="card" style="margin-top:16px">
+  <h3>多机型 BOM 聚合</h3>
+  <p class="muted">勾选多个机型，汇总各物料的总需求量。</p>
+  <div id="agg-models" style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0"><span class="muted">加载中…</span></div>
+  <div class="btn-row"><button onclick="aggregateBom()" class="btn">聚合</button></div>
+  <div id="agg-result" style="margin-top:12px"></div>
+</div>
+
+
+<!-- 聚合 BOM 导入（ERP 多设备格式） -->
+<div class="card" style="margin-top:16px">
+  <h3>聚合 BOM 导入</h3>
+  <p class="muted">导入 ERP 导出的多层级、多设备 BOM 文件（如 26B-012 项目文件）。</p>
+  <div style="margin:8px 0">
+    <input type="file" id="aggbom-file" accept=".xlsx">
+  </div>
+  <div class="btn-row">
+    <button onclick="previewAggBom()" class="btn">预览</button>
+  </div>
+  <div id="aggbom-preview" style="margin-top:12px"></div>
+  <hr style="margin:16px 0;border:none;border-top:1px solid var(--line)">
+  <h4>已导入批次</h4>
+  <div id="aggbom-batches"><span class="muted">加载中…</span></div>
+  <div id="aggbom-agg" style="margin-top:12px"></div>
+</div>
+
+<script>
+let aggbomPreviewId = null;
+let aggbomBatchId = null;
+async function previewAggBom() {
+  const file = document.getElementById("aggbom-file").files[0];
+  if (!file) { alert("请先选择文件"); return; }
+  const fd = new FormData();
+  fd.append("file", file);
+  const box = document.getElementById("aggbom-preview");
+  box.innerHTML = "<p>解析中…</p>";
+  try {
+    const r = await fetch("/admin/agent/import/aggbom/preview", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    aggbomPreviewId = j.previewId;
+    let html = "<p><strong>聚合 BOM 预览</strong></p>" +
+      "<p>项目：" + (j.projectName || "-") + "，共 " + j.totalRows + " 行，" +
+      j.deviceCount + " 台设备，" + j.materialCount + " 种物料</p>";
+    if (j.devices && j.devices.length) {
+      html += '<p class="muted">设备示例：' + j.devices.slice(0, 10).map(d => d.device_code).join("、") +
+        (j.devices.length > 10 ? " 等" : "") + "</p>";
+    }
+    html += '<div class="btn-row" style="margin-top:8px"><button onclick="commitAggBom()" class="btn">确认导入</button></div>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<p class=\"error\">预览失败：" + e.message + "</p>";
+  }
+}
+async function commitAggBom() {
+  if (!aggbomPreviewId) return;
+  if (!confirm("确认导入聚合 BOM？")) return;
+  const box = document.getElementById("aggbom-preview");
+  try {
+    const r = await fetch("/admin/agent/import/aggbom/commit", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ preview_id: aggbomPreviewId })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    box.innerHTML = "<p class=\"notice\">导入完成</p>" +
+      "<p>订单：" + (j.orderNo || "-") + "（" + (j.projectName || "") + "）</p>" +
+      "<p>机台：共 " + j.deviceCount + " 台" + (j.devicesCreated > 0 ? "，新生成 " + j.devicesCreated + " 台档案（已自动归类）" : "（已存在）") + "</p>" +
+      "<p>物料：共 " + j.materialCount + " 种</p>";
+    aggbomPreviewId = null;
+    loadAggBomBatches();
+  } catch (e) {
+    box.innerHTML = "<p class=\"error\">导入失败：" + e.message + "</p>";
+  }
+}
+async function loadAggBomBatches() {
+  const box = document.getElementById("aggbom-batches");
+  try {
+    const r = await fetch("/admin/agent/aggbom/batches");
+    if (!r.ok) return;
+    const j = await r.json();
+    const batches = j.batches || [];
+    if (!batches.length) { box.innerHTML = '<span class="muted">暂无</span>'; return; }
+    box.innerHTML = batches.map(b =>
+      '<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0">' +
+      "<strong>" + (b.project_name || b.file_name) + "</strong><br>" +
+      '<span class="muted">' + b.device_count + " 台设备，" + b.material_count + " 种物料，" + b.row_count + " 行</span><br>" +
+      '<button onclick="showAggBomDevices(\'' + b.id + '\')" class="btn" style="margin-top:4px">按设备聚合</button>' +
+      "</div>"
+    ).join("");
+  } catch (e) {}
+}
+async function showAggBomDevices(batchId) {
+  aggbomBatchId = batchId;
+  const box = document.getElementById("aggbom-agg");
+  box.innerHTML = "<p>加载设备列表…</p>";
+  try {
+    const r = await fetch("/admin/agent/aggbom/aggregate?batch_id=" + encodeURIComponent(batchId));
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    const devs = j.devices || [];
+    let html = "<p><strong>" + (j.projectName || "") + "</strong> - 勾选设备后聚合物料需求</p>";
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;max-height:200px;overflow-y:auto">' +
+      devs.map(d => '<label style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer">' +
+        '<input type="checkbox" class="aggbom-dev" value="' + d.device_code + '" checked> ' + d.device_code + "</label>").join("") +
+      "</div>";
+    html += '<div class="btn-row"><button onclick="doAggBomAggregate()" class="btn">聚合选中设备</button> ' +
+      '<button onclick="doAggBomAggregate(true)" class="btn">聚合全部</button></div>';
+    html += '<div id="aggbom-agg-result" style="margin-top:8px"></div>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<p class=\"error\">加载失败：" + e.message + "</p>";
+  }
+}
+async function doAggBomAggregate(all) {
+  const codes = all ? [] : [...document.querySelectorAll(".aggbom-dev:checked")].map(i => i.value);
+  const box = document.getElementById("aggbom-agg-result");
+  box.innerHTML = "<p>聚合中…</p>";
+  try {
+    const r = await fetch("/admin/agent/aggbom/aggregate?batch_id=" + encodeURIComponent(aggbomBatchId) +
+      "&device_codes=" + encodeURIComponent(codes.join(",")));
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    const mats = j.materials || [];
+    let html = "<p><strong>聚合结果</strong>：共 " + mats.length + " 种物料</p>";
+    if (mats.length) {
+      html += '<div style="overflow-x:auto;max-height:400px;overflow-y:auto"><table class="tbl"><tr><th>物料编码</th><th>名称</th><th>规格</th><th>单位</th><th>总需求</th><th>涉及设备数</th></tr>' +
+        mats.slice(0, 200).map(m => "<tr><td>" + m.material_code + "</td><td>" + (m.material_name || "") + "</td><td>" +
+          (m.specification || "") + "</td><td>" + (m.unit || "") + "</td><td><strong>" + m.total_quantity + "</strong></td><td>" +
+          m.device_count + "</td></tr>").join("") + "</table></div>";
+      if (mats.length > 200) html += '<p class="muted">仅显示前 200 种</p>';
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<p class=\"error\">聚合失败：" + e.message + "</p>";
+  }
+}
+loadAggBomBatches();
+</script>
+
+<script><script>
+async function loadAggModels() {
+  try {
+    const r = await fetch("/admin/agent/bom/models");
+    if (!r.ok) return;
+    const j = await r.json();
+    const box = document.getElementById("agg-models");
+    box.innerHTML = (j.models || []).map(m =>
+      '<label style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer">' +
+      '<input type="checkbox" value="' + m.model_code + '"' + (m.has_bom ? "" : " disabled") + '> ' +
+      m.model_code + (m.model_name ? "（" + m.model_name + "）" : "") + (m.has_bom ? "" : " <span class=\"muted\">无BOM</span>") +
+      '</label>'
+    ).join("") || '<span class="muted">暂无机型</span>';
+  } catch (e) {}
+}
+async function aggregateBom() {
+  const codes = [...document.querySelectorAll("#agg-models input:checked")].map(i => i.value);
+  const box = document.getElementById("agg-result");
+  if (!codes.length) { box.innerHTML = '<p class="muted">请先勾选机型</p>'; return; }
+  box.innerHTML = "<p>聚合中…</p>";
+  try {
+    const r = await fetch("/admin/agent/bom/aggregate?model_codes=" + encodeURIComponent(codes.join(",")));
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    const mats = j.materials || [];
+    let html = "<p><strong>聚合结果</strong>：共 " + codes.length + " 个机型，" + mats.length + " 种物料</p>";
+    const pm = j.per_model || {};
+    const missing = Object.entries(pm).filter(([k, v]) => v.error).map(([k]) => k);
+    if (missing.length) html += '<p class="muted">以下机型无已发布 BOM：' + missing.join("、") + '</p>';
+    if (mats.length) {
+      html += '<div style="overflow-x:auto"><table class="tbl"><tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>单位</th><th>总需求量</th><th>涉及机型</th></tr>' +
+        mats.map(m => "<tr><td>" + m.material_code + "</td><td>" + (m.material_name || "") + "</td><td>" +
+          (m.specification || "") + "</td><td>" + (m.unit || "") + "</td><td><strong>" + m.total_quantity + "</strong></td><td>" +
+          m.models.join("、") + "</td></tr>").join("") + "</table></div>";
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = "<p class=\"error\">聚合失败：" + e.message + "</p>";
+  }
+}
+loadAggModels();
+</script>
+
+<script>
+let chatSessionId = null;
+
+// 模型 -> 默认 Base URL 映射
+const MODEL_URLS = {
+  "kimi-k3": "https://api.moonshot.cn/v1",
+  "mimo-v2.6-pro": "https://token-plan-cn.xiaomimimo.com/v1",
+  "mimo-v2.6-flash": "https://token-plan-cn.xiaomimimo.com/v1",
+  "deepseek-chat": "https://api.deepseek.com",
+  "deepseek-reasoner": "https://api.deepseek.com",
+  "qwen3.8-max": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "glm-5.2": "https://open.bigmodel.cn/api/paas/v4",
+  "doubao-2.1-pro": "https://ark.cn-beijing.volces.com/api/v3",
+  "minimax-m3": "https://api.minimax.chat/v1",
+  "claude-fable-5": "https://api.anthropic.com/v1",
+  "claude-opus-4.8": "https://api.anthropic.com/v1",
+  "claude-sonnet-4.6": "https://api.anthropic.com/v1",
+  "gpt-5.5": "https://api.openai.com/v1",
+  "gpt-5.6": "https://api.openai.com/v1",
+  "gemini-3.1-pro": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "grok-4.7": "https://api.x.ai/v1",
+};
+document.getElementById("set-model").addEventListener("change", function() {
+  const url = MODEL_URLS[this.value];
+  if (url) document.getElementById("set-base-url").value = url;
+});
+
+async function apiCall(path, method, body) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(t.slice(0, 200)); }
+  return r.json();
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch("/admin/agent/settings");
+    if (!r.ok) return;
+    const j = await r.json();
+    const s = j.settings || {};
+    if (s.base_url) document.getElementById("set-base-url").value = s.base_url;
+    if (s.model) {
+      const sel = document.getElementById("set-model");
+      let found = false;
+      for (const o of sel.options) { if (o.value === s.model) { sel.value = s.model; found = true; break; } }
+      if (!found) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model + " (自定义)"; sel.appendChild(o); sel.value = s.model; }
+    }
+    if (s.enabled) document.getElementById("set-enabled").value = s.enabled;
+    document.getElementById("settings-msg").textContent = s.api_key_set ? "API Key 已配置（" + s.api_key + "）" : "API Key 未配置，请填写后保存";
+  } catch (e) {}
+}
+async function saveSettings() {
+  const key = document.getElementById("set-api-key").value.trim();
+  if (!key) { document.getElementById("settings-msg").textContent = "请填写 API Key"; return; }
+  const body = {
+    base_url: document.getElementById("set-base-url").value.trim(),
+    model: document.getElementById("set-model").value,
+    api_key: key,
+    enabled: document.getElementById("set-enabled").value,
+  };
+  const msg = document.getElementById("settings-msg");
+  msg.textContent = "保存中…";
+  try {
+    const r = await fetch("/admin/agent/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && j.error.message) || r.status);
+    msg.textContent = "已保存";
+    document.getElementById("set-api-key").value = "";
+    loadSettings();
+  } catch (e) { msg.textContent = "保存失败：" + e.message; }
+}
+loadSettings();
+
+function addMsg(role, text) {
+  const box = document.getElementById("chat-box");
+  const div = document.createElement("div");
+  div.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;" +
+    (role === "user" ? "background:#e3f0ff;margin-left:auto;text-align:right" : "background:#fff;border:1px solid var(--line)");
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+async function sendChat() {
+  const input = document.getElementById("chat-input");
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = "";
+  addMsg("user", msg);
+  addMsg("assistant", "思考中…");
+  try {
+    const res = await apiCall("/admin/agent/chat", "POST", { session_id: chatSessionId, message: msg });
+    chatSessionId = res.session_id || res.sessionId || chatSessionId;
+    const box = document.getElementById("chat-box");
+    box.lastChild.textContent = res.reply || res.answer || JSON.stringify(res).slice(0, 500);
+    box.scrollTop = box.scrollHeight;
+  } catch (e) {
+    const box = document.getElementById("chat-box");
+    box.lastChild.textContent = "出错：" + e.message;
+  }
+}
+document.addEventListener("DOMContentLoaded", function() {
+  var btn = document.getElementById("chat-send-btn");
+  if (btn) btn.addEventListener("click", function(e) { e.preventDefault(); sendChat(); });
+});
+function newChatSession() {
+  chatSessionId = null;
+  document.getElementById("chat-box").innerHTML = '<p class="muted" style="text-align:center">新会话已开始</p>';
+}
+let previewJobId = null;
+let bomPreviewId = null;
+function toggleBomField() {
+  const isBom = document.getElementById("import-type").value === "bom";
+  document.getElementById("bom-model-wrap").style.display = isBom ? "block" : "none";
+}
+async function previewImport() {
+  const kind = document.getElementById("import-type").value;
+  if (kind === "bom") return previewBomImport();
+  const file = document.getElementById("import-file").files[0];
+  if (!file) { alert("请先选择文件"); return; }
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("target", kind);
+  const preview = document.getElementById("import-preview");
+  preview.innerHTML = "<p>解析中…</p>";
+  try {
+    const r = await fetch("/admin/agent/import/preview", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text().then(t => t.slice(0, 200)));
+    const res = await r.json();
+    previewJobId = res.jobId || res.job_id;
+    const rows = res.preview || [];
+    const errCount = res.invalidRows || (res.errors ? res.errors.length : 0);
+    let html = "<p><strong>预览</strong>（共 " + (res.totalRows || rows.length) + " 行，有效 " + (res.validRows || 0) + " 行" +
+      (errCount ? "，<span style=\"color:red\">" + errCount + " 行有误</span>" : "") + "）</p>";
+    if (rows.length) {
+      const cols = Object.keys(rows[0]);
+      const cnNames = {material_code:"物料编码", material_name:"物料名称", specification:"规格", unit:"单位", location_code:"库位编码", location_name:"库位名称", quantity:"数量", batch_no:"批次号", order_no:"订单号", device_code:"设备编码", device_name:"设备名称", parent_code:"父项编码", child_code:"子项编码", child_name:"子项名称", level_no:"层级"};
+      html += '<div style="overflow-x:auto"><table class="tbl"><tr>' +
+        cols.map(c => "<th>" + (cnNames[c] || c) + "</th>").join("") + "</tr>" +
+        rows.slice(0, 10).map(row => "<tr>" + cols.map(c => "<td>" + (row[c] ?? "") + "</td>").join("") + "</tr>").join("") +
+        "</table></div>";
+      if (rows.length > 10) html += '<p class="muted">仅显示前 10 行</p>';
+    }
+    if (res.errors && res.errors.length) {
+      html += '<p style="color:red">' + res.errors.slice(0, 5).map(e => "行 " + (e.row || e.line || "?") + ": " + (e.message || e.error || JSON.stringify(e))).join("<br>") + "</p>";
+    }
+    html += '<div class="btn-row" style="margin-top:12px"><button onclick="commitImport()" class="btn" ' + (!res.canCommit ? "disabled" : "") + '>确认提交</button></div>';
+    preview.innerHTML = html;
+  } catch (e) {
+    preview.innerHTML = "<p class=\"error\">预览失败：" + e.message + "</p>";
+  }
+}
+async function previewBomImport() {
+  const file = document.getElementById("import-file").files[0];
+  const modelCode = document.getElementById("bom-model-code").value.trim();
+  if (!file) { alert("请先选择文件"); return; }
+  if (!modelCode) { alert("请填写机型码"); return; }
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("model_code", modelCode);
+  const preview = document.getElementById("import-preview");
+  preview.innerHTML = "<p>解析中…</p>";
+  try {
+    const r = await fetch("/admin/agent/import/bom/preview", { method: "POST", body: fd });
+    const res = await r.json();
+    if (!r.ok) throw new Error((res.error && (res.error.message || res.error.code)) || r.status);
+    bomPreviewId = res.previewId;
+    const items = res.items || [];
+    let html = "<p><strong>BOM 预览</strong>（机型 " + res.modelCode + "，共 " + res.totalRows + " 行，有效 " + res.validRows + " 行" +
+      (res.invalidRows ? "，<span style=\"color:red\">" + res.invalidRows + " 行有误</span>" : "") + "）</p>";
+    if (items.length) {
+      const cols = Object.keys(items[0]);
+      html += '<div style="overflow-x:auto"><table class="tbl"><tr>' +
+        cols.slice(0, 6).map(c => "<th>" + c + "</th>").join("") + "</tr>" +
+        items.slice(0, 10).map(row => "<tr>" + cols.slice(0, 6).map(c => "<td>" + (row[c] ?? "") + "</td>").join("") + "</tr>").join("") +
+        "</table></div>";
+      if (items.length > 10) html += '<p class="muted">仅显示前 10 行</p>';
+    }
+    if (res.errors && res.errors.length) {
+      html += '<p style="color:red">' + res.errors.slice(0, 5).map(e => (typeof e === "string" ? e : JSON.stringify(e))).join("<br>") + "</p>";
+    }
+    html += '<div class="btn-row" style="margin-top:12px"><button onclick="commitBomImport()" class="btn" ' + (!res.canCommit ? "disabled" : "") + '>确认提交</button></div>';
+    preview.innerHTML = html;
+  } catch (e) {
+    preview.innerHTML = "<p class=\"error\">预览失败：" + e.message + "</p>";
+  }
+}
+async function commitBomImport() {
+  if (!bomPreviewId) return;
+  if (!confirm("确认提交 BOM 导入？")) return;
+  const preview = document.getElementById("import-preview");
+  try {
+    const r = await fetch("/admin/agent/import/bom/commit", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ preview_id: bomPreviewId })
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error((res.error && (res.error.message || res.error.code)) || r.status);
+    preview.innerHTML = "<p class=\"notice\">BOM 导入完成" + (res.versionNo ? "，版本 v" + res.versionNo : "") + "</p>";
+    bomPreviewId = null;
+  } catch (e) {
+    preview.innerHTML = "<p class=\"error\">提交失败：" + e.message + "</p>";
+  }
+}
+async function commitImport() {
+  if (!previewJobId) return;
+  if (!confirm("确认提交导入？")) return;
+  const preview = document.getElementById("import-preview");
+  try {
+    const res = await apiCall("/admin/agent/import/commit", "POST", { job_id: previewJobId });
+    const ok = res.importedRows || res.committed_rows || res.success || 0;
+    const fail = res.failedRows || res.failed || 0;
+    let msg = "<p class=\"notice\">导入完成：成功 " + ok + " 行" + (fail ? "，失败 " + fail + " 行" : "") + "</p>";
+    if (res.created_materials) msg += "<p>自动新建物料档案 " + res.created_materials + " 个</p>";
+    if (res.created_locations) msg += "<p>自动新建库位 " + res.created_locations + " 个</p>";
+    if (res.logged_errors) msg += "<p style=\"color:orange\">" + res.logged_errors + " 行错误已记录，待人工处理</p>";
+    preview.innerHTML = msg;
+    previewJobId = null;
+  } catch (e) {
+    preview.innerHTML = "<p class=\"error\">提交失败：" + e.message + "</p>";
+  }
+}
+</script>
+<script>
+// 兜底：确保发送按钮可用
+(function() {
+  function doSend() {
+    try {
+      if (typeof sendChat === "function") { sendChat(); return; }
+    } catch (e) {}
+    // 如果 sendChat 不可用，手动实现
+    var input = document.getElementById("chat-input");
+    var box = document.getElementById("chat-box");
+    if (!input || !box) return;
+    var msg = input.value.trim();
+    if (!msg) return;
+    input.value = "";
+    var d1 = document.createElement("div");
+    d1.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;background:#e3f0ff;margin-left:auto;text-align:right";
+    d1.textContent = msg;
+    box.appendChild(d1);
+    var d2 = document.createElement("div");
+    d2.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;background:#fff;border:1px solid #e5e7eb";
+    d2.textContent = "思考中…";
+    box.appendChild(d2);
+    box.scrollTop = box.scrollHeight;
+    fetch("/admin/agent/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: msg})
+    }).then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function(j) {
+      d2.textContent = j.reply || j.answer || "(空回复)";
+      box.scrollTop = box.scrollHeight;
+    }).catch(function(e) {
+      d2.textContent = "出错：" + e.message;
+    });
+  }
+  document.addEventListener("DOMContentLoaded", function() {
+    var btn = document.getElementById("chat-send-btn");
+    if (btn) {
+      btn.addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); doSend(); }, true);
+    }
+    var input = document.getElementById("chat-input");
+    if (input) {
+      input.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") { e.preventDefault(); doSend(); }
+      });
+    }
+  });
+})();
+</script>
+{% endblock %}

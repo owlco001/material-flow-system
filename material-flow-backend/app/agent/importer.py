@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 
 from app.agent.config import AgentConfig
 from app.agent.llm import LLMError, chat
-from app.xlsx_parser import XlsxParseError, XlsxSheetReader
+from app.xlsx_parser import XlsxParseError, XlsxSheetReader, XlsxMaxRowsExceededError
 
-MAX_IMPORT_ROWS = 20000
+MAX_IMPORT_ROWS = 100000
 
 # 导入目标定义：字段名 -> (是否必填, 别名列表)
 TARGETS: dict[str, dict[str, tuple[bool, list[str]]]] = {
@@ -35,9 +35,13 @@ TARGETS: dict[str, dict[str, tuple[bool, list[str]]]] = {
         "available_quantity": (False, ["可用数量", "available_quantity"]),
     },
     "inventory": {
-        "material_code": (True, ["物料编码", "料号", "material_code"]),
-        "location_code": (True, ["库位编码", "库位", "location_code"]),
-        "quantity": (True, ["数量", "库存数量", "quantity"]),
+        "material_code": (True, ["物料编码", "料号", "编码", "material_code", "code"]),
+        "material_name": (False, ["物料名称", "名称", "品名", "material_name", "name"]),
+        "specification": (False, ["规格", "型号", "specification", "spec"]),
+        "unit": (False, ["单位", "unit"]),
+        "location_code": (True, ["库位编码", "库位", "仓位", "location_code", "location"]),
+        "quantity": (True, ["数量", "库存数量", "现有量", "结存", "quantity", "qty"]),
+        "batch_no": (False, ["批次", "批号", "batch_no", "batch"]),
     },
     "orders": {
         "order_no": (True, ["订单号", "单号", "order_no"]),
@@ -88,22 +92,46 @@ def parse_upload(file_name: str, raw: bytes) -> dict:
 def _parse_xlsx(raw: bytes) -> dict:
     try:
         sheet_rows = XlsxSheetReader.read_rows(raw, max_rows=MAX_IMPORT_ROWS + 1)
+    except XlsxMaxRowsExceededError as exc:
+        raise ValueError(f"文件行数超过上限（{MAX_IMPORT_ROWS} 行），请拆分后导入") from exc
     except XlsxParseError as exc:
         raise ValueError("XLSX 文件无法解析") from exc
-    header_values: list[str] | None = None
-    data: list[dict[str, str]] = []
+    # 收集前5个非空行作为表头候选
+    candidate_rows: list[list[str]] = []
     for row in sheet_rows:
         values = [_clean(v) for v in row.values]
-        if header_values is None:
-            if _is_blank_row(values):
-                continue
-            header_values = values
-            continue
         if _is_blank_row(values):
             continue
-        data.append(_row_dict(header_values, values))
-    if header_values is None:
+        candidate_rows.append(values)
+        if len(candidate_rows) >= 5:
+            break
+    if not candidate_rows:
         raise ValueError("未找到表头行")
+    # 智能表头检测：找包含已知列名关键词最多的行
+    header_keywords = ["料号", "编码", "名称", "品名", "规格", "数量", "库位", "库存", "单位", "code", "name", "quantity"]
+    best_idx = 0
+    best_score = -1
+    for i, values in enumerate(candidate_rows):
+        score = sum(1 for v in values for kw in header_keywords if kw in v.lower())
+        non_empty = sum(1 for v in values if v)
+        if non_empty >= 3:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    header_values = candidate_rows[best_idx]
+    # 表头之后的行作为数据
+    data: list[dict[str, str]] = []
+    found_header = False
+    for row in sheet_rows:
+        values = [_clean(v) for v in row.values]
+        if _is_blank_row(values):
+            continue
+        if not found_header:
+            if values == header_values:
+                found_header = True
+            continue
+        data.append(_row_dict(header_values, values))
     _check_row_limit(len(data))
     return {"headers": header_values, "rows": data, "total_rows": len(data)}
 
@@ -155,18 +183,86 @@ def _normalize(text: str) -> str:
     return "".join(text.split()).lower()
 
 
+# 智能列识别：关键词权重打分（不用精确匹配）
+_FIELD_KEYWORDS: dict[str, list[tuple[str, int]]] = {
+    # 通用
+    "code": [("料号", 10), ("编码", 8), ("code", 8), ("料号", 10)],
+    "material_code": [("料号", 10), ("物料编码", 10), ("t6料号", 9), ("编码", 5), ("code", 5)],
+    "material_name": [("品名", 10), ("物料名称", 10), ("名称", 6), ("name", 6)],
+    "name": [("名称", 8), ("品名", 8), ("name", 6)],
+    "specification": [("规格", 10), ("型号", 8), ("spec", 6)],
+    "unit": [("库存单位", 10), ("单位", 8), ("unit", 6)],
+    "quantity": [("现存量", 25), ("库存可用量", 9), ("可用量", 8), ("数量", 7), ("库存数量", 8), ("结存", 7), ("quantity", 6), ("qty", 6)],
+    "total_quantity": [("总数量", 10), ("库存", 6), ("数量", 5)],
+    "available_quantity": [("可用数量", 10), ("可用量", 8)],
+    "location_code": [("库位编码", 10), ("库位", 7), ("仓位", 7), ("存储地点", 6), ("location", 5)],
+    "location_name": [("库位名称", 10), ("存储地点名称", 9), ("库位", 5)],
+    "batch_no": [("批号", 10), ("批次", 8), ("batch", 6)],
+    "order_no": [("订单号", 10), ("单号", 8), ("order", 6)],
+    "product_name": [("产品名称", 10), ("产品", 7)],
+    "status": [("状态", 10), ("status", 6)],
+    "expiry_date": [("有效期", 10), ("到期日", 8)],
+}
+
+# 负向关键词：出现则扣分
+_NEGATIVE_KEYWORDS = ["不可用", "待退", "在途", "t6", "u9"]
+
+def _score_header(header: str, field: str, aliases: list[str]) -> int:
+    """计算表头与字段的匹配分数。"""
+    h = _normalize(header)
+    if not h:
+        return 0
+    score = 0
+    # 完全精确匹配得最高分
+    for a in aliases:
+        na = _normalize(a)
+        if na and na == h:
+            score += 30
+            break
+    else:
+        # 别名包含在表头中
+        for a in aliases:
+            na = _normalize(a)
+            if na and na in h:
+                # 别名越短、越接近表头长度，得分越高（避免 T6料号 抢 料号）
+                score += 20 - min(10, len(h) - len(na))
+                break
+    # 关键词打分
+    for kw, weight in _FIELD_KEYWORDS.get(field, []):
+        if kw in h:
+            score += weight
+    # 负向关键词扣分
+    for nkw in _NEGATIVE_KEYWORDS:
+        if nkw in h:
+            score -= 15
+    # 字段名本身
+    if _normalize(field) in h:
+        score += 5
+    return score
+
+
 def _fallback_mapping(target: str, headers: list[str]) -> dict[str, str | None]:
     fields = TARGETS[target]
-    norm_headers = [(_normalize(h), h) for h in headers]
     mapping: dict[str, str | None] = {}
-    for field, (_, aliases) in fields.items():
-        candidates = {_normalize(field)} | {_normalize(a) for a in aliases}
-        matched: str | None = None
-        for normed, original in norm_headers:
-            if normed and normed in candidates:
-                matched = original
-                break
-        mapping[field] = matched
+    used_headers: set[str] = set()
+    # 按字段优先级排序：必填字段先匹配
+    sorted_fields = sorted(fields.items(), key=lambda x: (not x[1][0], x[0]))
+    for field, (required, aliases) in sorted_fields:
+        best_header = None
+        best_score = 0
+        for h in headers:
+            if not h or h in used_headers:
+                continue
+            s = _score_header(h, field, aliases)
+            if s > best_score:
+                best_score = s
+                best_header = h
+        # 阈值：至少 5 分才算匹配
+        if best_header and best_score >= 5:
+            mapping[field] = best_header
+            used_headers.add(best_header)
+        else:
+            mapping[field] = None
     return mapping
 
 
@@ -321,31 +417,51 @@ def _validate_inventory(
         material_code = _clean(row.get("material_code"))
         location_code = _clean(row.get("location_code"))
         raw_quantity = _clean(row.get("quantity"))
+        # 空行直接跳过（不计为错误）
+        if not material_code and not location_code and not raw_quantity:
+            continue
+        material_name = _clean(row.get("material_name"))
+        specification = _clean(row.get("specification"))
+        unit = _clean(row.get("unit")) or "件"
+        batch_no = _clean(row.get("batch_no"))
         row_errors: list[dict] = []
         if not material_code:
             row_errors.append({"row": line_no, "field": "material_code", "message": "物料编码不能为空"})
-        elif not conn.execute(
-            "SELECT 1 FROM materials WHERE code=?", (material_code,)
-        ).fetchone():
-            row_errors.append({"row": line_no, "field": "material_code", "message": "物料不存在"})
         if not location_code:
             row_errors.append({"row": line_no, "field": "location_code", "message": "库位编码不能为空"})
-        elif not conn.execute(
-            "SELECT 1 FROM locations WHERE code=?", (location_code,)
-        ).fetchone():
-            row_errors.append({"row": line_no, "field": "location_code", "message": "库位不存在"})
-        quantity = _parse_non_negative_int(raw_quantity)
-        if raw_quantity and quantity is None:
-            row_errors.append({"row": line_no, "field": "quantity", "message": "数量必须为非负整数"})
-        elif not raw_quantity:
+        # 数量支持小数
+        quantity = None
+        if raw_quantity:
+            try:
+                quantity = float(raw_quantity.replace(",", ""))
+                if quantity < 0:
+                    quantity = None
+            except ValueError:
+                quantity = None
+            if quantity is None:
+                row_errors.append({"row": line_no, "field": "quantity", "message": "数量必须为非负数字"})
+        else:
             row_errors.append({"row": line_no, "field": "quantity", "message": "数量不能为空"})
         if row_errors:
             errors.extend(row_errors)
             continue
+        # 标记是否需要自动建档
+        material_exists = bool(conn.execute(
+            "SELECT 1 FROM materials WHERE code=?", (material_code,)
+        ).fetchone()) if material_code else False
+        location_exists = bool(conn.execute(
+            "SELECT 1 FROM locations WHERE code=?", (location_code,)
+        ).fetchone()) if location_code else False
         valid_rows.append({
             "material_code": material_code,
+            "material_name": material_name or material_code,
+            "specification": specification,
+            "unit": unit,
             "location_code": location_code,
+            "batch_no": batch_no,
             "quantity": quantity,
+            "_new_material": not material_exists,
+            "_new_location": not location_exists,
         })
     return valid_rows, errors
 
@@ -393,6 +509,25 @@ def _ensure_operation_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_import_error_logs(
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            error_msg TEXT NOT NULL,
+            row_data TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT NOT NULL,
+            handled_at TEXT,
+            handled_by TEXT,
+            handle_note TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_errlog_status ON agent_import_error_logs(status)")
 
 
 def create_import_job(
@@ -485,10 +620,23 @@ def commit_import_job(
         raise ValueError("导入任务状态异常，无法提交")
     if prior:
         raise ValueError("幂等键冲突")
-    if job["errors"]:
-        raise ValueError("存在校验错误，无法提交")
-
+    # 错误行自动记录待人工处理，不阻塞提交
     target = job["target"]
+    file_name = job.get("file_name", "")
+    errors = job.get("errors") or []
+    logged_errors = 0
+    if errors:
+        import uuid as _uuid
+        for err in errors:
+            eid = "ERR" + _uuid.uuid4().hex[:12].upper()
+            conn.execute(
+                "INSERT INTO agent_import_error_logs(id, job_id, target, file_name, line_no, error_msg, row_data, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (eid, job_id, target, file_name, err.get("line_no", 0), err.get("message", ""),
+                 json.dumps(err.get("row", {}), ensure_ascii=False), _utcnow()),
+            )
+        logged_errors = len(errors)
+
     rows = job["rows"]
     ts = _utcnow()
     role_row = conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
@@ -511,7 +659,11 @@ def commit_import_job(
             "target": target,
             "committed_rows": len(rows),
             "client_operation_id": client_operation_id,
+            "logged_errors": logged_errors,
         }
+        if target == "inventory":
+            after_summary["created_materials"] = getattr(_commit_inventory, "created_materials", 0)
+            after_summary["created_locations"] = getattr(_commit_inventory, "created_locations", 0)
         conn.execute(
             "INSERT INTO audit_events(event_type, entity_type, entity_id, actor_user_id,"
             " actor_role, request_id, client_operation_id, before_json, after_json,"
@@ -606,18 +758,35 @@ def _commit_materials(conn: sqlite3.Connection, rows: list[dict], ts: str) -> No
 
 
 def _commit_inventory(conn: sqlite3.Connection, rows: list[dict], ts: str) -> None:
-    del ts
+    created_materials = 0
+    created_locations = 0
     for row in rows:
+        # 自动建物料档案
         material = conn.execute(
             "SELECT id FROM materials WHERE code=?", (row["material_code"],)
         ).fetchone()
+        if not material:
+            mid = _new_id()
+            conn.execute(
+                "INSERT INTO materials(id, code, name, specification, unit)"
+                " VALUES(?,?,?,?,?)",
+                (mid, row["material_code"], row["material_name"], row["specification"],
+                 row["unit"]),
+            )
+            material = (mid,)
+            created_materials += 1
+        # 自动建库位档案
         location = conn.execute(
             "SELECT id FROM locations WHERE code=?", (row["location_code"],)
         ).fetchone()
-        if not material:
-            raise ValueError(f"物料不存在：{row['material_code']}")
         if not location:
-            raise ValueError(f"库位不存在：{row['location_code']}")
+            lid = _new_id()
+            conn.execute(
+                "INSERT INTO locations(id, code, name) VALUES(?,?,?)",
+                (lid, row["location_code"], row["location_code"]),
+            )
+            location = (lid,)
+            created_locations += 1
         existing = conn.execute(
             "SELECT id FROM inventory WHERE material_id=? AND location_id=?",
             (material[0], location[0]),
@@ -633,6 +802,12 @@ def _commit_inventory(conn: sqlite3.Connection, rows: list[dict], ts: str) -> No
                 " VALUES(?,?,?,?)",
                 (_new_id(), material[0], location[0], row["quantity"]),
             )
+    # 记录自动建档数到连接，供上层读取
+    conn.execute("SELECT 1")  # no-op
+    _commit_inventory.created_materials = created_materials
+    _commit_inventory.created_locations = created_locations
+_commit_inventory.created_materials = 0
+_commit_inventory.created_locations = 0
 
 
 def _commit_orders(conn: sqlite3.Connection, rows: list[dict], ts: str) -> None:
