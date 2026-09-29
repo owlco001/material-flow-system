@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}物料与库存 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/orders">生产订单</a>
-<a class="nav-link" href="/admin/flows">流转申请</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>物料与库存</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}

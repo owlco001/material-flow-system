@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}审计日志 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/users">用户管理</a>
-<a class="nav-link" href="/admin/flows">流转申请</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>审计日志</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -19,7 +10,12 @@
     <label>截止时间</label>
     <input name="to" value="{{ filters['to'] or '' }}" style="max-width:190px">
     <label>事件类型</label>
-    <input name="eventType" value="{{ filters.eventType or '' }}" style="max-width:150px" placeholder="如 OUTBOUND_APPROVED">
+    <select name="eventType" style="max-width:150px">
+      <option value="">全部</option>
+      {% for _k, _v in event_labels.items() %}
+      <option value="{{ _k }}" {% if filters.eventType == _k %}selected{% endif %}>{{ _v }}</option>
+      {% endfor %}
+    </select>
     <label>实体类型</label>
     <input name="entityType" value="{{ filters.entityType or '' }}" style="max-width:150px">
     <label>操作人 ID</label>
@@ -35,14 +31,14 @@
   <tr><th>时间</th><th>记录类型</th><th>事件</th><th>实体类型</th><th>实体 ID</th><th>操作人</th><th>角色</th><th>结果</th><th>请求 ID</th></tr>
   {% for item in items %}
   <tr>
-    <td>{{ item.server_time or "—" }}</td>
+    <td>{{ item.server_time[:16].replace("T", " ") if item.server_time else "—" }}</td>
     <td>{{ "审计事件" if item.record_type == "AUDIT_EVENT" else "审计日志" }}</td>
-    <td>{{ item.event_type }}</td>
-    <td>{{ item.entity_type or "—" }}</td>
+    <td>{{ event_labels.get(item.event_type, item.event_type) }}</td>
+    <td>{{ entity_labels.get(item.entity_type, item.entity_type or "—") }}</td>
     <td>{{ item.entity_id or "—" }}</td>
     <td>{{ item.actor_user_id or "—" }}</td>
-    <td>{{ item.actor_role or "—" }}</td>
-    <td>{{ item.result or "—" }}</td>
+    <td>{{ role_labels.get(item.actor_role, item.actor_role or "—") }}</td>
+    <td>{{ result_labels.get(item.result, item.result or "—") }}</td>
     <td>{{ item.request_id or "—" }}</td>
   </tr>
   {% else %}

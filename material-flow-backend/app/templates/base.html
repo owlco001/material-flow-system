@@ -148,6 +148,18 @@ tbody tr:last-child td { border-bottom: 0; }
   .cards .card { flex: 1 1 100%; }
   .page-head h2 { font-size: 19px; }
 }
+/* 物料状态浅色标签 */
+.st{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:500}
+.st-red{background:rgba(220,53,69,.12);color:#c92a3a}
+.st-yellow{background:rgba(255,193,7,.18);color:#9a6b00}
+.st-green{background:rgba(40,167,69,.12);color:#1e7e34}
+.st-blue{background:rgba(14,95,216,.12);color:#0e5fd8}
+.st-neutral{background:rgba(108,117,125,.12);color:#5a6268}
+/* 整行状态浅色 */
+tr.row-red{background:rgba(220,53,69,.06)}
+tr.row-yellow{background:rgba(255,193,7,.08)}
+tr.row-green{background:rgba(40,167,69,.06)}
+tr.row-blue{background:rgba(14,95,216,.06)}
 </style>
 </head>
 <body>
@@ -157,8 +169,8 @@ tbody tr:last-child td { border-bottom: 0; }
 </header>
 {% if user %}
 <nav class="quicknav">
-  {% if user.role == "ADMIN" %}<a href="/admin/">仪表盘</a>{% endif %}
   {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}<a href="/admin/workspace">工作台</a>{% endif %}
+  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}<a href="/admin/exceptions">异常处理</a>{% endif %}
   {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
   <a href="/admin/reports">概览</a><a href="/admin/reports/labor">工时</a><a href="/admin/tasks">任务</a>
   {% endif %}
@@ -174,5 +186,98 @@ tbody tr:last-child td { border-bottom: 0; }
 </nav>
 {% endif %}
 <main>{% block content %}{% endblock %}</main>
+
+<!-- 智能助手悬浮球 -->
+<style>
+#agent-fab {
+  position: fixed; right: 24px; bottom: 24px; z-index: 1000;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #22d3ee);
+  color: #fff; border: none; cursor: pointer;
+  font-size: 22px; font-weight: 700;
+  box-shadow: 0 4px 16px rgba(59,130,246,.5);
+  display: flex; align-items: center; justify-content: center;
+}
+#agent-fab:hover { transform: scale(1.05); }
+#agent-panel {
+  position: fixed; right: 24px; bottom: 92px; z-index: 1000;
+  width: 380px; max-width: calc(100vw - 48px); height: 480px; max-height: calc(100vh - 140px);
+  background: #fff; border-radius: 16px; box-shadow: 0 8px 32px rgba(8,18,38,.25);
+  display: none; flex-direction: column; overflow: hidden;
+}
+#agent-panel.open { display: flex; }
+#agent-panel .ap-head {
+  padding: 12px 16px; background: linear-gradient(120deg, #0d1930, #1d3a6e);
+  color: #fff; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+}
+#agent-panel .ap-head button { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; }
+#agent-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc; }
+#agent-msgs .msg { max-width: 85%; padding: 8px 12px; border-radius: 12px; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+#agent-msgs .msg.user { background: #2563eb; color: #fff; align-self: flex-end; }
+#agent-msgs .msg.asst { background: #fff; border: 1px solid var(--line); align-self: flex-start; }
+#agent-panel .ap-input { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+#agent-panel .ap-input input { flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+#agent-panel .ap-input button { background: var(--brand); color: #fff; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+</style>
+<button id="agent-fab" title="智能助手" onclick="toggleAgentPanel()">智</button>
+<div id="agent-panel">
+  <div class="ap-head"><span>智能助手</span><button onclick="toggleAgentPanel()">×</button></div>
+  <div id="agent-msgs"><div class="msg asst">你好，我是智能助手，可以帮你查询库存、订单、流转单等数据。</div></div>
+  <div class="ap-input">
+    <input id="agent-input" placeholder="输入问题…" onkeydown="if(event.key===Enter)sendAgentMsg()">
+    <button id="agent-send-btn" onclick="sendAgentMsg()">发送</button>
+  </div>
+</div>
+<script>
+let agentSessionId = null;
+let agentSending = false;
+function toggleAgentPanel() {
+  document.getElementById("agent-panel").classList.toggle("open");
+}
+function agentAddMsg(role, text) {
+  const box = document.getElementById("agent-msgs");
+  const div = document.createElement("div");
+  div.className = "msg " + (role === "user" ? "user" : "asst");
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+async function sendAgentMsg() {
+  const input = document.getElementById("agent-input");
+  const msg = input.value.trim();
+  if (!msg || agentSending) return;
+  input.value = "";
+  agentAddMsg("user", msg);
+  agentAddMsg("asst", "思考中…");
+  agentSending = true;
+  const box = document.getElementById("agent-msgs");
+  try {
+    const r = await fetch("/admin/agent/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: agentSessionId, message: msg})
+    });
+    if (!r.ok) {
+      let emsg = "HTTP " + r.status;
+      try { const ej = await r.json(); if (ej.error && ej.error.message) emsg = ej.error.message; } catch(_e) {}
+      throw new Error(emsg);
+    }
+    const j = await r.json();
+    agentSessionId = j.session_id || agentSessionId;
+    box.lastChild.textContent = j.reply || "(空回复)";
+  } catch (e) {
+    box.lastChild.textContent = "出错：" + e.message;
+  } finally {
+    agentSending = false;
+    box.scrollTop = box.scrollHeight;
+  }
+}
+// 双保险：DOM 加载后绑定按钮事件
+document.addEventListener("DOMContentLoaded", function() {
+  var btn = document.getElementById("agent-send-btn");
+  if (btn) btn.addEventListener("click", function(e) { e.preventDefault(); sendAgentMsg(); });
+});
+</script>
+
 </body>
 </html>

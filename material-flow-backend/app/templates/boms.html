@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}BOM 管理 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/orders">生产订单</a>
-<a class="nav-link" href="/admin/tasks">机台任务</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>BOM 版本管理与导入</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -31,11 +22,33 @@
     <label>机型码</label>
     <input name="modelCode" value="{{ filters.modelCode }}" style="max-width:170px">
     <label>状态</label>
-    <input name="status" value="{{ filters.status }}" style="max-width:120px" placeholder="DRAFT / PUBLISHED">
+    <select name="status" style="max-width:120px">
+      <option value="">全部</option>
+      <option value="DRAFT" {% if filters.status == "DRAFT" %}selected{% endif %}>草稿</option>
+      <option value="PUBLISHED" {% if filters.status == "PUBLISHED" %}selected{% endif %}>已发布</option>
+      <option value="ARCHIVED" {% if filters.status == "ARCHIVED" %}selected{% endif %}>已归档</option>
+    </select>
     <button type="submit">筛选</button>
     <a href="/admin/boms" style="margin-left:8px">重置</a>
   </form>
 </div>
+
+<h3 style="margin-top:24px">聚合 BOM（智能导入，共 {{ agg_batches|length }} 批）</h3>
+<table>
+  <tr><th>项目</th><th>文件名</th><th>机台数</th><th>物料数</th><th>行数</th><th>导入时间</th></tr>
+  {% for b in agg_batches %}
+  <tr>
+    <td>{{ b.project_name or "—" }}</td>
+    <td>{{ b.file_name }}</td>
+    <td>{{ b.device_count }}</td>
+    <td>{{ b.material_count }}</td>
+    <td>{{ b.row_count }}</td>
+    <td>{{ b.created_at[:16].replace("T", " ") if b.created_at else "—" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">暂无聚合 BOM</td></tr>
+  {% endfor %}
+</table>
 
 <h3 style="margin-top:24px">版本列表（共 {{ total_rows }}）</h3>
 <table>
@@ -45,7 +58,7 @@
     <td>{{ item.id }}</td>
     <td>{{ item.model_code }}</td>
     <td>v{{ item.version_no }}</td>
-    <td>{{ item.status }}</td>
+    <td>{{ {"DRAFT": "草稿", "PUBLISHED": "已发布", "ARCHIVED": "已归档"}.get(item.status, item.status) }}</td>
     <td>{{ item.row_count }}</td>
     <td>{{ (item.source_file_sha256 or "")[:12] }}…</td>
     <td>{{ item.created_by }} @ {{ item.created_at }}</td>

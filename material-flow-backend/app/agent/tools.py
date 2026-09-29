@@ -26,6 +26,18 @@ class Tool:
 _MAX_LIMIT = 50
 
 
+def _clamp_offset(args: dict) -> int:
+    """offset 参数钳制到 >=0。"""
+    raw = args.get("offset", 0)
+    if raw is None:
+        return 0
+    try:
+        offset = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, offset)
+
+
 def _clamp_limit(args: dict, default: int = 20) -> int:
     """limit 参数钳制到 1..50。"""
     raw = args.get("limit", default)
@@ -85,17 +97,18 @@ def _order_detail(conn: sqlite3.Connection, args: dict) -> dict:
 
 def _list_orders(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     status = args.get("status")
     if status:
         cur = conn.execute(
             """SELECT order_no, product_name, status, created_at FROM production_orders
-               WHERE status = ? ORDER BY created_at DESC LIMIT ?""",
-            (status, limit))
+               WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (status, limit, offset))
     else:
         cur = conn.execute(
             """SELECT order_no, product_name, status, created_at FROM production_orders
-               ORDER BY created_at DESC LIMIT ?""",
-            (limit,))
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset))
     return _fetch_dicts(cur)
 
 
@@ -119,10 +132,11 @@ def _material_inventory(conn: sqlite3.Connection, args: dict) -> dict:
 
 def _low_stock(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     return _fetch_dicts(conn.execute(
         """SELECT code, name, specification, unit, total_quantity, available_quantity
-           FROM materials ORDER BY available_quantity ASC LIMIT ?""",
-        (limit,)))
+           FROM materials ORDER BY available_quantity ASC LIMIT ? OFFSET ?""",
+        (limit, offset)))
 
 
 def _workspace_summary(conn: sqlite3.Connection, args: dict) -> dict:
@@ -143,71 +157,76 @@ def _workspace_summary(conn: sqlite3.Connection, args: dict) -> dict:
 
 def _list_transfer_requests(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     status = args.get("status")
     if status:
         cur = conn.execute(
             """SELECT id, type, document_no, status, created_at FROM transfer_requests
-               WHERE status = ? ORDER BY created_at DESC LIMIT ?""",
-            (status, limit))
+               WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (status, limit, offset))
     else:
         cur = conn.execute(
             """SELECT id, type, document_no, status, created_at FROM transfer_requests
-               ORDER BY created_at DESC LIMIT ?""",
-            (limit,))
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset))
     return _fetch_dicts(cur)
 
 
 def _list_handovers(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     status = args.get("status")
     if status:
         cur = conn.execute(
             """SELECT id, work_item_id, quantity, status, created_at FROM material_handovers
-               WHERE status = ? ORDER BY created_at DESC LIMIT ?""",
-            (status, limit))
+               WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (status, limit, offset))
     else:
         cur = conn.execute(
             """SELECT id, work_item_id, quantity, status, created_at FROM material_handovers
-               ORDER BY created_at DESC LIMIT ?""",
-            (limit,))
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset))
     return _fetch_dicts(cur)
 
 
 def _list_exceptions(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     status = args.get("status")
     if status:
         cur = conn.execute(
             """SELECT id, type, difference, status, description, created_at FROM exceptions
-               WHERE status = ? ORDER BY created_at DESC LIMIT ?""",
-            (status, limit))
+               WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (status, limit, offset))
     else:
         cur = conn.execute(
             """SELECT id, type, difference, status, description, created_at FROM exceptions
-               ORDER BY created_at DESC LIMIT ?""",
-            (limit,))
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset))
     return _fetch_dicts(cur)
 
 
 def _task_progress(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     order_no = args.get("order_no")
     if order_no:
         cur = conn.execute(
             """SELECT order_no, device_no, status, progress_stage, updated_at
                FROM assembly_tasks WHERE order_no = ?
-               ORDER BY updated_at DESC LIMIT ?""",
+               ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
             (order_no, limit))
     else:
         cur = conn.execute(
             """SELECT order_no, device_no, status, progress_stage, updated_at
-               FROM assembly_tasks ORDER BY updated_at DESC LIMIT ?""",
-            (limit,))
+               FROM assembly_tasks ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset))
     return _fetch_dicts(cur)
 
 
 def _labor_summary(conn: sqlite3.Connection, args: dict) -> list:
     limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
     return _fetch_dicts(conn.execute(
         """SELECT worker_user_id, type,
                   SUM(COALESCE(duration_minutes, 0)) AS total_minutes,
@@ -215,8 +234,8 @@ def _labor_summary(conn: sqlite3.Connection, args: dict) -> list:
            FROM labor_records
            WHERE started_at >= date('now', '-30 days')
            GROUP BY worker_user_id, type
-           ORDER BY total_minutes DESC LIMIT ?""",
-        (limit,)))
+           ORDER BY total_minutes DESC LIMIT ? OFFSET ?""",
+        (limit, offset)))
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +269,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "properties": {
                 "status": {"type": "string", "description": "订单状态过滤，可选"},
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_list_orders,
@@ -279,6 +299,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_low_stock,
@@ -304,6 +325,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "properties": {
                 "status": {"type": "string", "description": "单据状态过滤，可选"},
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_list_transfer_requests,
@@ -320,6 +342,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "properties": {
                 "status": {"type": "string", "description": "交接状态过滤，可选"},
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_list_handovers,
@@ -335,6 +358,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "properties": {
                 "status": {"type": "string", "description": "异常状态过滤，可选"},
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_list_exceptions,
@@ -350,6 +374,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "properties": {
                 "order_no": {"type": "string", "description": "生产订单号过滤，可选"},
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_task_progress,
@@ -365,6 +390,7 @@ ANALYSIS_TOOLS: list[Tool] = [
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "description": "返回条数，默认 20，最大 50", "default": 20},
+                "offset": {"type": "integer", "description": "分页偏移，默认 0。数据多时可用 offset 翻页取全量", "default": 0},
             },
         },
         run=_labor_summary,

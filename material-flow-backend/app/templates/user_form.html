@@ -1,12 +1,5 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/users">用户管理</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <div class="card" style="max-width:480px">
   <h2>{{ title }}</h2>

@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}物料状态工作台 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/orders">生产订单</a>
-<a class="nav-link" href="/admin/warehouse">物料库存</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>物料状态工作台</h2>
 <p style="color:#6b7280">当前角色视图：{{ summary.role }}（{{ summary.authenticatedRole }}）· 生成 {{ summary.generatedAt }}</p>
@@ -34,26 +25,43 @@
 </div>
 
 <p style="margin-top:16px">共 {{ total_rows }} 行</p>
+<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+  <input type="text" id="ws-q" placeholder="本页搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px" oninput="wsFilter()">
+</div>
+<script>
+function wsFilter(){
+  var q = document.getElementById('ws-q').value.trim();
+  var rows = document.querySelectorAll('table tr');
+  for (var i = 1; i < rows.length; i++) {
+    var t = rows[i].innerText;
+    rows[i].style.display = (!q || t.indexOf(q) >= 0) ? '' : 'none';
+  }
+}
+</script>
 <table>
-  <tr><th>订单</th><th>机台</th><th>物料</th><th>规格</th><th>需求</th><th>到货</th><th>在库</th><th>已发</th><th>已领</th><th>状态</th><th>责任人</th><th>最近交接</th><th>流转</th></tr>
+  <tr><th>订单</th><th>机台</th><th>物料</th><th>分类</th><th>规格</th><th>需求</th><th>到货</th><th>在库</th><th>已发</th><th>已领</th><th>状态</th><th>责任人</th><th>最近交接</th><th>流转</th></tr>
   {% for item in items %}
-  <tr>
+  {% set _rw = {"OUT_OF_STOCK": "row-red", "REJECTED": "row-red", "ARRIVED": "row-yellow", "PENDING": "row-yellow", "OUTBOUND_PENDING": "row-yellow", "IN_STOCK": "row-green", "PICKED_UP": "row-green", "AT_STATION": "row-green", "OUTBOUND_CONFIRMED": "row-green", "OUTBOUND_APPROVED": "row-blue"}.get(item.statusCode, "") %}
+  <tr class="{{ _rw }}">
     <td>{{ item.orderNo }}</td>
     <td>{{ item.deviceNo }}</td>
     <td>{{ item.materialCode }} {{ item.materialName }}</td>
+    <td>{{ item.materialCategory or item.material_category or "—" }}</td>
     <td>{{ item.specification or "—" }}</td>
     <td>{{ item.requiredQuantity }}</td>
     <td>{{ item.arrivedQuantity }}</td>
     <td>{{ item.inStockQuantity }}</td>
     <td>{{ item.issuedQuantity }}</td>
     <td>{{ item.pickedQuantity }}</td>
-    <td>{{ item.label or item.statusCode }}</td>
+    {% set _s = item.statusCode %}
+    {% set _c = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(_s, "st-neutral") %}
+    <td><span class="st {{ _c }}">{{ item.label or item.statusCode or "—" }}</span></td>
     <td>{{ item.currentOwnerName or item.assignedUserName or "—" }}</td>
     <td>{{ item.lastHandoverStatus or "—" }}</td>
     <td>{{ item.transferStatus or "—" }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="13">暂无数据</td></tr>
+  <tr><td colspan="14">暂无数据</td></tr>
   {% endfor %}
 </table>
 <p style="margin-top:12px">

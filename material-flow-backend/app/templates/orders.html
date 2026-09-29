@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}生产订单 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/reports">车间概览</a>
-<a class="nav-link" href="/admin/flows">流转申请</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>生产订单</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -29,43 +20,144 @@
   {% set d_order_no = order.get("orderNo") or order.get("order_no") or order_no %}
   <p>订单号：{{ d_order_no }}
      · 产品：{{ order.get("productName") or order.get("product_name") or "—" }}
-     · 状态：{{ order.get("orderStatus") or order.get("status") or "—" }}</p>
+     · 状态：{% set _os = order.get("orderStatus") or order.get("status") or "—" %}{{ status_labels.get(_os, _os) if status_labels else _os }}</p>
   <div class="btn-row" style="margin-bottom:12px">
     <a class="btn btn-sm" href="/admin/barcodes?entity=order&key={{ d_order_no }}">生成订单码</a>
     <a class="btn btn-sm btn-secondary" href="/admin/orders/{{ d_order_no }}/barcodes">批量生成机台码</a>
   </div>
   <h4>机台列表</h4>
-  {% set task_items = detail.get("assemblyTasks") or [] %}
+  {% set task_q = request.query_params.get("task_q", "").strip() %}
+  {% set task_items_all = detail.get("assemblyTasks") or [] %}
+  {% if task_q %}
+    {% set task_items_all = task_items_all | selectattr("deviceNo") | list %}
+    {% set _tq = task_q.lower() %}
+    {% set _filtered = [] %}
+    {% for _t in task_items_all %}
+      {% set _no = (_t.get("deviceNo") or _t.get("device_no") or "") | lower %}
+      {% set _nm = (_t.get("deviceName") or _t.get("device_name") or "") | lower %}
+      {% if _tq in _no or _tq in _nm %}{% set _ = _filtered.append(_t) %}{% endif %}
+    {% endfor %}
+    {% set task_items_all = _filtered %}
+  {% endif %}
+  {% set task_page = request.query_params.get("task_page", "1")|int %}
+  {% set task_size = request.query_params.get("task_size", "20")|int %}
+  {% if task_size not in [10, 20, 50, 100] %}{% set task_size = 20 %}{% endif %}
+  {% set task_total = task_items_all|length %}
+  {% set task_pages = (task_total // task_size) + (1 if task_total % task_size else 0) %}
+  {% if task_page < 1 %}{% set task_page = 1 %}{% endif %}
+  {% if task_pages > 0 and task_page > task_pages %}{% set task_page = task_pages %}{% endif %}
+  {% set task_items = task_items_all[(task_page-1)*task_size : task_page*task_size] %}
+  <form method="get" action="/admin/orders" style="margin:8px 0;display:flex;gap:8px;align-items:center">
+    <input type="hidden" name="order_no" value="{{ order_no }}">
+    <input name="task_q" value="{{ task_q }}" placeholder="搜索机台编号/名称" style="max-width:220px">
+    <label>每页</label>
+    <select name="task_size" onchange="this.form.submit()">
+      {% for _s in [10, 20, 50, 100] %}
+      <option value="{{ _s }}" {% if task_size == _s %}selected{% endif %}>{{ _s }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-sm">搜索</button>
+    {% if task_q %}<a href="?order_no={{ order_no }}" class="btn btn-sm btn-secondary">清除</a>{% endif %}
+  </form>
+  <p style="color:#6b7280;font-size:13px">共 {{ task_total }} 台</p>
   <table>
-    <tr><th>机台</th><th>状态</th><th>进度</th><th>装配工</th><th>详情</th></tr>
+    <tr><th>序号</th><th>机台编号</th><th>机台名称</th><th>状态</th><th>进度</th><th>装配工</th><th>详情</th></tr>
     {% for t in task_items %}
-    <tr>
+    {% set _tst = t.get("status") %}
+    {% set _trow = {"WAITING_MATERIAL": "row-yellow", "MATERIAL_ACCEPTED": "row-blue", "IN_PROGRESS": "row-blue", "PAUSED_FOR_TEMPORARY_TRANSFER": "row-red", "COMPLETED": "row-green"}.get(_tst, "") %}
+    <tr class="{{ _trow }}">
+      <td>{{ (task_page-1)*task_size + loop.index }}</td>
       <td>{{ t.get("deviceNo") or t.get("device_no") }}</td>
-      <td>{{ t.get("status") }}</td>
-      <td>{{ t.get("progressStage") or t.get("progress_stage") }} / 3</td>
+      <td>{{ t.get("deviceName") or t.get("device_name") or "—" }}</td>
+      <td>{% set _ts = t.get("status") %}{{ status_labels.get(_ts, _ts) if status_labels else _ts }}</td>
+      <td>{{ t.get("progressStage") if t.get("progressStage") is not none else (t.get("progress_stage") if t.get("progress_stage") is not none else "—") }} / 3</td>
       <td>{{ t.get("assignedAssemblerId") or t.get("assigned_assembler_id") or "—" }}</td>
       <td><a href="/admin/orders/{{ d_order_no }}/tasks/{{ t.get('taskId') or t.get('id') }}">查看</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="5">暂无机台</td></tr>
+    <tr><td colspan="7">暂无机台</td></tr>
     {% endfor %}
   </table>
+  {% if task_pages > 1 %}
+  <div style="margin:8px 0;display:flex;gap:6px;align-items:center;font-size:14px">
+    {% if task_page > 1 %}<a href="?order_no={{ order_no }}&task_page={{ task_page-1 }}&task_size={{ task_size }}&task_q={{ task_q }}" class="btn btn-sm">上一页</a>{% endif %}
+    <span>第 {{ task_page }} / {{ task_pages }} 页</span>
+    {% if task_page < task_pages %}<a href="?order_no={{ order_no }}&task_page={{ task_page+1 }}&task_size={{ task_size }}&task_q={{ task_q }}" class="btn btn-sm">下一页</a>{% endif %}
+  </div>
+  {% endif %}
   <h4>物料需求</h4>
+  {% set mat_q = request.query_params.get("mat_q", "").strip() %}
+  {% set mat_cat = request.query_params.get("mat_cat", "").strip() %}
+  {% set mat_list_all = detail.get("materials") or [] %}
+  {% set mat_list = [] %}
+  {% for m in mat_list_all %}
+    {% set _code = (m.get("materialCode") or m.get("material_id") or m.get("materialId") or "")|string %}
+    {% set _name = (m.get("materialName") or m.get("material_name") or "")|string %}
+    {% set _cat = (m.get("materialCategory") or m.get("material_category") or "")|string %}
+    {% if (not mat_q or mat_q in _code or mat_q in _name) and (not mat_cat or mat_cat == _cat) %}
+      {% set _ = mat_list.append(m) %}
+    {% endif %}
+  {% endfor %}
+  <form method="get" style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+    <input type="hidden" name="order_no" value="{{ order_no }}">
+    <input type="text" name="mat_q" value="{{ mat_q }}" placeholder="搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px">
+    <button type="submit" class="btn">搜索</button>
+    <select name="mat_cat" onchange="this.form.submit()" style="padding:6px;border:1px solid #ddd;border-radius:6px">
+      <option value="">全部分类</option>
+      {% for c in ["电气", "机械", "其他"] %}
+      <option value="{{ c }}" {% if mat_cat == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    {% if mat_q or mat_cat %}<a href="?order_no={{ order_no }}" class="btn">清空</a>{% endif %}
+    <span class="muted">每页</span>
+    <select name="mat_size" onchange="this.form.submit()" style="padding:6px;border:1px solid #ddd;border-radius:6px">
+      {% for n in [10, 20, 50, 100] %}
+      <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }}</option>
+      {% endfor %}
+    </select>
+    <span class="muted">条</span>
+  </form>
+  {% set page = request.query_params.get("mat_page", "1")|int %}
+  {% set per_page = request.query_params.get("mat_size", "20")|int %}
+  {% if per_page not in [10, 20, 50, 100] %}{% set per_page = 20 %}{% endif %}
+  {% set total = mat_list|length %}
+  {% set total_pages = (total // per_page) + (1 if total % per_page else 0) %}
+  {% if page < 1 %}{% set page = 1 %}{% endif %}
+  {% if page > total_pages and total_pages > 0 %}{% set page = total_pages %}{% endif %}
+  {% set start = (page - 1) * per_page %}
+  {% set page_items = mat_list[start:start + per_page] %}
+  <p class="muted">共 {{ total }} 条{% if total_pages > 1 %}，第 {{ page }}/{{ total_pages }} 页{% endif %}</p>
   <table>
-    <tr><th>物料</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
-    {% for m in detail.get("materials") or [] %}
-    <tr>
-      <td>{{ m.get("materialCode") or m.get("material_id") or m.get("materialId") }}</td>
-      <td>{{ m.get("requiredQuantity") or m.get("required_quantity") }}</td>
-      <td>{{ m.get("arrivedQuantity") or m.get("arrived_quantity") }}</td>
-      <td>{{ m.get("inStockQuantity") or m.get("in_stock_quantity") }}</td>
-      {% set st = m.get("statusCode") or m.get("status_code") or m.get("status") %}
-      <td>{{ status_labels.get(st, st) if status_labels else st }}</td>
+    <tr><th>物料编码</th><th>物料名称</th><th>分类</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
+    {% for m in page_items %}
+    {% set _st2 = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
+    {% set _row = {"OUT_OF_STOCK": "row-red", "REJECTED": "row-red", "ARRIVED": "row-yellow", "PENDING": "row-yellow", "OUTBOUND_PENDING": "row-yellow", "IN_STOCK": "row-green", "PICKED_UP": "row-green", "AT_STATION": "row-green", "OUTBOUND_CONFIRMED": "row-green", "OUTBOUND_APPROVED": "row-blue"}.get(_st2, "") %}
+    <tr class="{{ _row }}">
+      <td>{{ m.get("materialCode") or m.get("material_id") or m.get("materialId") or "—" }}</td>
+      <td>{{ m.get("materialName") or m.get("material_name") or "—" }}</td>
+      <td>{{ m.get("materialCategory") or m.get("material_category") or "—" }}</td>
+      <td>{{ m.get("requiredQuantity") if m.get("requiredQuantity") is not none else (m.get("required_quantity") if m.get("required_quantity") is not none else "—") }}</td>
+      <td>{{ m.get("arrivedQuantity") if m.get("arrivedQuantity") is not none else (m.get("arrived_quantity") if m.get("arrived_quantity") is not none else "—") }}</td>
+      <td>{{ m.get("inStockQuantity") if m.get("inStockQuantity") is not none else (m.get("in_stock_quantity") if m.get("in_stock_quantity") is not none else "—") }}</td>
+      {% set st = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
+      {% set _cls = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(st, "st-neutral") %}
+      <td><span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span></td>
     </tr>
     {% else %}
-    <tr><td colspan="5">暂无物料需求（或不在您的可见范围内）</td></tr>
+    <tr><td colspan="7">暂无物料需求（或不在您的可见范围内）</td></tr>
     {% endfor %}
   </table>
+  {% if total_pages > 1 %}
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+    {% if page > 1 %}
+    <a href="?order_no={{ order_no }}&mat_q={{ mat_q }}&mat_cat={{ mat_cat }}&mat_size={{ per_page }}&mat_page={{ page - 1 }}" class="btn">上一页</a>
+    {% endif %}
+    <span class="muted">{{ page }}/{{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?order_no={{ order_no }}&mat_q={{ mat_q }}&mat_cat={{ mat_cat }}&mat_size={{ per_page }}&mat_page={{ page + 1 }}" class="btn">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -76,7 +168,7 @@
   <tr>
     <td>{{ row.order_no }}</td>
     <td>{{ row.product_name or "—" }}</td>
-    <td>{{ row.status }}</td>
+    <td>{{ status_labels.get(row.status, row.status) if status_labels else row.status }}</td>
     <td>{{ row.created_at }}</td>
     <td>{{ row.updated_at or "—" }}</td>
     <td><a href="/admin/orders?order_no={{ row.order_no }}">查看</a></td>

@@ -39,9 +39,26 @@ class ImportCommitRequest(BaseModel):
 
 
 def _agent_cfg(trace_id: str) -> AgentConfig:
+    from dataclasses import replace
     cfg = AgentConfig.from_env()
+    # 合并数据库里的配置（管理后台 Agent 页面保存的）
+    try:
+        c = db()
+        rows = c.execute("SELECT key, value FROM agent_settings").fetchall()
+        c.close()
+        s = {r[0]: r[1] for r in rows}
+        kw = {}
+        if s.get("base_url"): kw["base_url"] = s["base_url"]
+        if s.get("api_key"): kw["api_key"] = s["api_key"]
+        if s.get("model"): kw["model"] = s["model"]
+        if s.get("enabled") in ("0", "1"): kw["enabled"] = s["enabled"] == "1"
+        if kw: cfg = replace(cfg, **kw)
+    except Exception:
+        pass
     if not cfg.enabled:
         raise ApiError(503, "AGENT_DISABLED", "Agent 功能未启用", trace_id=trace_id)
+    if not cfg.api_key:
+        raise ApiError(503, "AGENT_LLM_ERROR", "AGENT_LLM_API_KEY 未配置", retryable=False, trace_id=trace_id)
     return cfg
 
 

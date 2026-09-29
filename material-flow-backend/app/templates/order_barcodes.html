@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}批量机台码 · {{ order_no }} · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/orders">生产订单</a>
-<a class="nav-link" href="/admin/orders?order_no={{ order_no }}">返回订单</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <div class="page-head">
   <h2>批量机台码</h2>

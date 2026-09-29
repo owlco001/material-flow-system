@@ -102,6 +102,12 @@ WORKSPACE_STATUS_CODES = frozenset({
     "PENDING", "PICKED_UP", "AT_STATION", "REJECTED", "CANCELLED",
 })
 WORKSPACE_STATUS_LABELS = {
+    "RELEASED": "已下达",
+    "WAITING_MATERIAL": "待领料",
+    "MATERIAL_ACCEPTED": "已领料",
+    "IN_PROGRESS": "生产中",
+    "PAUSED_FOR_TEMPORARY_TRANSFER": "暂停（临调）",
+    "COMPLETED": "已完成",
     "OUT_OF_STOCK": "缺货",
     "ARRIVED": "到货",
     "IN_STOCK": "在库",
@@ -585,6 +591,11 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS device_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS device_assignment_operations(client_operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS bom_versions(id TEXT PRIMARY KEY, model_code TEXT NOT NULL, version_no INTEGER NOT NULL CHECK(version_no > 0), status TEXT NOT NULL CHECK(status IN ('DRAFT','PUBLISHED','ARCHIVED')), source_file_sha256 TEXT NOT NULL, row_count INTEGER NOT NULL CHECK(row_count >= 0), created_by TEXT NOT NULL, created_at TEXT NOT NULL, published_by TEXT, published_at TEXT, UNIQUE(model_code, version_no));
+    CREATE TABLE IF NOT EXISTS agg_bom_batches(id TEXT PRIMARY KEY, project_name TEXT NOT NULL DEFAULT '', file_name TEXT NOT NULL DEFAULT '', file_sha256 TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0, device_count INTEGER NOT NULL DEFAULT 0, material_count INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agg_bom_items(id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES agg_bom_batches(id) ON DELETE CASCADE, device_code TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL DEFAULT '', level_no INTEGER NOT NULL DEFAULT 0, parent_code TEXT NOT NULL DEFAULT '', material_code TEXT NOT NULL, material_name TEXT NOT NULL DEFAULT '', specification TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', quantity REAL NOT NULL DEFAULT 0, material_form TEXT NOT NULL DEFAULT '', line_no INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_agg_bom_items_batch ON agg_bom_items(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_agg_bom_items_device ON agg_bom_items(batch_id, device_code);
+    CREATE INDEX IF NOT EXISTS idx_agg_bom_items_mat ON agg_bom_items(batch_id, material_code);
     CREATE TABLE IF NOT EXISTS bom_items(id TEXT PRIMARY KEY, bom_version_id TEXT NOT NULL REFERENCES bom_versions(id) ON DELETE CASCADE, material_id TEXT NOT NULL REFERENCES materials(id), material_code TEXT NOT NULL, material_name TEXT NOT NULL, specification TEXT, unit TEXT NOT NULL, quantity REAL NOT NULL CHECK(quantity > 0), scrap_rate REAL NOT NULL DEFAULT 0 CHECK(scrap_rate >= 0 AND scrap_rate < 1), substitute_material_codes TEXT NOT NULL DEFAULT '[]', line_no INTEGER NOT NULL, UNIQUE(bom_version_id, material_code));
     CREATE INDEX IF NOT EXISTS idx_bom_versions_model_status ON bom_versions(model_code, status, version_no);
     -- 订单物料需求：订单 × 设备 × 物料主数据的关联。
@@ -636,7 +647,7 @@ def _init_db(c: sqlite3.Connection) -> None:
                   ('default', 'INITIALIZED' if initialized else 'UNINITIALIZED', 'owlco', now() if initialized else None,
                    'environment' if initialized else None))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
-        c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1))
+        c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1, "机械"))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)", ("inv_001", "mat_001", "loc_001", 986))
 
@@ -693,8 +704,8 @@ def seed_demo_order(c: sqlite3.Connection) -> None:
 
     for mat_id, code, name, spec, unit in DEMO_MATERIALS:
         c.execute(
-            "INSERT OR IGNORE INTO materials VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (mat_id, code, name, spec, unit, None, None, 0, 0, 1),
+            "INSERT OR IGNORE INTO materials VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (mat_id, code, name, spec, unit, None, None, 0, 0, 1, ""),
         )
 
     # production_orders 的 product_name / updated_at 是新增列，用 upsert 补齐
@@ -2037,7 +2048,274 @@ def _xlsx_bom_rows(raw: bytes, *, model_code: str, trace_id: str) -> list[dict[s
     return preview_rows
 
 
+# ============ 聚合 BOM（ERP 多层级多设备格式） ============
+AGG_BOM_PREVIEWS: dict[str, dict] = {}
+
+def _categorize_device(device_name: str) -> tuple[str, str]:
+    """设备自动归类：返回 (workshop, model_capability)。"""
+    name = device_name or ""
+    if "输送" in name:
+        return ("输送线", "输送设备")
+    if "缓存" in name:
+        return ("缓存区", "缓存设备")
+    if any(k in name for k in ("冲孔", "弯折", "加工", "切割")):
+        return ("加工区", "加工设备")
+    if any(k in name for k in ("顶升", "旋转")):
+        return ("顶升旋转区", "顶升旋转设备")
+    return ("通用区", "通用设备")
+
+
+def _parse_agg_bom(raw: bytes, trace_id: str) -> dict:
+    """解析 ERP 聚合 BOM：多层级、多设备。返回 {devices, items, project_name}。"""
+    from app.xlsx_parser import XlsxSheetReader, XlsxParseError
+    try:
+        sheet_rows = XlsxSheetReader.read_rows(raw, max_rows=100001)
+    except XlsxParseError as exc:
+        raise ApiError(422, "AGENT_BAD_FILE", "XLSX 文件无法解析", trace_id=trace_id) from exc
+    if not sheet_rows:
+        raise ApiError(422, "AGENT_BAD_FILE", "文件为空", trace_id=trace_id)
+    header = [h.strip() for h in sheet_rows[0].values]
+    col = {name: i for i, name in enumerate(header)}
+    def get(vals, name):
+        i = col.get(name)
+        return vals[i].strip() if i is not None and i < len(vals) else ""
+    # 必需列
+    for need in ("料品编码", "料品名称", "单位名称", "实际用量", "展开级别", "设备编码"):
+        if need not in col:
+            raise ApiError(422, "AGENT_BAD_FILE", f"缺少必需列：{need}", trace_id=trace_id)
+    devices = {}  # device_code -> {device_name, material_code}
+    items = []
+    current_device = ""
+    current_device_name = ""
+    project_name = ""
+    for r in sheet_rows[1:]:
+        vals = r.values
+        level_str = get(vals, "展开级别")
+        mat_code = get(vals, "料品编码")
+        if not mat_code:
+            continue
+        # 级别：数点个数
+        level_no = level_str.count(".") if level_str else 0
+        dev_code = get(vals, "设备编码")
+        if dev_code:
+            current_device = dev_code
+            current_device_name = get(vals, "料品名称")
+            if dev_code not in devices:
+                devices[dev_code] = {"device_code": dev_code, "device_name": current_device_name,
+                                     "material_code": mat_code}
+        if not get(vals, "项目名称"):
+            pass
+        else:
+            project_name = project_name or get(vals, "项目名称")
+        qty_raw = get(vals, "实际用量")
+        try:
+            qty = float(qty_raw) if qty_raw else 0
+        except ValueError:
+            qty = 0
+        items.append({
+            "line_no": r.index,
+            "device_code": current_device,
+            "device_name": current_device_name,
+            "level_no": level_no,
+            "parent_code": get(vals, "母件料号"),
+            "material_code": mat_code,
+            "material_name": get(vals, "料品名称"),
+            "specification": get(vals, "规格"),
+            "unit": get(vals, "单位名称"),
+            "quantity": qty,
+            "material_form": get(vals, "料品形态属性"),
+        })
+    # 项目名从主产品行取
+    for r in sheet_rows[1:3]:
+        vals = r.values
+        if get(vals, "类型") == "主产品":
+            project_name = get(vals, "料品名称") or project_name
+            break
+    return {"devices": list(devices.values()), "items": items, "project_name": project_name,
+            "row_count": len(items)}
+
+
+@app.post("/api/v1/agent/aggbom/preview")
+async def preview_agg_bom(file: UploadFile = File(...), user: sqlite3.Row = Depends(current_user),
+                           x_request_id: str | None = Header(default=None)):
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise ApiError(413, "AGENT_FILE_TOO_LARGE", "文件超过 10MB", trace_id=trace_id)
+    parsed = _parse_agg_bom(raw, trace_id)
+    pid = str(uuid.uuid4())
+    digest = hashlib.sha256(raw).hexdigest()
+    AGG_BOM_PREVIEWS[pid] = {"userId": user["id"], "created": time.time(),
+                             "file_name": file.filename or "", "sha": digest, "parsed": parsed}
+    # 物料种类统计
+    mat_codes = {it["material_code"] for it in parsed["items"]}
+    return {"previewId": pid, "fileSha256": digest, "projectName": parsed["project_name"],
+            "totalRows": parsed["row_count"], "deviceCount": len(parsed["devices"]),
+            "materialCount": len(mat_codes),
+            "devices": parsed["devices"][:50], "traceId": trace_id, "serverTime": now()}
+
+
+class AggBomCommitRequest(BaseModel):
+    previewId: str
+    clientOperationId: str
+
+
+@app.post("/api/v1/agent/aggbom/commit")
+def commit_agg_bom(body: AggBomCommitRequest, user: sqlite3.Row = Depends(current_user),
+                   x_request_id: str | None = Header(default=None),
+                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+    trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    operation_id = str(body.clientOperationId)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM audit_events WHERE event_type='AGG_BOM_IMPORT' AND client_operation_id=?",
+                          (operation_id,)).fetchone()
+        if prior:
+            result = json.loads(prior["after_json"]); result.update(idempotent=True, traceId=trace_id)
+            c.rollback(); return result
+        preview = AGG_BOM_PREVIEWS.get(str(body.previewId))
+        if not preview or preview["userId"] != user["id"] or time.time() - preview["created"] > 1800:
+            raise ApiError(409, "BOM_PREVIEW_EXPIRED", "预览不存在、已过期或不属于当前用户", trace_id=trace_id)
+        parsed = preview["parsed"]
+        batch_id = str(uuid.uuid4())
+        ts = now()
+        # --- 自动生成机台档案 ---
+        devices_created = 0
+        device_id_map = {}
+        for dev in parsed["devices"]:
+            dev_code = dev["device_code"]
+            existing = c.execute("SELECT id FROM devices WHERE device_no=?", (dev_code,)).fetchone()
+            if existing:
+                device_id_map[dev_code] = existing["id"]
+                continue
+            workshop, capability = _categorize_device(dev["device_name"])
+            did = str(uuid.uuid4())
+            c.execute("INSERT INTO devices(id, device_no, device_name, workshop, model_capability, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                      (did, dev_code, dev["device_name"] or dev_code, workshop, capability, "ACTIVE", user["id"], ts, ts))
+            device_id_map[dev_code] = did
+            devices_created += 1
+        # --- 自动生成订单 ---
+        order_id = None
+        order_no = None
+        project_name = parsed["project_name"] or preview["file_name"]
+        # 从项目名提取订单号（如 26B-012）
+        import re as _re
+        m = _re.search(r"(\d+[A-Z]-\d+)", project_name)
+        order_no = m.group(1) if m else project_name[:32]
+        existing_order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (order_no,)).fetchone()
+        if existing_order:
+            order_id = existing_order["id"]
+        else:
+            order_id = str(uuid.uuid4())
+            c.execute("INSERT INTO production_orders(id, order_no, product_name, status, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+                      (order_id, order_no, project_name, "IN_PROGRESS", ts, ts))
+        # --- 关联订单与机台 ---
+        seq = 0
+        tasks_created = 0
+        for dev in parsed["devices"]:
+            dev_code = dev["device_code"]
+            exists_link = c.execute("SELECT 1 FROM order_devices WHERE order_id=? AND device_no=?", (order_id, dev_code)).fetchone()
+            if not exists_link:
+                seq += 1
+                _, capability = _categorize_device(dev["device_name"])
+                c.execute("INSERT INTO order_devices(id, order_id, device_type, device_no, sequence_no, created_at) VALUES(?,?,?,?,?,?)",
+                          (str(uuid.uuid4()), order_id, capability, dev_code, seq, ts))
+            # 生成装配任务（订单详情页按此展示机台）
+            device_id = device_id_map.get(dev_code)
+            exists_task = c.execute("SELECT 1 FROM assembly_tasks WHERE order_no=? AND device_no=?", (order_no, dev_code)).fetchone()
+            if not exists_task and device_id:
+                c.execute("INSERT INTO assembly_tasks(id, order_no, device_id, device_no, status, progress_stage, task_version, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (str(uuid.uuid4()), order_no, device_id, dev_code, "WAITING_MATERIAL", 0, 1, ts, ts))
+                tasks_created += 1
+        # --- 生成物料需求 ---
+        req_created = 0
+        # 确保物料档案存在
+        for r in c.execute("SELECT DISTINCT material_code, material_name, specification, unit FROM agg_bom_items WHERE batch_id=? AND material_form IN ('采购件','委外加工件','制造件') AND level_no > 1", (batch_id,)).fetchall():
+            if not c.execute("SELECT 1 FROM materials WHERE code=?", (r["material_code"],)).fetchone():
+                c.execute("INSERT INTO materials(id, code, name, specification, unit) VALUES(?,?,?,?,?)",
+                          (str(uuid.uuid4()), r["material_code"], r["material_name"] or r["material_code"], r["specification"], r["unit"] or "件"))
+        # 按设备+物料汇总生成需求
+        for r in c.execute("""SELECT od.id as od_id, m.id as mat_id, SUM(b.quantity) as qty
+                              FROM agg_bom_items b
+                              JOIN materials m ON m.code = b.material_code
+                              JOIN order_devices od ON od.device_no = b.device_code AND od.order_id = ?
+                              WHERE b.batch_id = ? AND b.material_form IN ('采购件','委外加工件','制造件')
+                              AND b.level_no > 1 AND b.quantity > 0
+                              GROUP BY od.id, m.id""", (order_id, batch_id)).fetchall():
+            exists_req = c.execute("SELECT 1 FROM order_material_requirements WHERE order_id=? AND device_id=? AND material_id=?",
+                                   (order_id, r["od_id"], r["mat_id"])).fetchone()
+            if not exists_req:
+                c.execute("INSERT INTO order_material_requirements(id, order_id, device_id, material_id, required_quantity, arrived_quantity, in_stock_quantity, status_code, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          (str(uuid.uuid4()), order_id, r["od_id"], r["mat_id"], int(r["qty"]), 0, 0, "OUT_OF_STOCK", ts, ts))
+                req_created += 1
+        mat_codes = {it["material_code"] for it in parsed["items"]}
+        c.execute("INSERT INTO agg_bom_batches(id, project_name, file_name, file_sha256, row_count, device_count, material_count, created_by, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (batch_id, parsed["project_name"], preview["file_name"], preview["sha"],
+                   parsed["row_count"], len(parsed["devices"]), len(mat_codes), user["id"], ts))
+        for it in parsed["items"]:
+            c.execute("INSERT INTO agg_bom_items(id, batch_id, device_code, device_name, level_no, parent_code, material_code, material_name, specification, unit, quantity, material_form, line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (str(uuid.uuid4()), batch_id, it["device_code"], it["device_name"], it["level_no"],
+                       it["parent_code"], it["material_code"], it["material_name"], it["specification"],
+                       it["unit"], it["quantity"], it["material_form"], it["line_no"]))
+        result = {"batchId": batch_id, "projectName": parsed["project_name"],
+                  "deviceCount": len(parsed["devices"]), "materialCount": len(mat_codes),
+                  "rowCount": parsed["row_count"], "devicesCreated": devices_created,
+                  "tasksCreated": tasks_created,
+                  "requirementsCreated": req_created,
+                  "orderNo": order_no, "orderId": order_id,
+                  "traceId": trace_id, "serverTime": ts}
+        c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  ("AGG_BOM_IMPORT", "AGG_BOM_BATCH", batch_id, user["id"], user["role"], trace_id, operation_id, "", json.dumps(result), ts, None, None, "SUCCESS"))
+        c.commit()
+        AGG_BOM_PREVIEWS.pop(str(body.previewId), None)
+        return result
+    except Exception:
+        c.rollback(); raise
+    finally:
+        c.close()
+
+
+@app.get("/api/v1/agent/aggbom/batches")
+def list_agg_bom_batches(user: sqlite3.Row = Depends(current_user)):
+    c = db()
+    try:
+        rows = c.execute("SELECT id, project_name, file_name, row_count, device_count, material_count, created_at FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20").fetchall()
+        return {"batches": [dict(r) for r in rows]}
+    finally:
+        c.close()
+
+
+@app.get("/api/v1/agent/aggbom/aggregate")
+def aggregate_agg_bom(batch_id: str, device_codes: str = "", user: sqlite3.Row = Depends(current_user)):
+    """按设备聚合物料需求。device_codes 为空=全部设备。"""
+    c = db()
+    try:
+        batch = c.execute("SELECT * FROM agg_bom_batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            raise ApiError(404, "NOT_FOUND", "批次不存在", trace_id=str(uuid.uuid4()))
+        codes = [x.strip() for x in device_codes.split(",") if x.strip()]
+        if codes:
+            ph = ",".join("?" for _ in codes)
+            rows = c.execute(f"SELECT material_code, material_name, specification, unit, SUM(quantity) as total_qty, COUNT(DISTINCT device_code) as dev_count FROM agg_bom_items WHERE batch_id=? AND device_code IN ({ph}) AND quantity > 0 GROUP BY material_code ORDER BY total_qty DESC",
+                             (batch_id, *codes)).fetchall()
+        else:
+            rows = c.execute("SELECT material_code, material_name, specification, unit, SUM(quantity) as total_qty, COUNT(DISTINCT device_code) as dev_count FROM agg_bom_items WHERE batch_id=? AND quantity > 0 GROUP BY material_code ORDER BY total_qty DESC",
+                             (batch_id,)).fetchall()
+        devs = c.execute("SELECT DISTINCT device_code, device_name FROM agg_bom_items WHERE batch_id=? AND device_code != '' ORDER BY device_code",
+                         (batch_id,)).fetchall()
+        return {"batchId": batch_id, "projectName": batch["project_name"],
+                "materials": [{"material_code": r["material_code"], "material_name": r["material_name"],
+                               "specification": r["specification"], "unit": r["unit"],
+                               "total_quantity": r["total_qty"], "device_count": r["dev_count"]} for r in rows],
+                "devices": [{"device_code": d["device_code"], "device_name": d["device_name"]} for d in devs]}
+    finally:
+        c.close()
+
+
 @app.post("/api/v1/boms/import/preview")
+
 async def preview_bom_import(
     file: UploadFile = File(...), modelCode: str = Form(...),
     user: sqlite3.Row = Depends(current_user),
@@ -2094,7 +2372,7 @@ def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(curren
 
 
 @app.get("/api/v1/boms/versions")
-def list_bom_versions(modelCode: str | None = None, status: str | None = None, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=100), user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
+def list_bom_versions(modelCode: str | None = None, status: str | None = None, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=500), user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
     _bom_authorized(user); c = db(); where, args = [], []
     if modelCode: where.append("model_code=?"); args.append(modelCode)
     if status: where.append("status=?"); args.append(status)
@@ -2939,6 +3217,304 @@ def create_assembly_task(
         c.close()
 
 
+
+
+# ==================== 工作台缺失接口补齐（2026-09-27） ====================
+
+def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str, Any]:
+    """将 assembly_tasks 行转为 App 期望的格式。"""
+    task_id = task["id"]
+    stages = c.execute(
+        "SELECT stage_no, status, version, started_at, completed_at, rework_reason "
+        "FROM assembly_task_stages WHERE task_id=? ORDER BY stage_no",
+        (task_id,),
+    ).fetchall()
+    stage_list = [
+        {
+            "stageNo": s["stage_no"], "status": s["status"], "version": s["version"],
+            "startedAt": s["started_at"], "completedAt": s["completed_at"],
+            "reworkReason": s["rework_reason"],
+        }
+        for s in stages
+    ]
+    # 保证 1..3 阶段都存在
+    existing = {s["stageNo"] for s in stage_list}
+    for no in (1, 2, 3):
+        if no not in existing:
+            stage_list.append({"stageNo": no, "status": "NOT_STARTED", "version": 1,
+                               "startedAt": None, "completedAt": None, "reworkReason": None})
+    stage_list.sort(key=lambda s: s["stageNo"])
+    members = c.execute(
+        "SELECT assembler_id, assignment_role, assigned_by, assigned_at, removed_at "
+        "FROM assembly_task_members WHERE task_id=? AND removed_at IS NULL",
+        (task_id,),
+    ).fetchall()
+    member_list = [
+        {
+            "assemblerId": m["assembler_id"], "assignmentRole": m["assignment_role"],
+            "assignedBy": m["assigned_by"], "assignedAt": m["assigned_at"],
+            "removedAt": m["removed_at"],
+        }
+        for m in members
+    ]
+    labor = c.execute(
+        "SELECT id, started_at, "
+        "COALESCE(SUM(CASE WHEN status='COMPLETED' THEN duration_minutes ELSE 0 END), 0) AS acc_minutes "
+        "FROM labor_records WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    active_labor = c.execute(
+        "SELECT id, started_at FROM labor_records WHERE task_id=? AND status='ACTIVE' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    assembler_name = None
+    if task["assigned_assembler_id"]:
+        u = c.execute("SELECT display_name FROM users WHERE id=?", (task["assigned_assembler_id"],)).fetchone()
+        assembler_name = u["display_name"] if u else None
+    return {
+        "id": task_id, "orderNo": task["order_no"],
+        "deviceId": task["device_id"], "deviceNo": task["device_no"],
+        "materialSummary": None,
+        "status": task["status"], "progressStage": task["progress_stage"],
+        "taskVersion": task["task_version"],
+        "currentLaborRecordId": active_labor["id"] if active_labor else None,
+        "currentLaborStartedAt": active_labor["started_at"] if active_labor else None,
+        "accumulatedLaborMinutes": labor["acc_minutes"] if labor else 0,
+        "assignedAssemblerId": task["assigned_assembler_id"],
+        "assignedAssemblerName": assembler_name,
+        "serverTime": task["updated_at"],
+        "stages": stage_list, "members": member_list,
+    }
+
+
+@app.get("/api/v1/assembly/tasks")
+def list_assembly_tasks(
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=64),
+    status: str | None = Query(default=None, max_length=32),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """装配任务列表（装配工工作台用）。"""
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看装配任务")
+    c = db()
+    try:
+        where = "1=1"
+        args: list[Any] = []
+        if user["role"] == "ASSEMBLER":
+            # 装配工只看分配给自己的任务（含成员表）
+            where = (
+                "(t.assigned_assembler_id = ? OR EXISTS ("
+                "SELECT 1 FROM assembly_task_members m "
+                "WHERE m.task_id = t.id AND m.assembler_id = ? AND m.removed_at IS NULL))"
+            )
+            args = [user["id"], user["id"]]
+        if q:
+            where += " AND (t.order_no LIKE ? OR t.device_no LIKE ?)"
+            args += [f"%{q}%", f"%{q}%"]
+        if status:
+            where += " AND t.status = ?"
+            args.append(status)
+        total = c.execute(f"SELECT COUNT(*) AS n FROM assembly_tasks t WHERE {where}", args).fetchone()["n"]
+        total_pages = (total + pageSize - 1) // pageSize if total else 0
+        offset = (page - 1) * pageSize
+        rows = c.execute(
+            f"SELECT t.* FROM assembly_tasks t WHERE {where} "
+            "ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
+            (*args, pageSize, offset),
+        ).fetchall()
+        items = [_assembly_task_to_dict(c, r) for r in rows]
+        ts = now()
+        return {
+            "items": items, "page": page, "pageSize": pageSize,
+            "total": total, "totalPages": total_pages,
+            "serverTime": ts, "generatedAt": ts,
+        }
+    finally:
+        c.close()
+
+
+@app.get("/api/v1/workshop/summary")
+def workshop_summary(
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """车间进度汇总（车间主管工作台用）。"""
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看车间汇总")
+    c = db()
+    try:
+        total = c.execute("SELECT COUNT(*) AS n FROM assembly_tasks").fetchone()["n"]
+        completed = c.execute("SELECT COUNT(*) AS n FROM assembly_tasks WHERE status='COMPLETED'").fetchone()["n"]
+        overall = round(completed * 100 / total) if total else 0
+        labor = c.execute(
+            "SELECT COALESCE(SUM(CASE WHEN status='COMPLETED' THEN duration_minutes ELSE 0 END),0) AS m, "
+            "COALESCE(SUM(CASE WHEN status='COMPLETED' AND type='ASSEMBLY' THEN duration_minutes ELSE 0 END),0) AS a, "
+            "COALESCE(SUM(CASE WHEN status='COMPLETED' AND type='TEMPORARY_TRANSFER' THEN duration_minutes ELSE 0 END),0) AS t "
+            "FROM labor_records"
+        ).fetchone()
+        machines = c.execute(
+            "SELECT t.device_id AS device_id, t.device_no AS device_no, "
+            "COUNT(*) AS task_count, "
+            "SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count, "
+            "COALESCE((SELECT SUM(CASE WHEN lr.status='COMPLETED' THEN lr.duration_minutes ELSE 0 END) "
+            "FROM labor_records lr WHERE lr.task_id IN "
+            "(SELECT id FROM assembly_tasks t2 WHERE t2.device_id=t.device_id)),0) AS labor_minutes "
+            "FROM assembly_tasks t GROUP BY t.device_id, t.device_no ORDER BY t.device_no"
+        ).fetchall()
+        # ---- 订单物料汇总 ----
+        order_materials = c.execute(
+            "SELECT o.order_no AS order_no, o.product_name AS product_name, o.status AS order_status, "
+            "COUNT(r.id) AS material_kinds, "
+            "COALESCE(SUM(r.required_quantity),0) AS total_required, "
+            "COALESCE(SUM(r.arrived_quantity),0) AS total_arrived, "
+            "COALESCE(SUM(r.in_stock_quantity),0) AS total_in_stock, "
+            "SUM(CASE WHEN r.status_code='OUT_OF_STOCK' THEN 1 ELSE 0 END) AS out_of_stock_kinds "
+            "FROM production_orders o "
+            "LEFT JOIN order_material_requirements r ON r.order_id=o.id "
+            "GROUP BY o.id, o.order_no, o.product_name, o.status "
+            "ORDER BY o.order_no"
+        ).fetchall()
+        order_material_summary = []
+        for om in order_materials:
+            req = om["total_required"] or 0
+            arr = om["total_arrived"] or 0
+            order_material_summary.append({
+                "orderNo": om["order_no"], "productName": om["product_name"],
+                "orderStatus": om["order_status"],
+                "materialKinds": om["material_kinds"] or 0,
+                "totalRequired": req, "totalArrived": arr,
+                "totalInStock": om["total_in_stock"] or 0,
+                "gapQuantity": req - arr,
+                "outOfStockKinds": om["out_of_stock_kinds"] or 0,
+            })
+
+        # ---- 订单关联流转汇总 ----
+        order_transfers = c.execute(
+            "SELECT o.order_no AS order_no, "
+            "COUNT(t.id) AS total, "
+            "SUM(CASE WHEN t.status='PENDING_APPROVAL' THEN 1 ELSE 0 END) AS pending_approval, "
+            "SUM(CASE WHEN t.status='APPROVED' THEN 1 ELSE 0 END) AS approved, "
+            "SUM(CASE WHEN t.status='EXECUTED' THEN 1 ELSE 0 END) AS executed, "
+            "SUM(CASE WHEN t.status='REJECTED' THEN 1 ELSE 0 END) AS rejected "
+            "FROM production_orders o "
+            "LEFT JOIN transfer_requests t ON t.document_no=o.order_no "
+            "GROUP BY o.id, o.order_no ORDER BY o.order_no"
+        ).fetchall()
+        order_transfer_summary = []
+        for ot in order_transfers:
+            order_transfer_summary.append({
+                "orderNo": ot["order_no"],
+                "total": ot["total"] or 0,
+                "pendingApproval": ot["pending_approval"] or 0,
+                "approved": ot["approved"] or 0,
+                "executed": ot["executed"] or 0,
+                "rejected": ot["rejected"] or 0,
+            })
+
+        # ---- 机台订单进度（机台 x 订单细分）----
+        mo_rows = c.execute(
+            "SELECT t.device_id AS device_id, t.device_no AS device_no, t.order_no AS order_no, "
+            "COUNT(*) AS task_count, "
+            "SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count, "
+            "SUM(CASE WHEN t.status='IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, "
+            "SUM(CASE WHEN t.status='WAITING_MATERIAL' THEN 1 ELSE 0 END) AS waiting_count "
+            "FROM assembly_tasks t "
+            "GROUP BY t.device_id, t.device_no, t.order_no "
+            "ORDER BY t.device_no, t.order_no"
+        ).fetchall()
+        machine_order_progress = []
+        for mo in mo_rows:
+            tc = mo["task_count"] or 0
+            cc = mo["completed_count"] or 0
+            machine_order_progress.append({
+                "deviceId": mo["device_id"], "deviceNo": mo["device_no"],
+                "orderNo": mo["order_no"],
+                "taskCount": tc, "completedTaskCount": cc,
+                "inProgressTaskCount": mo["in_progress_count"] or 0,
+                "waitingMaterialTaskCount": mo["waiting_count"] or 0,
+                "progressPercent": round(cc * 100 / tc) if tc else 0,
+            })
+
+        machine_list = []
+        for m in machines:
+            tc = m["task_count"]
+            cc = m["completed_count"]
+            machine_list.append({
+                "deviceId": m["device_id"], "deviceNo": m["device_no"],
+                "taskCount": tc, "completedTaskCount": cc,
+                "progressPercent": round(cc * 100 / tc) if tc else 0,
+                "laborMinutes": m["labor_minutes"],
+            })
+        ts = now()
+        return {
+            "workshopId": None, "totalTasks": total, "completedTasks": completed,
+            "overallProgressPercent": overall,
+            "totalLaborMinutes": labor["m"], "assemblyLaborMinutes": labor["a"],
+            "temporaryTransferLaborMinutes": labor["t"],
+            "machines": machine_list,
+            "orderMaterialSummary": order_material_summary,
+            "orderTransferSummary": order_transfer_summary,
+            "machineOrderProgress": machine_order_progress,
+            "generatedAt": ts, "serverTime": ts,
+        }
+    finally:
+        c.close()
+
+
+@app.get("/api/v1/workshop/machine-progress")
+def workshop_machine_progress(
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
+    deviceId: str | None = Query(default=None, max_length=64),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """机台进度分页（车间主管工作台用）。"""
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看机台进度")
+    c = db()
+    try:
+        where = "1=1"
+        args: list[Any] = []
+        if deviceId:
+            where = "t.device_id = ?"
+            args = [deviceId]
+        total = c.execute(
+            f"SELECT COUNT(DISTINCT t.device_id) AS n FROM assembly_tasks t WHERE {where}", args
+        ).fetchone()["n"]
+        total_pages = (total + pageSize - 1) // pageSize if total else 0
+        offset = (page - 1) * pageSize
+        rows = c.execute(
+            f"SELECT t.device_id AS device_id, t.device_no AS device_no, "
+            "COUNT(*) AS task_count, "
+            "SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count, "
+            "COALESCE((SELECT SUM(CASE WHEN lr.status='COMPLETED' THEN lr.duration_minutes ELSE 0 END) "
+            "FROM labor_records lr WHERE lr.task_id IN "
+            "(SELECT id FROM assembly_tasks t2 WHERE t2.device_id=t.device_id)),0) AS labor_minutes "
+            f"FROM assembly_tasks t WHERE {where} "
+            "GROUP BY t.device_id, t.device_no ORDER BY t.device_no LIMIT ? OFFSET ?",
+            (*args, pageSize, offset),
+        ).fetchall()
+        items = []
+        for m in rows:
+            tc = m["task_count"]
+            cc = m["completed_count"]
+            items.append({
+                "deviceId": m["device_id"], "deviceNo": m["device_no"],
+                "taskCount": tc, "completedTaskCount": cc,
+                "progressPercent": round(cc * 100 / tc) if tc else 0,
+                "laborMinutes": m["labor_minutes"],
+            })
+        ts = now()
+        return {
+            "items": items, "page": page, "pageSize": pageSize,
+            "total": total, "totalPages": total_pages,
+            "serverTime": ts, "generatedAt": ts,
+        }
+    finally:
+        c.close()
+
+
 class SessionRevokeRequest(BaseModel):
     clientOperationId: str
 
@@ -3190,7 +3766,7 @@ def material_status(
 def order_detail(
     order_no: str,
     page: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1, le=100),
+    pageSize: int = Query(20, ge=1, le=500),
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     """Return one order's server-fact aggregate with the existing visibility scope."""
@@ -3226,10 +3802,10 @@ def order_detail(
         f"SELECT count(*) AS n FROM assembly_tasks WHERE {task_where}", task_args
     ).fetchone()["n"]
     task_rows = c.execute(
-        f"""SELECT id,device_id,device_no,status,progress_stage,task_version,
-                    assigned_assembler_id
-               FROM assembly_tasks WHERE {task_where}
-              ORDER BY created_at,id LIMIT ? OFFSET ?""",
+        f"""SELECT t.id,t.device_id,t.device_no,d.device_name AS device_name,t.status,t.progress_stage,t.task_version,
+                    t.assigned_assembler_id
+               FROM assembly_tasks t LEFT JOIN devices d ON d.id = t.device_id WHERE {task_where.replace("assembly_tasks", "t")}
+              ORDER BY t.created_at,t.id LIMIT ? OFFSET ?""",
         task_args + [pageSize, (page - 1) * pageSize],
     ).fetchall()
 
@@ -3309,6 +3885,7 @@ def order_detail(
         "materialSummary": _material_summary(scoped),
         "assemblyTasks": [{
             "taskId": r["id"], "deviceId": r["device_id"], "deviceNo": r["device_no"],
+            "deviceName": r["device_name"],
             "status": r["status"], "progressStage": r["progress_stage"],
             "taskVersion": r["task_version"], "assignedAssemblerId": r["assigned_assembler_id"],
         } for r in task_rows],
@@ -3376,6 +3953,7 @@ def order_task_detail(
     materials = [
         {
             "materialCode": r["material_code"], "materialName": r["material_name"],
+            "materialCategory": r["material_category"],
             "specification": r["specification"], "unit": r["unit"],
             "requiredQuantity": r["required_quantity"],
             "arrivedQuantity": r["arrived_quantity"],
@@ -3384,6 +3962,7 @@ def order_task_detail(
         }
         for r in c.execute(
             """SELECT m.code AS material_code, m.name AS material_name,
+                      m.category AS material_category,
                       m.specification, m.unit, r.required_quantity,
                       r.arrived_quantity, r.in_stock_quantity, r.status_code
                  FROM order_material_requirements r
@@ -3536,6 +4115,7 @@ def _workspace_requirements(
                r.material_id AS material_id,
                m.code AS material_code,
                m.name AS material_name,
+               m.category AS material_category,
                m.specification AS specification,
                m.unit AS unit,
                r.required_quantity AS required_quantity,

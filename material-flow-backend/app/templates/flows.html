@@ -1,14 +1,5 @@
 {% extends "base.html" %}
 {% block title %}流转申请 · 智慧工厂{% endblock %}
-{% block nav %}
-<a class="nav-link" href="/admin/">仪表盘</a>
-<a class="nav-link" href="/admin/users">用户管理</a>
-<a class="nav-link" href="/admin/handovers">交接留痕</a>
-<form method="post" action="/admin/logout" class="logout-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button type="submit" class="btn btn-danger btn-sm">退出（{{ user.display_name }}）</button>
-</form>
-{% endblock %}
 {% block content %}
 <h2>流转申请</h2>
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
@@ -22,12 +13,14 @@
 <table>
   <tr><th>申请单</th><th>类型</th><th>状态</th><th>单据号</th><th>创建时间</th><th>详情</th></tr>
   {% for item in items %}
+  {% set _s = item.status %}
+  {% set _cls = {"PENDING_APPROVAL": "st-yellow", "APPROVED": "st-blue", "REJECTED": "st-red", "EXECUTED": "st-green"}.get(_s, "st-neutral") %}
   <tr>
     <td>{{ item.id }}</td>
     <td>{{ type_labels.get(item.type, item.type) }}</td>
-    <td>{{ status_labels.get(item.status, item.status) }}</td>
+    <td><span class="st {{ _cls }}">{{ status_labels.get(_s, _s) }}</span></td>
     <td>{{ item.document_no or "—" }}</td>
-    <td>{{ item.created_at or "—" }}</td>
+    <td>{{ item.created_at[:16].replace("T", " ") if item.created_at else "—" }}</td>
     <td><a href="/admin/flows/{{ item.id }}">查看</a></td>
   </tr>
   {% else %}

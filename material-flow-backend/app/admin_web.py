@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, RedirectResponse
+from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -164,7 +164,7 @@ def _authenticate(username: str, password: str) -> sqlite3.Row | None:
 @router.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request):
     if _session_user(request) is not None:
-        return _see_other("/admin/")
+        return _see_other("/admin/exceptions")
     anon_csrf = request.cookies.get(ANON_CSRF_COOKIE) or secrets.token_urlsafe(32)
     response = templates.TemplateResponse(
         request,
@@ -244,6 +244,7 @@ def admin_home(request: Request):
     user = _session_user(request)
     if user is None:
         return _see_other("/admin/login")
+    return _see_other("/admin/exceptions")
     if user["role"] not in WEB_ROLES:
         return HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
     c = db()
@@ -344,14 +345,21 @@ def _api_error_message(exc: Exception) -> str:
 
 
 def _render_users(request: Request, user: sqlite3.Row, error: str | None = None):
+    q = (request.query_params.get("q") or "").strip()
     c = db()
     try:
-        rows = c.execute(
+        sql = (
             "SELECT u.id, u.username, u.display_name, u.role, u.active,"
             " u.must_change_password, u.created_at, m.display_name AS manager_name"
             " FROM users u LEFT JOIN employee_managers em ON em.employee_id=u.id"
-            " LEFT JOIN users m ON m.id=em.manager_id ORDER BY u.created_at"
-        ).fetchall()
+            " LEFT JOIN users m ON m.id=em.manager_id"
+        )
+        args: list = []
+        if q:
+            sql += " WHERE u.username LIKE ? OR u.display_name LIKE ?"
+            args = [f"%{q}%", f"%{q}%"]
+        sql += " ORDER BY u.created_at"
+        rows = c.execute(sql, args).fetchall()
     finally:
         c.close()
     notice_code = request.query_params.get("notice", "")
@@ -621,7 +629,7 @@ def _local_time(value: Any) -> Any:
         dt = datetime.fromisoformat(s[:-1] + "+00:00") if s.endswith("Z") else datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(_BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+        return dt.astimezone(_BEIJING).strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError):
         return value
 
@@ -809,6 +817,22 @@ def admin_handovers_search(request: Request):
             result = handover_timeline(query, user=user)
         except HTTPException as exc:
             error = f"{exc.status_code}：{exc.detail}"
+    # 最近交接列表
+    page = _page_param(request)
+    page_size = 20
+    c = db()
+    try:
+        total = c.execute("SELECT COUNT(*) FROM material_handovers").fetchone()[0]
+        rows = c.execute(
+            "SELECT h.id, h.work_item_id, h.status, h.quantity, h.from_location,"
+            " h.created_at, u.display_name AS creator_name"
+            " FROM material_handovers h"
+            " LEFT JOIN users u ON u.id = h.created_by"
+            " ORDER BY h.created_at DESC LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
+        ).fetchall()
+    finally:
+        c.close()
     return templates.TemplateResponse(
         request,
         "handovers.html",
@@ -818,6 +842,12 @@ def admin_handovers_search(request: Request):
             "query": query,
             "result": result,
             "error": error,
+            "rows": rows,
+            "page": page,
+            "total_pages": (total + page_size - 1) // page_size if total else 1,
+            "total": total,
+            "ho_status_labels": {"PENDING": "待确认", "CONFIRMED": "已确认",
+                                 "REJECTED": "已驳回", "CANCELLED": "已取消"},
         },
     )
 
@@ -840,6 +870,12 @@ def admin_handover_timeline(request: Request, hid: str):
             "query": hid,
             "result": result,
             "error": None,
+            "rows": [],
+            "page": 1,
+            "total_pages": 1,
+            "total": 0,
+            "ho_status_labels": {"PENDING": "待确认", "CONFIRMED": "已确认",
+                                 "REJECTED": "已驳回", "CANCELLED": "已取消"},
         },
     )
 
@@ -889,7 +925,7 @@ def admin_reports_overview(request: Request):
     try:
         summary = _api_endpoint("/api/v1/workshop/summary")(user=user)
         machines = _api_endpoint("/api/v1/workshop/machine-progress")(
-            user=user, page=page, pageSize=20
+            user=user, page=page, pageSize=20, deviceId=None
         )
     except HTTPException as exc:
         return _api_http_error_response(exc)
@@ -959,21 +995,28 @@ def admin_models_list(request: Request):
     if denied:
         return denied
     code = str(request.query_params.get("code", "")).strip()
+    q = str(request.query_params.get("q", "")).strip()
+    page = _page_param(request)
+    page_size = 20
     c = db()
     try:
+        where = "1=1"
+        args: list = []
         if code:
-            rows = c.execute(
-                "SELECT id, model_code, model_name, version, format, byte_size, sha256,"
-                " status, created_by, created_at FROM assembly_model_versions"
-                " WHERE model_code=? ORDER BY version DESC LIMIT 200",
-                (code,),
-            ).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT id, model_code, model_name, version, format, byte_size, sha256,"
-                " status, created_by, created_at FROM assembly_model_versions"
-                " ORDER BY model_code, version DESC LIMIT 200"
-            ).fetchall()
+            where += " AND model_code=?"
+            args.append(code)
+        if q:
+            where += " AND (model_code LIKE ? OR model_name LIKE ?)"
+            args += [f"%{q}%", f"%{q}%"]
+        total = c.execute(
+            f"SELECT COUNT(*) FROM assembly_model_versions WHERE {where}", args
+        ).fetchone()[0]
+        rows = c.execute(
+            "SELECT id, model_code, model_name, version, format, byte_size, sha256,"
+            " status, created_by, created_at FROM assembly_model_versions"
+            f" WHERE {where} ORDER BY model_code, version DESC LIMIT ? OFFSET ?",
+            (*args, page_size, (page - 1) * page_size),
+        ).fetchall()
     finally:
         c.close()
 
@@ -987,14 +1030,24 @@ def admin_models_list(request: Request):
         except HTTPException as exc:
             published_error = f"{exc.status_code}：{exc.detail}"
     # 机台 3D 模型绑定：机台列表 + 已发布模型码
+    dq = str(request.query_params.get("dq", "")).strip()
+    dpage = max(1, int(request.query_params.get("dpage", "1") or 1))
+    dpage_size = 20
     c = db()
     try:
         device_cols = {r["name"] for r in c.execute("PRAGMA table_info(devices)").fetchall()}
         has_3d_col = "model_3d_code" in device_cols
         col = "model_3d_code" if has_3d_col else "NULL AS model_3d_code"
+        dwhere = "1=1"
+        dargs: list = []
+        if dq:
+            dwhere += " AND (device_no LIKE ? OR device_name LIKE ?)"
+            dargs += [f"%{dq}%", f"%{dq}%"]
+        dtotal = c.execute(f"SELECT COUNT(*) FROM devices WHERE {dwhere}", dargs).fetchone()[0]
         device_rows = c.execute(
             f"SELECT id, device_no, device_name, {col} FROM devices"
-            " ORDER BY device_no LIMIT 500"
+            f" WHERE {dwhere} ORDER BY device_no LIMIT ? OFFSET ?",
+            (*dargs, dpage_size, (dpage - 1) * dpage_size),
         ).fetchall()
         published_codes = [
             r["model_code"] for r in c.execute(
@@ -1021,11 +1074,19 @@ def admin_models_list(request: Request):
             "csrf_token": user["csrf_token"],
             "rows": rows,
             "code": code,
+            "q": q,
+            "page": page,
+            "total_pages": (total + page_size - 1) // page_size if total else 1,
+            "total": total,
             "published": published,
             "published_error": published_error,
             "status_labels": MODEL_STATUS_LABELS,
             "devices": devices,
             "published_codes": published_codes,
+            "dq": dq,
+            "dpage": dpage,
+            "dtotal_pages": (dtotal + dpage_size - 1) // dpage_size if dtotal else 1,
+            "dtotal": dtotal,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
         },
     )
@@ -1077,6 +1138,28 @@ def admin_audit_logs(request: Request):
             "page": _page_param(request),
             "error": error,
             "filters": filters,
+            "event_labels": {
+                "ORDER_STATUS_CHANGED": "订单状态变更",
+                "ORDER_CREATED": "订单创建",
+                "HANDOVER_CREATED": "交接创建",
+                "HANDOVER_CONFIRMED": "交接确认",
+                "HANDOVER_REJECTED": "交接驳回",
+                "HANDOVER_CANCELLED": "交接取消",
+                "OUTBOUND_APPROVED": "出库审批通过",
+                "AGG_BOM_IMPORT": "聚合BOM导入",
+                "AGENT_IMPORT": "智能导入",
+                "ADMIN_PROVISIONED_CLI": "管理员CLI开通",
+            },
+            "entity_labels": {
+                "PRODUCTION_ORDER": "生产订单",
+                "MATERIAL_HANDOVER": "物料交接",
+                "TRANSFER_REQUEST": "流转申请",
+                "AGG_BOM_BATCH": "聚合BOM批次",
+                "AGENT_IMPORT_JOB": "智能导入任务",
+                "USER": "用户",
+            },
+            "result_labels": {"SUCCESS": "成功", "FAIL": "失败", "FAILURE": "失败"},
+            "role_labels": ROLE_LABELS,
         },
     )
 
@@ -1103,7 +1186,7 @@ def admin_orders(request: Request):
     if order_no:
         try:
             detail = api_order_detail(
-                order_no=order_no, page=_page_param(request), pageSize=20, user=user
+                order_no=order_no, page=1, pageSize=500, user=user
             )
         except ApiError as exc:
             error = _api_error_message(exc)
@@ -1118,6 +1201,7 @@ def admin_orders(request: Request):
             "rows": rows,
             "order_no": order_no,
             "detail": detail,
+            "status_labels": WORKSPACE_STATUS_LABELS,
             "error": error,
             "status_labels": WORKSPACE_STATUS_LABELS,
         },
@@ -1354,6 +1438,72 @@ async def admin_exception_review(request: Request, eid: str):
     return _see_other("/admin/warehouse?notice=exception_reviewed")
 
 
+@router.get("/admin/exceptions", response_class=HTMLResponse)
+def admin_exceptions(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return HTMLResponse("403 禁止访问", status_code=403)
+    c = db()
+    try:
+        exceptions = [dict(r) for r in c.execute(
+            "SELECT * FROM exceptions ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()]
+        import_errors = [dict(r) for r in c.execute(
+            "SELECT * FROM agent_import_error_logs ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()]
+        open_count = sum(1 for e in exceptions if e["status"] in ("OPEN", "PENDING"))
+        in_progress_count = sum(1 for e in exceptions if e["status"] == "IN_PROGRESS")
+        resolved_count = sum(1 for e in exceptions if e["status"] in ("RESOLVED", "CLOSED", "APPROVED"))
+    finally:
+        c.close()
+    return templates.TemplateResponse(
+        request,
+        "exceptions.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "exceptions": exceptions,
+            "import_errors": import_errors,
+            "open_count": open_count,
+            "in_progress_count": in_progress_count,
+            "resolved_count": resolved_count,
+            "import_error_count": len(import_errors),
+            "exc_status_labels": {"OPEN": "待处理", "PENDING": "待处理", "IN_PROGRESS": "处理中",
+                                  "RESOLVED": "已解决", "CLOSED": "已关闭",
+                                  "APPROVED": "已通过", "REJECTED": "已驳回"},
+        },
+    )
+
+
+@router.post("/admin/exceptions/{eid}/review")
+async def admin_exceptions_review(request: Request, eid: str):
+    user, denied = _manager_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        api_review_exception(
+            eid,
+            Decision(
+                decision=str(form.get("decision", "")),
+                comment=str(form.get("comment", "")),
+                clientOperationId=operation_id,
+            ),
+            request,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return HTMLResponse(_api_error_message(exc), status_code=400)
+    return _see_other("/admin/exceptions?notice=exception_reviewed")
+
+
 def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
     code = str(request.query_params.get("code", "")).strip()
     stocktakes = api_list_stocktakes(user=user)["items"]
@@ -1430,7 +1580,7 @@ def admin_workspace(request: Request):
         {
             "user": user,
             "csrf_token": user["csrf_token"],
-            "summary": summary,
+            "summary": {**summary, "generatedAt": _local_time(summary.get("generatedAt"))},
             "items": items["items"],
             "page": items["page"],
             "total_pages": items["totalPages"],
@@ -1458,10 +1608,11 @@ def _request_with_id(request: Request) -> Request:
 
 def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     page = _page_param(request)
-    device_id = request.query_params.get("deviceId") or None
+    q = (request.query_params.get("q") or "").strip() or None
+    f_status = (request.query_params.get("status") or "").strip() or None
     try:
         tasks_data = _api_endpoint("/api/v1/assembly/tasks")(
-            page=page, pageSize=20, deviceId=device_id, user=user
+            page=page, pageSize=20, q=q, status=f_status, user=user
         )
     except HTTPException as exc:
         return _api_http_error_response(exc)
@@ -1491,10 +1642,11 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
             "total_pages": tasks_data["totalPages"],
             "total_rows": tasks_data["total"],
             "assemblers": assemblers,
+            "status_labels": WORKSPACE_STATUS_LABELS,
             "names": names,
             "assign_ops": assign_ops,
             "remove_ops": remove_ops,
-            "device_id": device_id or "",
+
             "error": error,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
         },
@@ -1590,6 +1742,16 @@ def admin_boms(request: Request):
         return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
     except HTTPException as exc:
         return _api_http_error_response(exc)
+    # 聚合 BOM 批次（智能导入）
+    import sqlite3 as _sq3
+    from pathlib import Path as _Path
+    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
+    _c = _sq3.connect(str(_db_path))
+    _c.row_factory = _sq3.Row
+    agg_batches = _c.execute(
+        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
@@ -1597,6 +1759,7 @@ def admin_boms(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "items": data["items"],
+            "agg_batches": agg_batches,
             "page": data["page"],
             "total_rows": data["total"],
             "filters": {"modelCode": q.get("modelCode") or "", "status": q.get("status") or ""},
@@ -1643,6 +1806,16 @@ async def admin_bom_preview(request: Request):
 
 def _bom_error_page(request: Request, user: sqlite3.Row, error: str):
     data = api_bom_versions(modelCode=None, status=None, page=1, pageSize=20, user=user)
+    # 聚合 BOM 批次（智能导入）
+    import sqlite3 as _sq3
+    from pathlib import Path as _Path
+    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
+    _c = _sq3.connect(str(_db_path))
+    _c.row_factory = _sq3.Row
+    agg_batches = _c.execute(
+        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
@@ -1650,6 +1823,7 @@ def _bom_error_page(request: Request, user: sqlite3.Row, error: str):
             "user": user,
             "csrf_token": user["csrf_token"],
             "items": data["items"],
+            "agg_batches": agg_batches,
             "page": data["page"],
             "total_rows": data["total"],
             "filters": {"modelCode": "", "status": ""},
@@ -1844,7 +2018,7 @@ def admin_machines_export(request: Request):
     user, denied = _report_or_403(request)
     if denied:
         return denied
-    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=20, user=user)
+    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=20, user=user, deviceId=None)
     return _csv_response("machine-progress", rows)
 
 
@@ -2159,3 +2333,363 @@ def admin_barcodes_image(request: Request):
             "Cache-Control": "private, max-age=86400",
         },
     )
+
+@router.get("/admin/agent", response_class=HTMLResponse)
+def admin_agent(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
+    return templates.TemplateResponse(
+        request,
+        "agent.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+        },
+    )
+
+# 智能助手 session 认证包装接口（供 /admin/agent 页面 JS 调用）
+from app.agent import service as agent_service
+from app.agent.config import AgentConfig
+from app.agent.routes import _agent_cfg as _get_agent_cfg
+
+@router.post("/admin/agent/chat")
+async def admin_agent_chat(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "消息不能为空"}}, status_code=400)
+    session_id = body.get("session_id")
+    import asyncio
+    def _run():
+        c = db()
+        try:
+            cfg = _agent_cfg_effective(c)
+            return agent_service.run_chat(c, cfg, user["id"], session_id, message)
+        finally:
+            c.close()
+    try:
+        try:
+            result = await asyncio.to_thread(_run)
+        except Exception as e:
+            return JSONResponse({"error": {"code": "AGENT_ERROR", "message": str(e)[:500]}}, status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": {"code": "AGENT_CONFIG_ERROR", "message": str(e)[:200]}}, status_code=503)
+    return JSONResponse(result)
+
+
+# 智能导入 Session 包装（管理后台用 Web Session，不走 Token）
+from fastapi import UploadFile as _UploadFile, File as _File, Form as _Form
+from app.agent import importer as _agent_importer
+from app.agent.config import AgentConfig as _AgentConfig
+
+@router.post("/admin/agent/import/preview")
+async def admin_agent_import_preview(request: Request, file: _UploadFile = _File(...), target: str = _Form(...)):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    if user["role"] not in ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER"):
+        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "无权执行智能导入"}}, status_code=403)
+    if target not in _agent_importer.TARGETS:
+        return JSONResponse({"error": {"code": "AGENT_BAD_TARGET", "message": "不支持的导入目标: " + target}}, status_code=400)
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        return JSONResponse({"error": {"code": "AGENT_FILE_TOO_LARGE", "message": "文件超过 10MB"}}, status_code=413)
+    file_name = file.filename or "upload.bin"
+    try:
+        parsed = _agent_importer.parse_upload(file_name, raw)
+    except ValueError as e:
+        return JSONResponse({"error": {"code": "AGENT_BAD_FILE", "message": str(e)}}, status_code=400)
+    c = db()
+    try:
+        cfg = _agent_cfg_effective(c)
+        column_map = _agent_importer._fallback_mapping(target, parsed["headers"])
+        mapped_rows = _agent_importer.apply_column_mapping(parsed, column_map)
+        valid_rows, errors = _agent_importer.validate_rows(target, mapped_rows, c)
+        job_id = _agent_importer.create_import_job(c, user["id"], target, file_name, raw, column_map, valid_rows, errors)
+    finally:
+        c.close()
+    import hashlib as _hashlib
+    return JSONResponse({
+        "jobId": job_id, "target": target, "fileName": file_name,
+        "fileSha256": _hashlib.sha256(raw).hexdigest(),
+        "columnMap": column_map, "totalRows": parsed["total_rows"],
+        "validRows": len(valid_rows), "invalidRows": len(errors),
+        "canCommit": bool(valid_rows),
+        "errors": errors[:100], "preview": valid_rows[:20],
+    })
+
+@router.post("/admin/agent/import/commit")
+async def admin_agent_import_commit(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    if user["role"] not in ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER"):
+        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "无权执行智能导入"}}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    job_id = body.get("job_id") or body.get("jobId")
+    if not job_id:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "缺少 job_id"}}, status_code=400)
+    import uuid as _uuid
+    c = db()
+    try:
+        try:
+            result = _agent_importer.commit_import_job(c, user["id"], job_id, body.get("client_operation_id") or str(_uuid.uuid4()))
+        except ValueError as e:
+            return JSONResponse({"error": {"code": "AGENT_IMPORT_ERROR", "message": str(e)[:500]}}, status_code=400)
+    finally:
+        c.close()
+    return JSONResponse(result)
+
+
+# BOM 导入 Session 包装（智能助手页用）
+@router.post("/admin/agent/import/bom/preview")
+async def admin_agent_bom_preview(request: Request, file: _UploadFile = _File(...), model_code: str = _Form(...)):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        preview = await api_bom_preview(file=file, modelCode=model_code.strip(), user=user, x_request_id=str(__import__("uuid").uuid4()))
+    except Exception as e:
+        from app.main import ApiError as _ApiError
+        if isinstance(e, _ApiError):
+            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
+        return JSONResponse({"error": {"code": "BOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    return JSONResponse(preview)
+
+@router.post("/admin/agent/import/bom/commit")
+async def admin_agent_bom_commit(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    preview_id = body.get("preview_id") or body.get("previewId")
+    if not preview_id:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "缺少 preview_id"}}, status_code=400)
+    import uuid as _uuid2
+    from pydantic import BaseModel as _BM
+    class _BomCommit(_BM):
+        previewId: str
+        clientOperationId: str
+    try:
+        result = api_bom_commit(
+            body=_BomCommit(previewId=preview_id, clientOperationId=body.get("client_operation_id") or str(_uuid2.uuid4())),
+            user=user, x_request_id=str(_uuid2.uuid4()),
+            idempotency_key=body.get("client_operation_id") or str(_uuid2.uuid4()),
+        )
+    except Exception as e:
+        from app.main import ApiError as _ApiError2
+        if isinstance(e, _ApiError2):
+            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
+        return JSONResponse({"error": {"code": "BOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    return JSONResponse(result)
+
+
+# 多机型 BOM 聚合
+@router.get("/admin/agent/bom/models")
+async def admin_agent_bom_models(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    c = db()
+    try:
+        rows = c.execute("""
+            SELECT m.model_code, m.model_name,
+                   (SELECT COUNT(*) FROM bom_versions v WHERE v.model_code = m.model_code AND v.status = 'PUBLISHED') as pub_count
+            FROM production_order_models m ORDER BY m.model_code
+        """).fetchall()
+        models = [{"model_code": r["model_code"], "model_name": r["model_name"], "has_bom": r["pub_count"] > 0} for r in rows]
+    finally:
+        c.close()
+    return JSONResponse({"models": models})
+
+@router.get("/admin/agent/bom/aggregate")
+async def admin_agent_bom_aggregate(request: Request, model_codes: str = ""):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    codes = [c.strip() for c in model_codes.split(",") if c.strip()]
+    if not codes:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请选择机型"}}, status_code=400)
+    c = db()
+    try:
+        agg = {}
+        per_model = {}
+        for code in codes:
+            v = c.execute(
+                "SELECT id FROM bom_versions WHERE model_code = ? AND status = 'PUBLISHED' ORDER BY version_no DESC LIMIT 1",
+                (code,)).fetchone()
+            if not v:
+                per_model[code] = {"error": "无已发布 BOM"}
+                continue
+            items = c.execute(
+                "SELECT material_code, material_name, specification, unit, quantity FROM bom_items WHERE bom_version_id = ?",
+                (v["id"],)).fetchall()
+            per_model[code] = {"rows": len(items)}
+            for it in items:
+                mc = it["material_code"]
+                if mc not in agg:
+                    agg[mc] = {"material_code": mc, "material_name": it["material_name"],
+                               "specification": it["specification"], "unit": it["unit"],
+                               "total_quantity": 0, "models": []}
+                agg[mc]["total_quantity"] += it["quantity"] or 0
+                agg[mc]["models"].append(code)
+        result = sorted(agg.values(), key=lambda x: -x["total_quantity"])
+        for r in result:
+            r["models"] = sorted(set(r["models"]))
+            r["model_count"] = len(r["models"])
+    finally:
+        c.close()
+    return JSONResponse({"materials": result, "per_model": per_model, "model_count": len(codes)})
+
+
+# 聚合 BOM 导入 Session 包装（智能助手页用）
+@router.post("/admin/agent/import/aggbom/preview")
+async def admin_agent_aggbom_preview(request: Request, file: _UploadFile = _File(...)):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    form_data = await request.form()
+    upload = _UploadFile(file=file.file, filename=file.filename)
+    try:
+        from app.main import preview_agg_bom as _preview_aggbom
+        preview = await _preview_aggbom(file=upload, user=user, x_request_id=str(__import__("uuid").uuid4()))
+    except Exception as e:
+        from app.main import ApiError as _ApiError
+        if isinstance(e, _ApiError):
+            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
+        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    return JSONResponse(preview)
+
+@router.post("/admin/agent/import/aggbom/commit")
+async def admin_agent_aggbom_commit(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    preview_id = body.get("preview_id") or body.get("previewId")
+    if not preview_id:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "缺少 preview_id"}}, status_code=400)
+    import uuid as _uuid3
+    from app.main import AggBomCommitRequest as _AggReq, commit_agg_bom as _commit_aggbom
+    op_id = body.get("client_operation_id") or str(_uuid3.uuid4())
+    try:
+        result = _commit_aggbom(
+            body=_AggReq(previewId=preview_id, clientOperationId=op_id),
+            user=user, x_request_id=str(_uuid3.uuid4()), idempotency_key=op_id,
+        )
+    except Exception as e:
+        from app.main import ApiError as _ApiError3
+        if isinstance(e, _ApiError3):
+            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
+        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    return JSONResponse(result)
+
+@router.get("/admin/agent/aggbom/batches")
+async def admin_agent_aggbom_batches(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    from app.main import list_agg_bom_batches as _list_batches
+    return JSONResponse(_list_batches(user=user))
+
+@router.get("/admin/agent/aggbom/aggregate")
+async def admin_agent_aggbom_aggregate(request: Request, batch_id: str = "", device_codes: str = ""):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    from app.main import aggregate_agg_bom as _agg
+    try:
+        return JSONResponse(_agg(batch_id=batch_id, device_codes=device_codes, user=user))
+    except Exception as e:
+        from app.main import ApiError as _ApiError4
+        if isinstance(e, _ApiError4):
+            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
+        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+
+# 智能助手 LLM 设置（存数据库，覆盖环境变量）
+import time as _time
+
+def _agent_settings_get(c):
+    rows = c.execute("SELECT key, value FROM agent_settings").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+def _agent_cfg_effective(c, trace_id="admin"):
+    from dataclasses import replace
+    cfg = _get_agent_cfg(trace_id)
+    s = _agent_settings_get(c)
+    kw = {}
+    if s.get("base_url"): kw["base_url"] = s["base_url"]
+    if s.get("api_key"): kw["api_key"] = s["api_key"]
+    if s.get("model"): kw["model"] = s["model"]
+    if s.get("enabled") in ("0", "1"): kw["enabled"] = s["enabled"] == "1"
+    if kw: cfg = replace(cfg, **kw)
+    return cfg
+
+@router.get("/admin/agent/settings")
+def admin_agent_settings_get(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    c = db()
+    try:
+        s = _agent_settings_get(c)
+    finally:
+        c.close()
+    # api_key 脱敏显示
+    masked = dict(s)
+    if masked.get("api_key"):
+        k = masked["api_key"]
+        masked["api_key"] = k[:4] + "****" + k[-4:] if len(k) > 8 else "****"
+        masked["api_key_set"] = True
+    else:
+        masked["api_key_set"] = False
+    return JSONResponse({"settings": masked})
+
+@router.post("/admin/agent/settings")
+async def admin_agent_settings_set(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    if user["role"] not in ("ADMIN",):
+        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "仅管理员可修改"}}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    allowed = ("base_url", "api_key", "model", "enabled")
+    c = db()
+    try:
+        now_ts = int(_time.time())
+        for k in allowed:
+            if k in body and body[k] is not None:
+                v = str(body[k]).strip()
+                # api_key 为空字符串表示不修改（前端脱敏显示时）
+                if k == "api_key" and v == "":
+                    continue
+                c.execute(
+                    "INSERT INTO agent_settings(key, value, updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (k, v, now_ts),
+                )
+        c.commit()
+    finally:
+        c.close()
+    return JSONResponse({"ok": True})
