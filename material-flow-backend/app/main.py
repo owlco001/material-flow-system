@@ -610,6 +610,10 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
+    -- U9 集成：同步运行日志（u9/sync.py 也会幂等建表）
+    CREATE TABLE IF NOT EXISTS u9_sync_logs(id TEXT PRIMARY KEY, run_id TEXT NOT NULL, entity TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL DEFAULT 'RUNNING', dry_run INTEGER NOT NULL DEFAULT 1, total INTEGER NOT NULL DEFAULT 0, inserted INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT, detail_json TEXT);
+    CREATE INDEX IF NOT EXISTS idx_u9_sync_logs_run ON u9_sync_logs(run_id);
+    CREATE INDEX IF NOT EXISTS idx_u9_sync_logs_entity ON u9_sync_logs(entity, started_at);
     CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_model_versions(
         id TEXT PRIMARY KEY,
@@ -6607,3 +6611,9 @@ try:
 except ImportError:
     from agent.routes import router as _agent_router
 app.include_router(_agent_router)
+# U9 ERP 集成（Phase 1 只读同步骨架；默认关闭，未配置时接口返回 503）。
+try:
+    from .u9.routes import router as _u9_router
+except ImportError:
+    from u9.routes import router as _u9_router
+app.include_router(_u9_router)

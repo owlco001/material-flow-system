@@ -45,6 +45,18 @@
 
 基于 LLM（默认 DeepSeek 兼容接口，可配 MiMo 等）的 ReAct 对话，10 个只读数据分析工具，配置见环境变量 `AGENT_LLM_API_KEY` 等。
 
+## 用友 U9 ERP 集成
+
+`material-flow-backend/app/u9/` 提供与用友 U9 的数据同步骨架，目标是替代"U9 导出 Excel → 人工导入"的手工链路。
+
+- **分期**：Phase 1 只读同步（U9 → 本地：料品档案、BOM、库存现存量、生产订单）；Phase 2 回写（完工汇报、领料出库，待实施商确认业务校验规则）。
+- **默认关闭**：`U9_ENABLED=0` 时所有同步接口返回 503，不写任何数据。
+- **安全**：连接信息与凭证只从环境变量读取（`U9_WSDL_URL`/`U9_USERNAME`/`U9_PASSWORD` 等），不落盘、不进日志；管理接口返回脱敏配置。
+- **同步语义**：接口默认 `dry_run=true`（只预览不写库）；真实写入为幂等 upsert（按 `materials.code`、`production_orders.order_no` 等自然键）；每次运行写入 `u9_sync_logs`。
+- **管理接口**（需 ADMIN）：`GET /api/v1/u9/status`（配置状态+最近同步）、`POST /api/v1/u9/sync/{items|boms|inventory|orders}`、`GET /api/v1/u9/logs`。
+
+当前状态：模块骨架已就绪，SOAP/REST 客户端与 U9 字段映射待实施商提供《接口开发文档》、WSDL 地址与接口凭证后填充。过渡期 Excel 导入保留作为兜底。
+
 ## 部署后端
 
 推荐使用一键部署脚本（在仓库内以 root 执行）：
