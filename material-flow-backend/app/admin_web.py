@@ -1504,6 +1504,101 @@ async def admin_exceptions_review(request: Request, eid: str):
     return _see_other("/admin/exceptions?notice=exception_reviewed")
 
 
+# ---------------------------------------------------------------- U9 集成页面
+@router.get("/admin/u9", response_class=HTMLResponse)
+def admin_u9(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    from app.u9.config import get_config
+    from app.u9.sync import ENTITIES
+    cfg = get_config()
+    c = db()
+    try:
+        logs = []
+        if c.execute("SELECT name FROM sqlite_master WHERE name='u9_sync_logs'").fetchone():
+            logs = [dict(r) for r in c.execute(
+                "SELECT * FROM u9_sync_logs ORDER BY started_at DESC LIMIT 30").fetchall()]
+    finally:
+        c.close()
+    entities = [
+        {"id": "items", "label": "料品档案",
+         "desc": "U9 料品主数据 → 本地物料档案（编码/名称/规格/单位，不含数量）",
+         "table": "materials"},
+        {"id": "boms", "label": "物料清单 BOM",
+         "desc": "按产品/设备编码拉取多层 BOM，替代人工导 Excel",
+         "table": "agg_bom_batches / agg_bom_items"},
+        {"id": "inventory", "label": "库存现存量",
+         "desc": "U9 库存现存量 → 本地库存（按料品+库位）",
+         "table": "inventory"},
+        {"id": "orders", "label": "生产订单",
+         "desc": "U9 生产订单 → 本地生产订单",
+         "table": "production_orders"},
+    ]
+    return templates.TemplateResponse(
+        request,
+        "u9.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "config": cfg.safe_dict(),
+            "entities": [e for e in entities if e["id"] in ENTITIES],
+            "logs": logs,
+            "entity_labels": {"items": "料品档案", "boms": "BOM",
+                              "inventory": "库存", "orders": "生产订单"},
+            "status_labels": {"OK": "成功", "PENDING_DOC": "待实施商文档",
+                              "FAILED": "失败", "RUNNING": "运行中"},
+            "message": request.query_params.get("msg", ""),
+            "message_ok": request.query_params.get("ok", "") == "1",
+            "now_ts": int(time.time()),
+        },
+    )
+
+
+@router.post("/admin/u9/sync/{entity}")
+async def admin_u9_sync(request: Request, entity: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    from urllib.parse import quote
+    from app.u9.config import get_config
+    from app.u9.sync import ENTITIES, run_sync
+    cfg = get_config()
+    if entity not in ENTITIES:
+        return _see_other("/admin/u9?msg=" + quote("未知同步实体") + "&ok=0")
+    if not cfg.enabled or not cfg.configured:
+        return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，同步未执行") + "&ok=0")
+    dry_run = str(form.get("dry_run", "1")) != "0"
+    kwargs: dict = {}
+    if entity == "boms":
+        codes = [p.strip() for p in str(form.get("product_codes", "")).split(",") if p.strip()]
+        if not codes:
+            return _see_other("/admin/u9?msg=" + quote("同步 BOM 需填写产品/设备编码") + "&ok=0")
+        kwargs["product_codes"] = codes
+    c = db()
+    try:
+        result = run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)
+    except Exception as e:  # noqa: BLE001 - 转中文提示，不吞真因
+        c.close()
+        return _see_other("/admin/u9?msg=" + quote(f"同步异常：{e}") + "&ok=0")
+    c.close()
+    if result["status"] == "PENDING_DOC":
+        msg = "U9 接口尚未实现（待实施商提供 WSDL/字段文档），已记录占位日志"
+        ok = "0"
+    else:
+        s = result["stats"]
+        mode = "预览" if dry_run else "执行"
+        total = s.get("total", s.get("total_lines", 0))
+        inserted = s.get("inserted", s.get("inserted_lines", 0))
+        msg = (f"{mode}完成：总数 {total}，新增 {inserted}，"
+               f"更新 {s.get('updated', 0)}，跳过 {s.get('skipped', 0)}")
+        ok = "1"
+    return _see_other(f"/admin/u9?msg={quote(msg)}&ok={ok}")
+
+
 def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
     code = str(request.query_params.get("code", "")).strip()
     stocktakes = api_list_stocktakes(user=user)["items"]
