@@ -355,6 +355,9 @@ fun LogisticsApp(
                         onSubmitMaterialRequest = { material, orderNo, qty, remark ->
                             viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark)
                         },
+                        onSubmitException = { deviceId, materialId, orderNo, actualQty, desc ->
+                            viewModel.submitDeviceException(deviceId, materialId, orderNo, actualQty, desc)
+                        },
                     )
 
                     Screen.INVENTORY -> InventoryScreen(
