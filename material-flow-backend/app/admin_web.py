@@ -1552,6 +1552,7 @@ def admin_exceptions(request: Request):
             "csrf_token": user["csrf_token"],
             "exceptions": exceptions,
             "import_errors": import_errors,
+            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
             "open_count": open_count,
             "in_progress_count": in_progress_count,
             "resolved_count": resolved_count,

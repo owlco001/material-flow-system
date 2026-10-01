@@ -25,10 +25,15 @@
     <td>{{ e.description or "—" }}</td>
     <td>{{ e.created_at[:16].replace("T", " ") if e.created_at else "—" }}</td>
     <td>
-      {% if e.status == "OPEN" %}
+      {% if e.status in ("OPEN", "PENDING") %}
       <form method="post" action="/admin/exceptions/{{ e.id }}/review" style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-sm">处理</button>
+        <input type="hidden" name="clientOperationId" value="{{ exception_ops[e.id] }}">
+        <select name="decision" style="max-width:70px">
+          <option value="APPROVE">通过</option>
+          <option value="REJECT">驳回</option>
+        </select>
+        <button type="submit" class="btn btn-sm">提交</button>
       </form>
       {% else %}—{% endif %}
     </td>

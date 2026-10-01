@@ -681,6 +681,9 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
+    # 迁移必须跑在种子数据之前：种子 INSERT 的列数按迁移后结构书写
+    #（如 materials.category），历史库缺列时先补齐，否则新库初始化崩溃。
+    _migrate_schema(c)
     if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0 and INITIAL_ADMIN_PASSWORD and INITIAL_ADMIN_PASSWORD.strip():
         # 环境注入的初始密码同样是临时凭据，首次登录必须完成改密。
         c.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", ("u_admin", "owlco", "系统管理员", "ADMIN", hash_password(INITIAL_ADMIN_PASSWORD), 1, 1, now()))
@@ -691,11 +694,10 @@ def _init_db(c: sqlite3.Connection) -> None:
                   ('default', 'INITIALIZED' if initialized else 'UNINITIALIZED', 'owlco', now() if initialized else None,
                    'environment' if initialized else None))
     if c.execute("SELECT 1 FROM materials").fetchone() is None:
-        c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1, "机械"))
+        c.execute("INSERT INTO materials(id,code,name,specification,unit,batch_no,expiry_date,total_quantity,available_quantity,version,category) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("mat_001", "MTR-001", "工业轴承", "6205-2RS", "件", "B20260912", None, 986, 986, 1, "机械"))
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)", ("inv_001", "mat_001", "loc_001", 986))
 
-    _migrate_schema(c)
     seed_demo_order(c)
     c.commit()
 
@@ -824,6 +826,12 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     handover_cols = {r["name"] for r in c.execute("PRAGMA table_info(material_handovers)").fetchall()}
     if "items_json" not in handover_cols:
         c.execute("ALTER TABLE material_handovers ADD COLUMN items_json TEXT")
+
+    # 物料分类：历史库的 materials 表没有 category 列，但查询与种子数据都按 11 列书写，
+    # 缺列时新库初始化会在种子 INSERT 处崩溃。此处幂等补齐。
+    material_cols = {r["name"] for r in c.execute("PRAGMA table_info(materials)").fetchall()}
+    if "category" not in material_cols:
+        c.execute("ALTER TABLE materials ADD COLUMN category TEXT")
 
     exception_cols = {r["name"] for r in c.execute("PRAGMA table_info(exceptions)").fetchall()}
     if "order_no" not in exception_cols:
@@ -6453,7 +6461,7 @@ def review_exception(
             result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id)
             c.rollback(); c.close(); return result
         reviewed_at = now()
-        cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING'", (status, user["id"], reviewed_at, eid))
+        cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status IN ('PENDING','OPEN')", (status, user["id"], reviewed_at, eid))
         if cur.rowcount != 1:
             _conflict("异常状态不允许审批", trace_id)
         audit(c, user["id"], user["role"], "REVIEW", "EXCEPTION", eid, request_id=trace_id)
