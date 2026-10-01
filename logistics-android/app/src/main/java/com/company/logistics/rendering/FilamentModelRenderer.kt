@@ -27,8 +27,8 @@ import com.google.android.filament.EntityManager
 import com.google.android.filament.LightManager
 import com.google.android.filament.IndirectLight
 import com.google.android.filament.Texture
-import com.google.android.filament.ToneMapping
 import com.google.android.filament.TransformManager
+import com.google.android.filament.View.ToneMapping
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
