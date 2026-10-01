@@ -74,28 +74,28 @@
   {% if dq %}<a href="/admin/models?code={{ code }}&q={{ q }}" class="btn btn-sm btn-secondary">清除</a>{% endif %}
   <span style="color:#6b7280;font-size:13px">共 {{ dtotal }} 台</span>
 </form>
-<table>
-  <tr><th>机台编号</th><th>机台名称</th><th>已绑定模型</th><th>绑定 / 解绑</th><th>任务分配</th></tr>
+<div class="machine-grid" style="margin-top:8px">
   {% for d in devices %}
   {% set _dtasks = device_tasks.get(d.id, []) %}
-  <tr>
-    <td>{{ d.device_no }}</td>
-    <td>{{ d.device_name }}</td>
-    <td>{{ d.model_3d_code or "—" }}</td>
-    <td>
-      <form method="post" action="/admin/models/bind-device" style="display:inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="deviceId" value="{{ d.id }}">
-        <select name="model3dCode">
-          <option value="">— 解绑 —</option>
-          {% for mc in published_codes %}
-          <option value="{{ mc }}" {% if mc == d.model_3d_code %}selected{% endif %}>{{ mc }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit">保存</button>
-      </form>
-    </td>
-    <td>
+  <div class="machine-card">
+    <div class="mc-head">
+      <b><span class="mc-no">#{{ (dpage-1)*20 + loop.index }}</span>{{ d.device_no }}</b>
+      <span class="badge {% if d.model_3d_code %}b-ok{% else %}b-mute{% endif %}">{{ d.model_3d_code or "未绑定" }}</span>
+    </div>
+    <div class="mc-name">{{ d.device_name }}</div>
+    <form method="post" action="/admin/models/bind-device" style="display:flex;gap:6px;margin-top:6px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="deviceId" value="{{ d.id }}">
+      <select name="model3dCode" style="flex:1;min-width:0" title="3D 模型">
+        <option value="">— 解绑 —</option>
+        {% for mc in published_codes %}
+        <option value="{{ mc }}" {% if mc == d.model_3d_code %}selected{% endif %}>{{ mc }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-sm">保存</button>
+    </form>
+    <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">任务分配</div>
       {% for t in _dtasks %}
       {% set _tst = t.status %}
       <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed #e5e7eb">
@@ -133,13 +133,13 @@
           </div>
         </details>
       </div>
-      {% else %}<span style="color:#999">无任务</span>{% endfor %}
-    </td>
-  </tr>
+      {% else %}<span style="color:#999;font-size:12px">无任务</span>{% endfor %}
+    </div>
+  </div>
   {% else %}
-  <tr><td colspan="5">暂无机台</td></tr>
+  <p class="muted">暂无机台</p>
   {% endfor %}
-</table>
+</div>
 <p style="margin-top:12px">
   {% if dpage > 1 %}<a href="/admin/models?code={{ code }}&q={{ q }}&dq={{ dq }}&dpage={{ dpage - 1 }}" class="btn btn-sm">上一页</a>{% endif %}
   第 {{ dpage }} / {{ dtotal_pages }} 页
