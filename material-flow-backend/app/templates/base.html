@@ -235,6 +235,7 @@ tbody tr:last-child td { border-bottom: 0; }
 /* S16 移动端适配：表格横滚 + 小屏布局 + 触控目标 */
 @media (max-width: 720px) {
   th, td { padding: 7px 9px; font-size: 13px; }
+  .machine-grid { grid-template-columns: 1fr; }
   input, select, button, .btn { max-width: 100%; min-height: 42px; box-sizing: border-box; }
   .cards .card { flex: 1 1 100%; }
   .page-head h2 { font-size: 19px; }
@@ -253,6 +254,21 @@ tbody tr:last-child td { border-bottom: 0; }
   animation: mat-spin .7s linear infinite;
 }
 @keyframes mat-spin { to { transform: rotate(360deg); } }
+/* 机台双列卡片 */
+.machine-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.machine-card {
+  display: block; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 13px 16px; box-shadow: var(--shadow);
+  text-decoration: none; color: var(--ink); transition: border-color .15s, transform .15s;
+}
+.machine-card:hover { border-color: var(--brand); transform: translateY(-1px); }
+.mc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mc-head b { font-size: 16px; }
+.mc-head b .mc-no { color: var(--muted); font-weight: 400; font-size: 12px; margin-right: 6px; }
+.mc-name { color: var(--muted); font-size: 13px; margin: 2px 0 8px; }
+.mc-row { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-top: 6px; }
+.mc-row .bar-bg { flex: 1; }
+.mc-row .muted { flex: none; }
 /* 物料状态浅色标签 */
 .st{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:500}
 .st-red{background:rgba(220,53,69,.12);color:#c92a3a}

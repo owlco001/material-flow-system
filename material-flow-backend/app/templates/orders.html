@@ -60,24 +60,31 @@
     {% if task_q %}<a href="?order_no={{ order_no }}" class="btn btn-sm btn-secondary">清除</a>{% endif %}
   </form>
   <p style="color:#6b7280;font-size:13px">共 {{ task_total }} 台</p>
-  <table>
-    <tr><th>序号</th><th>机台编号</th><th>机台名称</th><th>状态</th><th>进度</th><th>装配工</th><th>详情</th></tr>
+  <div class="machine-grid">
     {% for t in task_items %}
     {% set _tst = t.get("status") %}
-    {% set _trow = {"WAITING_MATERIAL": "row-yellow", "MATERIAL_ACCEPTED": "row-blue", "IN_PROGRESS": "row-blue", "PAUSED_FOR_TEMPORARY_TRANSFER": "row-red", "COMPLETED": "row-green"}.get(_tst, "") %}
-    <tr class="{{ _trow }}">
-      <td>{{ (task_page-1)*task_size + loop.index }}</td>
-      <td>{{ t.get("deviceNo") or t.get("device_no") }}</td>
-      <td>{{ t.get("deviceName") or t.get("device_name") or "—" }}</td>
-      <td>{% set _ts = t.get("status") %}{{ status_labels.get(_ts, _ts) if status_labels else _ts }}</td>
-      <td>{{ t.get("progressStage") if t.get("progressStage") is not none else (t.get("progress_stage") if t.get("progress_stage") is not none else "—") }} / 3</td>
-      <td>{{ t.get("assignedAssemblerId") or t.get("assigned_assembler_id") or "—" }}</td>
-      <td><a href="/admin/orders/{{ d_order_no }}/tasks/{{ t.get('taskId') or t.get('id') }}">查看</a></td>
-    </tr>
+    {% set _tbadge = {"WAITING_MATERIAL": "b-warn", "MATERIAL_ACCEPTED": "b-info", "IN_PROGRESS": "b-info", "PAUSED_FOR_TEMPORARY_TRANSFER": "b-err", "COMPLETED": "b-ok"}.get(_tst, "b-mute") %}
+    {% set _stage = t.get("progressStage") if t.get("progressStage") is not none else (t.get("progress_stage") if t.get("progress_stage") is not none else 0) %}
+    <a class="machine-card" href="/admin/orders/{{ d_order_no }}/tasks/{{ t.get('taskId') or t.get('id') }}">
+      <div class="mc-head">
+        <b><span class="mc-no">#{{ (task_page-1)*task_size + loop.index }}</span>{{ t.get("deviceNo") or t.get("device_no") }}</b>
+        <span class="badge {{ _tbadge }}">{{ status_labels.get(_tst, _tst) if status_labels else _tst }}</span>
+      </div>
+      <div class="mc-name">{{ t.get("deviceName") or t.get("device_name") or "—" }}</div>
+      <div class="mc-row">
+        <span class="muted">进度</span>
+        <div class="bar-bg"><div class="bar-fg {% if _stage >= 3 %}is-done{% endif %}" style="width:{{ ([_stage, 3]|min / 3 * 100)|round(0) }}%"></div></div>
+        <span>{{ _stage }} / 3</span>
+      </div>
+      <div class="mc-row">
+        <span class="muted">装配工</span>
+        <span>{{ t.get("assignedAssemblerId") or t.get("assigned_assembler_id") or "—" }}</span>
+      </div>
+    </a>
     {% else %}
-    <tr><td colspan="7">暂无机台</td></tr>
+    <p class="muted">暂无机台</p>
     {% endfor %}
-  </table>
+  </div>
   {% if task_pages > 1 %}
   <div style="margin:8px 0;display:flex;gap:6px;align-items:center;font-size:14px">
     {% if task_page > 1 %}<a href="?order_no={{ order_no }}&task_page={{ task_page-1 }}&task_size={{ task_size }}&task_q={{ task_q }}" class="btn btn-sm">上一页</a>{% endif %}
