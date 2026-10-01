@@ -39,6 +39,23 @@
     <a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a>
     <a class="btn btn-sm btn-secondary" href="/admin/boms?modelCode={{ published.modelCode }}">查看 BOM</a>
   </div>
+  {% if parts_error %}
+  <p class="error" style="margin:8px 0 0">{{ parts_error }}</p>
+  {% else %}
+  <details style="margin-top:8px">
+    <summary style="cursor:pointer;font-size:14px">零件清单（{{ parts|length }}）</summary>
+    {% if parts %}
+    <table style="margin-top:8px">
+      <tr><th style="width:48px">序号</th><th>零件名</th><th>模型节点名</th></tr>
+      {% for p in parts %}
+      <tr><td>{{ loop.index }}</td><td>{{ p.cn }}</td><td class="muted">{{ p.name }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted" style="margin:8px 0 0">该模型未拆分独立零件</p>
+    {% endif %}
+  </details>
+  {% endif %}
 </div>
 {% elif published_error %}
 <p class="error" style="margin-top:12px">{{ published_error }}（{{ code }} 无已发布版本）</p>

@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import re
 import secrets
 import sqlite3
 import time
@@ -1019,6 +1020,65 @@ MODEL_STATUS_LABELS = {
     "DRAFT": "草稿",
 }
 
+# GLB 零件英文名 → 中文（与 App 端 PartNameCn 保持一致）
+_PART_CN_DICT = {
+    "arm": "机械臂", "base": "底座", "column": "立柱", "upper": "大臂",
+    "forearm": "小臂", "wrist": "腕部", "roll": "旋转", "pitch": "俯仰",
+    "flange": "法兰盘", "gripper": "夹爪", "jaw": "夹指",
+    "shoulder": "肩部", "elbow": "肘部",
+    "conveyor": "传送带", "belt": "皮带", "roller": "滚筒", "workstation": "工作站",
+    "line": "产线", "station": "工位",
+    "motor": "电机", "gear": "齿轮", "gearbox": "减速箱", "bearing": "轴承",
+    "shaft": "轴", "frame": "机架", "bracket": "支架", "plate": "板",
+    "cover": "罩盖", "housing": "壳体", "bolt": "螺栓", "nut": "螺母",
+    "screw": "螺钉", "washer": "垫圈", "spring": "弹簧",
+    "wheel": "轮", "cylinder": "油缸", "piston": "活塞", "chain": "链条",
+    "pump": "泵", "valve": "阀", "pipe": "管", "tank": "箱",
+    "sensor": "传感器", "controller": "控制器", "cabinet": "控制柜",
+    "panel": "面板", "screen": "屏幕", "button": "按钮",
+    "fork": "货叉", "mast": "门架", "forklift": "叉车",
+    "pallet": "托盘", "generator": "发电机",
+    "left": "左", "right": "右", "front": "前", "rear": "后",
+    "top": "上", "bottom": "下", "inner": "内", "outer": "外",
+    "l": "左", "r": "右",
+}
+_PART_SPLIT_RE = re.compile(r"[_.\-]+")
+_PART_JUNK_RE = re.compile(r"^(group\d+|rootnode|node\d*|mesh\d*|object\d*)$", re.IGNORECASE)
+
+
+def part_display_name(raw: str) -> str:
+    """'arm_base' → '机械臂 底座'；无命中词元时返回原名。"""
+    tokens = [t for t in _PART_SPLIT_RE.split(raw.lower()) if t]
+    if not tokens:
+        return raw
+    translated = [_PART_CN_DICT.get(t, t) for t in tokens]
+    if translated == tokens:
+        return raw
+    return " ".join(translated)
+
+
+def extract_glb_parts(storage_key: str) -> list[str]:
+    """从 GLB 文件的 JSON 块提取零件节点名（去重、过滤无意义名称）。"""
+    import struct as _struct
+    import json as _json
+    path = (UPLOAD_DIR.resolve() / storage_key).resolve()
+    if UPLOAD_DIR.resolve() not in path.parents:
+        raise ValueError("非法存储路径")
+    data = path.read_bytes()
+    if len(data) < 20 or data[0:4] != b"glTF":
+        raise ValueError("不是有效 GLB 文件")
+    json_len = _struct.unpack("<I", data[12:16])[0]
+    glb_json = _json.loads(data[20:20 + json_len])
+    seen: list[str] = []
+    for node in glb_json.get("nodes", []):
+        name = str(node.get("name", "")).strip()
+        if not name or name in seen:
+            continue
+        if _PART_JUNK_RE.match(name) or name.isdigit():
+            continue
+        seen.append(name)
+    return seen
+
 
 @router.get("/admin/models", response_class=HTMLResponse)
 def admin_models_list(request: Request):
@@ -1066,6 +1126,23 @@ def admin_models_list(request: Request):
     dpage_size = DEFAULT_PAGE_SIZE
     c = db()
     try:
+        # 零件清单：从已发布版本的 GLB 解析节点名
+        parts: list[dict] = []
+        parts_error: str | None = None
+        if published:
+            try:
+                prow = c.execute(
+                    "SELECT storage_key FROM assembly_model_versions"
+                    " WHERE model_code=? AND status='PUBLISHED' ORDER BY version DESC LIMIT 1",
+                    (published["modelCode"],),
+                ).fetchone()
+                if prow and prow["storage_key"]:
+                    parts = [
+                        {"name": n, "cn": part_display_name(n)}
+                        for n in extract_glb_parts(prow["storage_key"])
+                    ]
+            except Exception as exc:
+                parts_error = f"零件解析失败：{exc}"
         device_cols = {r["name"] for r in c.execute("PRAGMA table_info(devices)").fetchall()}
         has_3d_col = "model_3d_code" in device_cols
         col = "model_3d_code" if has_3d_col else "NULL AS model_3d_code"
@@ -1155,6 +1232,8 @@ def admin_models_list(request: Request):
             "total": total,
             "published": published,
             "published_error": published_error,
+            "parts": parts,
+            "parts_error": parts_error,
             "status_labels": MODEL_STATUS_LABELS,
             "devices": devices,
             "published_codes": published_codes,
