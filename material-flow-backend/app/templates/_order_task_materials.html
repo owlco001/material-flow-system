@@ -41,6 +41,7 @@
     {% set _cbadge = {"电气": "b-info", "机械": "b-warn"}.get(_mc, "b-mute") %}
     <div class="mat-row">
       <span class="mat-code">{{ m.materialCode or "—" }}</span>
+      {% if m.materialCode %}<img class="mini-barcode" src="/admin/barcodes/image?entity=material&key={{ m.materialCode|urlencode }}&kind=code128&image=png" alt="物料一维码" title="{{ m.materialCode }}" loading="lazy">{% endif %}
       <span class="mat-name">{{ m.materialName or "—" }}</span>
       <span class="mat-nums">需<b>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }}{{ m.unit or "" }}</b>到<b>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</b>库<b>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</b></span>
       <span class="mat-badges">

@@ -2407,10 +2407,12 @@ def admin_barcodes_print(request: Request):
 
 @router.get("/admin/barcodes/image")
 def admin_barcodes_image(request: Request):
-    """管理台会话鉴权的条码图片下载（浏览器直接点击可用，无需 Bearer Token）。"""
-    user, err = _admin_or_403(request)
-    if err is not None:
-        return err
+    """管理台会话鉴权的条码图片下载（浏览器直接点击可用，无需 Bearer Token）。
+    条码内容即页面上已可见的编号本身，不新增数据暴露，故允许所有已登录用户访问，
+    以便非管理员角色的列表页也能内嵌展示。"""
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
     entity = request.query_params.get("entity", "order")
     key = request.query_params.get("key", "").strip()
     kind = request.query_params.get("kind", "qr")
