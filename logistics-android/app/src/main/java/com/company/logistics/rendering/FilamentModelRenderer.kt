@@ -400,8 +400,11 @@ class FilamentModelRenderer(
         val scn = scene ?: return
         val tm = eng.transformManager
         if (asset == null) return
-        val ghostSoft = ghostInstance(0.55f, 0.65f, 0.85f, 0.16f) // 隔离：淡蓝半透明
-        val ghostMid = ghostInstance(0.45f, 0.60f, 0.95f, 0.38f) // 剖面相交：稍深
+        // 诊断：暂时禁用 ghost 材质，定位点选退回问题
+        // val ghostSoft = ghostInstance(0.55f, 0.65f, 0.85f, 0.16f) // 隔离：淡蓝半透明
+        // val ghostMid = ghostInstance(0.45f, 0.60f, 0.95f, 0.38f) // 剖面相交：稍深
+        val ghostSoft: com.google.android.filament.MaterialInstance? = null
+        val ghostMid: com.google.android.filament.MaterialInstance? = null
         val isolating = isolatedName != null || isolatedEntity != 0
         for (i in partEntities.indices) {
             val entity = partEntities[i]
