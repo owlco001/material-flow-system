@@ -8,16 +8,39 @@
   <span class="badge {% if status == 'PUBLISHED' %}b-ok{% elif status == 'ARCHIVED' %}b-mute{% else %}b-warn{% endif %}">{{ status_labels.get(status, status) }}</span>
   <span style="color:#6b7280;font-size:13px">{{ model_name }} · {{ byte_size }} 字节</span>
   <span style="flex:1"></span>
+  <button id="mv-parts-btn" class="btn btn-sm btn-secondary" type="button">零件清单</button>
   <button id="mv-reset" class="btn btn-sm btn-secondary" type="button">重置视角</button>
   <button id="mv-rotate" class="btn btn-sm btn-secondary" type="button">自动旋转：开</button>
 </div>
-<div id="mv-wrap" style="position:relative;height:calc(100vh - 230px);min-height:420px;background:#0b1020;border-radius:12px;overflow:hidden;border:1px solid var(--line)">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+  <label style="color:#94a3b8;font-size:13px">爆炸图</label>
+  <input id="mv-explode" type="range" min="0" max="100" value="0" style="width:180px;accent-color:#0E5FD8">
+  <span id="mv-explode-val" style="color:#94a3b8;font-size:13px;width:40px;text-align:right">0%</span>
+  <span style="color:#6b7280;font-size:12px">左键旋转 · 右键平移 · 滚轮缩放 · 点击零件查看名称</span>
+</div>
+<div id="mv-wrap" style="position:relative;height:calc(100vh - 270px);min-height:420px;background:#0b1020;border-radius:12px;overflow:hidden;border:1px solid var(--line)">
   <div id="mv-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:14px;z-index:2">
     <span class="mat-spinner" style="margin-right:10px"></span>模型加载中…
   </div>
   <div id="mv-error" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#fca5a5;font-size:14px;z-index:2;padding:24px;text-align:center"></div>
+  <div id="mv-part-chip" style="position:absolute;top:10px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:10px;background:rgba(26,29,33,.85);border-radius:12px;padding:8px 12px;z-index:3;max-width:90%">
+    <div><div id="mv-part-name" style="color:#fff;font-size:13px"></div>
+    <div style="color:rgba(255,255,255,.55);font-size:11px">已定位 · 其余零件半透明</div></div>
+    <button id="mv-part-clear" class="btn btn-sm btn-secondary" type="button">取消</button>
+  </div>
+  <div id="mv-parts-panel" style="position:absolute;top:0;right:0;bottom:0;width:280px;max-width:80%;background:rgba(16,26,48,.96);border-left:1px solid #24365c;z-index:3;display:none;flex-direction:column">
+    <div style="padding:12px;border-bottom:1px solid #24365c;display:flex;align-items:center;gap:8px">
+      <b style="color:#fff;font-size:14px;flex:1">零件清单（<span id="mv-parts-count">0</span>）</b>
+      <button id="mv-parts-close" class="btn btn-sm btn-secondary" type="button">关闭</button>
+    </div>
+    <div style="padding:8px 12px;border-bottom:1px solid #24365c">
+      <input id="mv-parts-search" placeholder="搜索零件名" style="width:100%;background:#0b1428;border:1px solid #24365c;border-radius:8px;color:#fff;font-size:13px;padding:8px 10px;box-sizing:border-box">
+    </div>
+    <div id="mv-parts-empty" style="display:none;padding:20px;color:#94a3b8;font-size:13px">该模型未拆分独立零件，可直接在 3D 视图中点选查看。</div>
+    <div id="mv-parts-list" style="flex:1;overflow-y:auto;padding:8px 12px"></div>
+  </div>
 </div>
-<p style="color:#6b7280;font-size:12px;margin-top:8px">左键旋转 · 右键平移 · 滚轮缩放</p>
+<p style="color:#6b7280;font-size:12px;margin-top:8px">零件清单点选后自动聚焦定位；爆炸图散开看装配关系</p>
 <script type="importmap">
 {"imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -65,12 +88,41 @@ scene.add(grid);
 
 let homePos = new THREE.Vector3(4, 3, 6);
 let homeTarget = new THREE.Vector3(0, 0.5, 0);
+let modelCenter = new THREE.Vector3();
+let modelMaxDim = 1;
+let partGroups = [];   // [{name, cn, meshes:[], center:Vector3}]
+let selectedName = null;
+let explodeFactor = 0;
+
+// ---- 零件英文名 → 中文（与 App/后台保持一致）----
+const PART_CN = {arm:'机械臂',base:'底座',column:'立柱',upper:'大臂',forearm:'小臂',wrist:'腕部',roll:'旋转',pitch:'俯仰',flange:'法兰盘',gripper:'夹爪',jaw:'夹指',shoulder:'肩部',elbow:'肘部',conveyor:'传送带',belt:'皮带',roller:'滚筒',workstation:'工作站',line:'产线',station:'工位',motor:'电机',gear:'齿轮',gearbox:'减速箱',bearing:'轴承',shaft:'轴',frame:'机架',bracket:'支架',plate:'板',cover:'罩盖',housing:'壳体',bolt:'螺栓',nut:'螺母',screw:'螺钉',washer:'垫圈',spring:'弹簧',wheel:'轮',cylinder:'油缸',piston:'活塞',chain:'链条',pump:'泵',valve:'阀',pipe:'管',tank:'箱',sensor:'传感器',controller:'控制器',cabinet:'控制柜',panel:'面板',screen:'屏幕',button:'按钮',fork:'货叉',mast:'门架',forklift:'叉车',pallet:'托盘',generator:'发电机',left:'左',right:'右',front:'前',rear:'后',top:'上',bottom:'下',inner:'内',outer:'外',l:'左',r:'右'};
+function cnName(raw) {
+  const toks = raw.toLowerCase().split(/[._\-]+/).filter(Boolean);
+  if (!toks.length) return raw;
+  const tr = toks.map(t => PART_CN[t] || t);
+  return tr.join('') === toks.join('') ? raw : tr.join(' ');
+}
+const JUNK_NAME = /^(group\d+|rootnode|node\d*|mesh\d*|object\d*)$/i;
+function meaningfulName(n) {
+  return n && !JUNK_NAME.test(n) && !/^\d+$/.test(n);
+}
+// 沿父链向上找有效节点名
+function partNameOf(mesh) {
+  let o = mesh;
+  while (o) {
+    if (o.name && meaningfulName(o.name)) return o.name;
+    o = o.parent;
+  }
+  return '';
+}
 
 function fitCameraToObject(obj) {
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  modelCenter.copy(center);
+  modelMaxDim = maxDim;
   const dist = maxDim * 2.2;
   homeTarget.copy(center);
   homePos.set(center.x + dist * 0.7, center.y + dist * 0.55, center.z + dist * 0.7);
@@ -81,6 +133,171 @@ function fitCameraToObject(obj) {
   camera.updateProjectionMatrix();
   controls.update();
 }
+
+// ---- 零件收集 / 高亮 / 爆炸 ----
+function collectParts(obj) {
+  partGroups = [];
+  const byName = new Map();
+  obj.traverse(o => {
+    if (!o.isMesh) return;
+    // 材质独立化，避免高亮互相污染
+    o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+    const name = partNameOf(o);
+    if (!name) return;
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(o);
+  });
+  for (const [name, meshes] of byName) {
+    const box = new THREE.Box3();
+    meshes.forEach(m => box.expandByObject(m));
+    const center = box.getCenter(new THREE.Vector3());
+    meshes.forEach(m => {
+      m.userData._basePos = m.position.clone();
+      // 爆炸方向：世界方向转父级局部
+      const dir = center.clone().sub(modelCenter);
+      if (dir.lengthSq() < 1e-8) dir.set(0, 1, 0); else dir.normalize();
+      const p0 = m.parent.worldToLocal(center.clone());
+      const p1 = m.parent.worldToLocal(center.clone().add(dir));
+      m.userData._explodeDir = p1.sub(p0).normalize();
+    });
+    partGroups.push({ name, cn: cnName(name), meshes, center });
+  }
+  renderPartsList('');
+}
+
+function setMeshHighlight(mesh, on) {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  mats.forEach(mt => {
+    if (!mt.emissive) return;
+    if (on) {
+      if (mt.userData._e === undefined) {
+        mt.userData._e = mt.emissive.getHex();
+        mt.userData._o = mt.opacity;
+        mt.userData._t = mt.transparent;
+      }
+      mt.emissive.setHex(0x0E5FD8);
+      mt.emissiveIntensity = 0.55;
+    } else {
+      if (mt.userData._e !== undefined) {
+        mt.emissive.setHex(mt.userData._e);
+        mt.emissiveIntensity = 1;
+      }
+    }
+  });
+}
+function setMeshDim(mesh, dim) {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  mats.forEach(mt => {
+    if (dim) {
+      if (mt.userData._o === undefined) { mt.userData._o = mt.opacity; mt.userData._t = mt.transparent; }
+      mt.transparent = true; mt.opacity = 0.15; mt.depthWrite = false;
+    } else if (mt.userData._o !== undefined) {
+      mt.opacity = mt.userData._o; mt.transparent = mt.userData._t; mt.depthWrite = true;
+    }
+  });
+}
+
+const chipEl = document.getElementById('mv-part-chip');
+const chipNameEl = document.getElementById('mv-part-name');
+function selectPart(name, focus) {
+  // 先恢复
+  partGroups.forEach(g => g.meshes.forEach(m => { setMeshHighlight(m, false); setMeshDim(m, false); }));
+  selectedName = name;
+  if (!name) {
+    chipEl.style.display = 'none';
+    renderPartsList(document.getElementById('mv-parts-search').value);
+    return;
+  }
+  const g = partGroups.find(x => x.name === name);
+  if (!g) return;
+  g.meshes.forEach(m => setMeshHighlight(m, true));
+  partGroups.forEach(x => { if (x.name !== name) x.meshes.forEach(m => setMeshDim(m, true)); });
+  chipNameEl.textContent = g.cn + (g.cn !== g.name ? '（' + g.name + '）' : '');
+  chipEl.style.display = 'flex';
+  if (focus) {
+    if (controls.autoRotate) {
+      controls.autoRotate = false;
+      rotateBtn.textContent = '自动旋转：关';
+    }
+    controls.target.copy(g.center);
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    const dist = Math.max(modelMaxDim * 1.2, g.center.distanceTo(modelCenter) + modelMaxDim * 0.6);
+    camera.position.copy(g.center).addScaledVector(dir, dist);
+    controls.update();
+  }
+  renderPartsList(document.getElementById('mv-parts-search').value);
+}
+document.getElementById('mv-part-clear').addEventListener('click', () => selectPart(null, false));
+
+function renderPartsList(filter) {
+  const listEl = document.getElementById('mv-parts-list');
+  const emptyEl = document.getElementById('mv-parts-empty');
+  document.getElementById('mv-parts-count').textContent = partGroups.length;
+  const q = (filter || '').trim().toLowerCase();
+  const items = partGroups.filter(g =>
+    !q || g.name.toLowerCase().includes(q) || g.cn.includes((filter || '').trim()));
+  emptyEl.style.display = partGroups.length ? 'none' : 'block';
+  listEl.innerHTML = '';
+  items.forEach((g, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:10px 12px;border-radius:10px;margin-bottom:4px;cursor:pointer;display:flex;align-items:center;gap:8px;' +
+      (g.name === selectedName ? 'background:rgba(14,95,216,.25);' : 'background:rgba(255,255,255,.05);');
+    row.innerHTML = '<div style="flex:1;min-width:0"><div style="color:#fff;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+      escapeHtml(g.cn) + '</div>' +
+      (g.cn !== g.name ? '<div style="color:rgba(255,255,255,.45);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(g.name) + '</div>' : '') +
+      '</div>' + (g.name === selectedName ? '<span style="color:#8AB4FF;font-size:12px">已定位</span>' : '');
+    row.addEventListener('click', () => selectPart(g.name, true));
+    listEl.appendChild(row);
+  });
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+document.getElementById('mv-parts-search').addEventListener('input', e => renderPartsList(e.target.value));
+
+// 零件面板开关
+const panelEl = document.getElementById('mv-parts-panel');
+document.getElementById('mv-parts-btn').addEventListener('click', () => {
+  panelEl.style.display = panelEl.style.display === 'flex' ? 'none' : 'flex';
+});
+document.getElementById('mv-parts-close').addEventListener('click', () => { panelEl.style.display = 'none'; });
+
+// 爆炸图
+const explodeInput = document.getElementById('mv-explode');
+const explodeVal = document.getElementById('mv-explode-val');
+function applyExplode() {
+  explodeFactor = explodeInput.value / 100;
+  explodeVal.textContent = explodeInput.value + '%';
+  const dist = modelMaxDim * 0.9;
+  partGroups.forEach(g => g.meshes.forEach(m => {
+    m.position.copy(m.userData._basePos).addScaledVector(m.userData._explodeDir, explodeFactor * dist);
+  }));
+}
+explodeInput.addEventListener('input', applyExplode);
+
+// 3D 点选零件（区分拖拽：移动 < 5px 才算点击）
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let downPos = null;
+renderer.domElement.addEventListener('pointerdown', e => { downPos = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downPos) return;
+  const dx = e.clientX - downPos[0], dy = e.clientY - downPos[1];
+  downPos = null;
+  if (dx * dx + dy * dy > 25 || !partGroups.length) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(pointerNDC, camera);
+  const meshes = [];
+  partGroups.forEach(g => meshes.push(...g.meshes));
+  const hits = raycaster.intersectObjects(meshes, false);
+  if (hits.length) {
+    const g = partGroups.find(x => x.meshes.includes(hits[0].object));
+    selectPart(g ? g.name : null, false);
+  } else {
+    selectPart(null, false);
+  }
+});
 
 function showError(msg) {
   loadingEl.style.display = 'none';
@@ -95,6 +312,8 @@ new GLTFLoader().load(
     const obj = gltf.scene;
     scene.add(obj);
     fitCameraToObject(obj);
+    collectParts(obj);
+    document.getElementById('mv-parts-btn').textContent = '零件清单（' + partGroups.length + '）';
   },
   undefined,
   (err) => {
