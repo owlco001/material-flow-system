@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.UUID
+import org.json.JSONObject
 
 /**
  * 数据仓库 —— 串联网络层与本地离线队列。
@@ -229,7 +230,50 @@ open class LogisticsRepository(
         api.createException(clientOperationId, orderNo, deviceId, materialId, type, bookQuantity, actualQuantity, description)
     }
 
+    /**
+     * 异常提报（离线优先）：先尝试远程，网络不可用时入本地队列待同步。
+     * 队列实体字段不足以装下异常全部字段，orderNo/deviceId/type/bookQuantity/description
+     * 打包为 JSON 存入 remark，quantity 存 actualQuantity，重放时解析还原。
+     */
+    suspend fun submitExceptionQueued(
+        materialCode: String,
+        materialId: String,
+        orderNo: String,
+        deviceId: String,
+        type: String,
+        bookQuantity: Int,
+        actualQuantity: Int,
+        description: String,
+        clientOperationId: String? = null
+    ): SubmitResult {
+        val payload = JSONObject().apply {
+            put("orderNo", orderNo)
+            put("deviceId", deviceId)
+            put("type", type)
+            put("bookQuantity", bookQuantity)
+            put("description", description)
+        }.toString()
+        return submit(
+            opType = OfflineOpType.EXCEPTION,
+            materialCode = materialCode,
+            materialId = materialId,
+            quantity = actualQuantity,
+            targetLocation = null,
+            expectedInventoryVersion = null,
+            remark = payload,
+            clientOperationId = clientOperationId,
+            remoteCall = { clientOpId ->
+                api.createException(clientOpId, orderNo, deviceId, materialId, type, bookQuantity, actualQuantity, description)
+            }
+        )
+    }
+
     /** Workshop assembly APIs use server-side timestamps and stable idempotency keys. */
+
+    /** 异常记录列表 */
+    open suspend fun getExceptions(): Result<List<com.company.logistics.model.ExceptionRecord>> = resultOf {
+        api.listExceptions()
+    }
     open suspend fun assemblyTasks(page: Int = 1): Result<List<com.company.logistics.model.AssemblyTask>> = resultOf { api.assemblyTasks(page) }
     open suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): Result<AssemblyTaskPage> = resultOf { api.assemblyTaskPage(page, pageSize) }
     open suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.acceptAssemblyMaterial(taskId, clientOperationId) }
@@ -652,6 +696,28 @@ open class LogisticsRepository(
                     )
                 }
                 OfflineOpType.LOCATION_BIND -> api.bindLocation(item.materialCode, item.targetLocation ?: "", item.quantity)
+                OfflineOpType.EXCEPTION -> {
+                    if (item.materialId == null) {
+                        dao.updateStatus(item.id, SyncStatus.FAILED.name, "缺少物料 ID，无法重放")
+                        return SyncOutcome.FAILED
+                    }
+                    val payload = try {
+                        JSONObject(item.remark ?: "{}")
+                    } catch (_: Exception) {
+                        dao.updateStatus(item.id, SyncStatus.FAILED.name, "异常数据损坏，无法重放")
+                        return SyncOutcome.FAILED
+                    }
+                    api.createException(
+                        clientOperationId = item.clientOperationId,
+                        orderNo = payload.optString("orderNo"),
+                        deviceId = payload.optString("deviceId"),
+                        materialId = item.materialId,
+                        type = payload.optString("type", "OTHER"),
+                        bookQuantity = payload.optInt("bookQuantity", 0),
+                        actualQuantity = item.quantity,
+                        description = payload.optString("description", ""),
+                    )
+                }
                 else -> {
                     dao.updateStatus(item.id, SyncStatus.FAILED.name, "该操作类型暂未接入同步")
                     return SyncOutcome.FAILED

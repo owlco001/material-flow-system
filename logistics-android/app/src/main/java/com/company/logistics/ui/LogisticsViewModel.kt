@@ -75,7 +75,8 @@ enum class Screen(val title: String) {
     PRODUCTION_MANAGEMENT("订单与机台"),
     DEVICE_DETAIL("机台详情"),
     FLOW_DETAIL("流转单详情"),
-    FLOW_HANDOVER("扫码交接")
+    FLOW_HANDOVER("扫码交接"),
+    MY_EXCEPTIONS("我的异常")
 }
 
 /**
@@ -231,6 +232,10 @@ data class LogisticsUiState(
     val auditLogs: List<AuditLog> = emptyList(),
     val auditState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val auditError: String? = null,
+    /** 我的异常提报记录 */
+    val myExceptions: List<ExceptionRecord> = emptyList(),
+    val myExceptionsState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
+    val myExceptionsError: String? = null,
     val auditPage: Int = 1,
     val auditPageSize: Int = AUDIT_PAGE_SIZE,
     val auditHasNext: Boolean = false,
@@ -586,6 +591,7 @@ class LogisticsViewModel(
         when (screen) {
             Screen.APPROVAL -> refreshTransferRequests()
             Screen.AUDIT -> refreshAuditLogs()
+            Screen.MY_EXCEPTIONS -> refreshMyExceptions()
             else -> Unit
         }
     }
@@ -1883,6 +1889,35 @@ class LogisticsViewModel(
         }
     }
 
+    /** 刷新我的异常提报记录（仅看本人提报的） */
+    fun refreshMyExceptions() {
+        if (!_state.value.loggedIn) return
+        val myUserId = _state.value.currentUserId
+        operationScope.launch {
+            _state.update { it.copy(myExceptionsState = WorkspaceLoadState.LOADING, myExceptionsError = null) }
+            repo.getExceptions()
+                .onSuccess { list ->
+                    val mine = if (myUserId.isNullOrBlank()) list else list.filter { it.createdBy == myUserId }
+                    _state.update {
+                        it.copy(
+                            myExceptions = mine,
+                            myExceptionsState = if (mine.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                            myExceptionsError = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            myExceptionsState = WorkspaceLoadState.ERROR,
+                            myExceptionsError = if (e is ApiException) e.safeMessage("加载异常记录失败") else "网络不可用",
+                            myExceptions = emptyList(),
+                        )
+                    }
+                }
+        }
+    }
+
     fun loadNextAuditPage() {
         val current = _state.value
         if (current.auditHasNext && !current.auditLoading) refreshAuditLogs(current.auditPage + 1)
@@ -2629,7 +2664,7 @@ class LogisticsViewModel(
             _state.update { it.copy(error = "测试预览只读，不能提报异常") }
             return
         }
-        val bookQuantity = item.requiredQuantity ?: 0
+        val bookQuantity = item.inStockQuantity ?: item.requiredQuantity ?: 0
         if (item.orderNo.isBlank() || item.deviceId.isNullOrBlank() || item.materialId.isBlank() || actualQuantity < 0 || description.isNullOrBlank()) {
             _state.update { it.copy(error = "订单、机台、物料、非负整数数量和描述均为必填") }
             return
@@ -2637,12 +2672,21 @@ class LogisticsViewModel(
         if (_state.value.exceptionSubmitting) return
         operationScope.launch {
             _state.update { it.copy(loading = true, exceptionSubmitting = true, error = null) }
-            repo.createException(UUID.randomUUID().toString(), item.orderNo, item.deviceId.orEmpty(), item.materialId, type, bookQuantity, actualQuantity, description)
-                .onSuccess { result ->
-                    _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交，状态：${result.status}") }
-                    refreshOrderAfterMutation()
-                }
-                .onFailure { e -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
+            when (val r = repo.submitExceptionQueued(
+                materialCode = item.materialCode,
+                materialId = item.materialId,
+                orderNo = item.orderNo,
+                deviceId = item.deviceId.orEmpty(),
+                type = type,
+                bookQuantity = bookQuantity,
+                actualQuantity = actualQuantity,
+                description = description,
+            )) {
+                is SubmitResult.Success -> _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交") }
+                is SubmitResult.Queued -> _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "网络不可用，异常已入队，恢复后自动同步") }
+                is SubmitResult.Failure -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = r.message) }
+            }
+            refreshOrderAfterMutation()
         }
     }
 
@@ -2682,9 +2726,9 @@ class LogisticsViewModel(
 
     /**
      * 机台详情页提交异常：机台、物料固定，订单从机台关联订单选择。
-     * 复用 POST /api/v1/exceptions，结果走全局 Snackbar。
+     * 账面数量取物料在库数，离线时入队待同步。
      */
-    fun submitDeviceException(deviceId: String, materialId: String, orderNo: String, actualQuantity: Int, description: String?) {
+    fun submitDeviceException(deviceId: String, materialId: String, materialCode: String, orderNo: String, type: String, bookQuantity: Int, actualQuantity: Int, description: String?) {
         if (_state.value.preview) {
             _state.update { it.copy(error = "测试预览只读，不能提报异常") }
             return
@@ -2696,11 +2740,20 @@ class LogisticsViewModel(
         if (_state.value.exceptionSubmitting) return
         operationScope.launch {
             _state.update { it.copy(loading = true, exceptionSubmitting = true, error = null) }
-            repo.createException(UUID.randomUUID().toString(), orderNo, deviceId, materialId, "QUANTITY_MISMATCH", actualQuantity, actualQuantity, description)
-                .onSuccess { result ->
-                    _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交，状态：${result.status}") }
-                }
-                .onFailure { e -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
+            when (val r = repo.submitExceptionQueued(
+                materialCode = materialCode,
+                materialId = materialId,
+                orderNo = orderNo,
+                deviceId = deviceId,
+                type = type,
+                bookQuantity = bookQuantity,
+                actualQuantity = actualQuantity,
+                description = description,
+            )) {
+                is SubmitResult.Success -> _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交") }
+                is SubmitResult.Queued -> _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "网络不可用，异常已入队，恢复后自动同步") }
+                is SubmitResult.Failure -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = r.message) }
+            }
         }
     }
 

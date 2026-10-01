@@ -226,6 +226,35 @@ data class ExceptionSubmissionResult(
     val serverTime: String?
 )
 
+/** 异常记录（服务端 GET /api/v1/exceptions 返回条目） */
+data class ExceptionRecord(
+    val id: String,
+    val type: String,
+    val materialId: String?,
+    val bookQuantity: Int,
+    val actualQuantity: Int,
+    val difference: Int,
+    val status: String,
+    val description: String?,
+    val createdBy: String?,
+    val createdAt: String?,
+    val reviewedBy: String?,
+    val reviewedAt: String?,
+    val orderNo: String?,
+    val deviceId: String?,
+) {
+    val statusLabel: String get() = when (status) {
+        "PENDING", "OPEN" -> "待处理"
+        "IN_PROGRESS" -> "处理中"
+        "APPROVED" -> "已通过"
+        "REJECTED" -> "已驳回"
+        "RESOLVED" -> "已解决"
+        "CLOSED" -> "已关闭"
+        else -> status
+    }
+    val typeLabel: String get() = EXCEPTION_TYPE_OPTIONS.firstOrNull { it.first == type }?.second ?: type
+}
+
 // ==================== 数据模型 ====================
 
 /** 当前登录用户 —— 契约 4.1 响应 */
@@ -913,6 +942,15 @@ enum class OfflineOpType(val label: String) {
     STOCKTAKE("盘点"),
     EXCEPTION("异常提报")
 }
+
+/** 异常提报类型选项：code to 中文标签 */
+val EXCEPTION_TYPE_OPTIONS = listOf(
+    "QUANTITY_MISMATCH" to "数量不符",
+    "DAMAGE" to "损坏",
+    "LOSS" to "丢失",
+    "QUALITY" to "质量问题",
+    "OTHER" to "其他",
+)
 
 /** 离线队列同步状态 */
 enum class SyncStatus(val label: String, val color: Color) {

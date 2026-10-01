@@ -214,6 +214,30 @@ object ApiParser {
         )
     }
 
+    fun parseExceptionList(json: String): List<com.company.logistics.model.ExceptionRecord> {
+        val root = JSONObject(json)
+        val arr = root.optJSONArray("items") ?: return emptyList()
+        return List(arr.length()) { i ->
+            val o = arr.getJSONObject(i)
+            com.company.logistics.model.ExceptionRecord(
+                id = o.optString("id"),
+                type = o.optString("type", "OTHER"),
+                materialId = o.optString("material_id").takeIf { it.isNotBlank() },
+                bookQuantity = o.optInt("book_quantity"),
+                actualQuantity = o.optInt("actual_quantity"),
+                difference = o.optInt("difference"),
+                status = o.optString("status"),
+                description = o.optString("description").takeIf { it.isNotBlank() },
+                createdBy = o.optString("created_by").takeIf { it.isNotBlank() },
+                createdAt = o.optString("created_at").takeIf { it.isNotBlank() },
+                reviewedBy = o.optString("reviewed_by").takeIf { it.isNotBlank() },
+                reviewedAt = o.optString("reviewed_at").takeIf { it.isNotBlank() },
+                orderNo = o.optString("order_no").takeIf { it.isNotBlank() },
+                deviceId = o.optString("device_id").takeIf { it.isNotBlank() },
+            )
+        }
+    }
+
     /** 契约 4.2 扫码解析 —— 已移除 LOGISTICS_NO 语义 */
     fun parseScanResolve(json: String): ScanResult {
         val root = JSONObject(json)

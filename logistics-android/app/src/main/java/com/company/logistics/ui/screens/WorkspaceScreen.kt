@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +55,7 @@ import com.company.logistics.model.HandoverAction
 import com.company.logistics.model.HandoverActionPolicy
 import com.company.logistics.model.HandoverTimeline
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.EXCEPTION_TYPE_OPTIONS
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.WorkspaceMetric
 import com.company.logistics.model.WorkspaceMetricKey
@@ -824,6 +827,7 @@ private fun ExceptionReportDialog(
 ) {
     var actual by remember(item.id) { mutableStateOf("") }
     var description by remember(item.id) { mutableStateOf("") }
+    var selectedType by remember(item.id) { mutableStateOf(EXCEPTION_TYPE_OPTIONS.first().first) }
     val actualValue = actual.toIntOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -832,12 +836,33 @@ private fun ExceptionReportDialog(
             Column {
                 Text("订单 ${item.orderNo} · ${item.deviceNo ?: "机台"} · ${item.materialCode}", fontSize = 12.sp)
                 VSpace(Spacing.sm)
+                Text("异常类型", fontSize = 12.sp, color = LogisticsTheme.colors.textSecondary)
+                VSpace(4.dp)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    EXCEPTION_TYPE_OPTIONS.forEach { (code, label) ->
+                        val selected = code == selectedType
+                        TextButton(
+                            onClick = { selectedType = code },
+                            enabled = !submitting,
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (selected) LogisticsTheme.colors.primary else LogisticsTheme.colors.textSecondary
+                            ),
+                        ) {
+                            Text(
+                                (if (selected) "● " else "○ ") + label,
+                                fontSize = 13.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            )
+                        }
+                    }
+                }
+                VSpace(Spacing.sm)
                 OutlinedTextField(actual, { if (it.all(Char::isDigit)) actual = it }, label = { Text("实际数量") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 VSpace(Spacing.sm)
                 OutlinedTextField(description, { if (it.length <= 500) description = it }, label = { Text("说明（必填）") }, modifier = Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { TextButton(onClick = { onSubmit("OTHER", actualValue ?: 0, description.trim()) }, enabled = !submitting && actualValue != null && actualValue >= 0 && description.isNotBlank()) { Text(if (submitting) "提交中…" else "提交") } },
+        confirmButton = { TextButton(onClick = { onSubmit(selectedType, actualValue ?: 0, description.trim()) }, enabled = !submitting && actualValue != null && actualValue >= 0 && description.isNotBlank()) { Text(if (submitting) "提交中…" else "提交") } },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !submitting) { Text("取消") } },
     )
 }

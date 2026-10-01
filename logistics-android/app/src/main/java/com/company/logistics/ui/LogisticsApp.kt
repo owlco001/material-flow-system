@@ -337,6 +337,14 @@ fun LogisticsApp(
                         onBack = { viewModel.navigate(Screen.WORKSPACE) },
                     )
 
+                    Screen.MY_EXCEPTIONS -> MyExceptionsScreen(
+                        records = state.myExceptions,
+                        state = state.myExceptionsState,
+                        error = state.myExceptionsError,
+                        onRefresh = { viewModel.refreshMyExceptions() },
+                        onBack = { viewModel.navigate(Screen.WORKSPACE) },
+                    )
+
                     Screen.BOM_IMPORT -> BomImportScreen(
                         state = state,
                         onPick = { name, bytes, model -> viewModel.previewBomImport(name, bytes, model) },
@@ -358,8 +366,8 @@ fun LogisticsApp(
                         onSubmitMaterialRequest = { material, orderNo, qty, remark ->
                             viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark)
                         },
-                        onSubmitException = { deviceId, materialId, orderNo, actualQty, desc ->
-                            viewModel.submitDeviceException(deviceId, materialId, orderNo, actualQty, desc)
+                        onSubmitException = { deviceId, materialId, materialCode, orderNo, type, bookQty, actualQty, desc ->
+                            viewModel.submitDeviceException(deviceId, materialId, materialCode, orderNo, type, bookQty, actualQty, desc)
                         },
                     )
 
@@ -375,6 +383,7 @@ fun LogisticsApp(
                         endpointConfigured = endpointStore.isConfigured,
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
                         onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
+                        onOpenMyExceptions = { viewModel.navigate(Screen.MY_EXCEPTIONS) },
                         onLogout = { viewModel.logout() }
                     )
 

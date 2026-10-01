@@ -585,6 +585,7 @@ fun ProfileScreen(
     endpointConfigured: Boolean,
     onOpenQueue: () -> Unit,
     onOpenEndpointConfig: () -> Unit,
+    onOpenMyExceptions: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -710,6 +711,33 @@ fun ProfileScreen(
                 SecondaryButton(
                     text = "查看",
                     onClick = onOpenQueue,
+                    modifier = Modifier.width(96.dp)
+                )
+            }
+        }
+
+        VSpace(Spacing.md)
+
+        // 我的异常入口 —— 本人提报的异常及审批进度
+        AppCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "我的异常",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LogisticsTheme.colors.textPrimary
+                    )
+                    VSpace(3.dp)
+                    Text(
+                        "查看本人提报的异常及审批进度",
+                        fontSize = 12.sp,
+                        color = LogisticsTheme.colors.textSecondary
+                    )
+                }
+                SecondaryButton(
+                    text = "查看",
+                    onClick = onOpenMyExceptions,
                     modifier = Modifier.width(96.dp)
                 )
             }

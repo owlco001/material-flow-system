@@ -45,6 +45,7 @@ import com.company.logistics.Model3dActivity
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.DeviceDetail
 import com.company.logistics.model.DeviceModelMap
+import com.company.logistics.model.EXCEPTION_TYPE_OPTIONS
 import com.company.logistics.model.LaborSummaryPage
 import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.TransferRequest
@@ -74,7 +75,7 @@ fun DeviceDetailScreen(
     labor: LaborSummaryPage?,
     onBack: () -> Unit,
     onSubmitMaterialRequest: (material: OrderMaterialItem, orderNo: String, quantity: Int, remark: String) -> Unit = { _, _, _, _ -> },
-    onSubmitException: (deviceId: String, materialId: String, orderNo: String, actualQuantity: Int, description: String) -> Unit = { _, _, _, _, _ -> },
+    onSubmitException: (deviceId: String, materialId: String, materialCode: String, orderNo: String, type: String, bookQuantity: Int, actualQuantity: Int, description: String) -> Unit = { _, _, _, _, _, _, _, _ -> },
 ) {
     val context = LocalContext.current
     var showMaterialRequestDialog by remember { mutableStateOf(false) }
@@ -596,8 +597,8 @@ fun DeviceDetailScreen(
             materialCode = em.materialCode,
             orders = d.orders,
             onDismiss = { exceptionMaterial = null },
-            onConfirm = { orderNo, actualQty, desc ->
-                onSubmitException(d.deviceId, em.materialId, orderNo, actualQty, desc)
+            onConfirm = { orderNo, type, actualQty, desc ->
+                onSubmitException(d.deviceId, em.materialId, em.materialCode, orderNo, type, em.inStockQuantity, actualQty, desc)
                 exceptionMaterial = null
             },
         )
@@ -764,10 +765,12 @@ private fun DeviceExceptionDialog(
     materialCode: String,
     orders: List<com.company.logistics.model.DeviceOrder>,
     onDismiss: () -> Unit,
-    onConfirm: (orderNo: String, actualQuantity: Int, description: String) -> Unit,
+    onConfirm: (orderNo: String, type: String, actualQuantity: Int, description: String) -> Unit,
 ) {
     var selectedOrder by remember(orders) { mutableStateOf(orders.singleOrNull()?.orderNo ?: "") }
     var orderExpanded by remember { mutableStateOf(false) }
+    var selectedType by remember { mutableStateOf(EXCEPTION_TYPE_OPTIONS.first().first) }
+    var typeExpanded by remember { mutableStateOf(false) }
     var actualQtyText by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     val canConfirm = selectedOrder.isNotBlank() && (actualQtyText.toIntOrNull() ?: -1) >= 0 && description.isNotBlank()
@@ -799,6 +802,25 @@ private fun DeviceExceptionDialog(
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                ExposedDropdownMenuBox(expanded = typeExpanded, onExpandedChange = { typeExpanded = it }) {
+                    OutlinedTextField(
+                        value = EXCEPTION_TYPE_OPTIONS.first { it.first == selectedType }.second,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("异常类型") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(typeExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(expanded = typeExpanded, onDismissRequest = { typeExpanded = false }) {
+                        EXCEPTION_TYPE_OPTIONS.forEach { (code, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label, fontSize = 13.sp) },
+                                onClick = { selectedType = code; typeExpanded = false },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = actualQtyText,
                     onValueChange = { actualQtyText = it.filter { c -> c.isDigit() } },
@@ -817,7 +839,7 @@ private fun DeviceExceptionDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selectedOrder, actualQtyText.toIntOrNull() ?: 0, description) }, enabled = canConfirm) {
+            TextButton(onClick = { onConfirm(selectedOrder, selectedType, actualQtyText.toIntOrNull() ?: 0, description) }, enabled = canConfirm) {
                 Text("提交")
             }
         },
