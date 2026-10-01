@@ -2834,11 +2834,12 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
     resource_id: str | None = None
     c = db()
     try:
-        order = c.execute("SELECT id FROM production_orders WHERE order_no=?", (upper,)).fetchone()
-        material = c.execute("SELECT id FROM materials WHERE code=?", (upper,)).fetchone()
-        location = c.execute("SELECT id FROM locations WHERE code=?", (upper,)).fetchone()
-        device = c.execute("SELECT id FROM devices WHERE device_no=?", (upper,)).fetchone()
-        flow = c.execute("SELECT id FROM transfer_requests WHERE document_no=?", (upper,)).fetchone()
+        # 编号大小写不敏感：库里存在 C5a-15 这类混合大小写编号，转大写后必须还能命中
+        order = c.execute("SELECT id FROM production_orders WHERE order_no=? COLLATE NOCASE", (upper,)).fetchone()
+        material = c.execute("SELECT id FROM materials WHERE code=? COLLATE NOCASE", (upper,)).fetchone()
+        location = c.execute("SELECT id FROM locations WHERE code=? COLLATE NOCASE", (upper,)).fetchone()
+        device = c.execute("SELECT id FROM devices WHERE device_no=? COLLATE NOCASE", (upper,)).fetchone()
+        flow = c.execute("SELECT id FROM transfer_requests WHERE document_no=? COLLATE NOCASE", (upper,)).fetchone()
     finally:
         c.close()
     if order:
@@ -2870,8 +2871,8 @@ def resolve_scan(body: Scan, user: sqlite3.Row = Depends(current_user)) -> dict[
 
 # ==================== 条码生成 ====================
 # 订单 / 机台 / 物料的二维码（QR）与一维码（Code128）。
-# 条码内容直接编码业务编号本身。订单号与物料编码可被 /api/v1/scan/resolve
-# 直接识别；机台号按现有冻结契约在扫码解析中保持 UNKNOWN，仅用于展示与打印。
+# 条码内容直接编码业务编号本身。扫码解析（resolve_scan）对编号做大小写
+# 不敏感匹配（COLLATE NOCASE），因此混合大小写编号（如 C5a-15）也能识别。
 try:
     from . import barcodes as _barcodes
 except ImportError:
