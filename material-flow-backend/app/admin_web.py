@@ -1192,19 +1192,21 @@ def admin_orders(request: Request):
             error = _api_error_message(exc)
         except HTTPException as exc:
             error = f"{exc.status_code}：{exc.detail}"
+    ctx = {
+        "user": user,
+        "csrf_token": user["csrf_token"],
+        "rows": rows,
+        "order_no": order_no,
+        "detail": detail,
+        "status_labels": WORKSPACE_STATUS_LABELS,
+        "error": error,
+    }
+    if request.query_params.get("partial") == "materials":
+        return templates.TemplateResponse(request, "_order_materials.html", ctx)
     return templates.TemplateResponse(
         request,
         "orders.html",
-        {
-            "user": user,
-            "csrf_token": user["csrf_token"],
-            "rows": rows,
-            "order_no": order_no,
-            "detail": detail,
-            "status_labels": WORKSPACE_STATUS_LABELS,
-            "error": error,
-            "status_labels": WORKSPACE_STATUS_LABELS,
-        },
+        ctx,
     )
 
 
@@ -1222,16 +1224,19 @@ def admin_order_task(request: Request, order_no: str, task_id: str):
         error = _api_error_message(exc)
     except HTTPException as exc:
         error = f"{exc.status_code}：{exc.detail}"
+    ctx = {
+        "user": user,
+        "csrf_token": user["csrf_token"],
+        "order_no": order_no,
+        "detail": detail,
+        "error": error,
+    }
+    if request.query_params.get("partial") == "materials":
+        return templates.TemplateResponse(request, "_order_task_materials.html", ctx)
     return templates.TemplateResponse(
         request,
         "order_task.html",
-        {
-            "user": user,
-            "csrf_token": user["csrf_token"],
-            "order_no": order_no,
-            "detail": detail,
-            "error": error,
-        },
+        ctx,
     )
 
 

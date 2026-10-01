@@ -45,71 +45,58 @@
   </table>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h3>机台物料</h3>
-  {% set _q = request.query_params.get("q", "").strip() %}
-  {% set _cat = request.query_params.get("cat", "").strip() %}
-  {% set _all = detail.materials or [] %}
-  {% set _list = [] %}
-  {% for m in _all %}
-    {% set _mc = (m.materialCategory or m.material_category or "")|string %}
-    {% if (not _q or _q in (m.materialCode or "")|string or _q in (m.materialName or "")|string) and (not _cat or _cat == _mc) %}
-      {% set _ = _list.append(m) %}
-    {% endif %}
-  {% endfor %}
-  <form method="get" style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
-    <input type="text" name="q" value="{{ _q }}" placeholder="搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px">
-    <button type="submit" class="btn">搜索</button>
-    <select name="cat" onchange="this.form.submit()" style="padding:6px;border:1px solid #ddd;border-radius:6px">
-      <option value="">全部分类</option>
-      {% for c in ["电气", "机械", "其他"] %}
-      <option value="{{ c }}" {% if _cat == c %}selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-    </select>
-    {% if _q or _cat %}<a href="?" class="btn">清空</a>{% endif %}
-  </form>
-  {% set _page = request.query_params.get("page", "1")|int %}
-  {% set _size = request.query_params.get("size", "20")|int %}
-  {% if _size not in [10, 20, 50, 100] %}{% set _size = 20 %}{% endif %}
-  {% set _total = _list|length %}
-  {% set _pages = (_total // _size) + (1 if _total % _size else 0) %}
-  {% if _page < 1 %}{% set _page = 1 %}{% endif %}
-  {% if _page > _pages and _pages > 0 %}{% set _page = _pages %}{% endif %}
-  {% set _items = _list[(_page-1)*_size:_page*_size] %}
-  <p class="muted">共 {{ _total }} 条{% if _pages > 1 %}，第 {{ _page }}/{{ _pages }} 页{% endif %}</p>
-  <table>
-    <tr><th>物料编码</th><th>名称</th><th>分类</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
-    {% for m in _items %}
-    {% set _row = {"IN_STOCK": "row-green", "ARRIVED": "row-yellow"}.get(m.statusCode, "row-red") %}
-    <tr class="{{ _row }}">
-      <td>{{ m.materialCode or "—" }}</td>
-      <td>{{ m.materialName or "—" }}</td>
-      <td>{{ m.materialCategory or m.material_category or "—" }}</td>
-      <td>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }} {{ m.unit or "" }}</td>
-      <td>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</td>
-      <td>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</td>
-      <td>
-        {% if m.statusCode == "IN_STOCK" %}<span class="st st-green">在库</span>
-        {% elif m.statusCode == "ARRIVED" %}<span class="st st-yellow">已到货</span>
-        {% else %}<span class="st st-red">缺料</span>{% endif %}
-      </td>
-    </tr>
-    {% else %}
-    <tr><td colspan="7">该机台暂无物料需求</td></tr>
-    {% endfor %}
-  </table>
-  {% if _pages > 1 %}
-  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-    <span class="muted">每页</span>
-    <select onchange="location.href='?q={{ _q }}&cat={{ _cat }}&size='+this.value" style="padding:6px;border:1px solid #ddd;border-radius:6px">
-      {% for n in [10, 20, 50, 100] %}<option value="{{ n }}" {% if _size == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
-    </select>
-    {% if _page > 1 %}<a href="?q={{ _q }}&cat={{ _cat }}&size={{ _size }}&page={{ _page - 1 }}" class="btn">上一页</a>{% endif %}
-    <span class="muted">{{ _page }}/{{ _pages }}</span>
-    {% if _page < _pages %}<a href="?q={{ _q }}&cat={{ _cat }}&size={{ _size }}&page={{ _page + 1 }}" class="btn">下一页</a>{% endif %}
-  </div>
-  {% endif %}
+<div id="task-mat-panel">
+{% include "_order_task_materials.html" %}
 </div>
+<script>
+(function(){
+  var panel = document.getElementById('task-mat-panel');
+  if (!panel || panel.dataset.bound) return;
+  panel.dataset.bound = '1';
+  function load(url) {
+    var u = new URL(url, location.href);
+    u.searchParams.set('partial', 'materials');
+    panel.style.opacity = '0.55';
+    fetch(u.toString(), {headers: {'X-Requested-With': 'XMLHttpRequest'}}).then(function(r){
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.text();
+    }).then(function(html){
+      panel.innerHTML = html;
+      panel.style.opacity = '';
+      history.replaceState(null, '', new URL(url, location.href).toString());
+    }).catch(function(){ location.href = url; });
+  }
+  panel.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!(f instanceof HTMLFormElement) || !f.hasAttribute('data-partial-form')) return;
+    e.preventDefault();
+    var fd = new FormData(f);
+    var params = new URLSearchParams();
+    var names = {};
+    fd.forEach(function(v, k){ names[k] = 1; if (v !== '') params.append(k, v); });
+    var cur = new URLSearchParams(location.search);
+    var pageParam = f.getAttribute('data-page-param');
+    cur.forEach(function(v, k){
+      if (k === 'partial' || names[k] || k === pageParam) return;
+      params.append(k, v);
+    });
+    load(location.pathname + '?' + params.toString());
+  });
+  panel.addEventListener('change', function(e){
+    var s = e.target;
+    if (s.tagName === 'SELECT' && s.hasAttribute('data-autosubmit')) {
+      var f = s.closest('form');
+      if (f) f.requestSubmit();
+    }
+  });
+  panel.addEventListener('click', function(e){
+    var a = e.target.closest('a[data-partial-link]');
+    if (!a) return;
+    e.preventDefault();
+    load(a.getAttribute('href'));
+  });
+})();
+</script>
 
 <div class="card" style="margin-top:16px;max-width:560px;text-align:center">
   <h3>机台码</h3>
