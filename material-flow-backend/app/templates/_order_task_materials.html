@@ -35,27 +35,31 @@
   {% if _page > _pages and _pages > 0 %}{% set _page = _pages %}{% endif %}
   {% set _items = _list[(_page-1)*_size:_page*_size] %}
   <p class="muted">共 {{ _total }} 条{% if _pages > 1 %}，第 {{ _page }}/{{ _pages }} 页{% endif %}</p>
-  <table>
-    <tr><th>物料编码</th><th>名称</th><th>分类</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
+  <div class="mat-grid">
     {% for m in _items %}
-    {% set _row = {"IN_STOCK": "row-green", "ARRIVED": "row-yellow"}.get(m.statusCode, "row-red") %}
-    <tr class="{{ _row }}">
-      <td>{{ m.materialCode or "—" }}</td>
-      <td>{{ m.materialName or "—" }}</td>
-      <td>{{ m.materialCategory or m.material_category or "—" }}</td>
-      <td>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }} {{ m.unit or "" }}</td>
-      <td>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</td>
-      <td>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</td>
-      <td>
-        {% if m.statusCode == "IN_STOCK" %}<span class="st st-green">在库</span>
-        {% elif m.statusCode == "ARRIVED" %}<span class="st st-yellow">已到货</span>
-        {% else %}<span class="st st-red">缺料</span>{% endif %}
-      </td>
-    </tr>
+    {% set _mc = (m.materialCategory or m.material_category or "")|string %}
+    {% set _cbadge = {"电气": "b-info", "机械": "b-warn"}.get(_mc, "b-mute") %}
+    <div class="mat-card">
+      <div class="mc-head">
+        <b>{{ m.materialCode or "—" }}</b>
+        <span class="mat-badges">
+          <span class="badge {{ _cbadge }}">{{ _mc or "未分类" }}</span>
+          {% if m.statusCode == "IN_STOCK" %}<span class="st st-green">在库</span>
+          {% elif m.statusCode == "ARRIVED" %}<span class="st st-yellow">已到货</span>
+          {% else %}<span class="st st-red">缺料</span>{% endif %}
+        </span>
+      </div>
+      <div class="mc-name">{{ m.materialName or "—" }}</div>
+      <div class="mat-nums">
+        <span>需求<b>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }}{{ m.unit or "" }}</b></span>
+        <span>到货<b>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</b></span>
+        <span>在库<b>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</b></span>
+      </div>
+    </div>
     {% else %}
-    <tr><td colspan="7">该机台暂无物料需求</td></tr>
+    <p class="muted">该机台暂无物料需求</p>
     {% endfor %}
-  </table>
+  </div>
   {% if _pages > 1 %}
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
 

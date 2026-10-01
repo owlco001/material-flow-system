@@ -40,26 +40,36 @@
   {% set start = (page - 1) * per_page %}
   {% set page_items = mat_list[start:start + per_page] %}
   <p class="muted">共 {{ total }} 条{% if total_pages > 1 %}，第 {{ page }}/{{ total_pages }} 页{% endif %}</p>
-  <table>
-    <tr><th>物料编码</th><th>物料名称</th><th>分类</th><th>需求量</th><th>到货量</th><th>在库量</th><th>状态</th></tr>
+  <div class="mat-grid">
     {% for m in page_items %}
-    {% set _st2 = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
-    {% set _row = {"OUT_OF_STOCK": "row-red", "REJECTED": "row-red", "ARRIVED": "row-yellow", "PENDING": "row-yellow", "OUTBOUND_PENDING": "row-yellow", "IN_STOCK": "row-green", "PICKED_UP": "row-green", "AT_STATION": "row-green", "OUTBOUND_CONFIRMED": "row-green", "OUTBOUND_APPROVED": "row-blue"}.get(_st2, "") %}
-    <tr class="{{ _row }}">
-      <td>{{ m.get("materialCode") or m.get("material_id") or m.get("materialId") or "—" }}</td>
-      <td>{{ m.get("materialName") or m.get("material_name") or "—" }}</td>
-      <td>{{ m.get("materialCategory") or m.get("material_category") or "—" }}</td>
-      <td>{{ m.get("requiredQuantity") if m.get("requiredQuantity") is not none else (m.get("required_quantity") if m.get("required_quantity") is not none else "—") }}</td>
-      <td>{{ m.get("arrivedQuantity") if m.get("arrivedQuantity") is not none else (m.get("arrived_quantity") if m.get("arrived_quantity") is not none else "—") }}</td>
-      <td>{{ m.get("inStockQuantity") if m.get("inStockQuantity") is not none else (m.get("in_stock_quantity") if m.get("in_stock_quantity") is not none else "—") }}</td>
-      {% set st = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
-      {% set _cls = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(st, "st-neutral") %}
-      <td><span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span></td>
-    </tr>
+    {% set _mcode = m.get("materialCode") or m.get("material_id") or m.get("materialId") or "—" %}
+    {% set _mname = m.get("materialName") or m.get("material_name") or "—" %}
+    {% set _mcat = m.get("materialCategory") or m.get("material_category") or "" %}
+    {% set _cbadge = {"电气": "b-info", "机械": "b-warn"}.get(_mcat, "b-mute") %}
+    {% set _req = m.get("requiredQuantity") if m.get("requiredQuantity") is not none else (m.get("required_quantity") if m.get("required_quantity") is not none else "—") %}
+    {% set _arr = m.get("arrivedQuantity") if m.get("arrivedQuantity") is not none else (m.get("arrived_quantity") if m.get("arrived_quantity") is not none else "—") %}
+    {% set _stk = m.get("inStockQuantity") if m.get("inStockQuantity") is not none else (m.get("in_stock_quantity") if m.get("in_stock_quantity") is not none else "—") %}
+    {% set st = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
+    {% set _cls = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(st, "st-neutral") %}
+    <div class="mat-card">
+      <div class="mc-head">
+        <b>{{ _mcode }}</b>
+        <span class="mat-badges">
+          <span class="badge {{ _cbadge }}">{{ _mcat or "未分类" }}</span>
+          <span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span>
+        </span>
+      </div>
+      <div class="mc-name">{{ _mname }}</div>
+      <div class="mat-nums">
+        <span>需求<b>{{ _req }}</b></span>
+        <span>到货<b>{{ _arr }}</b></span>
+        <span>在库<b>{{ _stk }}</b></span>
+      </div>
+    </div>
     {% else %}
-    <tr><td colspan="7">暂无物料需求（或不在您的可见范围内）</td></tr>
+    <p class="muted">暂无物料需求（或不在您的可见范围内）</p>
     {% endfor %}
-  </table>
+  </div>
   {% if total_pages > 1 %}
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
     {% if page > 1 %}
