@@ -40,7 +40,7 @@
   {% set start = (page - 1) * per_page %}
   {% set page_items = mat_list[start:start + per_page] %}
   <p class="muted">共 {{ total }} 条{% if total_pages > 1 %}，第 {{ page }}/{{ total_pages }} 页{% endif %}</p>
-  <div class="mat-grid">
+  <div class="mat-list">
     {% for m in page_items %}
     {% set _mcode = m.get("materialCode") or m.get("material_id") or m.get("materialId") or "—" %}
     {% set _mname = m.get("materialName") or m.get("material_name") or "—" %}
@@ -51,20 +51,14 @@
     {% set _stk = m.get("inStockQuantity") if m.get("inStockQuantity") is not none else (m.get("in_stock_quantity") if m.get("in_stock_quantity") is not none else "—") %}
     {% set st = m.get("statusCode") or m.get("status_code") or m.get("requirement_status_code") or m.get("status") %}
     {% set _cls = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(st, "st-neutral") %}
-    <div class="mat-card">
-      <div class="mc-head">
-        <b>{{ _mcode }}</b>
-        <span class="mat-badges">
-          <span class="badge {{ _cbadge }}">{{ _mcat or "未分类" }}</span>
-          <span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span>
-        </span>
-      </div>
-      <div class="mc-name">{{ _mname }}</div>
-      <div class="mat-nums">
-        <span>需求<b>{{ _req }}</b></span>
-        <span>到货<b>{{ _arr }}</b></span>
-        <span>在库<b>{{ _stk }}</b></span>
-      </div>
+    <div class="mat-row">
+      <span class="mat-code">{{ _mcode }}</span>
+      <span class="mat-name">{{ _mname }}</span>
+      <span class="mat-nums">需<b>{{ _req }}</b>到<b>{{ _arr }}</b>库<b>{{ _stk }}</b></span>
+      <span class="mat-badges">
+        <span class="badge {{ _cbadge }}">{{ _mcat or "未分类" }}</span>
+        <span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span>
+      </span>
     </div>
     {% else %}
     <p class="muted">暂无物料需求（或不在您的可见范围内）</p>

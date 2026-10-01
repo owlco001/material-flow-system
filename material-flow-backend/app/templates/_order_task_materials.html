@@ -35,26 +35,20 @@
   {% if _page > _pages and _pages > 0 %}{% set _page = _pages %}{% endif %}
   {% set _items = _list[(_page-1)*_size:_page*_size] %}
   <p class="muted">共 {{ _total }} 条{% if _pages > 1 %}，第 {{ _page }}/{{ _pages }} 页{% endif %}</p>
-  <div class="mat-grid">
+  <div class="mat-list">
     {% for m in _items %}
     {% set _mc = (m.materialCategory or m.material_category or "")|string %}
     {% set _cbadge = {"电气": "b-info", "机械": "b-warn"}.get(_mc, "b-mute") %}
-    <div class="mat-card">
-      <div class="mc-head">
-        <b>{{ m.materialCode or "—" }}</b>
-        <span class="mat-badges">
-          <span class="badge {{ _cbadge }}">{{ _mc or "未分类" }}</span>
-          {% if m.statusCode == "IN_STOCK" %}<span class="st st-green">在库</span>
-          {% elif m.statusCode == "ARRIVED" %}<span class="st st-yellow">已到货</span>
-          {% else %}<span class="st st-red">缺料</span>{% endif %}
-        </span>
-      </div>
-      <div class="mc-name">{{ m.materialName or "—" }}</div>
-      <div class="mat-nums">
-        <span>需求<b>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }}{{ m.unit or "" }}</b></span>
-        <span>到货<b>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</b></span>
-        <span>在库<b>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</b></span>
-      </div>
+    <div class="mat-row">
+      <span class="mat-code">{{ m.materialCode or "—" }}</span>
+      <span class="mat-name">{{ m.materialName or "—" }}</span>
+      <span class="mat-nums">需<b>{{ m.requiredQuantity if m.requiredQuantity is not none else "—" }}{{ m.unit or "" }}</b>到<b>{{ m.arrivedQuantity if m.arrivedQuantity is not none else "—" }}</b>库<b>{{ m.inStockQuantity if m.inStockQuantity is not none else "—" }}</b></span>
+      <span class="mat-badges">
+        <span class="badge {{ _cbadge }}">{{ _mc or "未分类" }}</span>
+        {% if m.statusCode == "IN_STOCK" %}<span class="st st-green">在库</span>
+        {% elif m.statusCode == "ARRIVED" %}<span class="st st-yellow">已到货</span>
+        {% else %}<span class="st st-red">缺料</span>{% endif %}
+      </span>
     </div>
     {% else %}
     <p class="muted">该机台暂无物料需求</p>
