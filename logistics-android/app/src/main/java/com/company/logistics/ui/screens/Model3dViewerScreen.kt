@@ -5,9 +5,23 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Badge
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,7 +60,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.company.logistics.rendering.FilamentModelRenderer
+import com.company.logistics.rendering.PartInfo
+import com.company.logistics.rendering.PartNameCn
 import com.company.logistics.ui.theme.LogisticsColors
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -57,6 +74,7 @@ import java.io.File
  *
  * 视觉：深色沉浸式，与开机动画的藏青（#0B2E6F → #08214F）保持一致。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Model3dViewerScreen(
     title: String,
@@ -74,6 +92,22 @@ fun Model3dViewerScreen(
     var sectionOn by remember { mutableStateOf(false) }
     var sectionAxis by remember { mutableIntStateOf(1) }
     var sectionPos by remember { mutableFloatStateOf(0f) }
+    // 零件装配指引状态
+    var parts by remember { mutableStateOf<List<PartInfo>>(emptyList()) }
+    var selectedPart by remember { mutableStateOf<PartInfo?>(null) }
+    var showPartsSheet by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+
+    fun selectPart(part: PartInfo?, focusCamera: Boolean) {
+        selectedPart = part
+        if (part == null) {
+            renderer.clearIsolation()
+        } else {
+            renderer.setIsolatedPart(part.name, part.entity)
+            if (focusCamera) renderer.focusPart(part.entity)
+        }
+    }
 
     DisposableEffect(renderer) {
         onDispose { renderer.release() }
@@ -105,7 +139,6 @@ fun Model3dViewerScreen(
             error != null -> ErrorState(error, onRetry, Modifier.weight(1f))
             glbFile == null -> EmptyState(Modifier.weight(1f))
             else -> {
-                var pickedPart by remember { mutableStateOf<Pair<String, Int>?>(null) }
                 Box(Modifier.weight(1f)) {
                     AndroidView(
                         modifier = Modifier
@@ -123,11 +156,10 @@ fun Model3dViewerScreen(
                                         renderer.pickPart(offset.x, offset.y) { name, entity ->
                                             if (name == null) {
                                                 // 点空处：取消隔离
-                                                pickedPart = null
-                                                renderer.clearIsolation()
+                                                selectPart(null, focusCamera = false)
                                             } else {
-                                                pickedPart = name to entity
-                                                renderer.setIsolatedPart(name, entity)
+                                                // 点选零件：高亮但不挪相机（避免误触时视角乱跳）
+                                                selectPart(PartInfo(name, entity), focusCamera = false)
                                             }
                                         }
                                     }
@@ -140,7 +172,11 @@ fun Model3dViewerScreen(
                                         surfaceTexture: SurfaceTexture, width: Int, height: Int,
                                     ) {
                                         renderer.attach(Surface(surfaceTexture)).fold(
-                                            { loadGlbInto(renderer, glbFile) { renderStatus = it } },
+                                            {
+                                                loadGlbInto(renderer, glbFile) { renderStatus = it }
+                                                // 模型加载后提取零件清单
+                                                parts = renderer.getParts()
+                                            },
                                             { renderStatus = "3D 不可用：${it.message ?: "设备不支持或初始化失败"}" },
                                         )
                                         renderer.onViewportChanged(width, height)
@@ -176,7 +212,7 @@ fun Model3dViewerScreen(
                         )
                     }
                     // 点选零件信息 + 隔离状态
-                    pickedPart?.let { (partName, _) ->
+                    selectedPart?.let { part ->
                         Row(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
@@ -186,18 +222,15 @@ fun Model3dViewerScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(partName, color = Color.White, fontSize = 13.sp)
+                                Text(PartNameCn.displayName(part.name), color = Color.White, fontSize = 13.sp)
                                 Text(
-                                    "已隔离 · 其余零件半透明",
+                                    "已定位 · 其余零件半透明",
                                     color = Color.White.copy(alpha = 0.55f),
                                     fontSize = 11.sp,
                                 )
                             }
-                            TextButton(onClick = {
-                                pickedPart = null
-                                renderer.clearIsolation()
-                            }) {
-                                Text("取消隔离", color = Color(0xFF8AB4FF), fontSize = 13.sp)
+                            TextButton(onClick = { selectPart(null, focusCamera = false) }) {
+                                Text("取消", color = Color(0xFF8AB4FF), fontSize = 13.sp)
                             }
                         }
                     }
@@ -242,6 +275,25 @@ fun Model3dViewerScreen(
                                 fontSize = 13.sp,
                                 color = if (sectionOn) LogisticsColors.Info else Color.White,
                             )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        // 零件清单：工人查"哪个部件装哪"
+                        BadgedBox(
+                            badge = {
+                                if (parts.isNotEmpty()) {
+                                    Badge(
+                                        containerColor = LogisticsColors.Info,
+                                        contentColor = Color.White,
+                                    ) { Text("${parts.size}", fontSize = 10.sp) }
+                                }
+                            },
+                        ) {
+                            OutlinedButton(
+                                onClick = { showPartsSheet = true },
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                            ) {
+                                Text("零件", fontSize = 13.sp, color = Color.White)
+                            }
                         }
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(
@@ -346,6 +398,127 @@ fun Model3dViewerScreen(
                             modifier = Modifier.width(40.dp),
                             textAlign = TextAlign.End,
                         )
+                    }
+                }
+            }
+        }
+
+        // 零件清单弹窗：工人按名查找零件，点选后 3D 定位高亮
+        if (showPartsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showPartsSheet = false },
+                sheetState = sheetState,
+                containerColor = Color(0xFF101A30),
+                contentColor = Color.White,
+            ) {
+                PartsSheetContent(
+                    parts = parts,
+                    selected = selectedPart,
+                    onSelect = { part ->
+                        selectPart(part, focusCamera = true)
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            if (!sheetState.isVisible) showPartsSheet = false
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PartsSheetContent(
+    parts: List<PartInfo>,
+    selected: PartInfo?,
+    onSelect: (PartInfo) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered by remember(parts, query) {
+        derivedStateOf {
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) parts
+            else parts.filter {
+                it.name.lowercase().contains(q) ||
+                    PartNameCn.displayName(it.name).contains(query.trim())
+            }
+        }
+    }
+    val listState = rememberLazyListState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 24.dp),
+    ) {
+        Text(
+            "零件清单（${parts.size}）",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        if (parts.isEmpty()) {
+            Text(
+                "该模型未拆分独立零件，可直接在 3D 视图中点选查看。",
+                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.padding(vertical = 16.dp),
+            )
+        } else {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("搜索零件名", fontSize = 13.sp) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = LogisticsColors.Info,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                    cursorColor = Color.White,
+                ),
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(filtered, key = { it.name }) { part ->
+                    val isSelected = selected?.name == part.name
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(part) }
+                            .background(
+                                if (isSelected) LogisticsColors.Info.copy(alpha = 0.25f)
+                                else Color.White.copy(alpha = 0.05f),
+                                RoundedCornerShape(10.dp),
+                            )
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                PartNameCn.displayName(part.name),
+                                fontSize = 14.sp,
+                                color = Color.White,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            )
+                            if (PartNameCn.displayName(part.name) != part.name) {
+                                Text(
+                                    part.name,
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.45f),
+                                )
+                            }
+                        }
+                        if (isSelected) {
+                            Text("已定位", fontSize = 12.sp, color = LogisticsColors.Info)
+                        }
                     }
                 }
             }

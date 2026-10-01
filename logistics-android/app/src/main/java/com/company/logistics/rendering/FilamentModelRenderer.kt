@@ -37,6 +37,9 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+/** 零件信息：GLB 节点名 + 渲染实体，用于零件清单与定位 */
+data class PartInfo(val name: String, val entity: Int)
+
 /** Real Filament GLB renderer; all Filament objects are owned and released here. */
 class FilamentModelRenderer(
     private val filamentInitializer: () -> Unit = { Filament.init() },
@@ -342,6 +345,40 @@ class FilamentModelRenderer(
         isolatedName = null
         isolatedEntity = 0
         applyAppearance()
+    }
+
+    /**
+     * 零件清单：返回去重后的有效零件（过滤无名/RootNode/ group123 这类无意义节点名）。
+     * 按模型内出现顺序返回。
+     */
+    fun getParts(): List<PartInfo> {
+        val seen = LinkedHashSet<String>()
+        val result = mutableListOf<PartInfo>()
+        for (i in partEntities.indices) {
+            val raw = partNames.getOrNull(i)?.trim().orEmpty()
+            if (!isMeaningfulPartName(raw)) continue
+            if (seen.add(raw)) result.add(PartInfo(raw, partEntities[i]))
+        }
+        return result
+    }
+
+    /** 聚焦零件：把相机目标移到该零件中心，便于工人看清"装在哪" */
+    fun focusPart(entity: Int) {
+        val idx = partEntities.indexOf(entity)
+        if (idx < 0) return
+        val c = partCenters.getOrNull(idx) ?: return
+        camera.focusAt(c[0], c[1])
+        applyCamera()
+    }
+
+    companion object {
+        private val JUNK_NAME = Regex("^(group\\d+|rootnode|node\\d*|mesh\\d*|object\\d*)$", RegexOption.IGNORE_CASE)
+        fun isMeaningfulPartName(name: String): Boolean {
+            if (name.isBlank()) return false
+            if (JUNK_NAME.matches(name)) return false
+            if (name.all { it.isDigit() }) return false
+            return true
+        }
     }
 
     /**

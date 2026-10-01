@@ -53,6 +53,12 @@ class OrbitCameraState(
         panY = (panY + deltaY).coerceIn(-maxPan, maxPan)
     }
 
+    /** 绝对聚焦：把相机目标直接移到 (x, y)，用于零件定位 */
+    fun focusAt(x: Float, y: Float) {
+        panX = x.coerceIn(-maxPan, maxPan)
+        panY = y.coerceIn(-maxPan, maxPan)
+    }
+
     fun reset() {
         yawDegrees = initialYaw
         pitchDegrees = initialPitch
