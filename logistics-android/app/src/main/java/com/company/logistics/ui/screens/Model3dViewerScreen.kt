@@ -234,7 +234,7 @@ fun Model3dViewerScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(PartNameCn.displayName(part.name), color = Color.White, fontSize = 13.sp)
                                 Text(
-                                    "已定位 · 其余零件半透明",
+                                    "已定位 · 其余零件已隐藏",
                                     color = Color.White.copy(alpha = 0.55f),
                                     fontSize = 11.sp,
                                 )

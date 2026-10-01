@@ -400,36 +400,30 @@ class FilamentModelRenderer(
         val scn = scene ?: return
         val tm = eng.transformManager
         if (asset == null) return
-        val ghostSoft = ghostInstance(0.55f, 0.65f, 0.85f, 0.16f) // 隔离：淡蓝半透明
-        val ghostMid = ghostInstance(0.45f, 0.60f, 0.95f, 0.38f) // 剖面相交：稍深
+        // 注意：Filament 1.75.1 上 setMaterialInstanceAt 换自定义材质会导致原生崩溃，
+        // 因此隔离改用隐藏非选中零件实现，不再使用 ghost 材质。
         val isolating = isolatedName != null || isolatedEntity != 0
         for (i in partEntities.indices) {
             val entity = partEntities[i]
             val instance = tm.getInstance(entity)
             if (instance == 0) continue
-            val primitiveCount = rm.getPrimitiveCount(instance)
             var hidden = false
-            var ghost: MaterialInstance? = null
             if (sectionEnabled) {
                 val box = rm.getAxisAlignedBoundingBox(instance, Box())
                 val c = box.center[sectionAxis]
                 val h = box.halfExtent[sectionAxis]
                 val p = sectionPos * modelRadius
-                when {
-                    c + h < p -> hidden = true
-                    c - h < p -> ghost = ghostMid
-                }
+                if (c + h < p) hidden = true
             }
             if (!hidden && isolating) {
                 val inPart = (isolatedName != null && partNames[i] == isolatedName) ||
                     (isolatedEntity != 0 && entity == isolatedEntity)
-                if (!inPart && ghostSoft != null) ghost = ghostSoft
+                if (!inPart) hidden = true
             }
             if (hidden) {
                 if (hiddenBySection.add(entity)) scn.removeEntity(entity)
             } else {
                 if (hiddenBySection.remove(entity)) scn.addEntity(entity)
-                setGhost(entity, instance, primitiveCount, ghost)
             }
         }
         updateSectionPlane()
