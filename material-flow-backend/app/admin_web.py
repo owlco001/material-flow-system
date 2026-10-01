@@ -1055,6 +1055,50 @@ def admin_models_list(request: Request):
                 " WHERE status='PUBLISHED' ORDER BY model_code"
             ).fetchall()
         ]
+        # 机台关联的装配任务（含成员）：机台页任务分配与任务页联动
+        device_ids = [r["id"] for r in device_rows]
+        device_tasks: dict[str, list] = {did: [] for did in device_ids}
+        if device_ids:
+            ph = ",".join("?" for _ in device_ids)
+            trows = c.execute(
+                "SELECT id, order_no, device_id, device_no, status, progress_stage"
+                f" FROM assembly_tasks WHERE device_id IN ({ph})"
+                " ORDER BY order_no DESC, device_no",
+                device_ids,
+            ).fetchall()
+            tids = [t["id"] for t in trows]
+            members_by_task: dict[str, list] = {tid: [] for tid in tids}
+            if tids:
+                tph = ",".join("?" for _ in tids)
+                for mr in c.execute(
+                    "SELECT task_id, assembler_id, assignment_role FROM assembly_task_members"
+                    f" WHERE task_id IN ({tph}) AND removed_at IS NULL",
+                    tids,
+                ).fetchall():
+                    members_by_task[mr["task_id"]].append(
+                        {"assembler_id": mr["assembler_id"], "assignment_role": mr["assignment_role"]}
+                    )
+            for t in trows:
+                device_tasks[t["device_id"]].append({
+                    "id": t["id"],
+                    "order_no": t["order_no"],
+                    "device_no": t["device_no"],
+                    "status": t["status"],
+                    "progress_stage": t["progress_stage"],
+                    "members": members_by_task[t["id"]],
+                })
+        assemblers = c.execute(
+            "SELECT id, username, display_name FROM users"
+            " WHERE role='ASSEMBLER' AND active=1 ORDER BY username"
+        ).fetchall()
+        names = {row["id"]: row["display_name"] for row in assemblers}
+        assign_ops: dict[str, str] = {}
+        remove_ops: dict[str, str] = {}
+        for tlist in device_tasks.values():
+            for t in tlist:
+                assign_ops[t["id"]] = str(uuid.uuid4())
+                for m in t["members"]:
+                    remove_ops[f"{t['id']}:{m['assembler_id']}"] = str(uuid.uuid4())
     finally:
         c.close()
     devices = [
@@ -1088,6 +1132,12 @@ def admin_models_list(request: Request):
             "dtotal_pages": (dtotal + dpage_size - 1) // dpage_size if dtotal else 1,
             "dtotal": dtotal,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+            "device_tasks": device_tasks,
+            "assemblers": assemblers,
+            "names": names,
+            "assign_ops": assign_ops,
+            "remove_ops": remove_ops,
+            "task_status_labels": WORKSPACE_STATUS_LABELS,
         },
     )
 
@@ -1794,7 +1844,8 @@ async def admin_task_assign(request: Request, tid: str):
         )
     except HTTPException as exc:
         return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
-    return _see_other(f"/admin/tasks?notice=assigned")
+    next_url = str(form.get("next", "") or "")
+    return _see_other(next_url if next_url.startswith("/admin/") else "/admin/tasks?notice=assigned")
 
 
 @router.post("/admin/tasks/{tid}/assignments/{assembler_id}/remove")
@@ -1817,7 +1868,8 @@ async def admin_task_unassign(request: Request, tid: str, assembler_id: str):
         )
     except HTTPException as exc:
         return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
-    return _see_other(f"/admin/tasks?notice=unassigned")
+    next_url = str(form.get("next", "") or "")
+    return _see_other(next_url if next_url.startswith("/admin/") else "/admin/tasks?notice=unassigned")
 
 
 # ==================== S13：BOM 导入（契约 §6.12）====================

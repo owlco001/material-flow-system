@@ -75,8 +75,9 @@
   <span style="color:#6b7280;font-size:13px">共 {{ dtotal }} 台</span>
 </form>
 <table>
-  <tr><th>机台编号</th><th>机台名称</th><th>已绑定模型</th><th>绑定 / 解绑</th></tr>
+  <tr><th>机台编号</th><th>机台名称</th><th>已绑定模型</th><th>绑定 / 解绑</th><th>任务分配</th></tr>
   {% for d in devices %}
+  {% set _dtasks = device_tasks.get(d.id, []) %}
   <tr>
     <td>{{ d.device_no }}</td>
     <td>{{ d.device_name }}</td>
@@ -94,9 +95,49 @@
         <button type="submit">保存</button>
       </form>
     </td>
+    <td>
+      {% for t in _dtasks %}
+      {% set _tst = t.status %}
+      <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed #e5e7eb">
+        <a href="/admin/tasks?q={{ t.order_no }}">{{ t.order_no }}</a>
+        <span class="st {% if _tst == 'WAITING_MATERIAL' %}st-yellow{% elif _tst in ('MATERIAL_ACCEPTED','IN_PROGRESS') %}st-blue{% elif _tst == 'PAUSED_FOR_TEMPORARY_TRANSFER' %}st-red{% elif _tst == 'COMPLETED' %}st-green{% else %}st-neutral{% endif %}">{{ task_status_labels.get(_tst, _tst) if task_status_labels else _tst }}</span>
+        <span style="color:#6b7280;font-size:12px">（{{ t.progress_stage or 0 }}/3）</span><br>
+        <span style="font-size:13px">
+          {% for m in t.members %}{{ names.get(m.assembler_id, m.assembler_id) }}{% if m.assignment_role == "LEAD" %}(组长){% endif %}{% if not loop.last %}、{% endif %}{% else %}<span style="color:#999">未分配</span>{% endfor %}
+        </span>
+        <details>
+          <summary style="cursor:pointer;color:#0E5FD8;font-size:13px">分配</summary>
+          <div style="min-width:260px;padding:8px">
+            <p style="margin:4px 0;font-size:13px">当前：
+              {% for m in t.members %}
+                {{ names.get(m.assembler_id, m.assembler_id) }}
+                <form method="post" action="/admin/tasks/{{ t.id }}/assignments/{{ m.assembler_id }}/remove" style="display:inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="next" value="/admin/models?dq={{ dq }}&dpage={{ dpage }}">
+                  <input type="hidden" name="clientOperationId" value="{{ remove_ops[t.id ~ ':' ~ m.assembler_id] }}">
+                  <button type="submit" class="btn btn-danger btn-sm" style="margin:0 4px">移除</button>
+                </form>
+              {% else %}无{% endfor %}
+            </p>
+            <form method="post" action="/admin/tasks/{{ t.id }}/assignments">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="next" value="/admin/models?dq={{ dq }}&dpage={{ dpage }}">
+              <input type="hidden" name="clientOperationId" value="{{ assign_ops[t.id] }}">
+              {% for a in assemblers %}
+              <label style="display:inline-block;margin-right:10px;font-size:13px">
+                <input type="checkbox" name="assemblerIds" value="{{ a.id }}">{{ a.display_name }}
+              </label>
+              {% endfor %}
+              <br><button type="submit" class="btn btn-sm" style="margin-top:6px">保存（首个为组长）</button>
+            </form>
+          </div>
+        </details>
+      </div>
+      {% else %}<span style="color:#999">无任务</span>{% endfor %}
+    </td>
   </tr>
   {% else %}
-  <tr><td colspan="4">暂无机台</td></tr>
+  <tr><td colspan="5">暂无机台</td></tr>
   {% endfor %}
 </table>
 <p style="margin-top:12px">
