@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}仪表盘 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <div class="page-head">
   <h2>仪表盘</h2>
   <p class="page-desc">服务版本 {{ app_version }} · 关键指标一览</p>
@@ -21,5 +22,6 @@
     <p class="stat-num">{{ pending_handovers }}</p>
     <p class="stat-label"><a href="/admin/handovers">前往处理 →</a></p>
   </div>
+</div>
 </div>
 {% endblock %}

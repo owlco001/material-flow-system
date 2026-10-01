@@ -1,45 +1,49 @@
 {% extends "base.html" %}
 {% block title %}装配模型 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>装配模型管理</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
-<div class="card" style="max-width:560px">
-  <h3>上传 GLB 模型（新版本自动发布，旧发布版自动归档）</h3>
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div class="card" style="flex:2;min-width:320px">
+  <h3>上传 GLB 模型</h3>
+  <p class="page-desc" style="margin-bottom:4px">新版本自动发布，旧发布版自动归档</p>
   <form method="post" action="/admin/models/upload" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>机型码</label>
-    <input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy">
-    <label>模型名</label>
-    <input name="modelName" required style="max-width:240px">
-    <label>GLB 文件（≤ 15 MiB）</label>
-    <input type="file" name="file" required accept=".glb">
-    <label>文件 SHA-256（可选校验）</label>
-    <input name="sha256" style="max-width:340px" placeholder="64 位十六进制">
-    <button type="submit">上传并发布</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div><label>机型码</label><input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy"></div>
+      <div><label>模型名</label><input name="modelName" required style="max-width:240px"></div>
+      <div><label>GLB 文件（≤ 15 MiB）</label><input type="file" name="file" required accept=".glb"></div>
+      <div><label>文件 SHA-256（可选）</label><input name="sha256" style="max-width:340px" placeholder="64 位十六进制"></div>
+    </div>
+    <button type="submit" class="btn btn-sm">上传并发布</button>
   </form>
 </div>
-<div class="card" style="max-width:640px">
-  <form method="get" action="/admin/models" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-    <div><label>机型码（精确）</label><input name="code" value="{{ code }}" style="max-width:180px" placeholder="如 GearboxAssy"></div>
-    <div><label>搜索（机型码/名称）</label><input name="q" value="{{ q }}" style="max-width:200px" placeholder="关键词"></div>
-    <div><button type="submit" class="btn btn-sm">查询</button>
+<div class="card" style="flex:1;min-width:260px">
+  <h3>查询</h3>
+  <form method="get" action="/admin/models">
+    <label>机型码（精确）</label><input name="code" value="{{ code }}" style="max-width:180px" placeholder="如 GearboxAssy">
+    <label>搜索（机型码/名称）</label><input name="q" value="{{ q }}" style="max-width:200px" placeholder="关键词">
+    <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">查询</button>
     {% if code or q %}<a href="/admin/models" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
   </form>
 </div>
+</div>
 
 {% if published %}
-<div class="card" style="margin-top:16px;max-width:720px">
-  <h3>当前发布 · {{ published.modelCode }}</h3>
-  <p>版本 v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}…</p>
-  <p>创建 {{ published.createdBy }} @ {{ published.createdAt }}</p>
-  <p><a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a></p>
+<div class="card" style="margin-top:12px">
+  <div class="btn-row" style="gap:12px">
+    <b>当前发布 · {{ published.modelCode }}</b>
+    <span class="muted" style="font-size:13px">v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}… · {{ published.createdBy }} @ {{ published.createdAt }}</span>
+    <a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a>
+  </div>
 </div>
 {% elif published_error %}
-<p class="error" style="margin-top:16px">{{ published_error }}（{{ code }} 无已发布版本）</p>
+<p class="error" style="margin-top:12px">{{ published_error }}（{{ code }} 无已发布版本）</p>
 {% endif %}
 
-<h3 style="margin-top:24px">版本列表</h3>
+<h3 style="margin-top:16px">版本列表</h3>
 <table>
   <tr><th>ID</th><th>机型码</th><th>名称</th><th>版本</th><th>格式</th><th>字节</th><th>SHA-256</th><th>状态</th><th>创建人</th><th>时间</th><th>操作</th></tr>
   {% for row in rows %}
@@ -66,7 +70,7 @@
   {% if page < total_pages %}<a href="/admin/models?page={{ page + 1 }}&code={{ code }}&q={{ q }}" class="btn btn-sm">下一页</a>{% endif %}
 </p>
 
-<h3 style="margin-top:24px">机台 3D 模型绑定</h3>
+<h3 style="margin-top:16px">机台 3D 模型绑定</h3>
 <p style="color:#666;font-size:13px">给机台绑定 3D 装配模型后，App 机台详情页头图的 3D 入口即打开该模型；未绑定的机台仍按 App 内置映射表兜底。</p>
 <form method="get" action="/admin/models" style="margin:8px 0;display:flex;gap:8px;align-items:center">
   <input type="hidden" name="code" value="{{ code }}">
@@ -96,8 +100,9 @@
       </select>
       <button type="submit" class="btn btn-sm">保存</button>
     </form>
-    <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">任务分配</div>
+    <details style="margin-top:8px;border-top:1px dashed var(--line);padding-top:6px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">任务分配（{{ _dtasks|length }}）</summary>
+      <div style="padding-top:6px">
       {% for t in _dtasks %}
       {% set _tst = t.status %}
       <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed #e5e7eb">
@@ -136,7 +141,8 @@
         </details>
       </div>
       {% else %}<span style="color:#999;font-size:12px">无任务</span>{% endfor %}
-    </div>
+      </div>
+    </details>
   </div>
   {% else %}
   <p class="muted">暂无机台</p>
@@ -147,4 +153,5 @@
   第 {{ dpage }} / {{ dtotal_pages }} 页
   {% if dpage < dtotal_pages %}<a href="/admin/models?code={{ code }}&q={{ q }}&dq={{ dq }}&dpage={{ dpage + 1 }}" class="btn btn-sm">下一页</a>{% endif %}
 </p>
+</div>
 {% endblock %}

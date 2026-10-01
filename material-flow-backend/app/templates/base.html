@@ -198,6 +198,19 @@ thead th {
 th, td { border-bottom: 1px solid var(--line); padding: 9px 12px; text-align: left; }
 tbody tr:nth-child(even) { background: #fafcff; }
 tbody tr:hover { background: var(--brand-soft); }
+/* ---- 紧凑布局（.compact 包裹的页面：更小的间距字号，一屏放更多内容） ---- */
+.compact .page-head { margin-bottom: 10px; }
+.compact .card { padding: 10px 14px; }
+.compact .card h3 { margin-bottom: 6px; font-size: 15px; }
+.compact .card p { margin: 6px 0; }
+.compact .cards { gap: 10px; }
+.compact .cards .card { flex: 1 1 160px; }
+.compact .stat-num { font-size: 24px; }
+.compact label { margin: 8px 0 3px; font-size: 13px; }
+.compact input, .compact select, .compact textarea { padding: 6px 9px; font-size: 13px; }
+.compact table { font-size: 13px; }
+.compact th, .compact td { padding: 5px 8px; }
+.compact form button[type="submit"] { margin-top: 10px; }
 tbody tr:last-child td { border-bottom: 0; }
 /* ---- 状态徽标 ---- */
 .badge { display: inline-block; padding: 2px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
