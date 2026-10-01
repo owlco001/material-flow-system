@@ -4,7 +4,8 @@
 <h2>流转申请详情</h2>
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-<div class="card">
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<div class="card" style="flex:1;min-width:300px;margin-top:0">
   <p>申请单：{{ item.document_no or item.id }}</p>
   <p>类型：{{ type_label }} · 状态：{{ status_labels.get(item.status, item.status) }}</p>
   <p>创建：{{ created_by_name }} @ {{ created_at_local or "—" }}</p>
@@ -12,6 +13,31 @@
   <p>审批：{{ approved_by_name }} @ {{ approved_at_local or "—" }}
      {% if item.rejection_reason %}· 驳回原因：{{ item.rejection_reason }}{% endif %}</p>
   {% endif %}
+</div>
+{% if item.document_no %}
+{% set _doc = item.document_no %}
+<div class="card" style="margin-top:0;text-align:center">
+  <h3>流转单码</h3>
+  <div style="display:flex;gap:20px;justify-content:center;flex-wrap:wrap">
+    <div>
+      <p class="page-desc">二维码</p>
+      <img src="/admin/barcodes/image?entity=transfer&key={{ _doc|urlencode }}&kind=qr&image=png" alt="流转单二维码" style="max-width:150px;background:#fff;padding:8px;border:1px solid var(--line);border-radius:8px">
+    </div>
+    <div>
+      <p class="page-desc">一维码（Code128）</p>
+      <img src="/admin/barcodes/image?entity=transfer&key={{ _doc|urlencode }}&kind=code128&image=png" alt="流转单一维码" style="max-width:230px;background:#fff;padding:8px;border:1px solid var(--line);border-radius:8px">
+    </div>
+  </div>
+  <div class="btn-row" style="justify-content:center;margin-top:12px">
+    <a class="btn btn-sm" href="/admin/barcodes/print?entity=transfer&key={{ _doc|urlencode }}&kind=qr&copies=1" target="_blank">打印二维码</a>
+    <a class="btn btn-sm btn-secondary" href="/admin/barcodes/print?entity=transfer&key={{ _doc|urlencode }}&kind=code128&copies=1" target="_blank">打印一维码</a>
+  </div>
+</div>
+{% endif %}
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>物料明细</h3>
   {% if payload_items %}
   <table style="margin-top:8px">
     <tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>数量</th></tr>
