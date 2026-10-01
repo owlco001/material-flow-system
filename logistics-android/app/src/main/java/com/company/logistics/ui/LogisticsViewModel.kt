@@ -163,6 +163,8 @@ data class LogisticsUiState(
     val workspaceTotal: Int = 0,
     val workspaceTotalPages: Int = 0,
     val workspaceServerTime: String? = null,
+    /** 工作台物料列表的状态标签过滤（服务端 status 参数）；null 表示全部。 */
+    val workspaceStatusFilter: String? = null,
     val assemblyTasks: List<AssemblyTask> = emptyList(),
     val assemblyTaskState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
     val assemblyTaskError: String? = null,
@@ -717,6 +719,16 @@ class LogisticsViewModel(
         if (_state.value.workspaceRole == UserRole.WORKSHOP_SUPERVISOR || _state.value.workspaceRole == UserRole.ADMIN) refreshWorkshopLabor()
     }
 
+    /** 切换工作台物料列表的状态标签；仅服务端分页的通用工作台生效。 */
+    fun setWorkspaceStatusFilter(status: String?) {
+        val current = _state.value
+        if (current.workspaceRole == UserRole.ASSEMBLER || current.workspaceRole == UserRole.WORKSHOP_SUPERVISOR) return
+        if (current.previewRole != null) return
+        if (current.workspaceStatusFilter == status) return
+        _state.update { it.copy(workspaceStatusFilter = status) }
+        if (current.loggedIn) loadWorkspacePage(resetToFirstPage = true)
+    }
+
     /** 切换服务端分页大小；仅支持内存约束规定的 20/50。 */
     fun setWorkspacePageSize(pageSize: Int) {
         if (_state.value.workspaceRole in setOf(UserRole.ASSEMBLER, UserRole.WORKSHOP_SUPERVISOR) && pageSize != LogisticsUiState.WORKSPACE_PAGE_SIZE) {
@@ -817,6 +829,7 @@ class LogisticsViewModel(
             }
 
             kotlinx.coroutines.coroutineScope {
+                val statusFilter = _state.value.workspaceStatusFilter
                 val summary = if (resetToFirstPage) async {
                     if (loadContext.preview) {
                         repo.loadRoleSummary(
@@ -839,6 +852,7 @@ class LogisticsViewModel(
                         )
                     } else {
                         repo.workspaceMaterialItems(
+                            status = if (loadContext.preview) null else statusFilter,
                             page = requestedPage,
                             pageSize = pageSize
                         )

@@ -350,6 +350,7 @@ object ApiParser {
     fun parseWorkspaceSummary(json: String): WorkspaceSummary {
         val root = JSONObject(json)
         val statusCounts = root.optJSONObject("statusCounts")
+        val handoverStatusCounts = root.optJSONObject("handoverStatusCounts")
         return WorkspaceSummary(
             role = UserRole.from(nullableString(root, "role")),
             pendingApprovalCount = nullableInt(root, "pendingApprovalCount"),
@@ -374,7 +375,22 @@ object ApiParser {
                 ?: nullableInt(root, "temporary_transfer_labor_minutes"),
             overallProgressPercent = nullableInt(root, "overallProgressPercent")
                 ?: nullableInt(root, "overall_progress_percent"),
+            statusCounts = intMap(statusCounts),
+            handoverStatusCounts = intMap(handoverStatusCounts),
         )
+    }
+
+    /** 把 {"CODE": n} 结构的 JSON 对象解析为 Map；缺失或非法时返回空 Map。 */
+    private fun intMap(json: JSONObject?): Map<String, Int> {
+        if (json == null) return emptyMap()
+        val result = mutableMapOf<String, Int>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = json.optInt(key, Int.MIN_VALUE)
+            if (value != Int.MIN_VALUE) result[key] = value
+        }
+        return result
     }
 
     /** POST /api/v1/handovers 以及确认/驳回/取消响应。 */

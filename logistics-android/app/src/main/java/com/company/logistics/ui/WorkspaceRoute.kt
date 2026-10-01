@@ -112,6 +112,8 @@ fun WorkspaceRoute(
         onRemoveAssemblyMember = callbacks.onRemoveAssemblyMember,
         onSubmitException = callbacks.onSubmitException,
         exceptionSubmitting = state.exceptionSubmitting,
+        statusFilter = state.workspaceStatusFilter,
+        onStatusFilterChange = callbacks.onStatusFilterChange,
     )
 }
 
@@ -157,4 +159,5 @@ private class WorkspaceCallbacks(private val vm: LogisticsViewModel) {
         { task, assemblerId -> vm.removeAssemblyMember(task, assemblerId) }
     val onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit =
         { item, type, actual, description -> vm.submitException(item, type, actual, description) }
+    val onStatusFilterChange: (String?) -> Unit = { vm.setWorkspaceStatusFilter(it) }
 }

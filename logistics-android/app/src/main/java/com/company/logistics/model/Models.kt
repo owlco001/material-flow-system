@@ -406,7 +406,11 @@ data class RoleWorkspaceSummary(
     val role: UserRole,
     val sourceOrderNo: String?,
     val serverTime: String?,
-    val metrics: Map<WorkspaceMetricKey, WorkspaceMetric>
+    val metrics: Map<WorkspaceMetricKey, WorkspaceMetric>,
+    /** 服务端全量物料的状态聚合（statusCode -> 数量），供仓管标签页展示计数。 */
+    val statusCounts: Map<String, Int> = emptyMap(),
+    /** 服务端全量物料的最后交接状态聚合，供“待交接”标签计数。 */
+    val handoverStatusCounts: Map<String, Int> = emptyMap(),
 ) {
     fun metric(key: WorkspaceMetricKey): WorkspaceMetric =
         metrics[key] ?: WorkspaceMetric.unavailable()
@@ -444,6 +448,10 @@ data class WorkspaceSummary(
     val assemblyLaborMinutes: Int? = null,
     val temporaryTransferLaborMinutes: Int? = null,
     val overallProgressPercent: Int? = null,
+    /** 服务端全量物料的状态聚合（statusCode -> 数量）；缺失表示接口未提供。 */
+    val statusCounts: Map<String, Int> = emptyMap(),
+    /** 服务端全量物料的最后交接状态聚合（handoverStatus -> 数量）。 */
+    val handoverStatusCounts: Map<String, Int> = emptyMap(),
 )
 
 /** 工作台分页工作项响应。客户端只保留当前页，避免一次性加载全量数据。 */
@@ -786,11 +794,43 @@ object ServerWorkspaceSummaryFactory {
             WorkspaceMetricKey.ASSEMBLY_LABOR_MINUTES to metric(summary.assemblyLaborMinutes),
             WorkspaceMetricKey.TEMPORARY_TRANSFER_LABOR_MINUTES to metric(summary.temporaryTransferLaborMinutes),
             WorkspaceMetricKey.OVERALL_PROGRESS_PERCENT to metric(summary.overallProgressPercent)
-        )
+        ),
+        statusCounts = summary.statusCounts,
+        handoverStatusCounts = summary.handoverStatusCounts,
     )
 
     private fun metric(count: Int?): WorkspaceMetric =
         count?.let { WorkspaceMetric.of(it) } ?: WorkspaceMetric.unavailable()
+}
+
+/**
+ * 仓管工作台物料状态标签：statusCode 为 null 表示不过滤（全部）。
+ * 顺序即标签栏展示顺序，覆盖仓管日常关注的出库链路与库存状态。
+ */
+data class WarehouseMaterialTab(
+    val statusCode: String?,
+    val label: String,
+)
+
+val WAREHOUSE_MATERIAL_TABS: List<WarehouseMaterialTab> = listOf(
+    WarehouseMaterialTab(null, "全部"),
+    WarehouseMaterialTab("OUTBOUND_PENDING", "待出库"),
+    WarehouseMaterialTab("OUTBOUND_APPROVED", "已审批"),
+    WarehouseMaterialTab("OUTBOUND_CONFIRMED", "已出库"),
+    WarehouseMaterialTab("IN_STOCK", "在库"),
+    WarehouseMaterialTab("ARRIVED", "到货"),
+    WarehouseMaterialTab("OUT_OF_STOCK", "缺货"),
+    WarehouseMaterialTab("PENDING", "待交接"),
+)
+
+/** 标签计数：PENDING 取交接状态聚合，其余取物料状态聚合；全部为两者无关的全量和。 */
+fun warehouseTabCount(summary: RoleWorkspaceSummary, tab: WarehouseMaterialTab): Int? {
+    if (summary.statusCounts.isEmpty() && summary.handoverStatusCounts.isEmpty()) return null
+    return when (tab.statusCode) {
+        null -> summary.statusCounts.values.sum()
+        "PENDING" -> summary.handoverStatusCounts["PENDING"]
+        else -> summary.statusCounts[tab.statusCode]
+    }
 }
 
 /** 从既有订单物料响应生成摘要；不调用新后端接口，也不推断缺失状态。 */

@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.RoleWorkspaceSummary
+import com.company.logistics.model.WAREHOUSE_MATERIAL_TABS
+import com.company.logistics.model.warehouseTabCount
 import com.company.logistics.model.AssemblyAction
 import com.company.logistics.model.AssemblyTask
 import com.company.logistics.model.LaborRecord
@@ -185,6 +188,9 @@ fun WorkspaceScreen(
     onRemoveAssemblyMember: (AssemblyTask, String) -> Unit = { _, _ -> },
     onSubmitException: (WorkspaceMaterialItem, String, Int, String?) -> Unit = { _, _, _, _ -> },
     exceptionSubmitting: Boolean = false,
+    /** 仓管工作台物料状态标签过滤；null 表示全部。 */
+    statusFilter: String? = null,
+    onStatusFilterChange: (String?) -> Unit = {},
 ) {
     // entriesFor 只跟 role 有关：remember 住，避免每次重组都重建 10+ 个入口对象。
     val entries = remember(role) { entriesFor(role) }
@@ -474,6 +480,18 @@ fun WorkspaceScreen(
             VSpace(Spacing.sm)
         }
 
+        // 仓管工作台：物料状态标签页，按服务端聚合数量切换过滤。
+        if (role == UserRole.WAREHOUSE_ADMIN) {
+            WarehouseMaterialTabs(
+                summary = summary,
+                selected = statusFilter,
+                readOnly = previewRole != null,
+                enabled = itemsState != WorkspaceLoadState.LOADING,
+                onSelect = onStatusFilterChange,
+            )
+            VSpace(Spacing.sm)
+        }
+
         when (itemsState) {
             WorkspaceLoadState.EMPTY -> EmptyState(
                 title = "当前没有工作项",
@@ -716,6 +734,79 @@ private fun WorkspaceMetricCard(entry: WorkspaceEntry, metric: WorkspaceMetric, 
         VSpace(Spacing.xs)
         Text(
             "— 表示接口未提供数据，不代表数量为 0",
+            fontSize = 11.sp,
+            color = LogisticsTheme.colors.textTertiary,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun WarehouseMaterialTabs(
+    summary: RoleWorkspaceSummary,
+    selected: String?,
+    readOnly: Boolean,
+    enabled: Boolean,
+    onSelect: (String?) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        WAREHOUSE_MATERIAL_TABS.forEach { tab ->
+            val isSelected = selected == tab.statusCode
+            val count = warehouseTabCount(summary, tab)
+            val clickable = enabled && !readOnly && !isSelected
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = if (isSelected) LogisticsColors.Primary else LogisticsTheme.colors.cardBackground,
+                border = BorderStroke(
+                    1.dp,
+                    if (isSelected) LogisticsColors.Primary else LogisticsTheme.colors.border,
+                ),
+                modifier = Modifier.clickable(enabled = clickable) { onSelect(tab.statusCode) },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        tab.label,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) Color.White else LogisticsTheme.colors.textPrimary,
+                    )
+                    if (count != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) {
+                                Color.White.copy(alpha = 0.25f)
+                            } else {
+                                LogisticsTheme.colors.border.copy(alpha = 0.5f)
+                            },
+                        ) {
+                            Text(
+                                count.toString(),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = if (isSelected) Color.White else LogisticsTheme.colors.textSecondary,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (readOnly) {
+        VSpace(Spacing.xs)
+        Text(
+            "角色预览为只读，标签切换已禁用",
             fontSize = 11.sp,
             color = LogisticsTheme.colors.textTertiary,
             modifier = Modifier.padding(start = 4.dp),
