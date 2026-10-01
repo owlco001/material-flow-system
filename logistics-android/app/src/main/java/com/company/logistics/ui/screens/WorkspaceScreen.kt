@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -65,6 +67,7 @@ import com.company.logistics.R
 import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
+import com.company.logistics.ui.components.formatServerTime
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.StatusTag
@@ -256,7 +259,8 @@ fun WorkspaceScreen(
         return
     }
 
-    if (role == UserRole.WORKSHOP_SUPERVISOR || role == UserRole.ADMIN) {
+    // 仅车间主管进入车间工作台；管理员走通用工作台（贴合管理员角色的指标与入口）
+    if (role == UserRole.WORKSHOP_SUPERVISOR) {
         WorkshopSupervisorScreen(
             authenticatedRole = authenticatedRole,
             previewRole = previewRole,
@@ -485,6 +489,18 @@ fun WorkspaceScreen(
             VSpace(Spacing.sm)
         }
 
+        // 管理员工作台：保留装配任务分配 / 协作成员能力
+        if (role == UserRole.ADMIN) {
+            AssemblyTaskAssignmentSection(
+                assemblyTasks = assemblyTasks,
+                assemblyTaskState = assemblyTaskState,
+                submitting = assemblySubmittingTaskId != null,
+                readOnly = previewRole != null,
+                onAssignMembers = onAssignAssemblyMembers,
+                onRemoveMember = onRemoveAssemblyMember,
+            )
+        }
+
         // 仓管工作台：物料状态标签页，按服务端聚合数量切换过滤。
         if (role == UserRole.WAREHOUSE_ADMIN) {
             WarehouseMaterialTabs(
@@ -683,7 +699,7 @@ private fun WorkspaceDataSourceNotice(
         }
         if (serverTime != null) {
             VSpace(4.dp)
-            Text("服务端时间：$serverTime", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+            Text("服务端时间：${formatWorkspaceTime(serverTime)}", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
         }
         if (summaryState == WorkspaceLoadState.ERROR || itemsState == WorkspaceLoadState.ERROR) {
             VSpace(Spacing.sm)
@@ -833,6 +849,8 @@ private fun ExceptionReportDialog(
     val actualValue = actual.toIntOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("提报物料异常") },
         text = {
             Column {
@@ -919,7 +937,7 @@ private fun WorkspaceItemCard(
         )
         VSpace(4.dp)
         Text(
-            text = "服务端状态 ${item.statusLabel.ifBlank { "未知状态" }} · 状态码 ${item.statusCode.ifBlank { "—" }}",
+            text = "状态 ${item.statusLabel.ifBlank { "未知状态" }}",
             fontSize = 11.sp,
             color = LogisticsTheme.colors.textTertiary,
         )
@@ -1064,6 +1082,8 @@ private fun ReasonDialog(
     var reason by remember(request.item.id, request.action) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("${request.action.label}交接") },
         text = {
             OutlinedTextField(
@@ -1099,6 +1119,8 @@ private fun CreateHandoverDialog(
     val parsedQuantity = quantity.toIntOrNull()
     AlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("发起出库交接") },
         text = {
             Column {
@@ -1221,3 +1243,6 @@ private fun entriesFor(role: UserRole): List<WorkspaceEntry> = when (role) {
         WorkspaceEntry(WorkspaceMetricKey.OVERALL_PROGRESS_PERCENT, "当前进度", "按服务端阶段 1/2/3 提交", "刷新"),
     )
 }
+
+/** ISO 时间精简为 "MM-dd HH:mm"（委托公共 formatServerTime，fix5m 提取共用） */
+private fun formatWorkspaceTime(iso: String?): String = formatServerTime(iso)

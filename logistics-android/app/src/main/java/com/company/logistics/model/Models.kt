@@ -350,7 +350,9 @@ data class OrderMaterialItem(
     val currentOwnerUserId: String? = null,
     val currentOwnerName: String? = null,
     val updatedAt: String? = null,
-    val unit: String = "件"
+    val unit: String = "件",
+    /** 后端物料分类（materials.category）：电气 / 机械 / 其他；空或未知值由客户端归为「未分类」 */
+    val materialCategory: String? = null
 ) {
     /** 缺口数量 */
     val shortageQuantity: Int get() = (requiredQuantity - inStockQuantity).coerceAtLeast(0)
@@ -518,8 +520,10 @@ data class TransferRequest(
     val items: List<TransferRequestItem> = emptyList(),
     val remark: String? = null,
     val createdBy: String? = null,
+    val createdByName: String? = null,
     val createdAt: String? = null,
     val approvedBy: String? = null,
+    val approvedByName: String? = null,
     val approvedAt: String? = null,
     val executedAt: String? = null,
     val serverTime: String? = null,

@@ -5,13 +5,18 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Badge
@@ -32,8 +37,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -43,8 +46,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,7 +53,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -90,19 +93,20 @@ fun Model3dViewerScreen(
     val context = LocalContext.current
     val renderer = remember {
         onStageChange("正在初始化 3D 引擎…")
-        FilamentModelRenderer().also {
+        // 画布背景 = App 页面背景（深藏青 BrandNavyDark #08214F），与整页视觉融为一体；
+        // 不再对齐浏览器的 #0b1020（用户指定：背景色采用 app 的背景色）。
+        FilamentModelRenderer(backgroundArgb = LogisticsColors.BrandNavyDark.toArgb()).also {
             onStageChange("3D 引擎初始化完成，等待模型文件…")
         }
     }
     var renderStatus by remember { mutableStateOf("") }
-    // 剖面控制状态
-    var sectionOn by remember { mutableStateOf(false) }
-    var sectionAxis by remember { mutableIntStateOf(1) }
-    var sectionPos by remember { mutableFloatStateOf(0f) }
     // 零件装配指引状态
     var parts by remember { mutableStateOf<List<PartInfo>>(emptyList()) }
     var selectedPart by remember { mutableStateOf<PartInfo?>(null) }
     var showPartsSheet by remember { mutableStateOf(false) }
+    // 悬浮球控制区：右下角透明悬浮球，点击展开半透明面板（零件 / 重置视角 / 爆炸图）
+    var controlsExpanded by remember { mutableStateOf(false) }
+    var explode by remember { mutableStateOf(0f) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
@@ -151,10 +155,29 @@ fun Model3dViewerScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .pointerInput(renderer) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    renderer.onRotate(pan.x * .2f, pan.y * .2f)
-                                    renderer.onPan(pan.x * .01f, pan.y * .01f)
-                                    renderer.onScale(zoom)
+                                // 单指拖动 = 旋转；双指拖动 = 平移 + 捏合缩放。
+                                // 旧 detectTransformGestures 把每次拖动（含单指）都同时旋转+平移，
+                                // 单指转视角时相机被悄悄平移、视角容易跑飞（用户指定：双指才平移）。
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        when {
+                                            pressed.size >= 2 -> {
+                                                renderer.onScale(event.calculateZoom())
+                                                val pan = event.calculatePan()
+                                                renderer.onPan(pan.x * .01f, pan.y * .01f)
+                                                pressed.forEach { it.consume() }
+                                            }
+                                            pressed.size == 1 -> {
+                                                val change = pressed[0]
+                                                val drag = change.positionChange()
+                                                renderer.onRotate(drag.x * .2f, drag.y * .2f)
+                                                change.consume()
+                                            }
+                                        }
+                                    } while (event.changes.any { it.pressed })
                                 }
                             }
                             .pointerInput(renderer) {
@@ -233,6 +256,14 @@ fun Model3dViewerScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(PartNameCn.displayName(part.name), color = Color.White, fontSize = 13.sp)
+                                if (PartNameCn.displayName(part.name) != part.name) {
+                                    // 英文节点名小字（对齐浏览器「机械臂 大臂 2（arm_upper_2）」）
+                                    Text(
+                                        "（${part.name}）",
+                                        color = Color.White.copy(alpha = 0.45f),
+                                        fontSize = 10.sp,
+                                    )
+                                }
                                 Text(
                                     "已定位 · 其余零件半透明",
                                     color = Color.White.copy(alpha = 0.55f),
@@ -244,170 +275,97 @@ fun Model3dViewerScreen(
                             }
                         }
                     }
-                }
-                // 底部控制区：深色
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color(0xFF060F24),
-                                ),
-                            ),
-                        )
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
+
+                    // 底部控制区：透明悬浮球模式（画布右下角，点击展开/收起，不遮挡画布主体）
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(20.dp)
+                            .size(52.dp)
+                            .background(Color.White.copy(alpha = 0.16f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                            .clickable { controlsExpanded = !controlsExpanded },
+                        contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "单指旋转 · 双指缩放/平移",
-                            fontSize = 12.sp,
-                            color = Color.White.copy(alpha = 0.55f),
-                            modifier = Modifier.weight(1f),
+                            if (controlsExpanded) "×" else "☰",
+                            fontSize = 20.sp,
+                            color = Color.White,
                         )
-                        OutlinedButton(
-                            onClick = {
-                                sectionOn = !sectionOn
-                                renderer.setSection(sectionOn, sectionAxis, sectionPos)
-                            },
-                            border = BorderStroke(
-                                1.dp,
-                                if (sectionOn) LogisticsColors.Info
-                                else Color.White.copy(alpha = 0.35f),
-                            ),
-                        ) {
-                            Text(
-                                "剖面",
-                                fontSize = 13.sp,
-                                color = if (sectionOn) LogisticsColors.Info else Color.White,
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        // 零件清单：工人查"哪个部件装哪"
-                        BadgedBox(
-                            badge = {
-                                if (parts.isNotEmpty()) {
-                                    Badge(
-                                        containerColor = LogisticsColors.Info,
-                                        contentColor = Color.White,
-                                    ) { Text("${parts.size}", fontSize = 10.sp) }
-                                }
-                            },
-                        ) {
-                            OutlinedButton(
-                                onClick = { showPartsSheet = true },
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
-                            ) {
-                                Text("零件", fontSize = 13.sp, color = Color.White)
-                            }
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(
-                            onClick = renderer::resetCamera,
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
-                        ) {
-                            Text("重置视角", fontSize = 13.sp, color = Color.White)
-                        }
                     }
-                    // 剖面控制：轴向 + 切面位置
-                    if (sectionOn) {
-                        Row(
+                    // 展开的半透明控制面板：零件 / 重置视角 / 爆炸图
+                    if (controlsExpanded) {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 20.dp, bottom = 84.dp)
+                                .width(248.dp)
+                                .background(Color(0xB31A1D21), RoundedCornerShape(16.dp))
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
                         ) {
-                            listOf("X 轴" to 0, "Y 轴" to 1, "Z 轴" to 2).forEach { (label, axis) ->
-                                FilterChip(
-                                    selected = sectionAxis == axis,
-                                    onClick = {
-                                        sectionAxis = axis
-                                        renderer.setSection(true, sectionAxis, sectionPos)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                // 零件清单：工人查"哪个部件装哪"
+                                BadgedBox(
+                                    badge = {
+                                        if (parts.isNotEmpty()) {
+                                            Badge(
+                                                containerColor = LogisticsColors.Info,
+                                                contentColor = Color.White,
+                                            ) { Text("${parts.size}", fontSize = 10.sp) }
+                                        }
                                     },
-                                    label = { Text(label, fontSize = 12.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        containerColor = Color.White.copy(alpha = 0.08f),
-                                        labelColor = Color.White.copy(alpha = 0.7f),
-                                        selectedContainerColor = LogisticsColors.Info.copy(alpha = 0.25f),
-                                        selectedLabelColor = Color.White,
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showPartsSheet = true },
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                                    ) {
+                                        Text("零件", fontSize = 13.sp, color = Color.White)
+                                    }
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                OutlinedButton(
+                                    onClick = renderer::resetCamera,
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                                ) {
+                                    Text("重置视角", fontSize = 13.sp, color = Color.White)
+                                }
+                            }
+                            // 爆炸图滑杆
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("爆炸图", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
+                                Slider(
+                                    value = explode,
+                                    onValueChange = {
+                                        explode = it
+                                        renderer.setExploded(it)
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = LogisticsColors.Info,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.22f),
                                     ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = sectionAxis == axis,
-                                        borderColor = Color.White.copy(alpha = 0.25f),
-                                        selectedBorderColor = LogisticsColors.Info,
-                                        borderWidth = 1.dp,
-                                        selectedBorderWidth = 1.dp,
-                                    ),
-                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                                Text(
+                                    "${(explode * 100).toInt()}%",
+                                    fontSize = 12.sp,
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.width(40.dp),
+                                    textAlign = TextAlign.End,
                                 )
                             }
                         }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("切面", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
-                            Slider(
-                                value = sectionPos,
-                                onValueChange = {
-                                    sectionPos = it
-                                    renderer.setSection(true, sectionAxis, sectionPos)
-                                },
-                                valueRange = -1f..1f,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 8.dp),
-                                colors = SliderDefaults.colors(
-                                    thumbColor = Color.White,
-                                    activeTrackColor = LogisticsColors.Info,
-                                    inactiveTrackColor = Color.White.copy(alpha = 0.22f),
-                                ),
-                            )
-                            Text(
-                                "${(sectionPos * 100).toInt()}%",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.75f),
-                                modifier = Modifier.width(44.dp),
-                                textAlign = TextAlign.End,
-                            )
-                        }
-                    }
-                    // 爆炸图滑杆
-                    var explode by remember { mutableStateOf(0f) }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("爆炸图", fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f))
-                        Slider(
-                            value = explode,
-                            onValueChange = {
-                                explode = it
-                                renderer.setExploded(it)
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color.White,
-                                activeTrackColor = LogisticsColors.Info,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.22f),
-                            ),
-                        )
-                        Text(
-                            "${(explode * 100).toInt()}%",
-                            fontSize = 12.sp,
-                            color = Color.White.copy(alpha = 0.75f),
-                            modifier = Modifier.width(40.dp),
-                            textAlign = TextAlign.End,
-                        )
                     }
                 }
             }

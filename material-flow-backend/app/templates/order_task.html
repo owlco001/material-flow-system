@@ -20,8 +20,9 @@
   </p>
   <p>总体进度：第 {{ detail.progressStage or 0 }} / 3 阶段</p>
   <div class="bar-bg" style="max-width:420px"><div class="bar-fg{% if detail.status == 'COMPLETED' %} is-done{% endif %}" style="width:{{ pct }}%"></div></div>
-  <p style="margin-top:10px">装配工：{{ detail.assignedAssemblerId or "—" }}
-    {% if detail.members %}（协同：{{ detail.members | map(attribute="assemblerId") | join("、") }}）{% endif %}</p>
+  {% set _lead = detail.members[0].assemblerName if detail.members else none %}
+  <p style="margin-top:10px">装配工：{{ detail.assignedAssemblerName or _lead or "未分配" }}
+    {% if detail.members %}（协同：{{ detail.members | map(attribute="assemblerName") | join("、") }}）{% endif %}</p>
 </div>
 
 <div class="card" style="margin-top:16px">

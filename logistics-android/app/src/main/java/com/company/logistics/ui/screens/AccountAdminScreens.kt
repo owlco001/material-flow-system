@@ -3,11 +3,14 @@ package com.company.logistics.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.company.logistics.model.ManagedUser
 import com.company.logistics.model.UserRole
 
@@ -62,6 +65,8 @@ fun UserManagementScreen(
     var selectedRole by remember { mutableStateOf<UserRole?>(null) }
     var roleMenuExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<ManagedUser?>(null) }
+    // 添加员工改为半透明弹窗：列表占满页面，表单不再常驻占位
+    var showAddDialog by remember { mutableStateOf(false) }
     val canSubmit = AddUserFormPolicy.canSubmit(employeeNo, displayName, password, selectedRole)
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -70,39 +75,13 @@ fun UserManagementScreen(
             Text("用户管理", style = MaterialTheme.typography.headlineSmall)
             TextButton(onClick = onRefresh) { Text("刷新") }
         }
-        Text("添加员工（带 * 为必填项）", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(employeeNo, { employeeNo = it }, Modifier.fillMaxWidth(), label = { Text("员工工号 *") }, singleLine = true)
-        OutlinedTextField(displayName, { displayName = it }, Modifier.fillMaxWidth(), label = { Text("姓名 *") }, singleLine = true)
-        ExposedDropdownMenuBox(
-            expanded = roleMenuExpanded,
-            onExpandedChange = { roleMenuExpanded = !roleMenuExpanded },
+        Button(
+            onClick = {
+                employeeNo = ""; displayName = ""; password = ""; managerId = ""; selectedRole = null
+                showAddDialog = true
+            },
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            OutlinedTextField(
-                value = selectedRole?.label.orEmpty(),
-                onValueChange = {},
-                modifier = Modifier.menuAnchor().fillMaxWidth(),
-                readOnly = true,
-                label = { Text("角色 *") },
-                placeholder = { Text("请选择角色") },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleMenuExpanded) },
-                singleLine = true,
-            )
-            ExposedDropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
-                assignableUserRoles.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text("${option.code} ${option.label}") },
-                        onClick = {
-                            selectedRole = option
-                            roleMenuExpanded = false
-                        },
-                    )
-                }
-            }
-        }
-        OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("临时密码 *") }, supportingText = { Text("必填，密码要求由后端校验") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
-        OutlinedTextField(managerId, { managerId = it }, Modifier.fillMaxWidth(), label = { Text("直属领导 ID（可选）") }, singleLine = true)
-        Button(onClick = { onAdd(employeeNo, displayName, selectedRole!!.code, password, managerId.ifBlank { null }) }, enabled = !loading && canSubmit, modifier = Modifier.fillMaxWidth()) { Text("添加员工") }
+        ) { Text("添加员工（带 * 为必填项）") }
         if (loading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text("正在加载用户…", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -134,6 +113,67 @@ fun UserManagementScreen(
                 }
             }
         }
+    }
+
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            // 键盘弹出时对话框上移，提交按钮贴在键盘上方，无需手动收起
+            properties = DialogProperties(decorFitsSystemWindows = false),
+            modifier = Modifier.imePadding(),
+            title = { Text("添加员工") },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(employeeNo, { employeeNo = it }, Modifier.fillMaxWidth(), label = { Text("员工工号 *") }, singleLine = true)
+                    OutlinedTextField(displayName, { displayName = it }, Modifier.fillMaxWidth(), label = { Text("姓名 *") }, singleLine = true)
+                    ExposedDropdownMenuBox(
+                        expanded = roleMenuExpanded,
+                        onExpandedChange = { roleMenuExpanded = !roleMenuExpanded },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedTextField(
+                            value = selectedRole?.label.orEmpty(),
+                            onValueChange = {},
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                            readOnly = true,
+                            label = { Text("角色 *") },
+                            placeholder = { Text("请选择角色") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleMenuExpanded) },
+                            singleLine = true,
+                        )
+                        ExposedDropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
+                            assignableUserRoles.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text("${option.code} ${option.label}") },
+                                    onClick = {
+                                        selectedRole = option
+                                        roleMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("临时密码 *") }, supportingText = { Text("必填，密码要求由后端校验") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    OutlinedTextField(managerId, { managerId = it }, Modifier.fillMaxWidth(), label = { Text("直属领导 ID（可选）") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showAddDialog = false
+                        onAdd(employeeNo, displayName, selectedRole!!.code, password, managerId.ifBlank { null })
+                        employeeNo = ""; displayName = ""; password = ""; managerId = ""; selectedRole = null
+                    },
+                    enabled = !loading && canSubmit,
+                ) { Text(if (loading) "提交中…" else "添加员工") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) { Text("取消") }
+            },
+        )
     }
 
     pendingDelete?.let { target ->

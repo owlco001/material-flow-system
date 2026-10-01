@@ -2523,6 +2523,33 @@ def _operation_replay(c, table: str, operation_id: str, payload: str, trace_id: 
     return result
 
 
+@app.get("/api/v1/production-orders")
+def list_production_orders(
+    limit: int = Query(20, ge=1, le=50),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """最近生产订单列表（订单页空态展示，点击即查详情）。created_at 倒序。"""
+    c = db()
+    try:
+        rows = c.execute(
+            """SELECT po.id, po.order_no, po.product_name, po.status, po.created_at,
+                      (SELECT COUNT(*) FROM production_order_models pom WHERE pom.order_id = po.id) AS model_count
+                 FROM production_orders po
+                ORDER BY po.created_at DESC, po.id DESC
+                LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return {
+            "orders": [
+                {"orderId": r["id"], "orderNo": r["order_no"], "productName": r["product_name"],
+                 "status": r["status"], "createdAt": r["created_at"], "modelCount": r["model_count"]}
+                for r in rows
+            ],
+            "serverTime": now(),
+        }
+    finally:
+        c.close()
+
 @app.post("/api/v1/production-orders")
 def create_production_order(body: ProductionOrderCreate, user: sqlite3.Row = Depends(current_user),
                            x_request_id: str | None = Header(default=None),
@@ -2569,7 +2596,31 @@ def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dic
             # 也支持用 device_no 查询
             d = c.execute("SELECT * FROM devices WHERE device_no=?", (device_id,)).fetchone()
         if not d:
-            raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在")
+            # 回退：部分机台编号（如 26B-013-HZ01）只存在于订单绑定表 order_devices，
+            # 不在机台主数据 devices 中。用绑定记录合成详情，deviceId 取 order_devices.id，
+            # 保证后续异常提交（校验 order_devices.id）与物料过滤（requirement.device_id）语义一致。
+            od = c.execute(
+                "SELECT * FROM order_devices WHERE id=? OR device_no=?",
+                (device_id, device_id),
+            ).fetchone()
+            if not od:
+                raise ApiError(404, "DEVICE_NOT_FOUND", "机台不存在")
+            po = c.execute(
+                "SELECT order_no, product_name FROM production_orders WHERE id=?",
+                (od["order_id"],),
+            ).fetchone()
+            return {
+                "deviceId": od["id"],
+                "deviceNo": od["device_no"],
+                "deviceName": od["device_no"],
+                "workshop": None,
+                "modelCapability": None,
+                "model3dCode": None,
+                "status": "BOUND",
+                "orders": [
+                    {"orderNo": po["order_no"], "productName": po["product_name"], "assignStatus": None}
+                ] if po else [],
+            }
         # 关联的生产订单（order_devices 用 device_no 关联）
         orders = c.execute("""
             SELECT po.order_no, po.product_name
@@ -3281,13 +3332,17 @@ def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str
                                "startedAt": None, "completedAt": None, "reworkReason": None})
     stage_list.sort(key=lambda s: s["stageNo"])
     members = c.execute(
-        "SELECT assembler_id, assignment_role, assigned_by, assigned_at, removed_at "
-        "FROM assembly_task_members WHERE task_id=? AND removed_at IS NULL",
+        """SELECT m.assembler_id, m.assignment_role, m.assigned_by, m.assigned_at, m.removed_at,
+                  u.display_name AS member_display_name, u.username AS member_username
+             FROM assembly_task_members m LEFT JOIN users u ON u.id = m.assembler_id
+            WHERE m.task_id=? AND m.removed_at IS NULL""",
         (task_id,),
     ).fetchall()
     member_list = [
         {
-            "assemblerId": m["assembler_id"], "assignmentRole": m["assignment_role"],
+            "assemblerId": m["assembler_id"],
+            "assemblerName": m["member_display_name"] or m["member_username"] or m["assembler_id"],
+            "assignmentRole": m["assignment_role"],
             "assignedBy": m["assigned_by"], "assignedAt": m["assigned_at"],
             "removedAt": m["removed_at"],
         }
@@ -3329,15 +3384,23 @@ def list_assembly_tasks(
     pageSize: int = Query(default=20, ge=1, le=100),
     q: str | None = Query(default=None, max_length=64),
     status: str | None = Query(default=None, max_length=32),
+    deviceNo: str | None = Query(default=None, max_length=64),
+    deviceId: str | None = Query(default=None, max_length=64),
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
-    """装配任务列表（装配工工作台用）。"""
+    """装配任务列表（装配工工作台用）。deviceNo/deviceId 用于机台详情精确过滤。"""
     if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER", "PLANNER"}:
         raise ApiError(403, CODE_FORBIDDEN, "无权查看装配任务")
     c = db()
     try:
         where = "1=1"
         args: list[Any] = []
+        if deviceId:
+            where += " AND t.device_id = ?"
+            args.append(deviceId)
+        if deviceNo:
+            where += " AND t.device_no = ?"
+            args.append(deviceNo)
         if user["role"] == "ASSEMBLER":
             # 装配工只看分配给自己的任务（含成员表）
             where = (
@@ -3724,6 +3787,7 @@ def material_status(
                r.material_id   AS material_id,
                m.code          AS material_code,
                m.name          AS material_name,
+               m.category      AS material_category,
                m.specification AS specification,
                m.unit          AS unit,
                r.required_quantity  AS required_quantity,
@@ -3749,6 +3813,7 @@ def material_status(
             "materialId": r["material_id"],
             "materialCode": r["material_code"],
             "materialName": r["material_name"],
+            "materialCategory": r["material_category"],
             "specification": r["specification"],
             "unit": r["unit"],
             "requiredQuantity": r["required_quantity"],
@@ -3813,8 +3878,12 @@ def order_detail(
     ).fetchone()["n"]
     task_rows = c.execute(
         f"""SELECT t.id,t.device_id,t.device_no,d.device_name AS device_name,t.status,t.progress_stage,t.task_version,
-                    t.assigned_assembler_id
-               FROM assembly_tasks t LEFT JOIN devices d ON d.id = t.device_id WHERE {task_where.replace("assembly_tasks", "t")}
+                    t.assigned_assembler_id, au.display_name AS assembler_display_name, au.username AS assembler_username,
+                    (SELECT group_concat(COALESCE(u2.display_name, u2.username, m2.assembler_id), '、')
+                       FROM assembly_task_members m2 LEFT JOIN users u2 ON u2.id = m2.assembler_id
+                      WHERE m2.task_id = t.id AND m2.removed_at IS NULL) AS member_names
+               FROM assembly_tasks t LEFT JOIN devices d ON d.id = t.device_id
+               LEFT JOIN users au ON au.id = t.assigned_assembler_id WHERE {task_where.replace("assembly_tasks", "t")}
               ORDER BY t.created_at,t.id LIMIT ? OFFSET ?""",
         task_args + [pageSize, (page - 1) * pageSize],
     ).fetchall()
@@ -3861,7 +3930,9 @@ def order_detail(
     if entity_ids:
         marks = ",".join("?" for _ in entity_ids)
         rows = c.execute(
-            f"SELECT event_type,entity_id,actor_user_id,server_time,after_json FROM audit_events WHERE entity_id IN ({marks}) ORDER BY server_time,id",
+            f"""SELECT e.event_type,e.entity_id,e.actor_user_id,e.server_time,e.after_json,u.username,u.display_name
+                  FROM audit_events e LEFT JOIN users u ON u.id=e.actor_user_id
+                 WHERE e.entity_id IN ({marks}) ORDER BY e.server_time,e.id""",
             list(entity_ids),
         ).fetchall()
         for row in rows:
@@ -3875,6 +3946,7 @@ def order_detail(
                 "type": row["event_type"], "entityId": row["entity_id"],
                 "status": after.get("status") or after.get("workspaceStatus") or after.get("handoverStatus"),
                 "serverTime": row["server_time"], "actorId": row["actor_user_id"],
+                "actorName": row["display_name"] or row["username"] or row["actor_user_id"],
             })
     c.close()
     materials = [{
@@ -3899,6 +3971,8 @@ def order_detail(
             "deviceName": r["device_name"],
             "status": r["status"], "progressStage": r["progress_stage"],
             "taskVersion": r["task_version"], "assignedAssemblerId": r["assigned_assembler_id"],
+            "assignedAssemblerName": r["assembler_display_name"] or r["assembler_username"] or r["assigned_assembler_id"],
+            "memberNames": r["member_names"],
         } for r in task_rows],
         "laborSummary": {
             "assemblyLaborMinutes": assembly_minutes,
@@ -3992,13 +4066,24 @@ def order_task_detail(
     ).fetchall()
     labor_minutes = {r["type"]: int(r["minutes"] or 0) for r in labor}
     members = [
-        {"assemblerId": r["assembler_id"], "role": r["assignment_role"]}
+        {
+            "assemblerId": r["assembler_id"], "assemblerName": r["member_display_name"] or r["member_username"] or r["assembler_id"],
+            "role": r["assignment_role"],
+        }
         for r in c.execute(
-            "SELECT assembler_id, assignment_role FROM assembly_task_members"
-            " WHERE task_id = ? AND removed_at IS NULL",
+            """SELECT m.assembler_id, m.assignment_role, u.display_name AS member_display_name, u.username AS member_username
+                 FROM assembly_task_members m LEFT JOIN users u ON u.id = m.assembler_id
+                WHERE m.task_id = ? AND m.removed_at IS NULL""",
             (task_id,),
         ).fetchall()
     ]
+    assigned_assembler_name = None
+    if t["assigned_assembler_id"]:
+        u = c.execute(
+            "SELECT display_name, username FROM users WHERE id=?", (t["assigned_assembler_id"],)
+        ).fetchone()
+        if u:
+            assigned_assembler_name = u["display_name"] or u["username"]
     c.close()
     return {
         "orderNo": order["order_no"], "productName": order["product_name"],
@@ -4008,6 +4093,7 @@ def order_task_detail(
         "status": t["status"], "progressStage": t["progress_stage"],
         "taskVersion": t["task_version"],
         "assignedAssemblerId": t["assigned_assembler_id"],
+        "assignedAssemblerName": assigned_assembler_name,
         "materialAcceptedAt": t["material_accepted_at"],
         "completedAt": t["completed_at"],
         "stages": stages, "materials": materials, "members": members,
@@ -4377,6 +4463,19 @@ def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
     """构造 transfer 的公开读模型，统一列表、详情与工作台状态字段。"""
     workspace_status, handover = _transfer_workspace_status(c, row)
     status_label, color_token = _workspace_status_meta(workspace_status)
+    # 创建人/审批人显示名（display_name > username > id，与时间线 actorName 同规则）
+    creator_name = row["created_by"]
+    approver_name = row["approved_by"]
+    _user_ids = {uid for uid in (row["created_by"], row["approved_by"]) if uid}
+    if _user_ids:
+        _ph = ",".join("?" for _ in _user_ids)
+        for u in c.execute(f"SELECT id, display_name, username FROM users WHERE id IN ({_ph})",
+                           list(_user_ids)).fetchall():
+            _dn = u["display_name"] or u["username"] or u["id"]
+            if u["id"] == row["created_by"]:
+                creator_name = _dn
+            if u["id"] == row["approved_by"]:
+                approver_name = _dn
     item = {
         "id": row["id"],
         "client_operation_id": row["client_operation_id"],
@@ -4390,8 +4489,10 @@ def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
         "colorToken": color_token,
         "statusDomain": _workspace_status_domain(workspace_status),
         "created_by": row["created_by"],
+        "createdByName": creator_name,
         "created_at": row["created_at"],
         "approved_by": row["approved_by"],
+        "approvedByName": approver_name,
         "approved_at": row["approved_at"],
         "rejection_reason": row["rejection_reason"] if "rejection_reason" in row.keys() else None,
         "executed_at": row["executed_at"],
@@ -6423,8 +6524,15 @@ def create_exception(
         c.close(); return {"exceptionId": eid, "status": existing["status"], "difference": existing["difference"], "idempotent": True, "serverTime": now()}
     if not body.orderNo or not body.deviceId or not body.materialId:
         c.close(); raise HTTPException(400, "异常必须关联 orderNo、deviceId、materialId")
-    if not c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (body.orderNo,)).fetchone() or not c.execute("SELECT 1 FROM order_devices WHERE id=?", (body.deviceId,)).fetchone() or not c.execute("SELECT 1 FROM materials WHERE id=?", (body.materialId,)).fetchone():
-        c.close(); raise HTTPException(400, "异常关联资源不存在")
+    # deviceId 存在两套语义：order_devices.id（订单绑定，material-status 契约）与
+    # devices.id（机台主数据，机台详情契约）。两者都放行，避免按机台主数据提交被误拒。
+    order_ok = c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (body.orderNo,)).fetchone()
+    device_ok = c.execute("SELECT 1 FROM order_devices WHERE id=?", (body.deviceId,)).fetchone() \
+        or c.execute("SELECT 1 FROM devices WHERE id=?", (body.deviceId,)).fetchone()
+    material_ok = c.execute("SELECT 1 FROM materials WHERE id=?", (body.materialId,)).fetchone()
+    if not order_ok or not device_ok or not material_ok:
+        missing = [name for name, ok in (("orderNo", order_ok), ("deviceId", device_ok), ("materialId", material_ok)) if not ok]
+        c.close(); raise HTTPException(400, f"异常关联资源不存在: {', '.join(missing)}")
     difference = body.actualQuantity - body.bookQuantity
     c.execute("INSERT INTO exceptions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (eid, body.materialId, body.type, body.bookQuantity, body.actualQuantity, difference, "PENDING", body.description, json.dumps(body.evidenceIds), user["id"], now(), None, None, body.orderNo, body.deviceId))
     audit(c, user["id"], user["role"], "CREATE", "EXCEPTION", eid, request_id=trace_id); c.commit(); c.close()

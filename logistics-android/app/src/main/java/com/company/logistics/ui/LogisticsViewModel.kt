@@ -7,6 +7,7 @@ import com.company.logistics.data.SubmitResult
 import com.company.logistics.data.SyncReport
 import com.company.logistics.data.remote.ApiException
 import com.company.logistics.data.remote.ApiParser
+import com.company.logistics.data.remote.MaterialFlowApi
 import com.company.logistics.data.remote.safeMessage
 import com.company.logistics.model.AuditLog
 import com.company.logistics.model.DeviceDetail
@@ -151,6 +152,13 @@ data class LogisticsUiState(
     val deviceTransferRequests: List<TransferRequest> = emptyList(),
     val deviceLabor: LaborSummaryPage? = null,
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
+    /** 订单页空态展示的最近订单列表（服务端 created_at 倒序，点击即查详情） */
+    val recentOrders: List<MaterialFlowApi.RecentOrderItem> = emptyList(),
+    val recentOrdersError: String? = null,
+    /** 「我的」页流转申请记录（当前用户创建，createdAt 倒序） */
+    val myTransferRequests: List<TransferRequest> = emptyList(),
+    val myTransferRequestsLoading: Boolean = false,
+    val myTransferRequestsError: String? = null,
     val workspaceSummary: RoleWorkspaceSummary = RoleWorkspaceSummary.empty(UserRole.OPERATOR),
     val previewRole: WorkspaceViewRole? = null,
     val workspaceSummaryState: WorkspaceLoadState = WorkspaceLoadState.IDLE,
@@ -336,6 +344,8 @@ class LogisticsViewModel(
     private var workspaceLoadGeneration = 0L
     private var workspaceLoadJob: Job? = null
     private val multiOrderDetails = MultiOrderDetailState()
+    /** 最近订单列表是否已加载（本次会话内只拉一次，重试可 force） */
+    private var recentOrdersLoaded = false
     private var previewController: AdminRolePreviewController? = null
     @Volatile
     private var sessionGeneration = 0L
@@ -593,7 +603,26 @@ class LogisticsViewModel(
             Screen.APPROVAL -> refreshTransferRequests()
             Screen.AUDIT -> refreshAuditLogs()
             Screen.MY_EXCEPTIONS -> refreshMyExceptions()
+            Screen.ORDER_DETAIL -> loadRecentOrders()
+            Screen.PROFILE -> loadMyTransferRequests()
             else -> Unit
+        }
+    }
+
+    /** 订单页空态展示最近订单；已加载过则不重复拉取（下拉重试走 force） */
+    fun loadRecentOrders(force: Boolean = false) {
+        if (!force && recentOrdersLoaded) return
+        viewModelScope.launch {
+            repo.recentOrders()
+                .onSuccess { page ->
+                    recentOrdersLoaded = true
+                    _state.update { it.copy(recentOrders = page.orders, recentOrdersError = null) }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(recentOrdersError = if (e is ApiException) e.safeMessage("最近订单读取失败") else "网络不可用，请检查连接后重试")
+                    }
+                }
         }
     }
 
@@ -972,7 +1001,9 @@ class LogisticsViewModel(
                     assemblyTaskTotalPages = if (resetToFirstPage) 0 else it.assemblyTaskTotalPages,
                 )
             }
-            repo.assemblyTaskPage(requestedPage, LogisticsUiState.WORKSPACE_PAGE_SIZE)
+            val pendingDeviceId = _state.value.pendingAssemblyDeviceId?.trim().orEmpty().ifBlank { null }
+            val pendingDeviceNo = _state.value.pendingAssemblyDeviceNo?.trim().orEmpty().ifBlank { null }
+            repo.assemblyTaskPage(requestedPage, LogisticsUiState.WORKSPACE_PAGE_SIZE, pendingDeviceNo, pendingDeviceId)
                 .onSuccess { result ->
                     if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@onSuccess
                     _state.update {
@@ -2449,7 +2480,8 @@ class LogisticsViewModel(
         val no = deviceNo?.trim().orEmpty().ifBlank { null }
         val value = no ?: id ?: return
         _state.update { it.copy(loading = true, assemblyDeviceFilter = value, error = null) }
-        repo.assemblyTaskPage(1, LogisticsUiState.WORKSPACE_PAGE_SIZE)
+        // 服务端按机台过滤（fix5l），客户端过滤保留作幂等兜底
+        repo.assemblyTaskPage(1, LogisticsUiState.WORKSPACE_PAGE_SIZE, no, id)
             .onSuccess { result ->
                 val matched = filterAssemblyTasks(result.items, id, no)
                 _state.update { it.copy(
@@ -2580,8 +2612,10 @@ class LogisticsViewModel(
         viewModelScope.launch {
             val deviceId = detail.deviceId
             val deviceNo = detail.deviceNo
-            // 装配任务：进度、人员
-            val tasks = repo.assemblyTaskPage(1, 20).getOrNull()?.items
+            // 装配任务：进度、人员。服务端按机台过滤（fix5l），
+            // 修「人员为 0」：此前拉全局第一页 20 条再客户端过滤，
+            // 大订单任务不在首屏导致机台详情任务/人员恒为 0。
+            val tasks = repo.assemblyTaskPage(1, 20, deviceNo, deviceId).getOrNull()?.items
                 ?.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
                 .orEmpty()
             // 物料情况：逐订单取物料状态，按机台过滤
@@ -2606,6 +2640,36 @@ class LogisticsViewModel(
                     deviceLabor = labor,
                 )
             }
+        }
+    }
+
+    /**
+     * 「我的」页流转申请记录：拉全量后按创建人过滤（服务端无按创建人过滤参数），
+     * createdAt 倒序。失败不阻塞页面（显示错误 + 可重试）。
+     */
+    fun loadMyTransferRequests() {
+        if (_state.value.myTransferRequestsLoading) return
+        operationScope.launch {
+            _state.update { it.copy(myTransferRequestsLoading = true, myTransferRequestsError = null) }
+            val myId = _state.value.currentUserId
+            repo.transferRequests().fold(
+                onSuccess = { page ->
+                    val mine = page.items
+                        .filter { it.createdBy != null && it.createdBy == myId }
+                        .sortedByDescending { it.createdAt.orEmpty() }
+                    _state.update {
+                        it.copy(myTransferRequestsLoading = false, myTransferRequests = mine)
+                    }
+                },
+                onFailure = { e ->
+                    _state.update {
+                        it.copy(
+                            myTransferRequestsLoading = false,
+                            myTransferRequestsError = if (e is ApiException) e.safeMessage("流转申请读取失败") else "网络不可用",
+                        )
+                    }
+                },
+            )
         }
     }
 
@@ -2721,6 +2785,54 @@ class LogisticsViewModel(
                 is SubmitResult.Success -> _state.update { it.copy(loading = false, message = "物料申请已提交") }
                 is SubmitResult.Queued -> _state.update { it.copy(loading = false, message = "网络不可用，申请已入队：${r.reason}") }
                 is SubmitResult.Failure -> _state.update { it.copy(loading = false, error = r.message) }
+            }
+        }
+    }
+
+    /**
+     * 机台详情页批量申请物料（勾选多条）：逐条查库存并创建 OUTBOUND 流转申请，
+     * 数量取各物料需求数量。逐条独立提交，部分失败不影响已成功条目；离线入队也算提交成功。
+     */
+    fun submitDeviceMaterialRequestBatch(items: List<com.company.logistics.model.OrderMaterialItem>, orderNo: String, remark: String) {
+        if (_state.value.preview) {
+            _state.update { it.copy(error = "测试预览只读，不能申请物料") }
+            return
+        }
+        if (items.isEmpty() || orderNo.isBlank()) {
+            _state.update { it.copy(error = "请勾选物料并选择关联订单") }
+            return
+        }
+        operationScope.launch {
+            _state.update { it.copy(loading = true, error = null, message = null) }
+            val deviceNo = _state.value.deviceDetail?.deviceNo.orEmpty()
+            val fullRemark = buildString {
+                if (deviceNo.isNotBlank()) append("机台：$deviceNo；")
+                if (remark.isNotBlank()) append(remark)
+            }.ifBlank { null }
+            var ok = 0
+            val failures = mutableListOf<String>()
+            items.forEach { material ->
+                val inv = repo.materialInventory(material.materialCode).getOrNull()
+                if (inv == null) {
+                    failures += "${material.materialCode}：查无库存"
+                    return@forEach
+                }
+                when (val r = repo.submitOutbound(material, inv, orderNo, material.requiredQuantity, fullRemark)) {
+                    is SubmitResult.Success -> ok++
+                    is SubmitResult.Queued -> ok++
+                    is SubmitResult.Failure -> failures += "${material.materialCode}：${r.message}"
+                }
+            }
+            _state.update {
+                when {
+                    failures.isEmpty() -> it.copy(loading = false, message = "已提交 $ok 条流转申请")
+                    ok == 0 -> it.copy(loading = false, error = "批量申请全部失败：" + failures.joinToString("；"))
+                    else -> it.copy(
+                        loading = false,
+                        message = "已提交 $ok 条流转申请",
+                        error = "失败 ${failures.size} 条：" + failures.joinToString("；"),
+                    )
+                }
             }
         }
     }

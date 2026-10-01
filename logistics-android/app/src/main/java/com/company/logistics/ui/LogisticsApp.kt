@@ -166,17 +166,10 @@ fun LogisticsApp(
                         containerColor = LogisticsTheme.colors.pageBackground
                     ),
                     actions = {
-                        if (onOpenDebug3d != null) {
-                            androidx.compose.material3.TextButton(onClick = onOpenDebug3d) {
-                                Text("3D测试")
-                            }
-                        }
+                        // 顶部快捷入口已移除（2026-10-01 用户指令）：3D测试 / 订单/机台 / BOM 导入。
+                        // onOpenDebug3d 参数保留（MainActivity 仍在传入），仅不再展示入口。
                         if (state.role == com.company.logistics.model.UserRole.ADMIN && !state.preview && state.screen == Screen.WORKSPACE) {
                             androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.USER_MANAGEMENT) }) { Text("用户管理") }
-                        }
-                        if (state.role == com.company.logistics.model.UserRole.ADMIN || state.role == com.company.logistics.model.UserRole.PLANNER || state.role == com.company.logistics.model.UserRole.WORKSHOP_SUPERVISOR) {
-                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.PRODUCTION_MANAGEMENT) }) { Text("订单/机台") }
-                            androidx.compose.material3.TextButton(onClick = { viewModel.navigate(Screen.BOM_IMPORT) }) { Text("BOM 导入") }
                         }
                     }
                 )
@@ -253,6 +246,9 @@ fun LogisticsApp(
                         multiOrder = state.multiOrderSnapshot,
                         onSelectOrder = { viewModel.selectOrder(it) },
                         onOpenDevice = { viewModel.openDeviceDetail(it) },
+                        recentOrders = state.recentOrders,
+                        recentOrdersError = state.recentOrdersError,
+                        onRetryRecent = { viewModel.loadRecentOrders(force = true) },
                     )
 
                     Screen.QUEUE -> QueueScreen(
@@ -367,9 +363,13 @@ fun LogisticsApp(
                         onSubmitMaterialRequest = { material, orderNo, qty, remark ->
                             viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark)
                         },
+                        onSubmitMaterialRequestBatch = { items, orderNo, remark ->
+                            viewModel.submitDeviceMaterialRequestBatch(items, orderNo, remark)
+                        },
                         onSubmitException = { deviceId, materialId, materialCode, orderNo, type, bookQty, actualQty, desc ->
                             viewModel.submitDeviceException(deviceId, materialId, materialCode, orderNo, type, bookQty, actualQty, desc)
                         },
+                        role = state.role,
                     )
 
                     Screen.INVENTORY -> InventoryScreen(
@@ -385,6 +385,10 @@ fun LogisticsApp(
                         onOpenQueue = { viewModel.navigate(Screen.QUEUE) },
                         onOpenEndpointConfig = { viewModel.navigate(Screen.ENDPOINT_CONFIG) },
                         onOpenMyExceptions = { viewModel.navigate(Screen.MY_EXCEPTIONS) },
+                        myTransferRequests = state.myTransferRequests,
+                        myTransferRequestsLoading = state.myTransferRequestsLoading,
+                        myTransferRequestsError = state.myTransferRequestsError,
+                        onRetryMyTransfers = { viewModel.loadMyTransferRequests() },
                         onLogout = { viewModel.logout() }
                     )
 

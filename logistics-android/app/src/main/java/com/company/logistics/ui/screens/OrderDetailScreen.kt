@@ -37,15 +37,18 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.Model3dActivity
+import com.company.logistics.model.AssemblyTaskStatus
 import com.company.logistics.model.DeviceModelMap
 import com.company.logistics.model.MaterialStatusCode
 import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.OrderMaterialStatus
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
+import com.company.logistics.ui.components.formatServerTime
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.tagTextColor
@@ -78,6 +81,9 @@ fun OrderDetailScreen(
     multiOrder: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     onSelectOrder: (String) -> Unit = {},
     onOpenDevice: (deviceId: String) -> Unit = {},
+    recentOrders: List<com.company.logistics.data.remote.MaterialFlowApi.RecentOrderItem> = emptyList(),
+    recentOrdersError: String? = null,
+    onRetryRecent: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var selectedDeviceId by remember(status) { mutableStateOf<String?>(null) }
@@ -111,9 +117,17 @@ fun OrderDetailScreen(
         }
 
         if (status == null) {
+            // 空态：直接列出服务端最近生产订单，点击即查详情（不必先扫码/输订单号）
+            RecentOrdersSection(
+                orders = recentOrders,
+                error = recentOrdersError,
+                onSelectOrder = onSelectOrder,
+                onRetry = onRetryRecent,
+            )
+            VSpace(Spacing.md)
             EmptyState(
                 title = "尚未查询订单",
-                description = "扫描生产订单号后，在此展示订单下各物料的需求、到料与在库情况"
+                description = "点击上方订单直接查询；也可扫描生产订单号，在此展示订单下各物料的需求、到料与在库情况"
             )
             return@Column
         }
@@ -188,7 +202,7 @@ fun OrderDetailScreen(
                             color = Color.White,
                         ) {
                             Text(
-                                status.orderStatus ?: "服务端未提供",
+                                orderStatusLabel(status.orderStatus),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = LogisticsColors.BrandNavyDark,
@@ -242,7 +256,7 @@ fun OrderDetailScreen(
                     VSpace(Spacing.sm)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "服务端时间：${status.serverTime ?: "未提供"}",
+                            "服务端时间：${formatTimelineTime(status.serverTime)}",
                             fontSize = 11.sp,
                             color = Color.White.copy(alpha = 0.72f),
                             modifier = Modifier.weight(1f),
@@ -268,27 +282,81 @@ fun OrderDetailScreen(
 
         detail?.let { aggregate ->
             VSpace(Spacing.md)
-            SectionTitle("装配任务（${aggregate.assemblyTasks.size}/${aggregate.total}）")
-            aggregate.assemblyTasks.forEach { task ->
-                AppCard(
-                    modifier = Modifier.clickable { onOpenDevice(task.deviceId) }
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("装配任务（${aggregate.assemblyTasks.size}/${aggregate.total}）", trailing = "点击查看机台")
+            // 列表模式：单卡片紧凑行 + 分隔线，一行承载机台/状态/阶段/版本/责任人/任务号/成员数
+            AppCard {
+                aggregate.assemblyTasks.forEachIndexed { index, task ->
+                    if (index > 0) {
+                        androidx.compose.material3.HorizontalDivider(
+                            color = LogisticsTheme.colors.border.copy(alpha = 0.5f),
+                            thickness = 0.5.dp,
+                        )
+                    }
+                    val statusBg = when (task.status) {
+                        AssemblyTaskStatus.WAITING_MATERIAL -> LogisticsTheme.colors.warning
+                        AssemblyTaskStatus.MATERIAL_ACCEPTED -> LogisticsTheme.colors.info
+                        AssemblyTaskStatus.IN_PROGRESS -> LogisticsTheme.colors.success
+                        AssemblyTaskStatus.PAUSED_FOR_TEMPORARY_TRANSFER -> LogisticsTheme.colors.warning
+                        AssemblyTaskStatus.COMPLETED -> LogisticsTheme.colors.success
+                    }
+                    val statusFg = when (task.status) {
+                        AssemblyTaskStatus.WAITING_MATERIAL -> LogisticsTheme.colors.warningText
+                        AssemblyTaskStatus.MATERIAL_ACCEPTED -> LogisticsTheme.colors.primary
+                        AssemblyTaskStatus.IN_PROGRESS -> LogisticsTheme.colors.successText
+                        AssemblyTaskStatus.PAUSED_FOR_TEMPORARY_TRANSFER -> LogisticsTheme.colors.warningText
+                        AssemblyTaskStatus.COMPLETED -> LogisticsTheme.colors.successText
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenDevice(task.deviceId) }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Column(Modifier.weight(1f)) {
-                            Text("${task.deviceNo} · ${task.status.label}", fontWeight = FontWeight.Bold)
-                            Text("进度阶段：${task.progressStage}  版本：${task.taskVersion}", fontSize = 12.sp)
-                            Text("责任人：${task.assignedAssemblerId ?: "服务端未提供"}", fontSize = 12.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    task.deviceNo,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = LogisticsType.MonoFamily,
+                                    color = LogisticsTheme.colors.textPrimary,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                StatusTag(
+                                    label = task.status.label,
+                                    color = statusFg,
+                                    containerColor = statusBg.copy(alpha = 0.12f),
+                                    symbol = task.statusSymbol(),
+                                )
+                            }
+                            VSpace(3.dp)
+                            Text(
+                                "阶段 ${task.progressStage}/3 · 版本 ${task.taskVersion} · 责任人 ${task.assignedAssemblerName ?: task.assignedAssemblerId ?: "未指派"}",
+                                fontSize = 11.sp,
+                                color = LogisticsTheme.colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "任务 ${task.id}" + if (task.members.isNotEmpty()) " · 成员 ${task.members.size} 人" else "",
+                                fontSize = 10.sp,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = LogisticsTheme.colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                         Text(
                             "›",
-                            fontSize = 13.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
-                VSpace(Spacing.sm)
             }
+            VSpace(Spacing.md)
             SectionTitle("工时（分钟）")
             AppCard {
                 Text("装配：${aggregate.laborSummary.assemblyLaborMinutes}  临时调拨：${aggregate.laborSummary.temporaryTransferLaborMinutes}")
@@ -322,13 +390,13 @@ fun OrderDetailScreen(
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.padding(bottom = if (index == aggregate.timeline.lastIndex) 0.dp else 12.dp)) {
                         Text(
-                            "${event.type}${event.status?.let { " · $it" } ?: ""}",
+                            "${timelineEventLabel(event.type)}${event.status?.let { " · ${timelineStatusLabel(it)}" } ?: ""}",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = LogisticsTheme.colors.textPrimary,
                         )
                         Text(
-                            "${event.serverTime ?: "服务端未提供"}${event.actorId?.let { " · $it" } ?: ""}",
+                            "${formatTimelineTime(event.serverTime)}${(event.actorName ?: event.actorId)?.let { " · $it" } ?: ""}",
                             fontSize = 11.sp,
                             fontFamily = LogisticsType.MonoFamily,
                             color = LogisticsTheme.colors.textTertiary,
@@ -381,6 +449,60 @@ fun OrderDetailScreen(
     }
 }
 
+/**
+ * 最近订单列表（订单页空态）：GET /api/v1/production-orders 倒序，点击订单号直接查询。
+ * 失败不阻塞页面（显示错误 + 重试），列表为空时提示去创建订单。
+ */
+@Composable
+private fun RecentOrdersSection(
+    orders: List<com.company.logistics.data.remote.MaterialFlowApi.RecentOrderItem>,
+    error: String?,
+    onSelectOrder: (String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    SectionTitle("最近订单", trailing = if (orders.isNotEmpty()) "点击直接查询" else null)
+    VSpace(Spacing.sm)
+    error?.let {
+        Text("最近订单读取失败：$it", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+        androidx.compose.material3.TextButton(onClick = onRetry) { Text("重试") }
+        VSpace(Spacing.sm)
+    }
+    if (orders.isEmpty()) {
+        if (error == null) {
+            EmptyState(
+                title = "暂无生产订单",
+                description = "服务端还没有生产订单，可联系管理员创建"
+            )
+        }
+        return
+    }
+    orders.forEach { order ->
+        AppCard(modifier = Modifier.clickable { onSelectOrder(order.orderNo) }) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        order.orderNo,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = LogisticsType.MonoFamily,
+                        color = LogisticsTheme.colors.textPrimary,
+                    )
+                    VSpace(2.dp)
+                    Text(
+                        listOfNotNull(order.productName, order.createdAt?.take(10))
+                            .joinToString("  ·  ")
+                            .ifBlank { "服务端未提供详情" },
+                        fontSize = 12.sp,
+                        color = LogisticsTheme.colors.textSecondary,
+                    )
+                }
+                Text("›", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        VSpace(Spacing.sm)
+    }
+}
+
 @Composable
 private fun MaterialSummarySection(summary: com.company.logistics.model.OrderDetailMaterialSummary) {
     SectionTitle("物料汇总（${summary.totalMaterialTypes}）", trailing = "服务端汇总")
@@ -409,7 +531,7 @@ private fun MaterialSummarySection(summary: com.company.logistics.model.OrderDet
                     code = item.materialCode, name = item.materialName, unit = item.unit,
                     required = item.requiredQuantity.toString(), arrived = item.arrivedQuantity.toString(),
                     inStock = item.inStockQuantity.toString(), shortage = item.shortageQuantity.toString(),
-                    status = "${item.statusCode} · ${item.statusLabel}",
+                    status = item.statusLabel,
                 )
             }
         }
@@ -652,3 +774,46 @@ private fun MiniMetric(
         )
     }
 }
+
+/** 流转时间线事件类型中文显示（后端 allowed_events 全枚举），未知值原样兜底 */
+private fun timelineEventLabel(type: String): String = when (type.trim().uppercase(java.util.Locale.ROOT)) {
+    "HANDOVER_CREATED" -> "交接创建"
+    "HANDOVER_CONFIRMED" -> "交接确认"
+    "HANDOVER_REJECTED" -> "交接驳回"
+    "HANDOVER_CANCELLED" -> "交接取消"
+    "MATERIAL_PICKED_UP" -> "物料已领取"
+    "MATERIAL_AT_STATION" -> "物料到站"
+    "OUTBOUND_APPROVED" -> "出库审批通过"
+    "OUTBOUND_CONFIRMED" -> "出库确认"
+    "MATERIAL_ACCEPTED_FOR_ASSEMBLY" -> "物料签收（装配）"
+    "ASSEMBLY_STARTED" -> "装配开始"
+    "ASSEMBLY_PROGRESS_UPDATED" -> "装配进度更新"
+    "ASSEMBLY_COMPLETED" -> "装配完成"
+    else -> type.ifBlank { "—" }
+}
+
+/** 流转时间线状态中文显示，未知值原样兜底 */
+/** 订单状态中文映射（对齐后端 WORKSPACE_STATUS_LABELS 订单域） */
+private fun orderStatusLabel(status: String?): String = when (status?.trim()?.uppercase(java.util.Locale.ROOT)) {
+    "RELEASED" -> "已下达"
+    "WAITING_MATERIAL" -> "待领料"
+    "MATERIAL_ACCEPTED" -> "已领料"
+    "IN_PROGRESS" -> "生产中"
+    "PAUSED_FOR_TEMPORARY_TRANSFER" -> "暂停（临调）"
+    "COMPLETED" -> "已完成"
+    null, "" -> "服务端未提供"
+    else -> timelineStatusLabel(status)
+}
+
+private fun timelineStatusLabel(status: String): String = when (status.trim().uppercase(java.util.Locale.ROOT)) {
+    "PENDING", "PENDING_APPROVAL" -> "待审批"
+    "CONFIRMED", "APPROVED" -> "已确认"
+    "REJECTED" -> "已驳回"
+    "CANCELLED" -> "已取消"
+    "EXECUTED" -> "已执行"
+    "COMPLETED" -> "已完成"
+    else -> status
+}
+
+/** ISO 时间精简为 "MM-dd HH:mm"（委托公共 formatServerTime，fix5m 提取共用） */
+private fun formatTimelineTime(iso: String?): String = formatServerTime(iso)

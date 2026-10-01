@@ -50,6 +50,7 @@ data class AssemblyTask(
 
 data class AssemblyMember(
     val assemblerId: String,
+    val assemblerName: String? = null,
     val assignmentRole: String,
     val assignedBy: String? = null,
     val assignedAt: String? = null,
@@ -107,7 +108,8 @@ data class WorkshopProgressSummary(
 )
 
 data class OrderDetailTimelineEvent(
-    val type: String, val entityId: String, val status: String?, val serverTime: String?, val actorId: String?
+    val type: String, val entityId: String, val status: String?, val serverTime: String?, val actorId: String?,
+    val actorName: String? = null
 )
 
 data class OrderDetailLaborSummary(

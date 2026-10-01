@@ -177,7 +177,7 @@ object ApiParser {
                 totalShortageQuantity = summary.optInt("totalShortageQuantity"),
             )
         } ?: OrderDetailMaterialSummary()
-        val timeline = root.optJSONArray("timeline")?.let { arr -> buildList { for (i in 0 until arr.length()) { val e = arr.getJSONObject(i); add(OrderDetailTimelineEvent(e.optString("type"), e.optString("entityId"), nullableString(e, "status"), nullableString(e, "serverTime"), nullableString(e, "actorId"))) } } }.orEmpty()
+        val timeline = root.optJSONArray("timeline")?.let { arr -> buildList { for (i in 0 until arr.length()) { val e = arr.getJSONObject(i); add(OrderDetailTimelineEvent(e.optString("type"), e.optString("entityId"), nullableString(e, "status"), nullableString(e, "serverTime"), nullableString(e, "actorId"), nullableString(e, "actorName"))) } } }.orEmpty()
         return OrderDetail(
             orderId = root.optString("orderId"), orderNo = root.optString("orderNo"), productName = nullableString(root, "productName"), orderStatus = nullableString(root, "orderStatus"),
             materials = materials, assemblyTasks = tasks,
@@ -356,7 +356,8 @@ object ApiParser {
                 lastHandoverId = nullableString(o, "lastHandoverId"),
                 currentOwnerUserId = nullableString(o, "currentOwnerUserId"),
                 currentOwnerName = nullableString(o, "currentOwnerName"),
-                updatedAt = nullableString(o, "updatedAt")
+                updatedAt = nullableString(o, "updatedAt"),
+                materialCategory = nullableString(o, "materialCategory")
             )
         }
         return OrderMaterialStatus(
@@ -635,8 +636,10 @@ object ApiParser {
             items = items,
             remark = nullableStringAny(json, "remark") ?: nullableStringAny(payload, "remark"),
             createdBy = nullableStringAny(json, "createdBy", "created_by"),
+            createdByName = nullableStringAny(json, "createdByName", "created_by_name"),
             createdAt = nullableStringAny(json, "createdAt", "created_at"),
             approvedBy = nullableStringAny(json, "approvedBy", "approved_by"),
+            approvedByName = nullableStringAny(json, "approvedByName", "approved_by_name"),
             approvedAt = nullableStringAny(json, "approvedAt", "approved_at"),
             executedAt = nullableStringAny(json, "executedAt", "executed_at"),
             serverTime = nullableStringAny(json, "serverTime", "server_time"),
@@ -805,7 +808,7 @@ object ApiParser {
         val root = JSONObject(json)
         val array = root.optJSONArray("members") ?: JSONArray()
         val members = (0 until array.length()).mapNotNull { i -> array.optJSONObject(i)?.let { member ->
-            AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
+            AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), nullableStringAny(member, "assemblerName", "assembler_name"), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
         } }
         return AssemblyAssignmentResponse(nullableStringAny(root, "taskId", "task_id").orEmpty(), members, nullableStringAny(root, "traceId", "trace_id"), root.optBoolean("idempotent", false), nullableStringAny(root, "serverTime", "server_time"))
     }
@@ -823,7 +826,7 @@ object ApiParser {
     )
 
     private fun parseAssemblyMembers(array: JSONArray?): List<AssemblyMember> = (0 until (array?.length() ?: 0)).mapNotNull { i -> array?.optJSONObject(i)?.let { member ->
-        AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
+        AssemblyMember(nullableStringAny(member, "assemblerId", "assembler_id").orEmpty(), nullableStringAny(member, "assemblerName", "assembler_name"), member.optString("assignmentRole", member.optString("assignment_role")), nullableStringAny(member, "assignedBy", "assigned_by"), nullableStringAny(member, "assignedAt", "assigned_at"), nullableStringAny(member, "removedAt", "removed_at"))
     } }
 
     private fun parseStages(o: JSONObject): List<AssemblyStage> {

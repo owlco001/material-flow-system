@@ -1,6 +1,7 @@
 package com.company.logistics.rendering
 
 import kotlin.math.atan
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.tan
 
@@ -75,9 +76,13 @@ class OrbitCameraState(
         val halfFov = min(halfFovX, HALF_FOV_Y_RADIANS)
         // Framing scales with the model: clamping to fixed bounds framed 2cm parts at
         // 0.1 units (near-plane slicing) and refused to back off from huge assemblies.
-        distance = radius / tan(halfFov) * 1.15f
+        // 2.2 对齐浏览器 three.js（fitCameraToObject: dist = maxDim * 2.2，模型约占屏一半）
+        distance = radius / tan(halfFov) * 2.2f
         homeZoom = distance
-        zoomMin = distance / ZOOM_RATIO
+        // 相机不许进入模型包围球：旧 zoomMin=fit/50≈0.11r 会让相机钻进模型内部，
+        // 配合背面剔除，旋转到某些朝向整个模型"消失"（用户实测）。聚焦零件只移目标
+        // 不动距离（focusAt），收紧下限不影响零件聚焦。
+        zoomMin = max(distance / ZOOM_RATIO, radius * INSIDE_GUARD)
         zoomMax = distance * ZOOM_RATIO
         panX = 0f
         panY = 0f
@@ -92,5 +97,8 @@ class OrbitCameraState(
         const val MAX_PITCH = 89f
         const val HALF_FOV_Y_RADIANS = 0.3926991f // 22.5 degrees, matching the renderer's 45deg FOV
         const val ZOOM_RATIO = 50f
+
+        /** 最近距离 ≥ 模型半径×该系数：保证相机始终在包围球外（1.15 留 15% 余量防 near 贴面） */
+        const val INSIDE_GUARD = 1.15f
     }
 }

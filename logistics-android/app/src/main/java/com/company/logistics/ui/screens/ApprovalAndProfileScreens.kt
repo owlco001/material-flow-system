@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import com.company.logistics.ui.components.formatServerTime
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -7,10 +8,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +41,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -162,7 +166,7 @@ fun ApprovalScreen(
                     serverTime?.let {
                         VSpace(Spacing.sm)
                         Text(
-                            "服务端时间 $it",
+                            "服务端时间 " + formatServerTime(it),
                             fontSize = 11.sp,
                             fontFamily = LogisticsType.MonoFamily,
                             color = Color.White.copy(alpha = 0.72f),
@@ -384,8 +388,8 @@ private fun TransferRequestCard(
         VSpace(Spacing.sm)
         Text(
             listOfNotNull(
-                request.createdBy?.let { "创建人 $it" },
-                request.createdAt?.let { "创建 $it" },
+                (request.createdByName ?: request.createdBy)?.let { "创建人 $it" },
+                request.createdAt?.let { "创建 " + formatServerTime(it) },
                 "明细 ${request.items.size} 条",
             ).joinToString(" · "),
             fontSize = 11.sp,
@@ -494,6 +498,8 @@ private fun RejectTransferDialog(
     var reason by remember(request.id) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("驳回流转申请") },
         text = {
             Column {
@@ -553,6 +559,14 @@ private fun requestStatusSymbol(status: String): String = when (status.uppercase
     else -> "?"
 }
 
+/** 流转申请类型中文映射 */
+private fun transferTypeLabel(type: String): String = when (type.trim().uppercase(java.util.Locale.ROOT)) {
+    "OUTBOUND" -> "出库"
+    "INBOUND" -> "入库"
+    "TRANSFER" -> "调拨"
+    else -> type.ifBlank { "—" }
+}
+
 /** 库存查询页（列表入口，扫码进入详情） */
 @Composable
 fun InventoryScreen(
@@ -586,6 +600,10 @@ fun ProfileScreen(
     onOpenQueue: () -> Unit,
     onOpenEndpointConfig: () -> Unit,
     onOpenMyExceptions: () -> Unit,
+    myTransferRequests: List<TransferRequest> = emptyList(),
+    myTransferRequestsLoading: Boolean = false,
+    myTransferRequestsError: String? = null,
+    onRetryMyTransfers: () -> Unit = {},
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -740,6 +758,133 @@ fun ProfileScreen(
                     onClick = onOpenMyExceptions,
                     modifier = Modifier.width(96.dp)
                 )
+            }
+        }
+
+        VSpace(Spacing.md)
+
+        // 我的流转申请 —— 本人提交的出入库/调拨申请及审批进度
+        AppCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "我的流转申请（${myTransferRequests.size}）",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LogisticsTheme.colors.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = onRetryMyTransfers,
+                    enabled = !myTransferRequestsLoading,
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text(
+                        if (myTransferRequestsLoading) "刷新中…" else "刷新",
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            VSpace(Spacing.sm)
+            when {
+                myTransferRequestsLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(Spacing.sm))
+                    Text(
+                        "正在加载流转申请…",
+                        fontSize = 12.sp,
+                        color = LogisticsTheme.colors.textSecondary
+                    )
+                }
+                myTransferRequestsError != null -> Column {
+                    Text(
+                        myTransferRequestsError,
+                        fontSize = 12.sp,
+                        color = LogisticsTheme.colors.danger
+                    )
+                    VSpace(4.dp)
+                    TextButton(
+                        onClick = onRetryMyTransfers,
+                        contentPadding = PaddingValues(horizontal = 0.dp)
+                    ) { Text("重试", fontSize = 12.sp) }
+                }
+                myTransferRequests.isEmpty() -> Text(
+                    "暂无流转申请记录；在机台详情勾选物料后可批量提出申请",
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.textTertiary
+                )
+                else -> Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "单据",
+                            fontSize = 10.sp,
+                            color = LogisticsTheme.colors.textTertiary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "类型",
+                            fontSize = 10.sp,
+                            color = LogisticsTheme.colors.textTertiary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(40.dp)
+                        )
+                        Text(
+                            "状态",
+                            fontSize = 10.sp,
+                            color = LogisticsTheme.colors.textTertiary,
+                            modifier = Modifier.width(76.dp)
+                        )
+                        Text(
+                            "时间",
+                            fontSize = 10.sp,
+                            color = LogisticsTheme.colors.textTertiary,
+                            textAlign = TextAlign.End,
+                            modifier = Modifier.width(84.dp)
+                        )
+                    }
+                    VSpace(4.dp)
+                    myTransferRequests.forEach { request ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 5.dp)
+                        ) {
+                            Text(
+                                request.documentNo?.takeIf { it.isNotBlank() }
+                                    ?: request.id.takeLast(8),
+                                fontSize = 11.sp,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = LogisticsTheme.colors.textPrimary,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                transferTypeLabel(request.type),
+                                fontSize = 11.sp,
+                                color = LogisticsTheme.colors.textSecondary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.width(40.dp)
+                            )
+                            StatusTag(
+                                label = request.displayStatusLabel,
+                                color = requestStatusTextColor(request.status),
+                                containerColor = requestStatusContainer(request.status),
+                                symbol = requestStatusSymbol(request.status),
+                                modifier = Modifier.width(76.dp)
+                            )
+                            Text(
+                                request.createdAt?.take(16)?.replace('T', ' ') ?: "—",
+                                fontSize = 10.sp,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = LogisticsTheme.colors.textTertiary,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.width(84.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 

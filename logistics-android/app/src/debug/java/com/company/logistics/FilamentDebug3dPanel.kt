@@ -4,7 +4,10 @@ import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -125,10 +129,28 @@ private fun RenderViewport(
     Box(modifier) {
     AndroidView(
         modifier = Modifier.fillMaxSize().pointerInput(renderer) {
-            detectTransformGestures { _, pan, zoom, _ ->
-                renderer.onRotate(pan.x * .2f, pan.y * .2f)
-                renderer.onPan(pan.x * .01f, pan.y * .01f)
-                renderer.onScale(zoom)
+            // 单指拖动 = 旋转；双指拖动 = 平移 + 捏合缩放（与正式查看器一致；
+            // 旧 detectTransformGestures 单指也会平移，视角容易跑飞）。
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                do {
+                    val event = awaitPointerEvent()
+                    val pressed = event.changes.filter { it.pressed }
+                    when {
+                        pressed.size >= 2 -> {
+                            renderer.onScale(event.calculateZoom())
+                            val pan = event.calculatePan()
+                            renderer.onPan(pan.x * .01f, pan.y * .01f)
+                            pressed.forEach { it.consume() }
+                        }
+                        pressed.size == 1 -> {
+                            val change = pressed[0]
+                            val drag = change.positionChange()
+                            renderer.onRotate(drag.x * .2f, drag.y * .2f)
+                            change.consume()
+                        }
+                    }
+                } while (event.changes.any { it.pressed })
             }
         },
         factory = { context ->

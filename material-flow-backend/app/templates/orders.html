@@ -96,7 +96,7 @@
       </div>
       <div class="mc-row">
         <span class="muted">装配工</span>
-        <span>{{ t.get("assignedAssemblerId") or t.get("assigned_assembler_id") or "—" }}</span>
+        <span>{{ t.get("assignedAssemblerName") or t.get("memberNames") or "未分配" }}</span>
       </div>
     </a>
     {% else %}

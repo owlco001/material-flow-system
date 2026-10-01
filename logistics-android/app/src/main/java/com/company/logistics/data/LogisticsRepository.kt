@@ -275,7 +275,9 @@ open class LogisticsRepository(
         api.listExceptions()
     }
     open suspend fun assemblyTasks(page: Int = 1): Result<List<com.company.logistics.model.AssemblyTask>> = resultOf { api.assemblyTasks(page) }
-    open suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): Result<AssemblyTaskPage> = resultOf { api.assemblyTaskPage(page, pageSize) }
+    open suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20, deviceNo: String? = null, deviceId: String? = null): Result<AssemblyTaskPage> = resultOf { api.assemblyTaskPage(page, pageSize, deviceNo, deviceId) }
+    /** 最近生产订单列表（订单页空态展示，服务端 created_at 倒序） */
+    open suspend fun recentOrders(limit: Int = 20): Result<MaterialFlowApi.RecentOrdersPage> = resultOf { api.recentProductionOrders(limit) }
     open suspend fun acceptAssemblyMaterial(taskId: String, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.acceptAssemblyMaterial(taskId, clientOperationId) }
     open suspend fun startAssemblyWork(taskId: String, expectedVersion: Int, clientOperationId: String): Result<LaborRecord> = resultOf { api.startAssemblyWork(taskId, expectedVersion, clientOperationId) }
     open suspend fun submitAssemblyProgress(taskId: String, stage: Int, expectedVersion: Int, clientOperationId: String): Result<com.company.logistics.model.AssemblyTask> = resultOf { api.submitAssemblyProgress(taskId, stage, expectedVersion, clientOperationId) }

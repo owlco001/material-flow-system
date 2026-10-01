@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
@@ -27,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.company.logistics.model.AssemblyAction
@@ -308,10 +310,12 @@ fun WorkshopSupervisorScreen(
             .padding(horizontal = Dimens.PagePadding),
     ) {
         VSpace(Spacing.sm)
+        // 标题与角色标签跟随有效角色：管理员直登显示管理员工作台；测试角色视图跟随所选角色
+        val effectiveRole = previewRole?.toUserRole() ?: authenticatedRole
         RoleWorkspaceHeader(
-            title = "车间主管工作台",
+            title = if (effectiveRole == UserRole.ADMIN) "管理员工作台" else "车间主管工作台",
             subtitle = "只读查看总工时、机台进度与订单总进度",
-            role = UserRole.WORKSHOP_SUPERVISOR,
+            role = effectiveRole,
             authenticatedRole = authenticatedRole,
             previewRole = previewRole,
             loading = summaryState == WorkspaceLoadState.LOADING || machineState == WorkspaceLoadState.LOADING,
@@ -335,20 +339,14 @@ fun WorkshopSupervisorScreen(
         WorkshopLaborSummarySection(laborSummary, laborState, laborError, laborDeviceFilter, onRefreshLabor, previewRole != null)
 
         if (authenticatedRole == UserRole.ADMIN || authenticatedRole == UserRole.WORKSHOP_SUPERVISOR) {
-            VSpace(Spacing.lg)
-            SectionTitle("任务分配 / 协作成员", trailing = "服务端成员")
-            if (assemblyTaskState == WorkspaceLoadState.LOADING) LoadingRow("正在加载装配任务…")
-            if (assemblyTasks.isEmpty() && assemblyTaskState != WorkspaceLoadState.LOADING) {
-                Text("暂无可分配的装配任务", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
-            }
-            assemblyTasks.forEach { task ->
-                VSpace(Spacing.sm)
-                AssemblyTaskCard(task, null, null, null, assemblySubmitting, null, previewRole != null,
-                    canManageMembers = previewRole == null,
-                    onAcceptMaterial = {}, onStartWork = {}, onProgress = {}, onCompleteWork = {},
-                    onStartStage = {}, onCompleteStage = {}, onReworkStage = {}, onStartTemporaryTransfer = {},
-                    onAssignMembers = { onAssignMembers(task, it) }, onRemoveMember = { onRemoveMember(task, it) })
-            }
+            AssemblyTaskAssignmentSection(
+                assemblyTasks = assemblyTasks,
+                assemblyTaskState = assemblyTaskState,
+                submitting = assemblySubmitting,
+                readOnly = previewRole != null,
+                onAssignMembers = onAssignMembers,
+                onRemoveMember = onRemoveMember,
+            )
         }
 
         when (summaryState) {
@@ -475,6 +473,34 @@ private fun AssemblyMaterialRow(code: String, name: String, unit: String, requir
         listOf(code to 120.dp, name to 150.dp, unit to 60.dp, required to 60.dp, arrived to 70.dp, inStock to 70.dp, shortage to 60.dp, status to 170.dp).forEach { (value, width) ->
             Text(value, Modifier.width(width), fontSize = if (header) 11.sp else 12.sp, fontWeight = if (header) FontWeight.Bold else FontWeight.Normal, color = if (header) LogisticsTheme.colors.textSecondary else LogisticsTheme.colors.textPrimary)
         }
+    }
+}
+
+/**
+ * 装配任务分配 / 协作成员区块 —— 车间主管工作台与管理员工作台共用。
+ */
+@Composable
+internal fun AssemblyTaskAssignmentSection(
+    assemblyTasks: List<AssemblyTask>,
+    assemblyTaskState: WorkspaceLoadState,
+    submitting: Boolean,
+    readOnly: Boolean,
+    onAssignMembers: (AssemblyTask, String) -> Unit,
+    onRemoveMember: (AssemblyTask, String) -> Unit,
+) {
+    VSpace(Spacing.lg)
+    SectionTitle("任务分配 / 协作成员", trailing = "服务端成员")
+    if (assemblyTaskState == WorkspaceLoadState.LOADING) LoadingRow("正在加载装配任务…")
+    if (assemblyTasks.isEmpty() && assemblyTaskState != WorkspaceLoadState.LOADING) {
+        Text("暂无可分配的装配任务", fontSize = 12.sp, color = LogisticsTheme.colors.textTertiary)
+    }
+    assemblyTasks.forEach { task ->
+        VSpace(Spacing.sm)
+        AssemblyTaskCard(task, null, null, null, submitting, null, readOnly,
+            canManageMembers = !readOnly,
+            onAcceptMaterial = {}, onStartWork = {}, onProgress = {}, onCompleteWork = {},
+            onStartStage = {}, onCompleteStage = {}, onReworkStage = {}, onStartTemporaryTransfer = {},
+            onAssignMembers = { onAssignMembers(task, it) }, onRemoveMember = { onRemoveMember(task, it) })
     }
 }
 
@@ -743,6 +769,8 @@ private fun AssemblyReworkDialog(
     val valid = reason.trim().length in 1..500
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("提交返工") },
         text = {
             OutlinedTextField(value = reason, onValueChange = { if (it.length <= 500) reason = it }, label = { Text("返工原因（必填）") }, supportingText = { Text("${reason.length}/500") }, modifier = Modifier.fillMaxWidth(), singleLine = false)
@@ -835,6 +863,8 @@ private fun TemporaryTransferStartDialog(
     val valid = remark.trim().length in 1..500
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("开始临时调拨") },
         text = {
             OutlinedTextField(
@@ -861,6 +891,8 @@ private fun TemporaryTransferCompleteDialog(
     val valid = remark.trim().length in 1..500
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(decorFitsSystemWindows = false),
+        modifier = Modifier.imePadding(),
         title = { Text("完成临时调拨") },
         text = {
             OutlinedTextField(

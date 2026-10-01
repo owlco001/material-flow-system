@@ -48,6 +48,7 @@ import com.company.logistics.ui.components.FlowQrCodeDialog
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.VSpace
+import com.company.logistics.ui.components.formatServerTime
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
@@ -237,11 +238,11 @@ private fun FlowDetailContent(
     SectionCard(title = "基本信息") {
         FlowKv("单号", request.documentNo ?: request.id, mono = true)
         FlowKv("类型", request.type.ifBlank { "—" })
-        request.createdBy?.let { FlowKv("创建人", it) }
-        request.createdAt?.let { FlowKv("创建时间", it, mono = true) }
-        request.approvedBy?.let { FlowKv("审批人", it) }
-        request.approvedAt?.let { FlowKv("审批时间", it, mono = true) }
-        request.executedAt?.let { FlowKv("执行时间", it, mono = true) }
+        (request.createdByName ?: request.createdBy)?.let { FlowKv("创建人", it) }
+        request.createdAt?.let { FlowKv("创建时间", formatServerTime(it), mono = true) }
+        (request.approvedByName ?: request.approvedBy)?.let { FlowKv("审批人", it) }
+        request.approvedAt?.let { FlowKv("审批时间", formatServerTime(it), mono = true) }
+        request.executedAt?.let { FlowKv("执行时间", formatServerTime(it), mono = true) }
         request.remark?.takeIf { it.isNotBlank() }?.let { FlowKv("备注", it) }
 
         if (canShowQr || canHandover) {

@@ -58,6 +58,8 @@ open class MaterialFlowApi(
     data class BomImportPreview(val previewId: String, val modelCode: String, val totalRows: Int, val validRows: Int, val invalidRows: Int, val canCommit: Boolean, val errors: List<BomImportError>)
     data class BomVersionResult(val bomVersionId: String, val modelCode: String, val versionNo: Int, val status: String, val itemCount: Int)
     data class ProductionOrderCreateResult(val orderNo: String, val orderId: String, val status: String)
+    data class RecentOrderItem(val orderId: String, val orderNo: String, val productName: String?, val status: String?, val createdAt: String?, val modelCount: Int)
+    data class RecentOrdersPage(val orders: List<RecentOrderItem>, val serverTime: String?)
     data class DeviceCreateResult(val deviceId: String, val deviceNo: String, val status: String)
     data class DeviceAssignmentResult(val taskId: String, val orderNo: String, val modelCode: String, val deviceId: String, val expectedVersion: Int)
 
@@ -318,6 +320,24 @@ open class MaterialFlowApi(
         requireUuid(clientOperationId, "clientOperationId"); require(orderNo.isNotBlank() && productName.isNotBlank() && plannedQuantity > 0)
         val root = JSONObject(request("POST", "/api/v1/production-orders", JSONObject().apply { put("clientOperationId", clientOperationId); put("orderNo", orderNo); put("productName", productName); put("plannedQuantity", plannedQuantity); put("plannedDeliveryDate", plannedDeliveryDate); put("models", models) }.toString(), idempotencyKey = clientOperationId))
         ProductionOrderCreateResult(root.optString("orderNo"), root.optString("orderId"), root.optString("status"))
+    }
+
+    /** 最近生产订单列表（订单页空态展示，GET /api/v1/production-orders，created_at 倒序） */
+    suspend fun recentProductionOrders(limit: Int = 20): RecentOrdersPage = withContext(Dispatchers.IO) {
+        val root = JSONObject(request("GET", "/api/v1/production-orders?limit=$limit", null))
+        val arr = root.optJSONArray("orders") ?: JSONArray()
+        val orders = (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            RecentOrderItem(
+                orderId = o.optString("orderId"),
+                orderNo = o.optString("orderNo"),
+                productName = o.optString("productName").ifBlank { null },
+                status = o.optString("status").ifBlank { null },
+                createdAt = o.optString("createdAt").ifBlank { null },
+                modelCount = o.optInt("modelCount", 0),
+            )
+        }
+        RecentOrdersPage(orders, root.optString("serverTime").ifBlank { null })
     }
 
     suspend fun createDevice(clientOperationId: String, deviceNo: String, deviceName: String, workshop: String, modelCapability: String?): DeviceCreateResult = withContext(Dispatchers.IO) {
@@ -640,10 +660,15 @@ open class MaterialFlowApi(
         }
     }
 
-    suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20): AssemblyTaskPage = withContext(Dispatchers.IO) {
+    suspend fun assemblyTaskPage(page: Int = 1, pageSize: Int = 20, deviceNo: String? = null, deviceId: String? = null): AssemblyTaskPage = withContext(Dispatchers.IO) {
         require(page >= 1 && pageSize == 20) { "装配任务分页固定为 20 条" }
+        val extra = buildList {
+            if (!deviceNo.isNullOrBlank()) add("deviceNo=" + java.net.URLEncoder.encode(deviceNo, "UTF-8"))
+            if (!deviceId.isNullOrBlank()) add("deviceId=" + java.net.URLEncoder.encode(deviceId, "UTF-8"))
+        }.joinToString("&")
+        val query = if (extra.isBlank()) "" else "&$extra"
         ApiParser.parseAssemblyTaskPage(
-            request("GET", "/api/v1/assembly/tasks?page=$page&pageSize=$pageSize", null)
+            request("GET", "/api/v1/assembly/tasks?page=$page&pageSize=$pageSize$query", null)
         )
     }
 
