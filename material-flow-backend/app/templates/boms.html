@@ -1,23 +1,27 @@
 {% extends "base.html" %}
 {% block title %}BOM 管理 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>BOM 版本管理与导入</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 
-<div class="card" style="max-width:560px">
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div class="card" style="flex:2;min-width:300px">
   <h3>导入 BOM（CSV / XLSX，两步：预览 → 提交）</h3>
   <form method="post" action="/admin/boms/import" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>机型码</label>
-    <input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy">
-    <label>文件（CSV 表头：modelCode,materialCode,materialName,specification,unit,quantity,scrapRate,substituteMaterialCodes）</label>
-    <input type="file" name="file" required accept=".csv,.xlsx">
-    <button type="submit">上传并预览</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div><label>机型码</label><input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy"></div>
+      <div><label>文件</label><input type="file" name="file" required accept=".csv,.xlsx"></div>
+    </div>
+    <p class="page-desc" style="margin:4px 0 0">CSV 表头：modelCode,materialCode,materialName,specification,unit,quantity,scrapRate,substituteMaterialCodes</p>
+    <button type="submit" class="btn btn-sm">上传并预览</button>
   </form>
 </div>
 
-<div class="card" style="margin-top:16px;max-width:680px">
+<div class="card" style="flex:1;min-width:240px">
+  <h3>筛选</h3>
   <form method="get" action="/admin/boms">
     <label>机型码</label>
     <input name="modelCode" value="{{ filters.modelCode }}" style="max-width:170px">
@@ -28,12 +32,13 @@
       <option value="PUBLISHED" {% if filters.status == "PUBLISHED" %}selected{% endif %}>已发布</option>
       <option value="ARCHIVED" {% if filters.status == "ARCHIVED" %}selected{% endif %}>已归档</option>
     </select>
-    <button type="submit">筛选</button>
-    <a href="/admin/boms" style="margin-left:8px">重置</a>
+    <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">筛选</button>
+    <a href="/admin/boms" class="btn btn-sm btn-secondary">重置</a></div>
   </form>
 </div>
+</div>
 
-<h3 style="margin-top:24px">聚合 BOM（智能导入，共 {{ agg_batches|length }} 批）</h3>
+<h3 style="margin-top:16px">聚合 BOM（智能导入，共 {{ agg_batches|length }} 批）</h3>
 <table>
   <tr><th>项目</th><th>文件名</th><th>机台数</th><th>物料数</th><th>行数</th><th>导入时间</th></tr>
   {% for b in agg_batches %}
@@ -50,7 +55,7 @@
   {% endfor %}
 </table>
 
-<h3 style="margin-top:24px">版本列表（共 {{ total_rows }}）</h3>
+<h3 style="margin-top:16px">版本列表（共 {{ total_rows }}）</h3>
 <table>
   <tr><th>ID</th><th>机型码</th><th>版本</th><th>状态</th><th>行数</th><th>文件 SHA-256</th><th>创建</th><th>发布</th></tr>
   {% for item in items %}
@@ -73,4 +78,5 @@
   第 {{ page }} 页
   {% if items %}<a href="/admin/boms?page={{ page + 1 }}&modelCode={{ filters.modelCode }}&status={{ filters.status }}">下一页</a>{% endif %}
 </p>
+</div>
 {% endblock %}

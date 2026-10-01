@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}BOM 导入预览 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>BOM 导入预览 · {{ preview.modelCode }}</h2>
 <div class="cards">
   <div class="card"><h3>解析统计</h3>
@@ -52,4 +53,5 @@
 </div>
 {% endif %}
 <p style="margin-top:16px"><a href="/admin/boms">返回 BOM 管理</a></p>
+</div>
 {% endblock %}
