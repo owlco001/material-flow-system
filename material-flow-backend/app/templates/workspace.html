@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}物料状态工作台 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>物料状态工作台</h2>
 <p style="color:#6b7280">当前角色视图：{{ summary.role }}（{{ summary.authenticatedRole }}）· 生成 {{ summary.generatedAt }}</p>
 
@@ -43,9 +44,9 @@ function wsFilter(){
   {% for item in items %}
   {% set _rw = {"OUT_OF_STOCK": "row-red", "REJECTED": "row-red", "ARRIVED": "row-yellow", "PENDING": "row-yellow", "OUTBOUND_PENDING": "row-yellow", "IN_STOCK": "row-green", "PICKED_UP": "row-green", "AT_STATION": "row-green", "OUTBOUND_CONFIRMED": "row-green", "OUTBOUND_APPROVED": "row-blue"}.get(item.statusCode, "") %}
   <tr class="{{ _rw }}">
-    <td>{{ item.orderNo }}</td>
-    <td>{{ item.deviceNo }}</td>
-    <td>{{ item.materialCode }} {{ item.materialName }}</td>
+    <td><a href="/admin/orders?order_no={{ item.orderNo }}">{{ item.orderNo }}</a></td>
+    <td><a href="/admin/tasks?q={{ item.deviceNo }}">{{ item.deviceNo }}</a></td>
+    <td><a href="/admin/warehouse?code={{ item.materialCode }}">{{ item.materialCode }}</a> {{ item.materialName }}</td>
     <td>{{ item.materialCategory or item.material_category or "—" }}</td>
     <td>{{ item.specification or "—" }}</td>
     <td>{{ item.requiredQuantity }}</td>
@@ -73,4 +74,5 @@ function wsFilter(){
   <a href="/admin/workspace?page={{ page + 1 }}&status={{ filters.status }}&orderNo={{ filters.orderNo }}">下一页</a>
   {% endif %}
 </p>
+</div>
 {% endblock %}

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}条码生成 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <div class="page-head">
   <h2>条码生成</h2>
   <p class="page-desc">为订单、机台、物料生成二维码或 Code128 一维码。条码内容即业务编号本身，可被现场扫码直接识别。</p>
@@ -37,4 +38,5 @@
   </div>
 </div>
 {% endif %}
+</div>
 {% endblock %}

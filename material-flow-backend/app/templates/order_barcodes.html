@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}批量机台码 · {{ order_no }} · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <div class="page-head">
   <h2>批量机台码</h2>
   <p class="page-desc">订单 {{ order_no }}{% if order.product_name %}（{{ order.product_name }}）{% endif %} · 共 {{ items | length }} 台机台，每台生成二维码与 Code128 一维码</p>
@@ -37,4 +38,5 @@
 {% else %}
 <p class="notice">该订单下暂无机台任务，无法批量生成机台码。</p>
 {% endif %}
+</div>
 {% endblock %}

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}U9 集成{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>U9 集成</h2>
 <p style="color:var(--muted)">与用友 U9 ERP 的数据同步。Phase 1 为只读同步（U9 → 本地），替代人工导 Excel。</p>
 
@@ -12,9 +13,9 @@
 
 <h3>配置状态</h3>
 <div class="cards">
-  <div class="card"><h3>总开关</h3><p style="font-size:20px;font-weight:700;color:{% if config.enabled %}#28a745{% else %}#6c757d{% endif %}">{{ "已启用" if config.enabled else "未启用" }}</p></div>
-  <div class="card"><h3>模式</h3><p style="font-size:20px;font-weight:700">{{ "经典 U9（局域网）" if config.mode == "classic" else "U9cloud" }}</p></div>
-  <div class="card"><h3>连接信息</h3><p style="font-size:20px;font-weight:700;color:{% if config.configured %}#28a745{% else %}#dc3545{% endif %}">{{ "已配齐" if config.configured else "未配齐" }}</p></div>
+  <div class="card"><p class="stat-label">总开关</p><p class="stat-num" style="color:{% if config.enabled %}#28a745{% else %}#6c757d{% endif %}">{{ "已启用" if config.enabled else "未启用" }}</p></div>
+  <div class="card"><p class="stat-label">模式</p><p class="stat-num">{{ "经典 U9（局域网）" if config.mode == "classic" else "U9cloud" }}</p></div>
+  <div class="card"><p class="stat-label">连接信息</p><p class="stat-num" style="color:{% if config.configured %}#28a745{% else %}#dc3545{% endif %}">{{ "已配齐" if config.configured else "未配齐" }}</p></div>
 </div>
 {% if not config.enabled or not config.configured %}
 <div class="card" style="margin-top:12px">
@@ -33,7 +34,7 @@
 </div>
 {% endif %}
 
-<h3 style="margin-top:24px">同步</h3>
+<h3 style="margin-top:16px">同步</h3>
 <div class="cards">
   {% for e in entities %}
   <div class="card">
@@ -54,7 +55,7 @@
   {% endfor %}
 </div>
 
-<h3 style="margin-top:24px">最近同步记录</h3>
+<h3 style="margin-top:16px">最近同步记录</h3>
 <table>
   <tr><th>时间</th><th>实体</th><th>模式</th><th>状态</th><th>总数</th><th>新增</th><th>更新</th><th>跳过</th><th>说明</th></tr>
   {% for l in logs %}
@@ -73,4 +74,5 @@
   <tr><td colspan="9">暂无同步记录</td></tr>
   {% endfor %}
 </table>
+</div>
 {% endblock %}

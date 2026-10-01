@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}流转申请 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>流转申请</h2>
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
 <p>
@@ -27,4 +28,5 @@
   <tr><td colspan="6">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {% endblock %}

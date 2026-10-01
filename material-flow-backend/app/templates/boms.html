@@ -61,7 +61,7 @@
   {% for item in items %}
   <tr>
     <td>{{ item.id }}</td>
-    <td>{{ item.model_code }}</td>
+    <td><a href="/admin/models?code={{ item.model_code }}">{{ item.model_code }}</a></td>
     <td>v{{ item.version_no }}</td>
     <td>{{ {"DRAFT": "草稿", "PUBLISHED": "已发布", "ARCHIVED": "已归档"}.get(item.status, item.status) }}</td>
     <td>{{ item.row_count }}</td>

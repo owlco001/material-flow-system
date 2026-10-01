@@ -1,22 +1,23 @@
 {% extends "base.html" %}
 {% block title %}异常处理{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>异常处理</h2>
 
 <div class="cards">
-  <div class="card"><h3>待处理</h3><p style="font-size:28px;font-weight:700;color:#dc3545">{{ open_count }}</p></div>
-  <div class="card"><h3>处理中</h3><p style="font-size:28px;font-weight:700;color:#ffc107">{{ in_progress_count }}</p></div>
-  <div class="card"><h3>已解决</h3><p style="font-size:28px;font-weight:700;color:#28a745">{{ resolved_count }}</p></div>
-  <div class="card"><h3>导入错误</h3><p style="font-size:28px;font-weight:700;color:#6c757d">{{ import_error_count }}</p></div>
+  <div class="card"><p class="stat-label">待处理</p><p class="stat-num" style="color:#dc3545">{{ open_count }}</p></div>
+  <div class="card"><p class="stat-label">处理中</p><p class="stat-num" style="color:#b7791f">{{ in_progress_count }}</p></div>
+  <div class="card"><p class="stat-label">已解决</p><p class="stat-num" style="color:#28a745">{{ resolved_count }}</p></div>
+  <div class="card"><p class="stat-label">导入错误</p><p class="stat-num" style="color:#6c757d">{{ import_error_count }}</p></div>
 </div>
 
-<h3 style="margin-top:24px">异常单</h3>
+<h3 style="margin-top:16px">异常单</h3>
 <table>
   <tr><th>类型</th><th>物料</th><th>账面</th><th>实际</th><th>差异</th><th>状态</th><th>描述</th><th>创建时间</th><th>操作</th></tr>
   {% for e in exceptions %}
   <tr>
     <td>{{ e.type }}</td>
-    <td>{{ e.material_code or "—" }} {{ e.material_name or "" }}</td>
+    <td>{% if e.material_code %}<a href="/admin/warehouse?code={{ e.material_code }}">{{ e.material_code }}</a>{% else %}—{% endif %} {{ e.material_name or "" }}</td>
     <td>{{ e.book_quantity }}</td>
     <td>{{ e.actual_quantity }}</td>
     <td style="color:{% if e.difference != 0 %}#dc3545{% else %}#28a745{% endif %}">{{ e.difference }}</td>
@@ -37,12 +38,12 @@
   {% endfor %}
 </table>
 
-<h3 style="margin-top:24px">导入错误</h3>
+<h3 style="margin-top:16px">导入错误</h3>
 <table>
   <tr><th>目标</th><th>文件名</th><th>行号</th><th>错误信息</th><th>状态</th><th>时间</th></tr>
   {% for e in import_errors %}
   <tr>
-    <td>{{ e.target or "—" }}</td>
+    <td>{% set _tp = {"materials": ("/admin/warehouse", "物料"), "inventory": ("/admin/warehouse", "库存"), "orders": ("/admin/orders", "订单")}.get(e.target) %}{% if _tp %}<a href="{{ _tp[0] }}">{{ _tp[1] }}</a>{% else %}{{ e.target or "—" }}{% endif %}</td>
     <td>{{ e.file_name or "—" }}</td>
     <td>{{ e.line_no or "—" }}</td>
     <td style="color:#dc3545">{{ e.error_msg }}</td>
@@ -53,4 +54,5 @@
   <tr><td colspan="6">暂无导入错误</td></tr>
   {% endfor %}
 </table>
+</div>
 {% endblock %}

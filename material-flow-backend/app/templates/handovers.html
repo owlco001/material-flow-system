@@ -1,20 +1,17 @@
 {% extends "base.html" %}
 {% block title %}交接留痕 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>交接留痕</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-<div class="card" style="max-width:560px">
-  <form method="get" action="/admin/handovers">
-    <label>交接单 / 工作物料 / 需求单号</label>
-    <input name="query" value="{{ query }}" placeholder="ho_… / wi_… / 需求单 ID" style="max-width:240px">
-    <button type="submit" class="btn btn-sm">查询</button>
-    {% if query %}<a href="/admin/handovers" class="btn btn-sm btn-secondary">清除</a>{% endif %}
-  </form>
-</div>
-
 {% if result %}
-<div class="card" style="margin-top:16px">
+<div class="card">
   <h3>交接 {{ result.handoverId }}</h3>
+  <form method="get" action="/admin/handovers" style="display:flex;gap:8px;align-items:center;margin:0 0 12px">
+    <input name="query" value="{{ query }}" placeholder="交接单 / 工作物料 / 需求单号" style="max-width:240px">
+    <button type="submit" class="btn btn-sm">查询</button>
+    <a href="/admin/handovers" class="btn btn-sm btn-secondary">清除</a>
+  </form>
   {% set _ws_labels = {"PENDING": "待处理", "IN_PROGRESS": "进行中", "COMPLETED": "已完成", "CANCELLED": "已取消"} %}
   {% set _ev_labels = {"HANDOVER_CREATED": "交接创建", "HANDOVER_CONFIRMED": "交接确认", "HANDOVER_REJECTED": "交接驳回", "HANDOVER_CANCELLED": "交接取消"} %}
   <p>工作物：{{ result.workItemId }} · 状态：{{ ho_status_labels.get(result.status, result.status) }} · 工作台状态：{{ _ws_labels.get(result.workspaceStatus, result.workspaceStatus or "—") }}</p>
@@ -35,10 +32,18 @@
     {% endfor %}
   </table>
 </div>
+{% else %}
+<div class="card" style="max-width:560px">
+  <form method="get" action="/admin/handovers">
+    <label>交接单 / 工作物料 / 需求单号</label>
+    <input name="query" value="{{ query }}" placeholder="ho_… / wi_… / 需求单 ID" style="max-width:240px">
+    <button type="submit" class="btn btn-sm">查询</button>
+  </form>
+</div>
 {% endif %}
 
 {% if rows %}
-<h3 style="margin-top:24px">最近交接（共 {{ total }} 条）</h3>
+<h3 style="margin-top:16px">最近交接（共 {{ total }} 条）</h3>
 <table>
   <tr><th>交接单</th><th>工作物料</th><th>状态</th><th>数量</th><th>发出库位</th><th>创建人</th><th>创建时间</th><th>详情</th></tr>
   {% for r in rows %}
@@ -62,4 +67,5 @@
   {% if page < total_pages %}<a href="/admin/handovers?page={{ page + 1 }}" class="btn btn-sm">下一页</a>{% endif %}
 </p>
 {% endif %}
+</div>
 {% endblock %}

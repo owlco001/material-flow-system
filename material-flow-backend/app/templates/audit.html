@@ -1,29 +1,33 @@
 {% extends "base.html" %}
 {% block title %}审计日志 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>审计日志</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <div class="card">
+  <h3>筛选</h3>
   <form method="get" action="/admin/audit">
-    <label>起始时间（ISO-8601）</label>
-    <input name="from" value="{{ filters['from'] or '' }}" style="max-width:190px" placeholder="2026-09-01T00:00:00Z">
-    <label>截止时间</label>
-    <input name="to" value="{{ filters['to'] or '' }}" style="max-width:190px">
-    <label>事件类型</label>
-    <select name="eventType" style="max-width:150px">
-      <option value="">全部</option>
-      {% for _k, _v in event_labels.items() %}
-      <option value="{{ _k }}" {% if filters.eventType == _k %}selected{% endif %}>{{ _v }}</option>
-      {% endfor %}
-    </select>
-    <label>实体类型</label>
-    <input name="entityType" value="{{ filters.entityType or '' }}" style="max-width:150px">
-    <label>操作人 ID</label>
-    <input name="operatorId" value="{{ filters.operatorId or '' }}" style="max-width:150px">
-    <label>实体 ID</label>
-    <input name="entityId" value="{{ filters.entityId or '' }}" style="max-width:150px">
-    <button type="submit">查询</button>
-    <a href="/admin/audit" style="margin-left:8px">重置</a>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px">
+      <div><label>起始时间（ISO-8601）</label>
+      <input name="from" value="{{ filters['from'] or '' }}" style="max-width:190px" placeholder="2026-09-01T00:00:00Z"></div>
+      <div><label>截止时间</label>
+      <input name="to" value="{{ filters['to'] or '' }}" style="max-width:190px"></div>
+      <div><label>事件类型</label>
+      <select name="eventType" style="max-width:150px">
+        <option value="">全部</option>
+        {% for _k, _v in event_labels.items() %}
+        <option value="{{ _k }}" {% if filters.eventType == _k %}selected{% endif %}>{{ _v }}</option>
+        {% endfor %}
+      </select></div>
+      <div><label>实体类型</label>
+      <input name="entityType" value="{{ filters.entityType or '' }}" style="max-width:150px"></div>
+      <div><label>操作人 ID</label>
+      <input name="operatorId" value="{{ filters.operatorId or '' }}" style="max-width:150px"></div>
+      <div><label>实体 ID</label>
+      <input name="entityId" value="{{ filters.entityId or '' }}" style="max-width:150px"></div>
+    </div>
+    <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">查询</button>
+    <a href="/admin/audit" class="btn btn-sm btn-secondary">重置</a></div>
   </form>
 </div>
 
@@ -35,7 +39,7 @@
     <td>{{ "审计事件" if item.record_type == "AUDIT_EVENT" else "审计日志" }}</td>
     <td>{{ event_labels.get(item.event_type, item.event_type) }}</td>
     <td>{{ entity_labels.get(item.entity_type, item.entity_type or "—") }}</td>
-    <td>{{ item.entity_id or "—" }}</td>
+    <td>{% if item.entity_type == "HANDOVER" and item.entity_id %}<a href="/admin/handovers/{{ item.entity_id }}">{{ item.entity_id }}</a>{% elif item.entity_type == "TRANSFER_REQUEST" and item.entity_id %}<a href="/admin/flows/{{ item.entity_id }}">{{ item.entity_id }}</a>{% else %}{{ item.entity_id or "—" }}{% endif %}</td>
     <td>{{ item.actor_user_id or "—" }}</td>
     <td>{{ role_labels.get(item.actor_role, item.actor_role or "—") }}</td>
     <td>{{ result_labels.get(item.result, item.result or "—") }}</td>
@@ -54,4 +58,5 @@
   <a href="/admin/audit?page={{ page + 1 }}&from={{ filters['from'] or '' }}&to={{ filters['to'] or '' }}&eventType={{ filters.eventType or '' }}&entityType={{ filters.entityType or '' }}&operatorId={{ filters.operatorId or '' }}&entityId={{ filters.entityId or '' }}">下一页</a>
   {% endif %}
 </p>
+</div>
 {% endblock %}

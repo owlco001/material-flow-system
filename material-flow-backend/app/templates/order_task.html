@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}机台详情 · {{ order_no }} · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>机台详情</h2>
 <p class="page-desc">订单 <a href="/admin/orders?order_no={{ order_no }}">{{ order_no }}</a> 下的机台任务</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -154,7 +155,9 @@
   <div class="btn-row" style="justify-content:center;margin-top:14px">
     <a class="btn" href="/admin/barcodes/print?entity=device&key={{ detail.deviceNo }}&kind=qr&copies=1" target="_blank">打印二维码</a>
     <a class="btn btn-secondary" href="/admin/barcodes/print?entity=device&key={{ detail.deviceNo }}&kind=code128&copies=1" target="_blank">打印一维码</a>
+    <a class="btn btn-secondary" href="/admin/models?dq={{ detail.deviceNo }}">查看 3D 绑定</a>
   </div>
 </div>
 {% endif %}
+</div>
 {% endblock %}

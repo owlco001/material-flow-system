@@ -1,16 +1,18 @@
 {% extends "base.html" %}
 {% block title %}工时汇总 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>工时汇总</h2>
-<div class="card" style="max-width:720px">
-  <form method="get" action="/admin/reports/labor">
-    <label>机台 ID</label>
-    <input name="deviceId" value="{{ filters.deviceId or '' }}" style="max-width:180px">
-    <label>订单号</label>
-    <input name="orderNo" value="{{ filters.orderNo or '' }}" style="max-width:180px">
-    <label>人员 ID</label>
-    <input name="assemblerId" value="{{ filters.assemblerId or '' }}" style="max-width:180px">
-    <button type="submit">筛选</button>
+<div class="card">
+  <h3>筛选</h3>
+  <form method="get" action="/admin/reports/labor" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+    <div><label>机台 ID</label>
+    <input name="deviceId" value="{{ filters.deviceId or '' }}" style="max-width:180px"></div>
+    <div><label>订单号</label>
+    <input name="orderNo" value="{{ filters.orderNo or '' }}" style="max-width:180px"></div>
+    <div><label>人员 ID</label>
+    <input name="assemblerId" value="{{ filters.assemblerId or '' }}" style="max-width:180px"></div>
+    <div><button type="submit" class="btn btn-sm">筛选</button></div>
   </form>
 </div>
 
@@ -20,9 +22,9 @@
   {% for item in items %}
   <tr>
     <td>{{ item.taskId }}</td>
-    <td>{{ item.orderNo }}</td>
-    <td>{{ item.deviceNo }}</td>
-    <td>{{ item.assemblerName }}（{{ item.assemblerId }}）</td>
+    <td><a href="/admin/orders?order_no={{ item.orderNo }}">{{ item.orderNo }}</a></td>
+    <td><a href="/admin/tasks?q={{ item.deviceNo }}">{{ item.deviceNo }}</a></td>
+    <td><a href="/admin/users?q={{ item.assemblerName }}">{{ item.assemblerName }}</a>（{{ item.assemblerId }}）</td>
     <td>{{ item.assemblyLaborMinutes }}</td>
     <td>{{ item.temporaryTransferLaborMinutes }}</td>
     <td>{{ item.totalLaborMinutes }}</td>
@@ -40,4 +42,5 @@
   <a href="/admin/reports/labor?page={{ page + 1 }}&deviceId={{ filters.deviceId or '' }}&orderNo={{ filters.orderNo or '' }}&assemblerId={{ filters.assemblerId or '' }}">下一页</a>
   {% endif %}
 </p>
+</div>
 {% endblock %}

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}车间概览 · 智慧工厂{% endblock %}
 {% block content %}
+<div class="compact">
 <h2>车间概览</h2>
 <div class="cards">
   <div class="card"><h3>任务</h3><p>总任务 {{ summary.totalTasks }} · 完成 {{ summary.completedTasks }}</p></div>
@@ -8,12 +9,12 @@
   <div class="card"><h3>工时（分钟）</h3><p>装配 {{ summary.assemblyLaborMinutes }} · 借调 {{ summary.temporaryTransferLaborMinutes }} · 合计 {{ summary.totalLaborMinutes }}</p></div>
 </div>
 
-<h3 style="margin-top:24px">机台进度</h3>
+<h3 style="margin-top:16px">机台进度</h3>
 <table>
   <tr><th>机台号</th><th>任务数</th><th>完成</th><th>进度</th><th>装配工时</th><th>借调工时</th><th>合计</th></tr>
   {% for m in machines %}
   <tr>
-    <td>{{ m.device_no }}</td>
+    <td><a href="/admin/tasks?q={{ m.device_no }}">{{ m.device_no }}</a></td>
     <td>{{ m.taskCount }}</td>
     <td>{{ m.completedTaskCount }}</td>
     <td>{{ m.progressPercent }}%
@@ -33,4 +34,5 @@
   {% if machines %}<a href="/admin/reports?page={{ page + 1 }}">下一页</a>{% endif %}
 </p>
 <p style="color:#6b7280;margin-top:8px">生成时间 {{ summary.generatedAt }}</p>
+</div>
 {% endblock %}

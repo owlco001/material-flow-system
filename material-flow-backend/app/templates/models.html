@@ -37,6 +37,7 @@
     <b>当前发布 · {{ published.modelCode }}</b>
     <span class="muted" style="font-size:13px">v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}… · {{ published.createdBy }} @ {{ published.createdAt }}</span>
     <a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a>
+    <a class="btn btn-sm btn-secondary" href="/admin/boms?modelCode={{ published.modelCode }}">查看 BOM</a>
   </div>
 </div>
 {% elif published_error %}
@@ -58,7 +59,8 @@
     <td>{{ status_labels.get(row.status, row.status) }}</td>
     <td>{{ row.created_by }}</td>
     <td>{{ row.created_at }}</td>
-    <td><a class="btn btn-sm btn-secondary" href="/admin/models/view?code={{ row.model_code }}&version={{ row.version }}" target="_blank" rel="noopener">查看</a></td>
+    <td><a class="btn btn-sm btn-secondary" href="/admin/models/view?code={{ row.model_code }}&version={{ row.version }}" target="_blank" rel="noopener">查看</a>
+    <a class="btn btn-sm btn-secondary" href="/admin/boms?modelCode={{ row.model_code }}">BOM</a></td>
   </tr>
   {% else %}
   <tr><td colspan="11">暂无数据</td></tr>
