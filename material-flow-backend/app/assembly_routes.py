@@ -1,4 +1,5 @@
 from fastapi import HTTPException, Depends, Query, Request, Header
+import datetime
 import json, uuid
 
 def register(app, db, now, current_user, audit_event, api_error=None):
@@ -33,8 +34,14 @@ def register(app, db, now, current_user, audit_event, api_error=None):
             out.insert(0, {'assembler_id':legacy['assigned_assembler_id'],'assignment_role':'LEAD','assigned_by':None,'assigned_at':None,'removed_at':None})
         return out
     def finish(c, rid):
-        t=now(); r=c.execute('SELECT started_at FROM labor_records WHERE id=?',(rid,)).fetchone(); secs=max(0, int(__import__('datetime').datetime.fromisoformat(t).timestamp()-__import__('datetime').datetime.fromisoformat(r['started_at']).timestamp()))
-        c.execute("UPDATE labor_records SET status='COMPLETED',ended_at=?,duration_minutes=? WHERE id=?",(t,secs//60,rid))
+        t = now()
+        r = c.execute('SELECT started_at FROM labor_records WHERE id=?', (rid,)).fetchone()
+        if not r:
+            return
+        secs = max(0, int(datetime.datetime.fromisoformat(t).timestamp()
+                           - datetime.datetime.fromisoformat(r['started_at']).timestamp()))
+        c.execute("UPDATE labor_records SET status='COMPLETED',ended_at=?,duration_minutes=? WHERE id=?",
+                  (t, secs // 60, rid))
     def bodycheck(b):
         if not isinstance(b,dict): raise HTTPException(422,'请求参数无效')
     def stage_conflict(code, message, trace_id):

@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -461,6 +462,41 @@ def db() -> sqlite3.Connection:
     c.execute("PRAGMA busy_timeout=30000")
     _enable_wal(c)
     return c
+
+
+@contextmanager
+def tx(error_message: str = "操作失败", trace_id: str = "",
+       *, reraise_unexpected: bool = False, immediate: bool = True):
+    """统一写事务样板：开连接 → [BEGIN IMMEDIATE] → yield → commit。
+
+    - ApiError：rollback 后原样抛出；
+    - 未知异常：rollback，默认转为 ApiError(500)（与老站点语义一致）；
+      ``reraise_unexpected=True`` 时原样抛出（保持部分老站点不转换的语义）；
+    - ``immediate=False`` 时不执行 BEGIN IMMEDIATE（极少数老站点无显式 BEGIN）；
+    - 无论何种路径，finally 关闭连接。
+    """
+    c = db()
+    try:
+        if immediate:
+            c.execute("BEGIN IMMEDIATE")
+        yield c
+        c.commit()
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        if reraise_unexpected:
+            raise
+        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, error_message,
+                       retryable=True, trace_id=trace_id) from None
+    finally:
+        c.close()
+
+
+def _conflict(msg: str, trace_id: str) -> None:
+    """409 状态冲突的 raise 样板收敛（一行调用代替三行）。"""
+    raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, msg, trace_id=trace_id)
 
 
 def hash_password(password: str) -> str:
@@ -1263,6 +1299,7 @@ def initialize_admin(
         raise ApiError(400, CODE_IDEMPOTENCY_KEY_MISMATCH, "Idempotency-Key 与 clientOperationId 不一致", trace_id=trace_id)
 
     digest = _setup_payload_digest(body)
+    # P0-#2: 刻意不用 tx() —— 无 except Exception 分支（未知异常原样抛出，不转 ApiError(500)），保持原样。
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -1365,6 +1402,7 @@ def edit_employee(user_id: str, body: EditUserRequest, user: sqlite3.Row = Depen
         raise ApiError(400, CODE_VALIDATION_ERROR, "角色无效", trace_id=trace_id)
     operation_id = str(body.clientOperationId)
     payload = json.dumps({"userId": user_id, **changes}, ensure_ascii=False, sort_keys=True)
+    # P0-#2: 刻意不用 tx() —— 无 except Exception 分支（未知异常原样抛出），保持原样。
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -1418,9 +1456,8 @@ def reset_employee_password(user_id: str, body: PasswordResetRequest, user: sqli
     trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     if user["role"] != "ADMIN": raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可重置密码", trace_id=trace_id)
     operation_id = str(body.clientOperationId); digest = hashlib.sha256(body.newPassword.encode()).hexdigest()
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE"); prior = c.execute("SELECT * FROM admin_user_password_reset_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
+    with tx(reraise_unexpected=True) as c:
+        prior = c.execute("SELECT * FROM admin_user_password_reset_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
         if prior:
             if prior["user_id"] != user_id or prior["payload_digest"] != digest: raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"]); result.update(traceId=trace_id, idempotent=True); c.rollback(); return result
@@ -1429,14 +1466,7 @@ def reset_employee_password(user_id: str, body: PasswordResetRequest, user: sqli
         before = _redacted_user(target); c.execute("UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?", (hash_password(body.newPassword), user_id)); revoke_all_sessions(c, user_id)
         after = {**before, "mustChangePassword": True}; ts = now(); result = {"userId": user_id, "mustChangePassword": True, "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("ADMIN_PASSWORD_RESET", "USER", user_id, user["id"], user["role"], trace_id, operation_id, json.dumps(before), json.dumps(after), ts, None, None, "SUCCESS"))
-        c.execute("INSERT INTO admin_user_password_reset_operations VALUES(?,?,?,?,?)", (operation_id, user_id, digest, json.dumps(result), ts)); c.commit(); return result
-    except ApiError: c.rollback(); raise
-    except Exception:
-        c.rollback()
-        raise
-    finally: c.close()
-
-
+        c.execute("INSERT INTO admin_user_password_reset_operations VALUES(?,?,?,?,?)", (operation_id, user_id, digest, json.dumps(result), ts)); return result
 @app.delete("/api/v1/admin/users/{user_id}")
 def delete_employee(
     user_id: str,
@@ -1457,11 +1487,9 @@ def delete_employee(
         ensure_ascii=False,
         sort_keys=True,
     )
-    c = db()
-    try:
+    with tx("用户删除失败", trace_id=trace_id) as c:
         # The idempotency read, business gates, state change, session revocation and
         # audit write share one lock so concurrent retries cannot split the result.
-        c.execute("BEGIN IMMEDIATE")
         prior = c.execute(
             "SELECT * FROM admin_user_delete_operations WHERE client_operation_id=?",
             (operation_id,),
@@ -1565,24 +1593,7 @@ def delete_employee(
                VALUES(?,?,?,?,?)""",
             (operation_id, user_id, payload, json.dumps(result, ensure_ascii=False), changed_at),
         )
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise ApiError(
-            500,
-            CODE_RETRYABLE_UPSTREAM_ERROR,
-            "用户删除失败",
-            retryable=True,
-            trace_id=trace_id,
-        ) from None
-    finally:
-        c.close()
-
-
 def _user_history_refs(c: sqlite3.Connection, user_id: str) -> str:
     """用户在业务/历史表中的引用（真删除前检查），返回命中项中文名。"""
     checks = [
@@ -1619,9 +1630,7 @@ def hard_delete_employee(user_id: str, body: HardDeleteUserRequest, request: Req
         raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可删除用户", trace_id=trace_id)
     operation_id = str(body.clientOperationId)
     payload = json.dumps({"userId": user_id}, ensure_ascii=False, sort_keys=True)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("用户删除失败", trace_id=trace_id) as c:
         prior = c.execute("SELECT * FROM admin_user_hard_delete_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
         if prior:
             if prior["user_id"] != user_id or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
@@ -1653,18 +1662,7 @@ def hard_delete_employee(user_id: str, body: HardDeleteUserRequest, request: Req
         result = {"userId": user_id, "deleted": True, "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO admin_user_hard_delete_operations(client_operation_id,user_id,payload_json,result_json,created_at) VALUES(?,?,?,?,?)",
                   (operation_id, user_id, payload, json.dumps(result, ensure_ascii=False), ts))
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "用户删除失败", retryable=True, trace_id=trace_id) from None
-    finally:
-        c.close()
-
-
 class TransferApproval(BaseModel):
     decision: str
     comment: str = Field(default="", max_length=500)
@@ -1738,6 +1736,7 @@ async def upload_assembly_model(
         if sha256 and sha256.lower() != calculated_sha:
             raise ApiError(422, "MODEL_SHA256_MISMATCH", "文件 SHA-256 校验失败", trace_id=trace_id)
 
+        # P0-#2: 刻意不用 tx() —— except 内有文件清理副作用（moved_path.unlink），保持原样。
         c = db()
         moved_path: Path | None = None
         try:
@@ -1978,6 +1977,7 @@ async def preview_inventory_import(
         raise ApiError(422, "INVENTORY_TEMPLATE_INVALID", "库存快照预览仅支持 XLSX 文件", trace_id=trace_id)
     parsed = _inventory_preview_from_xlsx(raw, trace_id=trace_id)
     digest = hashlib.sha256(raw).hexdigest()
+    # P0-#2: 刻意不用 tx() —— 只有 finally（异常原样抛出、无 rollback），保持原样。
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -2009,6 +2009,7 @@ def commit_inventory_import(body: InventoryCommitRequest, user: sqlite3.Row = De
         raise ApiError(403, CODE_FORBIDDEN, "无权提交库存快照", trace_id=trace_id)
     require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     operation_id = str(body.clientOperationId); payload = json.dumps(body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    # P0-#2: 刻意不用 tx() —— 无 except Exception 分支（未知异常原样抛出），保持原样。
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -2270,9 +2271,7 @@ def commit_agg_bom(body: AggBomCommitRequest, user: sqlite3.Row = Depends(curren
     trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
     require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     operation_id = str(body.clientOperationId)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute("SELECT * FROM audit_events WHERE event_type='AGG_BOM_IMPORT' AND client_operation_id=?",
                           (operation_id,)).fetchone()
         if prior:
@@ -2371,15 +2370,8 @@ def commit_agg_bom(body: AggBomCommitRequest, user: sqlite3.Row = Depends(curren
                   "traceId": trace_id, "serverTime": ts}
         c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   ("AGG_BOM_IMPORT", "AGG_BOM_BATCH", batch_id, user["id"], user["role"], trace_id, operation_id, "", json.dumps(result), ts, None, None, "SUCCESS"))
-        c.commit()
         AGG_BOM_PREVIEWS.pop(str(body.previewId), None)
         return result
-    except Exception:
-        c.rollback(); raise
-    finally:
-        c.close()
-
-
 @app.get("/api/v1/agent/aggbom/batches")
 def list_agg_bom_batches(user: sqlite3.Row = Depends(current_user)):
     c = db()
@@ -2445,9 +2437,7 @@ def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(curren
     _bom_authorized(user); trace_id = _safe_trace_id(x_request_id) or str(uuid.uuid4())
     require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
     operation_id = str(body.clientOperationId); payload = json.dumps(body.model_dump(mode="json"), sort_keys=True)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute("SELECT * FROM audit_events WHERE event_type='BOM_IMPORT' AND client_operation_id=?", (operation_id,)).fetchone()
         if prior:
             if prior["before_json"] != payload: raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
@@ -2466,14 +2456,7 @@ def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(curren
         if body.publish: c.execute("UPDATE bom_versions SET status='ARCHIVED' WHERE model_code=? AND status='PUBLISHED' AND id<>?", (preview["modelCode"], vid))
         result = {"bomVersionId": vid, "modelCode": preview["modelCode"], "versionNo": version, "status": status, "itemCount": len(preview["rows"]), "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ("BOM_IMPORT", "BOM_VERSION", vid, user["id"], user["role"], trace_id, operation_id, payload, json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"))
-        c.commit(); return result
-    except ApiError: c.rollback(); raise
-    except Exception:
-        c.rollback()
-        raise
-    finally: c.close()
-
-
+        return result
 @app.get("/api/v1/boms/versions")
 def list_bom_versions(modelCode: str | None = None, status: str | None = None, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=500), user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
     _bom_authorized(user); c = db(); where, args = [], []
@@ -2539,9 +2522,8 @@ def create_production_order(body: ProductionOrderCreate, user: sqlite3.Row = Dep
     trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
     if len({m.modelCode for m in body.models}) != len(body.models) or sum(m.plannedQuantity for m in body.models) > body.plannedQuantity:
         raise ApiError(422, CODE_VALIDATION_ERROR, "订单机型数量无效", trace_id=trace_id)
-    payload = body.model_dump_json(); op = str(body.clientOperationId); c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    payload = body.model_dump_json(); op = str(body.clientOperationId)
+    with tx(reraise_unexpected=True) as c:
         replay = _operation_replay(c, "production_order_operations", op, payload, trace_id)
         if replay: c.rollback(); return replay
         if c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (body.orderNo,)).fetchone():
@@ -2554,35 +2536,21 @@ def create_production_order(body: ProductionOrderCreate, user: sqlite3.Row = Dep
         for model in body.models:
             c.execute("INSERT INTO production_order_models(id,order_id,model_code,model_name,bom_version_id,planned_quantity,created_at) VALUES(?,?,?,?,?,?,?)", ("pom_" + uuid.uuid4().hex, oid, model.modelCode, model.modelName, model.bomVersionId, model.plannedQuantity, ts))
         result = {"orderId": oid, "orderNo": body.orderNo, "productName": body.productName, "plannedQuantity": body.plannedQuantity, "status": "IN_PROGRESS", "models": [m.model_dump() for m in body.models], "serverTime": ts, "traceId": trace_id, "idempotent": False}
-        c.execute("INSERT INTO production_order_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "PRODUCTION_ORDER", oid, "SUCCESS", trace_id); c.commit(); return result
-    except ApiError: c.rollback(); raise
-    except Exception:
-        c.rollback()
-        raise
-    finally: c.close()
-
-
+        c.execute("INSERT INTO production_order_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "PRODUCTION_ORDER", oid, "SUCCESS", trace_id); return result
 @app.post("/api/v1/devices")
 def create_device(body: DeviceCreate, user: sqlite3.Row = Depends(current_user),
                  x_request_id: str | None = Header(default=None),
                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
-    payload = body.model_dump_json(); op = str(body.clientOperationId); c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE"); replay = _operation_replay(c, "device_operations", op, payload, trace_id)
+    payload = body.model_dump_json(); op = str(body.clientOperationId)
+    with tx(reraise_unexpected=True) as c:
+        replay = _operation_replay(c, "device_operations", op, payload, trace_id)
         if replay: c.rollback(); return replay
         if c.execute("SELECT 1 FROM devices WHERE device_no=?", (body.deviceNo,)).fetchone(): raise ApiError(409, "DEVICE_NO_CONFLICT", "机台编号已存在", trace_id=trace_id)
         ts = now(); did = "dev_" + uuid.uuid4().hex
         c.execute("INSERT INTO devices(id, device_no, device_name, workshop, model_capability, model_3d_code, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (did, body.deviceNo, body.deviceName, body.workshop, body.modelCapability, body.model3dCode, "ACTIVE", user["id"], ts, ts))
         result = {"deviceId": did, "deviceNo": body.deviceNo, "deviceName": body.deviceName, "workshop": body.workshop, "modelCapability": body.modelCapability, "model3dCode": body.model3dCode, "status": "ACTIVE", "serverTime": ts, "traceId": trace_id, "idempotent": False}
-        c.execute("INSERT INTO device_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "DEVICE", did, "SUCCESS", trace_id); c.commit(); return result
-    except ApiError: c.rollback(); raise
-    except Exception:
-        c.rollback()
-        raise
-    finally: c.close()
-
-
+        c.execute("INSERT INTO device_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "CREATE", "DEVICE", did, "SUCCESS", trace_id); return result
 @app.get("/api/v1/devices/{device_id}")
 def get_device(device_id: str, user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
     """机台详情：扫码机台码后跳转用。"""
@@ -2626,8 +2594,7 @@ def bind_device_model_3d(device_id: str, body: DeviceModel3dBind, user: sqlite3.
                          idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
     """绑定 / 解绑机台的 3D 装配模型（model3dCode 为空表示解绑）。"""
     trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
-    c = db()
-    try:
+    with tx(reraise_unexpected=True, immediate=False) as c:
         d = c.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
         if not d:
             d = c.execute("SELECT * FROM devices WHERE device_no=?", (device_id,)).fetchone()
@@ -2641,24 +2608,15 @@ def bind_device_model_3d(device_id: str, body: DeviceModel3dBind, user: sqlite3.
         ts = now()
         c.execute("UPDATE devices SET model_3d_code=?, updated_at=? WHERE id=?", (code, ts, d["id"]))
         audit(c, user["id"], user["role"], "UPDATE", "DEVICE_MODEL_3D", d["id"], "SUCCESS", trace_id)
-        c.commit()
         return {"deviceId": d["id"], "deviceNo": d["device_no"], "model3dCode": code, "serverTime": ts, "traceId": trace_id}
-    except ApiError:
-        c.rollback(); raise
-    except Exception:
-        c.rollback(); raise
-    finally:
-        c.close()
-
-
 @app.post("/api/v1/production-orders/{order_no}/models/{model_code}/assign-device")
 def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, user: sqlite3.Row = Depends(current_user),
                   x_request_id: str | None = Header(default=None),
                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
     trace_id = require_request_id(x_request_id); require_idempotency_key(idempotency_key, body.clientOperationId, trace_id); _production_write_allowed(user)
-    payload = json.dumps({"orderNo": order_no, "modelCode": model_code, **body.model_dump(mode="json")}, sort_keys=True); op = str(body.clientOperationId); c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE"); replay = _operation_replay(c, "device_assignment_operations", op, payload, trace_id)
+    payload = json.dumps({"orderNo": order_no, "modelCode": model_code, **body.model_dump(mode="json")}, sort_keys=True); op = str(body.clientOperationId)
+    with tx(reraise_unexpected=True) as c:
+        replay = _operation_replay(c, "device_assignment_operations", op, payload, trace_id)
         if replay: c.rollback(); return replay
         model = c.execute("SELECT m.*,o.status order_status FROM production_order_models m JOIN production_orders o ON o.id=m.order_id WHERE o.order_no=? AND m.model_code=?", (order_no, model_code)).fetchone()
         if not model: raise ApiError(404, "ORDER_MODEL_NOT_FOUND", "订单机型不存在", trace_id=trace_id)
@@ -2673,13 +2631,7 @@ def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, use
         c.execute("INSERT INTO assembly_tasks(id,order_no,device_id,device_no,status,progress_stage,task_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (task_id, order_no, device["id"], device["device_no"], "WAITING_MATERIAL", 0, 1, ts, ts))
         c.execute("UPDATE production_order_models SET version=version+1 WHERE id=? AND version=?", (model["id"], body.expectedVersion))
         result = {"taskId": task_id, "orderNo": order_no, "modelCode": model_code, "deviceId": device["id"], "deviceNo": device["device_no"], "status": "WAITING_MATERIAL", "expectedVersion": body.expectedVersion + 1, "serverTime": ts, "traceId": trace_id, "idempotent": False}
-        c.execute("INSERT INTO device_assignment_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "ASSIGN", "ASSEMBLY_TASK", task_id, "SUCCESS", trace_id); c.commit(); return result
-    except ApiError: c.rollback(); raise
-    except Exception:
-        c.rollback()
-        raise
-    finally: c.close()
-
+        c.execute("INSERT INTO device_assignment_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "ASSIGN", "ASSEMBLY_TASK", task_id, "SUCCESS", trace_id); return result
 @app.get("/healthz")
 def health() -> dict[str, str]:
     c: sqlite3.Connection | None = None
@@ -3166,9 +3118,7 @@ def create_order(
             raise ApiError(422, CODE_VALIDATION_ERROR, "modelCode 重复", trace_id=trace_id)
         seen_codes.add(code)
     payload = json.dumps(body.model_dump(mode="json"), sort_keys=True)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute(
             "SELECT * FROM order_operations WHERE client_operation_id=?", (operation_id,)
         ).fetchone()
@@ -3221,18 +3171,7 @@ def create_order(
             (operation_id, order_id, "CREATE_ORDER", payload,
              json.dumps(result, ensure_ascii=False, sort_keys=True), ts),
         )
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise
-    finally:
-        c.close()
-
-
 class OrderStatusRequest(BaseModel):
     clientOperationId: str
     status: str
@@ -3272,9 +3211,7 @@ def create_assembly_task(
         {"orderNo": order_no, "deviceId": device_id, "deviceNo": device_no, "clientOperationId": operation_id},
         sort_keys=True,
     )
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute(
             "SELECT * FROM audit_events WHERE event_type='ASSEMBLY_TASK_CREATED' AND client_operation_id=?",
             (operation_id,),
@@ -3309,20 +3246,7 @@ def create_assembly_task(
              operation_id, payload,
              json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
         )
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise
-    finally:
-        c.close()
-
-
-
-
 # ==================== 工作台缺失接口补齐（2026-09-27） ====================
 
 def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str, Any]:
@@ -3639,9 +3563,7 @@ def revoke_user_sessions(
     except (ValueError, AttributeError, TypeError):
         raise ApiError(400, CODE_VALIDATION_ERROR, "clientOperationId 必须是合法 UUID", trace_id=trace_id) from None
     payload = json.dumps({"userId": user_id, "clientOperationId": operation_id}, sort_keys=True)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute(
             "SELECT * FROM audit_events WHERE event_type='SESSIONS_REVOKED' AND client_operation_id=?",
             (operation_id,),
@@ -3673,18 +3595,7 @@ def revoke_user_sessions(
              operation_id, payload,
              json.dumps(result, ensure_ascii=False, sort_keys=True), ts, None, None, "SUCCESS"),
         )
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise
-    finally:
-        c.close()
-
-
 @app.post("/api/v1/orders/{order_no}/status")
 def set_order_status(
     order_no: str,
@@ -3704,9 +3615,7 @@ def set_order_status(
     if target not in ("IN_PROGRESS", "COMPLETED"):
         raise ApiError(422, CODE_VALIDATION_ERROR, "status 取值无效", trace_id=trace_id)
     payload = json.dumps({"orderNo": order_no, "status": target, "clientOperationId": operation_id}, sort_keys=True)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx(reraise_unexpected=True) as c:
         prior = c.execute(
             "SELECT * FROM order_operations WHERE client_operation_id=?", (operation_id,)
         ).fetchone()
@@ -3746,18 +3655,7 @@ def set_order_status(
             (operation_id, order["id"], "SET_ORDER_STATUS", payload,
              json.dumps(result, ensure_ascii=False, sort_keys=True), ts),
         )
-        c.commit()
         return result
-    except ApiError:
-        c.rollback()
-        raise
-    except Exception:
-        c.rollback()
-        raise
-    finally:
-        c.close()
-
-
 @app.post("/api/v1/orders/material-status")
 def material_status(
     body: dict[str, str],
@@ -5145,12 +5043,10 @@ def create_transfer(
     }:
         raise ApiError(403, CODE_FORBIDDEN, "当前角色不能提交入库或出库申请", trace_id=trace_id)
 
-    c = db()
     op_id_str = str(body.clientOperationId)
-    try:
+    with tx("流转申请创建失败", trace_id=trace_id) as c:
         # The idempotency read and insert share the same write lock so a retry
         # cannot create two transfer requests under concurrent delivery.
-        c.execute("BEGIN IMMEDIATE")
         old = c.execute(
             "SELECT id,status,payload_json FROM transfer_requests WHERE client_operation_id=?",
             (op_id_str,),
@@ -5164,7 +5060,6 @@ def create_transfer(
             result = {"requestId": old["id"], "status": old["status"],
                       "idempotent": True, "serverTime": now(), "traceId": trace_id}
             c.rollback()
-            c.close()
             return result
 
         # 数量与库存版本前置校验（整数校验见 _validate_item）
@@ -5178,17 +5073,6 @@ def create_transfer(
              body.model_dump_json(), user["id"], now(), None, None, None, None),
         )
         audit(c, user["id"], user["role"], "CREATE", "TRANSFER_REQUEST", rid, "SUCCESS", trace_id)
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "流转申请创建失败",
-                       retryable=True, trace_id=trace_id) from None
-    c.close()
     status = "PENDING_APPROVAL"
     return {"requestId": rid, "status": status, "serverTime": now(), "traceId": trace_id}
 
@@ -5231,9 +5115,7 @@ def _execute_transfer_items(
       - 库存不足、库位不存在整单回滚
       - 已执行过的单据再次执行返回原结果，不重复扣减
     """
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("执行失败", trace_id=trace_id) as c:
         if operation_id is not None and operation_payload is not None:
             prior = c.execute(
                 "SELECT * FROM transfer_operations WHERE client_operation_id=?",
@@ -5250,7 +5132,6 @@ def _execute_transfer_items(
                                    "相同幂等键的请求体不一致", trace_id=trace_id)
                 result = json.loads(prior["result_json"])
                 c.rollback()
-                c.close()
                 result["idempotent"] = True
                 result["traceId"] = trace_id
                 return result
@@ -5259,10 +5140,9 @@ def _execute_transfer_items(
         if not row:
             raise ApiError(404, CODE_VALIDATION_ERROR, "申请不存在", trace_id=trace_id)
         if row["status"] == "EXECUTED":
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "申请已执行，不能重复执行", trace_id=trace_id)
+            _conflict("申请已执行，不能重复执行", trace_id)
         if row["status"] != "APPROVED":
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "申请尚未审批通过", trace_id=trace_id)
+            _conflict("申请尚未审批通过", trace_id)
 
         # 审批人与执行人不能是同一用户（TRANSFER 无需审批，跳过）
         if row["approved_by"] and row["approved_by"] == user["id"]:
@@ -5348,17 +5228,6 @@ def _execute_transfer_items(
                 (operation_id, rid, "EXECUTE", operation_payload,
                  json.dumps(result, ensure_ascii=False), execution_time),
             )
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "执行失败", retryable=True,
-                       trace_id=trace_id) from None
-    c.close()
     return result
 
 
@@ -5411,9 +5280,7 @@ def approve(
     status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"
     operation_id = str(body.clientOperationId)
     operation_payload = body.model_dump_json()
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("申请审批失败", trace_id=trace_id) as c:
         prior = c.execute(
             "SELECT * FROM transfer_operations WHERE client_operation_id=?",
             (operation_id,),
@@ -5429,7 +5296,6 @@ def approve(
                                "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"])
             c.rollback()
-            c.close()
             result["idempotent"] = True
             result["traceId"] = trace_id
             return result
@@ -5457,8 +5323,7 @@ def approve(
             (status, user["id"], now(), (body.comment.strip() if status == "REJECTED" else None), rid),
         )
         if cur.rowcount != 1:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "申请状态不允许审批", trace_id=trace_id)
+            _conflict("申请状态不允许审批", trace_id)
         decision_time = c.execute(
             "SELECT approved_at FROM transfer_requests WHERE id=?", (rid,)
         ).fetchone()["approved_at"]
@@ -5488,17 +5353,6 @@ def approve(
             (operation_id, rid, "APPROVE", operation_payload,
              json.dumps(result, ensure_ascii=False), decision_time),
         )
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "申请审批失败",
-                       retryable=True, trace_id=trace_id) from None
-    c.close()
     return result
 
 
@@ -5627,20 +5481,19 @@ def _validate_handover_relation(c: sqlite3.Connection, body: HandoverCreate,
         if not work["requirement_id"]:
             raise ApiError(400, CODE_VALIDATION_ERROR,
                            "工作项未关联正式订单需求", trace_id=trace_id)
-        if work["requirement_id"]:
-            req = c.execute(
-                "SELECT * FROM order_material_requirements WHERE id=?",
-                (work["requirement_id"],),
-            ).fetchone()
-            if not req:
-                raise ApiError(400, CODE_VALIDATION_ERROR,
-                               "工作项未关联有效订单需求", trace_id=trace_id)
-            if req["material_id"] != work["material_id"]:
-                raise ApiError(400, CODE_VALIDATION_ERROR,
-                               "工作项物料与订单需求不一致", trace_id=trace_id)
-            if work["device_id"] and req["device_id"] != work["device_id"]:
-                raise ApiError(400, CODE_VALIDATION_ERROR,
-                               "工作项目标机台与订单需求不一致", trace_id=trace_id)
+        req = c.execute(
+            "SELECT * FROM order_material_requirements WHERE id=?",
+            (work["requirement_id"],),
+        ).fetchone()
+        if not req:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "工作项未关联有效订单需求", trace_id=trace_id)
+        if req["material_id"] != work["material_id"]:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "工作项物料与订单需求不一致", trace_id=trace_id)
+        if work["device_id"] and req["device_id"] != work["device_id"]:
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "工作项目标机台与订单需求不一致", trace_id=trace_id)
         if work["assigned_user_id"] and body.receiverUserId != work["assigned_user_id"]:
             raise ApiError(400, CODE_VALIDATION_ERROR,
                            "receiverUserId 与工作项归属不一致", trace_id=trace_id)
@@ -5714,8 +5567,7 @@ def _validate_handover_relation(c: sqlite3.Connection, body: HandoverCreate,
         list(related_work_item_ids),
     ).fetchone()["quantity"]
     if existing_quantity + body.quantity > max_quantity:
-        raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                       "交接数量与已有交接重叠", trace_id=trace_id)
+        _conflict("交接数量与已有交接重叠", trace_id)
     transfer_existing_quantity = c.execute(
         """SELECT COALESCE(SUM(h.quantity), 0) AS quantity
                FROM material_handovers h
@@ -5728,8 +5580,7 @@ def _validate_handover_relation(c: sqlite3.Connection, body: HandoverCreate,
         (transfer["id"], material_id),
     ).fetchone()["quantity"]
     if transfer_existing_quantity + body.quantity > transfer_quantity:
-        raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                       "交接数量超过流转单已审批数量", trace_id=trace_id)
+        _conflict("交接数量超过流转单已审批数量", trace_id)
     if body.receiverUserId:
         receiver = c.execute("SELECT id,role,active FROM users WHERE id=?",
                              (body.receiverUserId,)).fetchone()
@@ -5757,13 +5608,11 @@ def create_handover(
     trace_id = _handover_headers(x_request_id, idempotency_key, body.clientOperationId)
     if user["role"] != "MATERIAL":
         raise ApiError(403, CODE_FORBIDDEN, "仅物料员可发起交接", trace_id=trace_id)
-    c = db()
     operation_id = str(body.clientOperationId)
     operation_payload = body.model_dump_json()
-    try:
+    with tx("交接创建失败", trace_id=trace_id) as c:
         # 先锁住整个交接写事务，幂等检查、重叠数量校验、状态投影和审计
         # 必须观察同一个数据库快照，避免并发重试写出两条交接。
-        c.execute("BEGIN IMMEDIATE")
         old = c.execute(
             "SELECT * FROM material_handovers WHERE client_operation_id=?", (operation_id,)
         ).fetchone()
@@ -5778,7 +5627,6 @@ def create_handover(
                 raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH,
                                "相同幂等键的请求体不一致", trace_id=trace_id)
             c.rollback()
-            c.close()
             return {"handoverId": old["id"], "status": old["status"],
                     "idempotent": True, "traceId": trace_id}
 
@@ -5792,11 +5640,9 @@ def create_handover(
             raise ApiError(400, CODE_VALIDATION_ERROR,
                            "transferRequestId 必须关联 OUTBOUND 流转单", trace_id=trace_id)
         if transfer["status"] not in {"APPROVED", "EXECUTED"}:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "流转单尚未审批通过", trace_id=trace_id)
+            _conflict("流转单尚未审批通过", trace_id)
         if not transfer["approved_by"] or not transfer["approved_at"]:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "流转单缺少有效审批记录", trace_id=trace_id)
+            _conflict("流转单缺少有效审批记录", trace_id)
         approver = c.execute(
             "SELECT id,role,active FROM users WHERE id=?", (transfer["approved_by"],)
         ).fetchone()
@@ -5805,8 +5651,7 @@ def create_handover(
             or not approver["active"]
             or approver["role"] not in {"WAREHOUSE_ADMIN", "ADMIN"}
         ):
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "流转单审批人角色无效", trace_id=trace_id)
+            _conflict("流转单审批人角色无效", trace_id)
         relation = _validate_handover_relation(c, body, transfer, user, trace_id)
         hid = "ho_" + uuid.uuid4().hex
         created_at = now()
@@ -5823,17 +5668,6 @@ def create_handover(
         _audit_event(c, "HANDOVER_CREATED", hid, user, trace_id, operation_id, {},
                      {"status": "PENDING", "transferRequestId": body.transferRequestId,
                       "quantity": body.quantity, "workspaceStatus": "PENDING"}, request)
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "交接创建失败",
-                       retryable=True, trace_id=trace_id) from None
-    c.close()
     return {"handoverId": hid, "status": "PENDING",
             "transferRequestId": body.transferRequestId, "traceId": trace_id}
 
@@ -5851,11 +5685,9 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
         raise ApiError(400, CODE_VALIDATION_ERROR, "驳回或取消必须填写原因", trace_id=trace_id)
     operation_id = str(body.clientOperationId)
     operation_payload = body.model_dump_json()
-    c = db()
-    try:
+    with tx("交接处理失败", trace_id=trace_id) as c:
         # BEGIN IMMEDIATE 把幂等闸门、状态转换、工作台投影和审计事件锁在
         # 同一事务中；两个并发请求不会都读到 PENDING 后各自写事件。
-        c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT * FROM material_handovers WHERE id=?", (hid,)).fetchone()
         if not row:
             raise ApiError(404, CODE_VALIDATION_ERROR, "交接不存在", trace_id=trace_id)
@@ -5900,7 +5732,6 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
                                "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"])
             c.rollback()
-            c.close()
             result["idempotent"] = True
             result["traceId"] = trace_id
             return result
@@ -5911,14 +5742,11 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             (row["transfer_request_id"],),
         ).fetchone()
         if not transfer or transfer["type"] != "OUTBOUND":
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接未关联有效出库单", trace_id=trace_id)
+            _conflict("交接未关联有效出库单", trace_id)
         if transfer["status"] not in {"APPROVED", "EXECUTED"}:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "关联流转单尚未审批通过", trace_id=trace_id)
+            _conflict("关联流转单尚未审批通过", trace_id)
         if not transfer["approved_by"] or not transfer["approved_at"]:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "关联流转单缺少有效审批记录", trace_id=trace_id)
+            _conflict("关联流转单缺少有效审批记录", trace_id)
         approver = c.execute(
             "SELECT role,active FROM users WHERE id=?", (transfer["approved_by"],)
         ).fetchone()
@@ -5927,8 +5755,7 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             or not approver["active"]
             or approver["role"] not in {"WAREHOUSE_ADMIN", "ADMIN"}
         ):
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "关联流转单审批人角色无效", trace_id=trace_id)
+            _conflict("关联流转单审批人角色无效", trace_id)
         relation = c.execute(
             """SELECT w.id AS work_item_id, w.requirement_id, w.material_id AS work_material_id,
                               w.device_id AS work_device_id,
@@ -5943,32 +5770,27 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             (hid,),
         ).fetchone()
         if not relation or not relation["requirement_id_resolved"]:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接未关联有效订单需求", trace_id=trace_id)
+            _conflict("交接未关联有效订单需求", trace_id)
         if (
             relation["work_material_id"]
             and relation["work_material_id"] != relation["material_id"]
         ):
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接工作项物料与订单需求不一致", trace_id=trace_id)
+            _conflict("交接工作项物料与订单需求不一致", trace_id)
         if (
             relation["work_device_id"]
             and relation["work_device_id"] != relation["requirement_device_id"]
         ):
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接工作项目标机台与订单需求不一致", trace_id=trace_id)
+            _conflict("交接工作项目标机台与订单需求不一致", trace_id)
         if (
             relation["requirement_device_id"]
             and row["device_id"] != relation["requirement_device_id"]
         ):
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接目标机台与订单需求不一致", trace_id=trace_id)
+            _conflict("交接目标机台与订单需求不一致", trace_id)
         order = c.execute(
             "SELECT order_no FROM production_orders WHERE id=?", (relation["order_id"],)
         ).fetchone()
         if not order or transfer["document_no"] != order["order_no"]:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接所属订单与流转单不一致", trace_id=trace_id)
+            _conflict("交接所属订单与流转单不一致", trace_id)
         transfer_payload = json.loads(transfer["payload_json"])
         transfer_quantity = sum(
             item.get("quantity", 0)
@@ -5976,12 +5798,10 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             if item.get("materialId") == relation["material_id"]
         )
         if transfer_quantity < row["quantity"] or row["quantity"] > relation["required_quantity"]:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接数量超过已审批数量", trace_id=trace_id)
+            _conflict("交接数量超过已审批数量", trace_id)
 
         if row["status"] != "PENDING":
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接状态不允许重复处理", trace_id=trace_id)
+            _conflict("交接状态不允许重复处理", trace_id)
 
         transition_time = now()
         updated = c.execute(
@@ -5991,8 +5811,7 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             (action, user["id"], transition_time, body.reason, hid),
         )
         if updated.rowcount != 1:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "交接状态不允许重复处理", trace_id=trace_id)
+            _conflict("交接状态不允许重复处理", trace_id)
 
         event_types = []
         if action == "CONFIRMED":
@@ -6068,17 +5887,6 @@ def _decide_handover(hid: str, body: HandoverDecision, request: Request, user: s
             (operation_id, hid, action, operation_payload,
              json.dumps(result, ensure_ascii=False), transition_time),
         )
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "交接处理失败",
-                       retryable=True, trace_id=trace_id) from None
-    c.close()
     return result
 
 
@@ -6171,9 +5979,7 @@ def create_transfer_handover(
         raise ApiError(403, CODE_FORBIDDEN, "无交接权限", trace_id=trace_id)
     operation_id = str(body.clientOperationId)
     operation_payload = body.model_dump_json()
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("扫码交接失败", trace_id=trace_id) as c:
         prior = c.execute(
             "SELECT * FROM handover_operations WHERE client_operation_id=?",
             (operation_id,),
@@ -6184,7 +5990,6 @@ def create_transfer_handover(
                                "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"])
             c.rollback()
-            c.close()
             result["idempotent"] = True
             result["traceId"] = trace_id
             return result
@@ -6198,8 +6003,7 @@ def create_transfer_handover(
         if transfer["type"] != "OUTBOUND":
             raise ApiError(400, CODE_VALIDATION_ERROR, "仅出库流转单支持扫码交接", trace_id=trace_id)
         if transfer["status"] not in {"APPROVED", "EXECUTED"}:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT,
-                           "流转单尚未审核通过，无法交接", trace_id=trace_id)
+            _conflict("流转单尚未审核通过，无法交接", trace_id)
 
         # 校验勾选的物料都在流转单明细内，且数量不超过申请数量
         try:
@@ -6264,17 +6068,6 @@ def create_transfer_handover(
             (operation_id, hid, "TRANSFER_HANDOVER", operation_payload,
              json.dumps(result, ensure_ascii=False), ts),
         )
-        c.commit()
-    except ApiError:
-        c.rollback()
-        c.close()
-        raise
-    except Exception:
-        c.rollback()
-        c.close()
-        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "扫码交接失败",
-                       retryable=True, trace_id=trace_id) from None
-    c.close()
     return result
 
 
@@ -6589,9 +6382,7 @@ def confirm_stocktake(
         require_idempotency_key(idempotency_key, body.clientOperationId or uuid.UUID(operation), trace_id)
     if user["role"] not in {"ADMIN", "WAREHOUSE_ADMIN"}:
         raise ApiError(403, CODE_FORBIDDEN, "无盘点确认权限", trace_id=trace_id)
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("盘点确认失败", trace_id=trace_id) as c:
         prior = c.execute("SELECT * FROM stocktake_operations WHERE client_operation_id=?", (operation,)).fetchone()
         payload = body.model_dump_json()
         if prior:
@@ -6601,19 +6392,13 @@ def confirm_stocktake(
             c.rollback(); c.close(); return result
         row = c.execute("SELECT * FROM stocktakes WHERE id=? AND status='PENDING_CONFIRM'", (sid,)).fetchone()
         if not row:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "待确认盘点不存在或已处理", trace_id=trace_id)
+            _conflict("待确认盘点不存在或已处理", trace_id)
         confirmed_at = now()
         c.execute("UPDATE stocktakes SET status='CONFIRMED',confirmed_by=?,confirmed_at=? WHERE id=?", (user["id"], confirmed_at, sid))
         audit(c, user["id"], user["role"], "CONFIRM", "STOCKTAKE", sid, request_id=trace_id)
         result = {"stocktakeId": sid, "status": "CONFIRMED", "traceId": trace_id}
         c.execute("INSERT INTO stocktake_operations VALUES(?,?,?,?,?,?)", (operation, sid, "CONFIRM", payload, json.dumps(result, ensure_ascii=False), confirmed_at))
-        c.commit(); c.close(); return result
-    except ApiError:
-        c.rollback(); c.close(); raise
-    except Exception:
-        c.rollback(); c.close(); raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "盘点确认失败", retryable=True, trace_id=trace_id) from None
-
-
+        return result
 @app.post("/api/v1/exceptions")
 def create_exception(
     body: ExceptionCreate,
@@ -6659,9 +6444,7 @@ def review_exception(
     if body.decision not in {"APPROVE", "REJECT"}:
         raise ApiError(400, CODE_VALIDATION_ERROR, "decision 无效", trace_id=trace_id)
     status = "APPROVED" if body.decision == "APPROVE" else "REJECTED"
-    c = db()
-    try:
-        c.execute("BEGIN IMMEDIATE")
+    with tx("异常审批失败", trace_id=trace_id) as c:
         payload = body.model_dump_json()
         prior = c.execute("SELECT * FROM exception_operations WHERE client_operation_id=?", (operation,)).fetchone()
         if prior:
@@ -6672,17 +6455,11 @@ def review_exception(
         reviewed_at = now()
         cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='PENDING'", (status, user["id"], reviewed_at, eid))
         if cur.rowcount != 1:
-            raise ApiError(409, CODE_TRANSFER_STATE_CONFLICT, "异常状态不允许审批", trace_id=trace_id)
+            _conflict("异常状态不允许审批", trace_id)
         audit(c, user["id"], user["role"], "REVIEW", "EXCEPTION", eid, request_id=trace_id)
         result = {"exceptionId": eid, "status": status, "traceId": trace_id}
         c.execute("INSERT INTO exception_operations VALUES(?,?,?,?,?,?)", (operation, eid, "REVIEW", payload, json.dumps(result, ensure_ascii=False), reviewed_at))
-        c.commit(); c.close(); return result
-    except ApiError:
-        c.rollback(); c.close(); raise
-    except Exception:
-        c.rollback(); c.close(); raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "异常审批失败", retryable=True, trace_id=trace_id) from None
-
-
+        return result
 # Workshop assembly vertical slice routes
 try:
     from .assembly_routes import register as _register_assembly_routes

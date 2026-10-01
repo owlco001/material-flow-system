@@ -89,6 +89,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "tem
 SESSION_COOKIE = "mf_session"
 ANON_CSRF_COOKIE = "anon_csrf"
 SESSION_SECONDS = 8 * 3600  # 固定 8 小时，不滑动续期（契约 §5.2）
+DEFAULT_PAGE_SIZE = 20  # 列表页默认分页大小
 # S1 准入仅 ADMIN；S3 起放宽 WAREHOUSE_ADMIN（契约 §1）
 WEB_ROLES = ("ADMIN",)
 
@@ -849,7 +850,7 @@ def admin_handovers_search(request: Request):
             error = f"{exc.status_code}：{exc.detail}"
     # 最近交接列表
     page = _page_param(request)
-    page_size = 20
+    page_size = DEFAULT_PAGE_SIZE
     c = db()
     try:
         total = c.execute("SELECT COUNT(*) FROM material_handovers").fetchone()[0]
@@ -1027,7 +1028,7 @@ def admin_models_list(request: Request):
     code = str(request.query_params.get("code", "")).strip()
     q = str(request.query_params.get("q", "")).strip()
     page = _page_param(request)
-    page_size = 20
+    page_size = DEFAULT_PAGE_SIZE
     c = db()
     try:
         where = "1=1"
@@ -1062,7 +1063,7 @@ def admin_models_list(request: Request):
     # 机台 3D 模型绑定：机台列表 + 已发布模型码
     dq = str(request.query_params.get("dq", "")).strip()
     dpage = max(1, int(request.query_params.get("dpage", "1") or 1))
-    dpage_size = 20
+    dpage_size = DEFAULT_PAGE_SIZE
     c = db()
     try:
         device_cols = {r["name"] for r in c.execute("PRAGMA table_info(devices)").fetchall()}
@@ -2266,7 +2267,7 @@ def admin_labor_export(request: Request):
     q = request.query_params
     rows = _collect_all(
         _api_endpoint("/api/v1/workshop/labor-summary"),
-        page_size=20,
+        page_size=DEFAULT_PAGE_SIZE,
         deviceId=q.get("deviceId") or None,
         orderNo=q.get("orderNo") or None,
         assemblerId=q.get("assemblerId") or None,
@@ -2280,7 +2281,7 @@ def admin_machines_export(request: Request):
     user, denied = _report_or_403(request)
     if denied:
         return denied
-    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=20, user=user, deviceId=None)
+    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=DEFAULT_PAGE_SIZE, user=user, deviceId=None)
     return _csv_response("machine-progress", rows)
 
 
