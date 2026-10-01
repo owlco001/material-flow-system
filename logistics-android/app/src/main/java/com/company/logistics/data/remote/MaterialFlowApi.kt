@@ -381,7 +381,7 @@ open class MaterialFlowApi(
 
     /** GET /api/v1/exceptions；异常记录列表（服务端返回全量，客户端按需过滤）。 */
     suspend fun listExceptions(): List<com.company.logistics.model.ExceptionRecord> = withContext(Dispatchers.IO) {
-        ApiParser.parseExceptionList(request("GET", "/api/v1/exceptions"))
+        ApiParser.parseExceptionList(request("GET", "/api/v1/exceptions", null))
     }
 
     // ==================== 4.3 生产订单物料状态 ====================

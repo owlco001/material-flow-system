@@ -59,6 +59,7 @@ import com.company.logistics.ui.screens.ProductionManagementScreen
 import com.company.logistics.ui.screens.DeviceDetailScreen
 import com.company.logistics.ui.screens.FlowDetailScreen
 import com.company.logistics.ui.screens.FlowHandoverScreen
+import com.company.logistics.ui.screens.MyExceptionsScreen
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsTypography

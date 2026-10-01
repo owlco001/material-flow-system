@@ -114,7 +114,7 @@ private fun ExceptionRecordCard(record: ExceptionRecord) {
                     "REJECTED" -> LogisticsColors.Danger
                     else -> LogisticsColors.Warning
                 },
-                containerColor = LogisticsTheme.colors.surfaceVariant,
+                containerColor = LogisticsTheme.colors.cardBackground,
             )
         }
         VSpace(Spacing.sm)

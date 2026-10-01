@@ -30,6 +30,7 @@ import com.company.logistics.model.ScanResult
 import com.company.logistics.model.ScanType
 import com.company.logistics.model.User
 import com.company.logistics.model.UserRole
+import com.company.logistics.model.ExceptionRecord
 import com.company.logistics.model.WorkspaceMaterialItem
 import com.company.logistics.model.ServerWorkspaceSummaryFactory
 import com.company.logistics.model.AdminRolePreviewController
