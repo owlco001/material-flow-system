@@ -53,7 +53,6 @@
     {% set _cls = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(st, "st-neutral") %}
     <div class="mat-row">
       <span class="mat-code">{{ _mcode }}</span>
-      {% if _mcode != "—" %}<img class="mini-barcode" src="/admin/barcodes/image?entity=material&key={{ _mcode|urlencode }}&kind=code128&image=png" alt="物料一维码" title="{{ _mcode }}" loading="lazy">{% endif %}
       <span class="mat-name">{{ _mname }}</span>
       <span class="mat-nums">需<b>{{ _req }}</b>到<b>{{ _arr }}</b>库<b>{{ _stk }}</b></span>
       <span class="mat-badges">
