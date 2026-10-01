@@ -56,7 +56,16 @@
       <span class="mat-name">{{ _mname }}</span>
       <span class="mat-nums">需<b>{{ _req }}</b>到<b>{{ _arr }}</b>库<b>{{ _stk }}</b></span>
       <span class="mat-badges">
+        {% if user and user["role"] == "ADMIN" %}
+        <select class="mat-cat-edit" data-code="{{ _mcode }}" data-csrf="{{ csrf_token }}" title="手动设置分类">
+          <option value="">未分类</option>
+          {% for c in ["电气", "机械", "其他"] %}
+          <option value="{{ c }}" {% if _mcat == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
         <span class="badge {{ _cbadge }}">{{ _mcat or "未分类" }}</span>
+        {% endif %}
         <span class="st {{ _cls }}">{{ status_labels.get(st, st or "—") if status_labels else (st or "—") }}</span>
       </span>
     </div>

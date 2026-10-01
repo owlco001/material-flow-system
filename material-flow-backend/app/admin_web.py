@@ -2405,6 +2405,36 @@ def admin_barcodes_print(request: Request):
     )
 
 
+MATERIAL_CATEGORIES = ("电气", "机械", "其他")
+
+
+@router.post("/admin/materials/category")
+async def admin_material_category(request: Request):
+    """手动设置物料分类（暂定仅管理员可操作）。"""
+    user, err = _admin_or_403(request)
+    if err is not None:
+        return err
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return JSONResponse({"ok": False, "error": "CSRF 校验失败"}, status_code=403)
+    code = str(form.get("code", "")).strip()
+    category = str(form.get("category", "")).strip()
+    if not code:
+        return JSONResponse({"ok": False, "error": "缺少物料编码"}, status_code=400)
+    if category and category not in MATERIAL_CATEGORIES:
+        return JSONResponse({"ok": False, "error": "分类无效，仅支持：电气/机械/其他"}, status_code=400)
+    c = db()
+    try:
+        row = c.execute("SELECT code FROM materials WHERE code=?", (code,)).fetchone()
+        if row is None:
+            return JSONResponse({"ok": False, "error": "物料不存在"}, status_code=404)
+        c.execute("UPDATE materials SET category=? WHERE code=?", (category or None, code))
+        c.commit()
+    finally:
+        c.close()
+    return JSONResponse({"ok": True, "code": code, "category": category})
+
+
 @router.get("/admin/barcodes/image")
 def admin_barcodes_image(request: Request):
     """管理台会话鉴权的条码图片下载（浏览器直接点击可用，无需 Bearer Token）。

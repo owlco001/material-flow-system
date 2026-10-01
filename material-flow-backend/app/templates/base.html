@@ -101,6 +101,23 @@ body.side-collapsed .side-collapse { display: none; }
 body.side-collapsed .side-user { justify-content: center; }
 body.side-collapsed .side-foot { padding: 12px 8px; }
 body.side-collapsed .page { margin-left: var(--side-w-min); }
+/* 收起时悬停自动展开（桌面端，浮层不挤内容） */
+@media (min-width: 1025px) {
+  body.side-collapsed .sidebar:hover { width: var(--side-w); box-shadow: 2px 0 28px rgba(8,18,38,.5); }
+  body.side-collapsed .sidebar:hover .side-brand-txt,
+  body.side-collapsed .sidebar:hover .side-group span,
+  body.side-collapsed .sidebar:hover .side-link span,
+  body.side-collapsed .sidebar:hover .side-user-txt { display: block; }
+  body.side-collapsed .sidebar:hover .side-logout { display: block; width: 100%; }
+  body.side-collapsed .sidebar:hover .side-group { text-align: left; padding: 14px 12px 6px; }
+  body.side-collapsed .sidebar:hover .side-group:first-child { padding-top: 6px; }
+  body.side-collapsed .sidebar:hover .side-group::after { content: none; }
+  body.side-collapsed .sidebar:hover .side-link { justify-content: flex-start; padding: 9px 12px; }
+  body.side-collapsed .sidebar:hover .side-brand { justify-content: flex-start; padding: 14px 14px 12px; }
+  body.side-collapsed .sidebar:hover .side-collapse { display: inline-flex; }
+  body.side-collapsed .sidebar:hover .side-user { justify-content: flex-start; }
+  body.side-collapsed .sidebar:hover .side-foot { padding: 12px 14px; }
+}
 /* ---- 页面区 ---- */
 .page { margin-left: var(--side-w); min-height: 100vh; display: flex; flex-direction: column; transition: margin-left .18s ease; }
 body.no-side .page { margin-left: 0; }
@@ -285,6 +302,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .mat-row .mat-nums { white-space: nowrap; color: var(--muted); font-size: 12px; }
 .mat-row .mat-nums b { color: var(--ink); font-weight: 700; margin: 0 2px; }
 .mat-badges { display: flex; gap: 6px; flex: none; }
+/* 物料分类手动编辑（管理员） */
+.mat-cat-edit {
+  font-size: 12px; padding: 2px 6px; border-radius: 20px; flex: none;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  max-width: 92px;
+}
+.mat-cat-edit:disabled { opacity: .6; }
 /* 物料状态浅色标签 */
 .st{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:500}
 .st-red{background:rgba(220,53,69,.12);color:#c92a3a}

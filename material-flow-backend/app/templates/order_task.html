@@ -53,6 +53,33 @@
   var panel = document.getElementById('task-mat-panel');
   if (!panel || panel.dataset.bound) return;
   panel.dataset.bound = '1';
+  // 物料分类手动修改（管理员）：下拉即保存
+  panel.addEventListener('change', function(e) {
+    var sel = e.target && e.target.closest ? e.target.closest('.mat-cat-edit') : null;
+    if (!sel || sel.dataset.saving === '1') return;
+    sel.dataset.saving = '1';
+    sel.disabled = true;
+    var fd = new FormData();
+    fd.append('code', sel.dataset.code);
+    fd.append('category', sel.value);
+    fd.append('csrf_token', sel.dataset.csrf);
+    fetch('/admin/materials/category', {method: 'POST', body: fd, credentials: 'same-origin'})
+      .then(function(r) { return r.json().then(function(d) { return {status: r.status, body: d}; }); })
+      .then(function(res) {
+        sel.disabled = false;
+        sel.dataset.saving = '';
+        if (!res.body.ok) {
+          alert('分类保存失败：' + (res.body.error || ('HTTP ' + res.status)));
+          return;
+        }
+        sel.title = '已保存：' + (res.body.category || '未分类');
+      })
+      .catch(function() {
+        sel.disabled = false;
+        sel.dataset.saving = '';
+        alert('分类保存失败：网络错误');
+      });
+  });
   function setLoading(on) {
     var old = panel.querySelector('.mat-loading');
     if (old) old.remove();
