@@ -1725,6 +1725,19 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     finally:
         c.close()
     names = {row["id"]: row["display_name"] for row in assemblers}
+    # /api/v1/assembly/tasks 返回的 members 是驼峰键（assemblerId/assignmentRole），
+    # 模板按 snake_case 取值，此处统一归一化，避免 KeyError: 'assembler_id'。
+    for _item in tasks_data["items"]:
+        _norm = []
+        for _m in _item.get("members", []):
+            if isinstance(_m, dict):
+                _norm.append({
+                    "assembler_id": _m.get("assemblerId", _m.get("assembler_id")),
+                    "assignment_role": _m.get("assignmentRole", _m.get("assignment_role")),
+                })
+            else:
+                _norm.append(_m)
+        _item["members"] = _norm
     assign_ops = {item["id"]: str(uuid.uuid4()) for item in tasks_data["items"]}
     remove_ops = {
         f"{item['id']}:{m['assembler_id']}": str(uuid.uuid4())
