@@ -455,14 +455,16 @@ class FilamentModelRenderer(
         val scn = scene ?: return
         val tm = eng.transformManager
         if (asset == null) return
-        // 注意：Filament 1.75.1 上 setMaterialInstanceAt 换自定义材质会导致原生崩溃，
-        // 因此隔离改用隐藏非选中零件实现，不再使用 ghost 材质。
+        // 简化版 ghost 材质（无自定义参数），尝试半透明隔离
+        val ghostSoft = ghostInstance()
         val isolating = isolatedName != null || isolatedEntity != 0
         for (i in partEntities.indices) {
             val entity = partEntities[i]
             val instance = tm.getInstance(entity)
             if (instance == 0) continue
+            val primitiveCount = rm.getPrimitiveCount(instance)
             var hidden = false
+            var ghost: MaterialInstance? = null
             if (sectionEnabled) {
                 val box = rm.getAxisAlignedBoundingBox(instance, Box())
                 val c = box.center[sectionAxis]
@@ -473,26 +475,22 @@ class FilamentModelRenderer(
             if (!hidden && isolating) {
                 val inPart = (isolatedName != null && partNames[i] == isolatedName) ||
                     (isolatedEntity != 0 && entity == isolatedEntity)
-                if (!inPart) hidden = true
+                if (!inPart && ghostSoft != null) ghost = ghostSoft
             }
             if (hidden) {
                 if (hiddenBySection.add(entity)) scn.removeEntity(entity)
             } else {
                 if (hiddenBySection.remove(entity)) scn.addEntity(entity)
+                setGhost(entity, instance, primitiveCount, ghost)
             }
         }
         updateSectionPlane()
     }
 
-    private fun ghostInstance(tintR: Float, tintG: Float, tintB: Float, opacity: Float): MaterialInstance? {
+    private fun ghostInstance(): MaterialInstance? {
         val mat = ghostMaterial ?: return null
-        val key = "$tintR,$tintG,$tintB,$opacity"
-        return ghostInstances.getOrPut(key) {
-            mat.createInstance().also {
-                it.setParameter("tint", tintR, tintG, tintB)
-                it.setParameter("opacity", opacity)
-            }
-        }
+        // 简化材质无自定义参数，直接复用单例
+        return ghostInstances.getOrPut("simple") { mat.createInstance() }
     }
 
     /** ghost 为 null 时恢复该零件的原始材质实例 */
