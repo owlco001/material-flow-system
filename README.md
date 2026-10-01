@@ -12,6 +12,156 @@
 
 系统边界是厂内物料流转：覆盖生产订单到厂内库位、仓储及生产现场交接的状态和记录；不包含外部运输、承运商、物流轨迹，也不把线边库或配送工位作为本 V1 的业务对象。
 
+## 功能总览（全图版）
+
+> 以下截图均为系统实拍。三端协同：**Android 移动端**（车间现场作业）+ **Web 管理后台**（管理侧治理）+ **FastAPI 后端**（单服务双出口：REST API `/api/v1` + 管理台 `/admin`），同一数据库、同一套 RBAC 角色、同一条审计流水。
+
+### 移动端：车间现场作业
+
+#### 角色化工作台 + 统一扫码
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/app-workspace.png" alt="工作台"></td>
+<td width="50%"><img src="docs/screenshots/app-scan.png" alt="扫码"></td>
+</tr>
+</table>
+
+- 五类角色（管理员 / 物料员 / 操作工 / 库管 / 装配工）分栏呈现，角色可切换试览；服务端地址在 App 内可视化配置。
+- 一码到底：物料码、订单码、机台码、库位码、流转码统一由服务端判别并直达对应页面；扫码结果先确认再进入，防误扫。
+
+#### 生产订单与齐套分析
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/app-order-detail.png" alt="订单详情"></td>
+<td width="50%"><img src="docs/screenshots/app-order-materials.png" alt="订单物料"></td>
+</tr>
+</table>
+
+- 订单头卡：中文状态徽章（已下达 / 待领料 / 生产中 / 已完成…）、齐套率、缺料项数、服务端时间。
+- 单订单 118 台机台的装配任务分页浏览：阶段进度、任务版本、责任人一目了然。
+- 物料需求清单使用 U9 真实物料编码，支持扫码定位。
+- 流转时间线：每次下达、领料、审批的操作人与时间全量留痕展示。
+
+#### 机台详情：装配作业全息视图
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/app-device-detail.png" alt="机台详情"></td>
+<td width="50%"><img src="docs/screenshots/app-device-personnel.png" alt="装配进度与人员"></td>
+</tr>
+</table>
+
+- 一页聚合：机台状态、物料情况、流转申请、装配进度、工时、人员、关联订单、3D 模型入口。
+- 物料按电气 / 机械 / 其他自动归类，支持搜索、分类筛选、分页与横向表格。
+- 勾选多条物料直接发起批量流转申请；装配人员按账号去重展示（服务端按机台精确过滤）。
+
+#### Filament 3D 机台查看器
+
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/app-3d.png" alt="3D 模型"></td>
+<td width="33%"><img src="docs/screenshots/app-3d-parts.png" alt="零件导航"></td>
+<td width="33%"><img src="docs/screenshots/app-3d-part.png" alt="零件定位"></td>
+</tr>
+</table>
+
+- 基于 Filament（Google 渲染引擎）加载 glTF/GLB 机台模型，网格地面 + 轨道环绕相机。
+- 零件导航清单可搜索，点选即 3D 定位：目标零件高亮、其余半透明（ghost 材质）。
+- 爆炸图滑杆 0-100% 无级拆解；模型由 Web 后台上传并与机台型号绑定。
+
+#### 库存查询 + 审批中心
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/app-inventory.png" alt="库存"></td>
+<td width="50%"><img src="docs/screenshots/app-approval.png" alt="审批"></td>
+</tr>
+</table>
+
+- 扫料号即查实时库存与库位分布，可就地绑定库位、发起流转申请。
+- 流转申请、盘点确认、异常审核、交接确认四类待办集中审批；按钮由服务端状态机驱动，驳回必填原因，批准 / 执行二次确认。
+
+#### 我的：权限、离线与可追溯
+
+<p><img src="docs/screenshots/app-profile.png" alt="我的" width="320"></p>
+
+- 权限范围逐条可视化；离线队列断网续传（幂等键保证不重不漏）；我的异常与我的流转随时回查。
+
+### Web 管理后台
+
+#### 订单管理 + 条码工场 + 装配派工
+
+<p><img src="docs/screenshots/web-orders.png" alt="订单管理"></p>
+
+- 新建生产订单（多机型多数量）、状态变更；订单 / 机台二维码与 Code128 条码一键生成并批量打印。
+- 订单下机台卡片直接展示进度与装配工分配状态；机台任务详情页可分配 / 移除装配工（主装配工 + 协同成员），与 App 实时同步。
+
+#### 装配工作台与工时报表
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-workspace.png" alt="装配工作台"></td>
+<td width="50%"><img src="docs/screenshots/web-labor.png" alt="工时报表"></td>
+</tr>
+</table>
+
+- 全厂装配任务状态总览，按状态 / 订单过滤，一键导出 Excel。
+- 按机台 / 订单 / 装配工多维查询装配工时，支持导出；配机台作业报表。
+
+#### 仓库治理 / 流转与交接
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-warehouse.png" alt="仓库"></td>
+<td width="50%"><img src="docs/screenshots/web-flows.png" alt="流转交接"></td>
+</tr>
+</table>
+
+- 库存 / 库位全景查询，盘点确认、异常审核页面闭环。
+- 流转申请审批 / 驳回 / 执行全流程页面化；交接单状态跟踪。
+
+#### BOM / 3D 模型 / 审计 / 用户
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-boms.png" alt="BOM"></td>
+<td width="50%"><img src="docs/screenshots/web-models.png" alt="模型"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-audit.png" alt="审计"></td>
+<td width="50%"><img src="docs/screenshots/web-users.png" alt="用户"></td>
+</tr>
+</table>
+
+- BOM：Excel 上传 → 校验预览 → 确认发布，版本化存档（草稿 / 已发布 / 归档），支持聚合 BOM。
+- 3D 模型：GLB 上传（SHA-256 校验）、与机台型号绑定、浏览器内直接预览。
+- 审计：全量操作留痕（谁、何时、对什么数据、做了什么），多条件检索 + Excel 导出。
+- 用户：账号增删改、角色分配、密码重置、会话吊销（强制下线）。
+
+#### U9 ERP 集成与 AI 智能助手
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-u9.png" alt="U9"></td>
+<td width="50%"><img src="docs/screenshots/web-agent.png" alt="AI 助手"></td>
+</tr>
+</table>
+
+- U9 同步：物料 / 生产订单 / 库存两段式同步（先试跑 dry-run 再提交），主数据与车间系统一致。
+- AI 助手：LLM 数据问答（如"哪些物料库存不足"）；CSV / Excel 智能导入——自动解析字段、生成预览，人工确认后入库。
+
+### 典型业务闭环
+
+| 步骤 | 角色 / 端 | 动作 |
+|------|-----------|------|
+| 1 | 装配工 · App | 机台详情勾选缺料物料 → 批量提交流转申请 |
+| 2 | 管理员 · App / Web | 审批中心收到待办 → 批准（或驳回并填写原因） |
+| 3 | 物料员 · App | 按申请出库拣料 → 发起交接，生成流转码 |
+| 4 | 接收方 · App | 扫码确认交接 → 库存扣减（乐观锁校验）→ 状态闭环 |
+| 5 | 系统 · 后端 | 全程审计事件入库，时间线可回放 |
+
 ## 目录
 
 - `material-flow-backend/`：FastAPI 服务、SQLite 数据库初始化、测试和 systemd 单元。
