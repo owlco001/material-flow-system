@@ -1,0 +1,27 @@
+material {
+    name : GhostMaterial,
+    parameters : [
+        {
+            type : float3,
+            name : tint
+        },
+        {
+            type : float,
+            name : opacity
+        }
+    ],
+    shadingModel : unlit,
+    blending : transparent,
+    depthWrite : false,
+    depthCulling : false,
+    culling : none
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = materialParams.tint;
+        // unlit 透明材质：用 baseColor.a 控制不透明度
+        material.baseColor.a = materialParams.opacity;
+    }
+}
