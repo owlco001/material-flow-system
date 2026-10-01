@@ -31,6 +31,7 @@ class Model3dActivity : ComponentActivity() {
 
     private var glbFile by mutableStateOf<File?>(null)
     private var loading by mutableStateOf(true)
+    private var loadingStage by mutableStateOf("正在准备…")
     private var error by mutableStateOf<String?>(null)
     private var modelCode by mutableStateOf("")
     private var modelName by mutableStateOf("")
@@ -55,9 +56,11 @@ class Model3dActivity : ComponentActivity() {
                     subtitle = if (deviceNo.isNotBlank()) "机台 $deviceNo · $modelCode" else modelCode,
                     glbFile = glbFile,
                     loading = loading,
+                    loadingStage = loadingStage,
                     error = error,
                     onRetry = ::loadModel,
                     onBack = ::finish,
+                    onStageChange = { loadingStage = it },
                 )
             }
         }
@@ -74,10 +77,12 @@ class Model3dActivity : ComponentActivity() {
         loading = true
         error = null
         glbFile = null
+        loadingStage = "正在下载模型文件…"
         lifecycleScope.launch {
             repository.loadPublishedModel(modelCode)
                 .onSuccess { cached ->
                     glbFile = cached.file
+                    loadingStage = "下载完成，准备初始化 3D 引擎…"
                     if (modelName.isBlank()) modelName = cached.meta.modelName
                 }
                 .onFailure { error = Debug3dErrorPolicy.load(it) }

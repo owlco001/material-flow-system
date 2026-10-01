@@ -81,12 +81,19 @@ fun Model3dViewerScreen(
     subtitle: String,
     glbFile: File?,
     loading: Boolean,
+    loadingStage: String = "",
     error: String?,
     onRetry: () -> Unit,
     onBack: () -> Unit,
+    onStageChange: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val renderer = remember { FilamentModelRenderer() }
+    val renderer = remember {
+        onStageChange("正在初始化 3D 引擎…")
+        FilamentModelRenderer().also {
+            onStageChange("3D 引擎初始化完成，等待模型文件…")
+        }
+    }
     var renderStatus by remember { mutableStateOf("") }
     // 剖面控制状态
     var sectionOn by remember { mutableStateOf(false) }
@@ -135,7 +142,7 @@ fun Model3dViewerScreen(
         }
 
         when {
-            loading -> LoadingState(Modifier.weight(1f))
+            loading -> LoadingState(Modifier.weight(1f), loadingStage)
             error != null -> ErrorState(error, onRetry, Modifier.weight(1f))
             glbFile == null -> EmptyState(Modifier.weight(1f))
             else -> {
@@ -171,9 +178,12 @@ fun Model3dViewerScreen(
                                     override fun onSurfaceTextureAvailable(
                                         surfaceTexture: SurfaceTexture, width: Int, height: Int,
                                     ) {
+                                        onStageChange("正在创建渲染表面…")
                                         renderer.attach(Surface(surfaceTexture)).fold(
                                             {
+                                                onStageChange("正在加载模型文件…")
                                                 loadGlbInto(renderer, glbFile) { renderStatus = it }
+                                                onStageChange("模型加载完成，正在渲染…")
                                                 // 模型加载后提取零件清单
                                                 parts = renderer.getParts()
                                             },
@@ -560,12 +570,12 @@ private fun TopBar(title: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun LoadingState(modifier: Modifier = Modifier) {
+private fun LoadingState(modifier: Modifier = Modifier, stage: String = "") {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator(Modifier.size(40.dp), color = Color.White)
             Text(
-                "模型加载中…",
+                if (stage.isNotBlank()) stage else "模型加载中…",
                 fontSize = 14.sp,
                 color = Color.White.copy(alpha = 0.6f),
                 modifier = Modifier.padding(top = 12.dp),
