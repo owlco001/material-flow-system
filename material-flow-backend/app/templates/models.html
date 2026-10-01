@@ -33,6 +33,7 @@
   <h3>当前发布 · {{ published.modelCode }}</h3>
   <p>版本 v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}…</p>
   <p>创建 {{ published.createdBy }} @ {{ published.createdAt }}</p>
+  <p><a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a></p>
 </div>
 {% elif published_error %}
 <p class="error" style="margin-top:16px">{{ published_error }}（{{ code }} 无已发布版本）</p>
@@ -40,7 +41,7 @@
 
 <h3 style="margin-top:24px">版本列表</h3>
 <table>
-  <tr><th>ID</th><th>机型码</th><th>名称</th><th>版本</th><th>格式</th><th>字节</th><th>SHA-256</th><th>状态</th><th>创建人</th><th>时间</th></tr>
+  <tr><th>ID</th><th>机型码</th><th>名称</th><th>版本</th><th>格式</th><th>字节</th><th>SHA-256</th><th>状态</th><th>创建人</th><th>时间</th><th>操作</th></tr>
   {% for row in rows %}
   <tr>
     <td>{{ row.id }}</td>
@@ -53,9 +54,10 @@
     <td>{{ status_labels.get(row.status, row.status) }}</td>
     <td>{{ row.created_by }}</td>
     <td>{{ row.created_at }}</td>
+    <td><a class="btn btn-sm btn-secondary" href="/admin/models/view?code={{ row.model_code }}&version={{ row.version }}" target="_blank" rel="noopener">查看</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="10">暂无数据</td></tr>
+  <tr><td colspan="11">暂无数据</td></tr>
   {% endfor %}
 </table>
 <p style="margin-top:12px">

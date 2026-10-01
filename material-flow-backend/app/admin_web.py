@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -78,6 +78,8 @@ from app.main import (
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
+    UPLOAD_DIR,
+    MODEL_CODE_RE,
     WORKSPACE_STATUS_LABELS,
 )
 
@@ -2117,6 +2119,73 @@ async def admin_device_bind_model(request: Request):
     except (ApiError, ValidationError, HTTPException):
         return _see_other("/admin/models?notice=bind_failed")
     return _see_other("/admin/models?notice=model_bound")
+
+
+@router.get("/admin/models/view", response_class=HTMLResponse)
+def admin_model_view(request: Request, code: str = "", version: str = ""):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    model_code = (code or "").strip()
+    try:
+        ver = int(version or 0)
+    except ValueError:
+        ver = 0
+    if not MODEL_CODE_RE.fullmatch(model_code) or ver < 1:
+        return HTMLResponse("模型不存在", status_code=404)
+    c = db()
+    row = c.execute(
+        "SELECT model_code, model_name, version, status, byte_size FROM assembly_model_versions WHERE model_code=? AND version=?",
+        (model_code, ver),
+    ).fetchone()
+    c.close()
+    if not row:
+        return HTMLResponse("模型不存在", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "model_view.html",
+        {
+            "user": user,
+            "model_code": row["model_code"],
+            "model_name": row["model_name"],
+            "version": row["version"],
+            "status": row["status"],
+            "byte_size": row["byte_size"],
+            "content_url": f"/admin/models/content?code={row['model_code']}&version={row['version']}",
+            "status_labels": MODEL_STATUS_LABELS,
+        },
+    )
+
+
+@router.get("/admin/models/content")
+def admin_model_content(request: Request, code: str = "", version: str = ""):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    model_code = (code or "").strip()
+    try:
+        ver = int(version or 0)
+    except ValueError:
+        ver = 0
+    if not MODEL_CODE_RE.fullmatch(model_code) or ver < 1:
+        raise HTTPException(404, "资源不存在")
+    c = db()
+    row = c.execute(
+        "SELECT storage_key, sha256 FROM assembly_model_versions WHERE model_code=? AND version=?",
+        (model_code, ver),
+    ).fetchone()
+    c.close()
+    if not row:
+        raise HTTPException(404, "资源不存在")
+    root = UPLOAD_DIR.resolve()
+    path = (root / row["storage_key"]).resolve()
+    if root not in path.parents or path.suffix.lower() != ".glb" or not path.is_file():
+        raise HTTPException(404, "资源不存在")
+    return FileResponse(
+        path,
+        media_type="model/gltf-binary",
+        headers={"ETag": f'"{row["sha256"]}"', "Cache-Control": "private, max-age=86400"},
+    )
 
 
 # ==================== S15：CSV 数据导出（契约 §6.14）====================

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}3D 模型查看 · {{ model_code }} v{{ version }} · 智慧工厂{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+  <a href="/admin/models?code={{ model_code }}" class="btn btn-sm btn-secondary">← 返回模型管理</a>
+  <h2 style="margin:0">3D 模型查看</h2>
+  <span class="badge b-info">{{ model_code }} v{{ version }}</span>
+  <span class="badge {% if status == 'PUBLISHED' %}b-ok{% elif status == 'ARCHIVED' %}b-mute{% else %}b-warn{% endif %}">{{ status_labels.get(status, status) }}</span>
+  <span style="color:#6b7280;font-size:13px">{{ model_name }} · {{ byte_size }} 字节</span>
+  <span style="flex:1"></span>
+  <button id="mv-reset" class="btn btn-sm btn-secondary" type="button">重置视角</button>
+  <button id="mv-rotate" class="btn btn-sm btn-secondary" type="button">自动旋转：开</button>
+</div>
+<div id="mv-wrap" style="position:relative;height:calc(100vh - 230px);min-height:420px;background:#0b1020;border-radius:12px;overflow:hidden;border:1px solid var(--line)">
+  <div id="mv-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-size:14px;z-index:2">
+    <span class="mat-spinner" style="margin-right:10px"></span>模型加载中…
+  </div>
+  <div id="mv-error" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#fca5a5;font-size:14px;z-index:2;padding:24px;text-align:center"></div>
+</div>
+<p style="color:#6b7280;font-size:12px;margin-top:8px">左键旋转 · 右键平移 · 滚轮缩放</p>
+<script type="importmap">
+{"imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const MODEL_URL = "{{ content_url | safe }}";
+const wrap = document.getElementById('mv-wrap');
+const loadingEl = document.getElementById('mv-loading');
+const errorEl = document.getElementById('mv-error');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+wrap.appendChild(renderer.domElement);
+renderer.domElement.style.display = 'block';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 2000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334155, 1.1));
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(5, 8, 6);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x93c5fd, 0.7);
+fill.position.set(-6, 3, -5);
+scene.add(fill);
+
+const grid = new THREE.GridHelper(20, 20, 0x33507a, 0x1b2942);
+grid.position.y = -0.001;
+scene.add(grid);
+
+let homePos = new THREE.Vector3(4, 3, 6);
+let homeTarget = new THREE.Vector3(0, 0.5, 0);
+
+function fitCameraToObject(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 2.2;
+  homeTarget.copy(center);
+  homePos.set(center.x + dist * 0.7, center.y + dist * 0.55, center.z + dist * 0.7);
+  camera.position.copy(homePos);
+  controls.target.copy(homeTarget);
+  camera.near = Math.max(dist / 1000, 0.01);
+  camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+function showError(msg) {
+  loadingEl.style.display = 'none';
+  errorEl.style.display = 'flex';
+  errorEl.textContent = msg;
+}
+
+new GLTFLoader().load(
+  MODEL_URL,
+  (gltf) => {
+    loadingEl.style.display = 'none';
+    const obj = gltf.scene;
+    scene.add(obj);
+    fitCameraToObject(obj);
+  },
+  undefined,
+  (err) => {
+    console.error(err);
+    showError('模型加载失败：' + (err && err.message ? err.message : '网络或文件异常'));
+  }
+);
+
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(wrap);
+window.addEventListener('resize', resize);
+resize();
+
+document.getElementById('mv-reset').addEventListener('click', () => {
+  camera.position.copy(homePos);
+  controls.target.copy(homeTarget);
+  controls.update();
+});
+const rotateBtn = document.getElementById('mv-rotate');
+rotateBtn.addEventListener('click', () => {
+  controls.autoRotate = !controls.autoRotate;
+  rotateBtn.textContent = '自动旋转：' + (controls.autoRotate ? '开' : '关');
+});
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+{% endblock %}
