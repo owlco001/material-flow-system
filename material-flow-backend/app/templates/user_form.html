@@ -13,7 +13,9 @@
     <label>工号</label>
     <input name="employeeNo" value="{{ values.employeeNo }}" maxlength="64" required>
     {% else %}
-    <p>工号：{{ values.employeeNo }}</p>
+    <label>工号</label>
+    <input name="employeeNo" value="{{ values.employeeNo }}" maxlength="64" required>
+    <p style="color:#6b7280;font-size:12px;margin-top:4px">工号即登录账号，修改后该用户需用新工号登录。</p>
     {% endif %}
     <label>显示名</label>
     <input name="displayName" value="{{ values.displayName }}" maxlength="128" required>

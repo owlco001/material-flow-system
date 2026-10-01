@@ -46,6 +46,8 @@ from app.main import (
     db,
     delete_employee,
     edit_employee,
+    hard_delete_employee,
+    HardDeleteUserRequest,
     execute_transfer as api_execute_transfer,
     get_transfer,
     handover_timeline,
@@ -301,6 +303,7 @@ NOTICE_TEXTS = {
     "updated": "用户已更新",
     "reset": "密码已重置（目标用户会话已吊销，首次登录需改密）",
     "disabled": "用户已停用",
+    "deleted": "用户已彻底删除",
     "approved": "申请已审批通过",
     "rejected": "申请已驳回",
     "executed": "出库执行完成，库存已变更",
@@ -375,6 +378,7 @@ def _render_users(request: Request, user: sqlite3.Row, error: str | None = None)
             "error": error,
             "reset_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
             "delete_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
+            "hard_delete_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
         },
     )
 
@@ -506,6 +510,7 @@ async def admin_user_edit(request: Request, user_id: str):
             user_id,
             EditUserRequest(
                 clientOperationId=operation_id,
+                employeeNo=values["employeeNo"] or None,
                 displayName=values["displayName"],
                 role=values["role"],
                 active=values["active"],
@@ -583,6 +588,29 @@ async def admin_user_delete(request: Request, user_id: str):
     finally:
         c.close()
     return _see_other("/admin/users?notice=disabled")
+
+
+@router.post("/admin/users/{user_id}/hard-delete")
+async def admin_user_hard_delete(request: Request, user_id: str):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
+    try:
+        hard_delete_employee(
+            user_id,
+            HardDeleteUserRequest(clientOperationId=operation_id),
+            request,
+            user=user,
+            x_request_id=str(uuid.uuid4()),
+            idempotency_key=operation_id,
+        )
+    except (ApiError, ValidationError) as exc:
+        return _render_users(request, user, error=_api_error_message(exc))
+    return _see_other("/admin/users?notice=deleted")
 
 
 # ==================== S3：流转审批与交接留痕（契约 §6.3）====================

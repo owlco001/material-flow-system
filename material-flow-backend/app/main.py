@@ -67,6 +67,7 @@ HEALTH_TABLES = frozenset({
     "production_orders", "order_devices", "order_material_requirements", "login_attempts",
     "assembly_tasks", "assembly_task_stages", "assembly_stage_operations", "labor_records", "progress_events", "temporary_transfers", "assembly_operations", "bom_versions", "bom_items", "production_order_models",
     "admin_user_delete_operations", "admin_user_edit_operations", "admin_user_password_reset_operations",
+    "admin_user_hard_delete_operations",
     "assembly_model_versions",
  })
 
@@ -179,6 +180,8 @@ CODE_USER_CANNOT_DELETE_SELF = "USER_CANNOT_DELETE_SELF"
 CODE_LAST_ADMIN_CANNOT_DELETE = "LAST_ADMIN_CANNOT_DELETE"
 CODE_USER_ALREADY_DELETED = "USER_ALREADY_DELETED"
 CODE_USER_HAS_ACTIVE_BUSINESS = "USER_HAS_ACTIVE_BUSINESS"
+CODE_USERNAME_EXISTS = "USERNAME_EXISTS"
+CODE_USER_HAS_HISTORY = "USER_HAS_HISTORY"
 CODE_USER_CANNOT_DISABLE_SELF = "USER_CANNOT_DISABLE_SELF"
 
 
@@ -607,6 +610,7 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS setup_state(id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('UNINITIALIZED','INITIALIZED')), admin_username TEXT NOT NULL, initialized_at TEXT, initialized_by TEXT, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS setup_operations(client_operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS admin_user_hard_delete_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_user_edit_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS web_sessions(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
@@ -1197,6 +1201,7 @@ class DeleteUserRequest(BaseModel):
 class EditUserRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clientOperationId: uuid.UUID
+    employeeNo: str | None = Field(default=None, min_length=1, max_length=64)
     displayName: str | None = Field(default=None, min_length=1, max_length=128)
     role: str | None = None
     active: bool | None = None
@@ -1339,7 +1344,7 @@ def _user_has_active_business(c: sqlite3.Connection, user_id: str) -> bool:
 
 
 def _redacted_user(row: sqlite3.Row) -> dict[str, Any]:
-    return {"id": row["id"], "displayName": row["display_name"], "role": row["role"], "active": bool(row["active"])}
+    return {"id": row["id"], "employeeNo": row["username"], "displayName": row["display_name"], "role": row["role"], "active": bool(row["active"])}
 
 
 @app.patch("/api/v1/admin/users/{user_id}")
@@ -1352,6 +1357,8 @@ def edit_employee(user_id: str, body: EditUserRequest, user: sqlite3.Row = Depen
         raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可编辑用户", trace_id=trace_id)
     changes = body.model_dump(exclude_none=True)
     changes.pop("clientOperationId", None)
+    if "employeeNo" in changes:
+        changes["employeeNo"] = changes["employeeNo"].strip()
     if not changes:
         raise ApiError(400, CODE_VALIDATION_ERROR, "至少提供一个可编辑字段", trace_id=trace_id)
     if "role" in changes and changes["role"] not in ("OPERATOR", "MATERIAL", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR", "ASSEMBLER"):
@@ -1377,9 +1384,19 @@ def edit_employee(user_id: str, body: EditUserRequest, user: sqlite3.Row = Depen
             raise ApiError(409, CODE_LAST_ADMIN_CANNOT_DELETE, "不能停用或降级最后一个启用的 ADMIN", trace_id=trace_id)
         if not new_active and target["active"] and _user_has_active_business(c, user_id):
             raise ApiError(409, CODE_USER_HAS_ACTIVE_BUSINESS, "用户存在未完成业务责任", trace_id=trace_id)
+        if "employeeNo" in changes:
+            new_no = changes["employeeNo"]
+            if not new_no:
+                raise ApiError(400, CODE_VALIDATION_ERROR, "工号不能为空", trace_id=trace_id)
+            if new_no == target["username"]:
+                del changes["employeeNo"]
+            elif c.execute("SELECT 1 FROM users WHERE username=? AND id<>?", (new_no, user_id)).fetchone():
+                raise ApiError(409, CODE_USERNAME_EXISTS, "工号已存在", trace_id=trace_id)
+        if not changes:
+            raise ApiError(400, CODE_VALIDATION_ERROR, "至少提供一个可编辑字段", trace_id=trace_id)
         before = _redacted_user(target)
         sets, values = [], []
-        for field, column in (("displayName", "display_name"), ("role", "role"), ("active", "active")):
+        for field, column in (("employeeNo", "username"), ("displayName", "display_name"), ("role", "role"), ("active", "active")):
             if field in changes: sets.append(f"{column}=?"); values.append(changes[field])
         values.append(user_id); c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", values)
         updated = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone(); after = _redacted_user(updated)
@@ -1562,6 +1579,88 @@ def delete_employee(
             retryable=True,
             trace_id=trace_id,
         ) from None
+    finally:
+        c.close()
+
+
+def _user_history_refs(c: sqlite3.Connection, user_id: str) -> str:
+    """用户在业务/历史表中的引用（真删除前检查），返回命中项中文名。"""
+    checks = [
+        ("装配任务", "SELECT 1 FROM assembly_tasks WHERE assigned_assembler_id=?"),
+        ("任务成员", "SELECT 1 FROM assembly_task_members WHERE assembler_id=?"),
+        ("工时记录", "SELECT 1 FROM labor_records WHERE worker_user_id=?"),
+        ("进度事件", "SELECT 1 FROM progress_events WHERE worker_user_id=?"),
+        ("临调记录", "SELECT 1 FROM temporary_transfers WHERE worker_user_id=?"),
+        ("流转单", "SELECT 1 FROM transfer_requests WHERE created_by=? OR approved_by=?"),
+        ("交接单", "SELECT 1 FROM material_handovers WHERE created_by=? OR receiver_user_id=? OR confirmed_by=?"),
+        ("异常单", "SELECT 1 FROM exceptions WHERE created_by=? OR reviewed_by=?"),
+        ("盘点单", "SELECT 1 FROM stocktakes WHERE created_by=? OR confirmed_by=?"),
+        ("库位绑定", "SELECT 1 FROM location_bindings WHERE created_by=?"),
+        ("审计日志", "SELECT 1 FROM audit_events WHERE actor_user_id=?"),
+        ("直属关系", "SELECT 1 FROM employee_managers WHERE employee_id=? OR manager_id=?"),
+    ]
+    hits = [label for label, sql in checks if c.execute(sql, (user_id,) * sql.count("?")).fetchone()]
+    return "、".join(hits)
+
+
+class HardDeleteUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    clientOperationId: uuid.UUID
+
+
+@app.delete("/api/v1/admin/users/{user_id}/hard-delete")
+def hard_delete_employee(user_id: str, body: HardDeleteUserRequest, request: Request, user: sqlite3.Row = Depends(current_user),
+                         x_request_id: str | None = Header(default=None),
+                         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict[str, Any]:
+    """真删除用户：仅已停用且无任何业务/历史引用时允许，否则 409。"""
+    trace_id = require_request_id(request.headers.get("x-request-id") or x_request_id)
+    require_idempotency_key(idempotency_key, body.clientOperationId, trace_id)
+    if user["role"] != "ADMIN":
+        raise ApiError(403, CODE_FORBIDDEN, "仅 ADMIN 可删除用户", trace_id=trace_id)
+    operation_id = str(body.clientOperationId)
+    payload = json.dumps({"userId": user_id}, ensure_ascii=False, sort_keys=True)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT * FROM admin_user_hard_delete_operations WHERE client_operation_id=?", (operation_id,)).fetchone()
+        if prior:
+            if prior["user_id"] != user_id or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
+                raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
+            result = json.loads(prior["result_json"])
+            result.update(traceId=trace_id, idempotent=True)
+            c.rollback()
+            return result
+        target = c.execute("SELECT id, username, display_name, role, active FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise ApiError(404, CODE_USER_NOT_FOUND, "用户不存在", trace_id=trace_id)
+        if target["id"] == user["id"]:
+            raise ApiError(409, CODE_USER_CANNOT_DELETE_SELF, "不能删除当前登录用户", trace_id=trace_id)
+        if target["role"] == "ADMIN" and c.execute("SELECT COUNT(*) FROM users WHERE role='ADMIN' AND active=1 AND id<>?", (user_id,)).fetchone()[0] < 1:
+            raise ApiError(409, CODE_LAST_ADMIN_CANNOT_DELETE, "不能删除最后一个启用的 ADMIN", trace_id=trace_id)
+        if target["active"]:
+            raise ApiError(409, CODE_USER_HAS_ACTIVE_BUSINESS, "请先停用该用户再删除", trace_id=trace_id)
+        refs = _user_history_refs(c, user_id)
+        if refs:
+            raise ApiError(409, CODE_USER_HAS_HISTORY, f"用户存在历史记录（{refs}），不可删除", trace_id=trace_id)
+        before = _redacted_user(target)
+        c.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        audit(c, user["id"], user["role"], "HARD_DELETE", "USER", user_id, "SUCCESS", trace_id)
+        ts = now()
+        c.execute("INSERT INTO audit_events(event_type,entity_type,entity_id,actor_user_id,actor_role,request_id,client_operation_id,before_json,after_json,server_time,device_id,source_ip,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  ("ADMIN_USER_HARD_DELETE", "USER", user_id, user["id"], user["role"], trace_id, operation_id, json.dumps(before, ensure_ascii=False), json.dumps({"deleted": True}, ensure_ascii=False), ts, None, None, "SUCCESS"))
+        result = {"userId": user_id, "deleted": True, "serverTime": ts, "traceId": trace_id, "idempotent": False}
+        c.execute("INSERT INTO admin_user_hard_delete_operations(client_operation_id,user_id,payload_json,result_json,created_at) VALUES(?,?,?,?,?)",
+                  (operation_id, user_id, payload, json.dumps(result, ensure_ascii=False), ts))
+        c.commit()
+        return result
+    except ApiError:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise ApiError(500, CODE_RETRYABLE_UPSTREAM_ERROR, "用户删除失败", retryable=True, trace_id=trace_id) from None
     finally:
         c.close()
 
