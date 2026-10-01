@@ -2666,30 +2666,6 @@ class LogisticsViewModel(
         }
     }
 
-    /**
-     * 机台详情页提交异常：机台、物料固定，订单从机台关联订单选择。
-     * 复用 POST /api/v1/exceptions，结果走全局 Snackbar。
-     */
-    fun submitDeviceException(deviceId: String, materialId: String, orderNo: String, actualQuantity: Int, description: String?) {
-        if (_state.value.preview) {
-            _state.update { it.copy(error = "测试预览只读，不能提报异常") }
-            return
-        }
-        if (orderNo.isBlank() || deviceId.isBlank() || materialId.isBlank() || actualQuantity < 0 || description.isNullOrBlank()) {
-            _state.update { it.copy(error = "订单、机台、物料、非负整数数量和描述均为必填") }
-            return
-        }
-        if (_state.value.exceptionSubmitting) return
-        operationScope.launch {
-            _state.update { it.copy(loading = true, exceptionSubmitting = true, error = null) }
-            repo.createException(UUID.randomUUID().toString(), orderNo, deviceId, materialId, "QUANTITY_MISMATCH", actualQuantity, actualQuantity, description)
-                .onSuccess { result ->
-                    _state.update { it.copy(loading = false, exceptionSubmitting = false, message = "异常已提交，状态：${result.status}") }
-                }
-                .onFailure { e -> _state.update { it.copy(loading = false, exceptionSubmitting = false, error = if (e is ApiException) e.safeMessage("异常提报失败，请重试") else "网络不可用，异常未提交") } }
-        }
-    }
-
     fun createProductionOrder(orderNo: String, productName: String, quantity: Int, deliveryDate: String, modelCode: String, modelName: String, modelQuantity: Int, bomVersionId: String) {
         if (_state.value.role != UserRole.ADMIN && _state.value.role != UserRole.PLANNER) { _state.update { it.copy(productionWriteError = "当前角色无创建订单权限") }; return }
         val op = UUID.randomUUID().toString(); val models = org.json.JSONArray().put(org.json.JSONObject().apply { put("modelCode", modelCode); put("modelName", modelName); put("plannedQuantity", modelQuantity); put("bomVersionId", bomVersionId) })

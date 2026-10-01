@@ -74,11 +74,9 @@ fun DeviceDetailScreen(
     labor: LaborSummaryPage?,
     onBack: () -> Unit,
     onSubmitMaterialRequest: (material: OrderMaterialItem, orderNo: String, quantity: Int, remark: String) -> Unit = { _, _, _, _ -> },
-    onSubmitException: (deviceId: String, materialId: String, orderNo: String, actualQuantity: Int, description: String) -> Unit = { _, _, _, _, _ -> },
 ) {
     val context = LocalContext.current
     var showMaterialRequestDialog by remember { mutableStateOf(false) }
-    var exceptionMaterial by remember { mutableStateOf<OrderMaterialItem?>(null) }
     Column(
         Modifier
             .fillMaxSize()
@@ -264,15 +262,6 @@ fun DeviceDetailScreen(
                                     fontSize = 12.sp,
                                     color = LogisticsTheme.colors.textSecondary,
                                 )
-                                VSpace(8.dp)
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End,
-                                ) {
-                                    TextButton(onClick = { exceptionMaterial = m }) {
-                                        Text("提交异常", fontSize = 13.sp, color = LogisticsColors.PrimaryDark)
-                                    }
-                                }
                             }
                         }
                     }
@@ -585,23 +574,6 @@ fun DeviceDetailScreen(
             },
         )
     }
-
-    // ---- 提交异常对话框：机台、物料固定，订单从关联订单下拉选 ----
-    val em = exceptionMaterial
-    val d = detail
-    if (em != null && d != null) {
-        DeviceExceptionDialog(
-            deviceNo = d.deviceNo,
-            materialName = em.name,
-            materialCode = em.materialCode,
-            orders = d.orders,
-            onDismiss = { exceptionMaterial = null },
-            onConfirm = { orderNo, actualQty, desc ->
-                onSubmitException(d.deviceId, em.materialId, orderNo, actualQty, desc)
-                exceptionMaterial = null
-            },
-        )
-    }
 }
 
 private fun formatMinutes(minutes: Int): String {
@@ -746,79 +718,6 @@ private fun DeviceMaterialRequestDialog(
                 enabled = canConfirm,
             ) {
                 Text("提交申请")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-/**
- * 机台详情提交异常对话框。
- * 机台、物料固定；订单从机台关联订单下拉选择（单个时自动选中）；填写实际数量与说明。
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DeviceExceptionDialog(
-    deviceNo: String,
-    materialName: String,
-    materialCode: String,
-    orders: List<com.company.logistics.model.DeviceOrder>,
-    onDismiss: () -> Unit,
-    onConfirm: (orderNo: String, actualQuantity: Int, description: String) -> Unit,
-) {
-    var selectedOrder by remember(orders) { mutableStateOf(orders.singleOrNull()?.orderNo ?: "") }
-    var orderExpanded by remember { mutableStateOf(false) }
-    var actualQtyText by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    val canConfirm = selectedOrder.isNotBlank() && (actualQtyText.toIntOrNull() ?: -1) >= 0 && description.isNotBlank()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("提交异常", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(Modifier.fillMaxWidth()) {
-                Text("机台：$deviceNo", fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
-                Text("物料：$materialName（$materialCode）", fontSize = 13.sp, color = LogisticsTheme.colors.textSecondary)
-                Spacer(Modifier.height(12.dp))
-                ExposedDropdownMenuBox(expanded = orderExpanded, onExpandedChange = { orderExpanded = it }) {
-                    OutlinedTextField(
-                        value = selectedOrder,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("关联订单") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(orderExpanded) },
-                        modifier = Modifier.menuAnchor().fillMaxWidth(),
-                    )
-                    ExposedDropdownMenu(expanded = orderExpanded, onDismissRequest = { orderExpanded = false }) {
-                        orders.forEach { o ->
-                            DropdownMenuItem(
-                                text = { Text(o.orderNo + (o.productName?.let { " · $it" } ?: ""), fontSize = 13.sp) },
-                                onClick = { selectedOrder = o.orderNo; orderExpanded = false },
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = actualQtyText,
-                    onValueChange = { actualQtyText = it.filter { c -> c.isDigit() } },
-                    label = { Text("实际数量") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("异常说明") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(selectedOrder, actualQtyText.toIntOrNull() ?: 0, description) }, enabled = canConfirm) {
-                Text("提交")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

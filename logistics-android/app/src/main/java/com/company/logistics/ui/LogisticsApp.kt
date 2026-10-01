@@ -351,7 +351,11 @@ fun LogisticsApp(
                         state.deviceMaterials,
                         state.deviceTransferRequests,
                         state.deviceLabor,
-                    ) { viewModel.navigate(Screen.SCANNER) }
+                        onBack = { viewModel.navigate(Screen.SCANNER) },
+                        onSubmitMaterialRequest = { material, orderNo, qty, remark ->
+                            viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark)
+                        },
+                    )
 
                     Screen.INVENTORY -> InventoryScreen(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
