@@ -64,6 +64,7 @@ import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.StatusTag
+import com.company.logistics.ui.components.tagTextColor
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsColors
@@ -396,7 +397,7 @@ fun WorkspaceScreen(
                             AdminRolePreviewUiPolicy.BANNER_TEXT,
                             modifier = Modifier.weight(1f),
                             fontSize = 12.sp,
-                            color = LogisticsTheme.colors.warning,
+                            color = LogisticsTheme.colors.warningText,
                             fontWeight = FontWeight.Bold,
                         )
                         Spacer(Modifier.width(Spacing.sm))
@@ -612,7 +613,7 @@ internal fun AdminRolePreviewDialog(
                 Text(
                     AdminRolePreviewUiPolicy.BANNER_TEXT,
                     fontSize = 12.sp,
-                    color = LogisticsTheme.colors.warning,
+                    color = LogisticsTheme.colors.warningText,
                 )
                 VSpace(Spacing.sm)
                 WorkspaceViewRole.entries.forEach { role ->
@@ -873,7 +874,7 @@ private fun WorkspaceItemCard(
             }
             StatusTag(
                 label = item.statusLabel.ifBlank { "未知状态" },
-                color = item.statusColor,
+                color = item.tagTextColor(),
                 containerColor = item.statusContainerColor,
                 symbol = item.statusSymbol,
             )

@@ -39,6 +39,7 @@ import com.company.logistics.model.WorkshopProgressSummary
 import com.company.logistics.model.WorkspaceViewRole
 import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.ConfirmDialog
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
@@ -420,7 +421,7 @@ private fun WorkshopLaborSummarySection(
     OutlinedTextField(value = deviceId, onValueChange = { deviceId = it }, label = { Text("机台 deviceId") }, singleLine = true, enabled = !readOnly && state != WorkspaceLoadState.LOADING, modifier = Modifier.fillMaxWidth())
     VSpace(Spacing.sm)
     PrimaryButton(text = if (state == WorkspaceLoadState.LOADING) "加载中…" else "加载工时汇总", onClick = { onRefresh(deviceId.trim().ifBlank { null }) }, enabled = !readOnly && state != WorkspaceLoadState.LOADING)
-    if (readOnly) Text("预览态只读", color = LogisticsTheme.colors.warning, fontSize = 12.sp)
+    if (readOnly) Text("预览态只读", color = LogisticsTheme.colors.warningText, fontSize = 12.sp)
     when (state) {
         WorkspaceLoadState.LOADING -> LoadingRow("正在加载服务端人员/任务工时…")
         WorkspaceLoadState.ERROR -> EmptyState("工时汇总加载失败", error ?: "请检查网络后重试", action = { PrimaryButton(text = "重试", onClick = { onRefresh(deviceId.trim().ifBlank { null }) }) })
@@ -525,7 +526,7 @@ private fun RoleWorkspaceHeader(
                         AdminRolePreviewUiPolicy.BANNER_TEXT,
                         modifier = Modifier.weight(1f),
                         fontSize = 12.sp,
-                        color = LogisticsTheme.colors.warning,
+                        color = LogisticsTheme.colors.warningText,
                         fontWeight = FontWeight.Bold,
                     )
                     Spacer(Modifier.width(Spacing.sm))
@@ -591,12 +592,34 @@ private fun AssemblyTaskCard(
     onAssignMembers: (String) -> Unit = {},
     onRemoveMember: (String) -> Unit = {},
 ) {
+    // 完工是终态操作：必须二次确认，文案写明后果
+    var showCompleteConfirm by remember { mutableStateOf(false) }
+    if (showCompleteConfirm) {
+        ConfirmDialog(
+            title = "确认完工？",
+            message = "机台 ${task.deviceNo} 的装配任务将进入终态，之后不可再上报进度或修改工时。请确认所有工序已完成。",
+            confirmText = "确认完工",
+            onConfirm = {
+                showCompleteConfirm = false
+                onCompleteWork()
+            },
+            onDismiss = { showCompleteConfirm = false }
+        )
+    }
     val statusColor = when (task.status) {
         AssemblyTaskStatus.WAITING_MATERIAL -> LogisticsTheme.colors.warning
         AssemblyTaskStatus.MATERIAL_ACCEPTED -> LogisticsTheme.colors.info
         AssemblyTaskStatus.IN_PROGRESS -> LogisticsTheme.colors.success
         AssemblyTaskStatus.PAUSED_FOR_TEMPORARY_TRANSFER -> LogisticsTheme.colors.warning
         AssemblyTaskStatus.COMPLETED -> LogisticsTheme.colors.success
+    }
+    // 标签文字用主题感知的深色变体（浅色主题 ≥ 4.5:1）；色条/容器沿用 vivid 色
+    val statusTagTextColor = when (task.status) {
+        AssemblyTaskStatus.WAITING_MATERIAL -> LogisticsTheme.colors.warningText
+        AssemblyTaskStatus.MATERIAL_ACCEPTED -> LogisticsTheme.colors.primary
+        AssemblyTaskStatus.IN_PROGRESS -> LogisticsTheme.colors.successText
+        AssemblyTaskStatus.PAUSED_FOR_TEMPORARY_TRANSFER -> LogisticsTheme.colors.warningText
+        AssemblyTaskStatus.COMPLETED -> LogisticsTheme.colors.successText
     }
     val nextStage = (task.progressStage + 1).takeIf { it in 1..3 }
     AppCard(accentColor = statusColor) {
@@ -608,7 +631,7 @@ private fun AssemblyTaskCard(
             }
             StatusTag(
                 label = task.status.label,
-                color = statusColor,
+                color = statusTagTextColor,
                 containerColor = statusColor.copy(alpha = 0.12f),
                 symbol = task.statusSymbol(),
             )
@@ -669,7 +692,7 @@ private fun AssemblyTaskCard(
                     }
                     SecondaryButton(
                         text = "完工",
-                        onClick = onCompleteWork,
+                        onClick = { showCompleteConfirm = true },
                         enabled = !submitting,
                     )
                 }
@@ -739,7 +762,13 @@ private fun ProgressStages(stages: List<com.company.logistics.model.AssemblyStag
                 com.company.logistics.model.AssemblyStageStatus.REWORK_REQUIRED -> LogisticsTheme.colors.warning
                 else -> LogisticsTheme.colors.textTertiary
             }
-            StatusTag(label = "阶段 ${stage.stageNo} · ${stage.status.label}", color = color, containerColor = color.copy(alpha = 0.12f), symbol = if (stage.status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "✓" else "○")
+            val tagTextColor = when (stage.status) {
+                com.company.logistics.model.AssemblyStageStatus.COMPLETED -> LogisticsTheme.colors.successText
+                com.company.logistics.model.AssemblyStageStatus.IN_PROGRESS -> LogisticsTheme.colors.primary
+                com.company.logistics.model.AssemblyStageStatus.REWORK_REQUIRED -> LogisticsTheme.colors.warningText
+                else -> LogisticsTheme.colors.textSecondary
+            }
+            StatusTag(label = "阶段 ${stage.stageNo} · ${stage.status.label}", color = tagTextColor, containerColor = color.copy(alpha = 0.12f), symbol = if (stage.status == com.company.logistics.model.AssemblyStageStatus.COMPLETED) "✓" else "○")
         }
     }
 }
@@ -766,7 +795,7 @@ private fun TemporaryTransferCard(
             }
             StatusTag(
                 label = if (active) "进行中" else "已完成",
-                color = if (active) LogisticsTheme.colors.warning else LogisticsTheme.colors.success,
+                color = if (active) LogisticsTheme.colors.warningText else LogisticsTheme.colors.successText,
                 containerColor = if (active) LogisticsTheme.colors.warning.copy(alpha = 0.12f) else LogisticsTheme.colors.success.copy(alpha = 0.12f),
                 symbol = if (active) "▶" else "✓",
             )

@@ -85,7 +85,18 @@ data class LogisticsColorTokens(
     val textOnDark: Color,
     val border: Color,
     val cardBackground: Color,
-    val pageBackground: Color
+    val pageBackground: Color,
+    /**
+     * 深色文字变体 —— 浅色容器上的标签文字/图标专用。
+     * 浅色主题取深色值（对比度 ≥ 4.5:1），深色主题取 vivid 值
+     * （深底容器上深色文字不可读）。
+     */
+    val warningText: Color,
+    val successText: Color,
+    val shortageText: Color,
+    val arrivedText: Color,
+    val inStockText: Color,
+    val unknownText: Color
 )
 
 private val LightTokens = LogisticsColorTokens(
@@ -102,7 +113,13 @@ private val LightTokens = LogisticsColorTokens(
     textOnDark = Color.White,
     border = LogisticsColors.Border,
     cardBackground = LogisticsColors.BgCard,
-    pageBackground = LogisticsColors.BgPage
+    pageBackground = LogisticsColors.BgPage,
+    warningText = LogisticsColors.WarningText,
+    successText = LogisticsColors.SuccessText,
+    shortageText = MaterialStatusColors.ShortageText,
+    arrivedText = MaterialStatusColors.ArrivedText,
+    inStockText = MaterialStatusColors.InStockText,
+    unknownText = MaterialStatusColors.UnknownText
 )
 
 private val DarkTokens = LogisticsColorTokens(
@@ -119,7 +136,14 @@ private val DarkTokens = LogisticsColorTokens(
     textOnDark = Color.White,
     border = LogisticsColors.DarkBorder,
     cardBackground = LogisticsColors.DarkBgCard,
-    pageBackground = LogisticsColors.DarkBgPage
+    pageBackground = LogisticsColors.DarkBgPage,
+    // 深色主题：容器为深底 tint，文字用 vivid 色保证可读
+    warningText = LogisticsColors.Warning,
+    successText = LogisticsColors.Success,
+    shortageText = MaterialStatusColors.Shortage,
+    arrivedText = MaterialStatusColors.Arrived,
+    inStockText = MaterialStatusColors.InStock,
+    unknownText = MaterialStatusColors.Unknown
 )
 
 private val LocalLogisticsColors = staticCompositionLocalOf { LightTokens }

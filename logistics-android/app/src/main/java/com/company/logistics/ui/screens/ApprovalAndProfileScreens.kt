@@ -48,6 +48,7 @@ import com.company.logistics.model.TransferRequestActionPolicy
 import com.company.logistics.model.UserRole
 import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.ConfirmDialog
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.KeyValueCell
 import com.company.logistics.ui.components.LogisticsIcons
@@ -218,7 +219,7 @@ fun ApprovalScreen(
             Text(
                 "测试预览只读，不能批准、驳回或执行",
                 fontSize = 12.sp,
-                color = LogisticsTheme.colors.warning,
+                color = LogisticsTheme.colors.warningText,
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -326,6 +327,33 @@ private fun TransferRequestCard(
     onExecute: () -> Unit,
 ) {
     val actions = if (readOnly) emptyList() else TransferRequestActionPolicy.actionsFor(role, request)
+    // 批准/执行会改变申请状态：必须二次确认，文案写明后果
+    var showApproveConfirm by remember { mutableStateOf(false) }
+    var showExecuteConfirm by remember { mutableStateOf(false) }
+    if (showApproveConfirm) {
+        ConfirmDialog(
+            title = "批准这条流转申请？",
+            message = "申请 ${request.documentNo ?: request.id} 将进入「已批准」状态，申请人可继续发起流转交接。",
+            confirmText = "批准",
+            onConfirm = {
+                showApproveConfirm = false
+                onApprove()
+            },
+            onDismiss = { showApproveConfirm = false }
+        )
+    }
+    if (showExecuteConfirm) {
+        ConfirmDialog(
+            title = "执行这条流转申请？",
+            message = "申请 ${request.documentNo ?: request.id} 将被执行并产生流转业务记录，物料归属随之变更。",
+            confirmText = "执行",
+            onConfirm = {
+                showExecuteConfirm = false
+                onExecute()
+            },
+            onDismiss = { showExecuteConfirm = false }
+        )
+    }
     AppCard(
         accentColor = requestStatusColor(request.status),
         borderColor = if (selected) MaterialTheme.colorScheme.primary else null,
@@ -348,7 +376,7 @@ private fun TransferRequestCard(
             }
             StatusTag(
                 label = request.displayStatusLabel,
-                color = requestStatusColor(request.status),
+                color = requestStatusTextColor(request.status),
                 containerColor = requestStatusContainer(request.status),
                 symbol = requestStatusSymbol(request.status),
             )
@@ -374,7 +402,7 @@ private fun TransferRequestCard(
             if (TransferRequestAction.APPROVE in actions) {
                 PrimaryButton(
                     text = "批准",
-                    onClick = onApprove,
+                    onClick = { showApproveConfirm = true },
                     enabled = !submitting,
                     loading = submitting,
                     modifier = Modifier.weight(1f),
@@ -391,7 +419,7 @@ private fun TransferRequestCard(
             if (TransferRequestAction.EXECUTE in actions) {
                 PrimaryButton(
                     text = "执行",
-                    onClick = onExecute,
+                    onClick = { showExecuteConfirm = true },
                     enabled = !submitting,
                     loading = submitting,
                     modifier = Modifier.weight(1f),
@@ -500,6 +528,14 @@ private fun requestStatusColor(status: String): Color = when (status.uppercase(j
     else -> LogisticsTheme.colors.textTertiary
 }
 
+/** 标签文字用主题感知的深色变体；色块语义沿用 requestStatusColor */
+@Composable
+private fun requestStatusTextColor(status: String): Color = when (status.uppercase(java.util.Locale.ROOT)) {
+    "PENDING_APPROVAL" -> LogisticsTheme.colors.warningText
+    "EXECUTED" -> LogisticsTheme.colors.successText
+    else -> requestStatusColor(status)
+}
+
 @Composable
 private fun requestStatusContainer(status: String): Color = when (status.uppercase(java.util.Locale.ROOT)) {
     "PENDING_APPROVAL" -> LogisticsTheme.colors.warning.copy(alpha = 0.14f)
@@ -552,6 +588,20 @@ fun ProfileScreen(
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 退出登录会清本地登录态：必须二次确认
+    var showLogoutConfirm by remember { mutableStateOf(false) }
+    if (showLogoutConfirm) {
+        ConfirmDialog(
+            title = "退出登录？",
+            message = "将清除本机的登录状态。离线队列中未同步的记录会保留在本地，下次登录后可继续同步。",
+            confirmText = "退出登录",
+            onConfirm = {
+                showLogoutConfirm = false
+                onLogout()
+            },
+            onDismiss = { showLogoutConfirm = false }
+        )
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -666,7 +716,7 @@ fun ProfileScreen(
         }
 
         VSpace(Spacing.lg)
-        SecondaryButton(text = "退出登录", onClick = onLogout)
+        SecondaryButton(text = "退出登录", onClick = { showLogoutConfirm = true })
 
         VSpace(Spacing.xxl)
     }

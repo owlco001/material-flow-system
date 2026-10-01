@@ -142,6 +142,10 @@ fun ScannerScreen(
     // 用计数驱动 LaunchedEffect，而不是直接调用 ViewModel —— 保证顺序可控。
     var cameraRetryTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
 
+    // 待确认的扫码结果：非空时展示结果确认卡，由用户确认后才跳转。
+    // 防错只拦「跳转」、不拦「取景」，相机保持运行。
+    var confirmResult by remember { mutableStateOf<ScanResult?>(null) }
+
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -210,269 +214,302 @@ fun ScannerScreen(
         }
     }
 
-    // 解析成功后回传结果，由外层决定跳转
+    // 解析成功后先展示结果确认卡（料号/名称大字 + 确认进入/重新扫描），
+    // 用户确认后才回传跳转。展示卡片期间忽略新的解析结果，避免误触覆盖。
     LaunchedEffect(uiState) {
         val s = uiState
-        if (s is ScannerUiState.Resolved) {
-            onResolved(s.resolution)
-            viewModel.onScanConsumed()
+        if (s is ScannerUiState.Resolved && confirmResult == null) {
+            confirmResult = s.resolution
         }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Dimens.PagePadding),
-    ) {
-        Spacer(Modifier.height(Spacing.sm))
+    Box(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Dimens.PagePadding),
+        ) {
+            Spacer(Modifier.height(Spacing.sm))
 
-        // ---- 上次查看的机台：快捷返回机台详情，无需重新扫码 ----
-        if (lastDevice != null) {
+            // ---- 上次查看的机台：快捷返回机台详情，无需重新扫码 ----
+            if (lastDevice != null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    shadowElevation = 2.dp,
+                    color = LogisticsTheme.colors.cardBackground,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "上次查看的机台",
+                                fontSize = 11.sp,
+                                color = LogisticsTheme.colors.textSecondary,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "${lastDevice.deviceNo} · ${lastDevice.deviceName}",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = LogisticsType.MonoFamily,
+                                color = LogisticsTheme.colors.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextButton(onClick = onReopenDevice) {
+                            Text("继续查看", fontSize = 13.sp, color = LogisticsColors.PrimaryDark)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(Spacing.sm))
+            }
+
+            // ---- 顶部渐变横幅 ----
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                shadowElevation = 2.dp,
-                color = LogisticsTheme.colors.cardBackground,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 3.dp,
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "上次查看的机台",
-                            fontSize = 11.sp,
-                            color = LogisticsTheme.colors.textSecondary,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "${lastDevice.deviceNo} · ${lastDevice.deviceName}",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = LogisticsType.MonoFamily,
-                            color = LogisticsTheme.colors.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    TextButton(onClick = onReopenDevice) {
-                        Text("继续查看", fontSize = 13.sp, color = LogisticsColors.PrimaryDark)
-                    }
-                }
-            }
-            Spacer(Modifier.height(Spacing.sm))
-        }
-
-        // ---- 顶部渐变横幅 ----
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 3.dp,
-        ) {
-            Box(
-                modifier = Modifier
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
-                        ),
-                    )
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "扫码",
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "对准条码自动识别，也可手动输入",
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.78f),
-                        )
-                    }
-                    TextButton(onClick = onBack) {
-                        Text("返回", fontSize = 14.sp, color = Color.White)
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(Spacing.sm))
-
-        // ---------- 取景区 ----------
-        val state = uiState
-        when {
-            state is ScannerUiState.PermissionDenied -> {
-                PermissionDeniedPanel(
-                    permanentlyDenied = state.permanentlyDenied,
-            onRetry = {
-                viewModel.onRetryPermission()
-                permissionLauncher.launch(Manifest.permission.CAMERA)
-            },
-                    onOpenSettings = { openAppSettings(context) },
-                )
-            }
-
-            hasPermission && cameraStatus !is CameraStatus.Failed -> {
-                // AndroidView 必须在 Idle/Starting/Ready 都存在：首次进入时由
-                // factory 触发 startScanning。若只在 Ready 渲染，会形成
-                // 「未 Ready 不创建 PreviewView、没有 PreviewView 就永远不能 Ready」的死循环。
-                CameraPreviewPanel(
-                    previewFactory = { preview ->
-                        previewView = preview
-                        if (lifecycleResumed) {
-                            viewModel.startScanning(lifecycleOwner, preview)
-                        }
-                    },
-                    torchOn = torchOn,
-                    torchAvailable = torchAvailable,
-                    onToggleTorch = { viewModel.toggleTorch() },
-                    statusText = statusTextOf(state),
-                    statusColor = rememberStatusColorOf(state),
-                )
-            }
-
-            hasPermission && cameraStatus is CameraStatus.Starting -> {
-                // 明确的「正在启动」态：转圈 + 可读文案，
-                // 与下面的失败态区分开，用户能判断系统在做什么
-                CameraStartingPanel()
-            }
-
-            hasPermission && cameraStatus is CameraStatus.Failed -> {
-                // 失败态必须给出「原因 + 出路」：
-                // 只有明确原因用户才能判断是权限、硬件还是被别的应用占用；
-                // 只有重试入口才不会卡死在这一屏
-                CameraFailedPanel(
-                    reason = (cameraStatus as CameraStatus.Failed).reason,
-                    onRetry = {
-                        previewView = null
-                        cameraRetryTick++
-                    },
-                )
-            }
-
-            else -> {
-                // 权限已授予但 AndroidView 尚未创建（首帧）
-                CameraStartingPanel()
-            }
-        }
-
-        Spacer(Modifier.height(Spacing.sm))
-
-        // ---------- 状态条 ----------
-        ScanStatusBar(state)
-
-        Spacer(Modifier.height(Spacing.sm))
-
-        // ---------- 操作区 ----------
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-        ) {
-            SecondaryButton(
-                text = if (manualVisible) "收起手动输入" else "手动输入",
-                onClick = { viewModel.toggleManualInput() },
-                modifier = Modifier.weight(1f),
-            )
-            if (state is ScannerUiState.Error && state.retryable) {
-                SecondaryButton(
-                    text = "重试",
-                    onClick = { viewModel.onScanConsumed() },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
-        if (manualVisible) {
-            Spacer(Modifier.height(Spacing.md))
-            SectionTitle("手动输入条码")
-            Spacer(Modifier.height(Spacing.sm))
-            // 出错时保留已输入内容，只高亮提示，绝不清空（规格第 7 节）
-            ManualInputField(
-                value = manualInput,
-                onValueChange = { manualInput = it },
-                onConfirm = {
-                    if (manualInput.isNotBlank()) {
-                        viewModel.onManualInput(manualInput.trim())
-                    }
-                },
-                loading = state is ScannerUiState.Processing,
-                isError = state is ScannerUiState.Error,
-            )
-        }
-
-        Spacer(Modifier.height(Spacing.lg))
-
-        // ---------- 离线队列入口 ----------
-        AppCard(modifier = Modifier.clickable { onOpenQueue() }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
-                        .background(LogisticsTheme.colors.warning, CircleShape),
-                    contentAlignment = Alignment.Center,
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(LogisticsColors.BrandNavy, LogisticsColors.BrandNavyDark),
+                            ),
+                        )
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                 ) {
-                    Text(
-                        if (pendingCount > 0) "$pendingCount" else "0",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "扫码",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "对准条码自动识别，也可手动输入",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.78f),
+                            )
+                        }
+                        TextButton(onClick = onBack) {
+                            Text("返回", fontSize = 14.sp, color = Color.White)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(Spacing.sm))
+
+            // ---------- 取景区 ----------
+            val state = uiState
+            when {
+                state is ScannerUiState.PermissionDenied -> {
+                    PermissionDeniedPanel(
+                        permanentlyDenied = state.permanentlyDenied,
+                onRetry = {
+                    viewModel.onRetryPermission()
+                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                },
+                        onOpenSettings = { openAppSettings(context) },
                     )
                 }
-                Spacer(Modifier.width(Spacing.md))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        if (pendingCount > 0) "待同步记录" else "离线队列",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LogisticsTheme.colors.textPrimary,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        when {
-                            syncing -> "正在同步…"
-                            pendingCount > 0 -> "$pendingCount 条记录等待上传，点击查看"
-                            else -> "当前无待同步记录"
+
+                hasPermission && cameraStatus !is CameraStatus.Failed -> {
+                    // AndroidView 必须在 Idle/Starting/Ready 都存在：首次进入时由
+                    // factory 触发 startScanning。若只在 Ready 渲染，会形成
+                    // 「未 Ready 不创建 PreviewView、没有 PreviewView 就永远不能 Ready」的死循环。
+                    CameraPreviewPanel(
+                        previewFactory = { preview ->
+                            previewView = preview
+                            if (lifecycleResumed) {
+                                viewModel.startScanning(lifecycleOwner, preview)
+                            }
                         },
-                        fontSize = 12.sp,
-                        color = LogisticsTheme.colors.textSecondary,
+                        torchOn = torchOn,
+                        torchAvailable = torchAvailable,
+                        onToggleTorch = { viewModel.toggleTorch() },
+                        statusText = statusTextOf(state),
+                        statusColor = rememberStatusColorOf(state),
                     )
                 }
-                Text("›", fontSize = 18.sp, color = LogisticsTheme.colors.textTertiary)
+
+                hasPermission && cameraStatus is CameraStatus.Starting -> {
+                    // 明确的「正在启动」态：转圈 + 可读文案，
+                    // 与下面的失败态区分开，用户能判断系统在做什么
+                    CameraStartingPanel()
+                }
+
+                hasPermission && cameraStatus is CameraStatus.Failed -> {
+                    // 失败态必须给出「原因 + 出路」：
+                    // 只有明确原因用户才能判断是权限、硬件还是被别的应用占用；
+                    // 只有重试入口才不会卡死在这一屏
+                    CameraFailedPanel(
+                        reason = (cameraStatus as CameraStatus.Failed).reason,
+                        onRetry = {
+                            previewView = null
+                            cameraRetryTick++
+                        },
+                    )
+                }
+
+                else -> {
+                    // 权限已授予但 AndroidView 尚未创建（首帧）
+                    CameraStartingPanel()
+                }
+            }
+
+            Spacer(Modifier.height(Spacing.sm))
+
+            // ---------- 状态条 ----------
+            ScanStatusBar(state)
+
+            Spacer(Modifier.height(Spacing.sm))
+
+            // ---------- 操作区 ----------
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            ) {
+                SecondaryButton(
+                    text = if (manualVisible) "收起手动输入" else "手动输入",
+                    onClick = { viewModel.toggleManualInput() },
+                    modifier = Modifier.weight(1f),
+                )
+                if (state is ScannerUiState.Error && state.retryable) {
+                    SecondaryButton(
+                        text = "重试",
+                        onClick = { viewModel.onScanConsumed() },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            if (manualVisible) {
+                Spacer(Modifier.height(Spacing.md))
+                SectionTitle("手动输入条码")
+                Spacer(Modifier.height(Spacing.sm))
+                // 出错时保留已输入内容，只高亮提示，绝不清空（规格第 7 节）
+                ManualInputField(
+                    value = manualInput,
+                    onValueChange = { manualInput = it },
+                    onConfirm = {
+                        if (manualInput.isNotBlank()) {
+                            viewModel.onManualInput(manualInput.trim())
+                        }
+                    },
+                    loading = state is ScannerUiState.Processing,
+                    isError = state is ScannerUiState.Error,
+                )
+            }
+
+            Spacer(Modifier.height(Spacing.lg))
+
+            // ---------- 离线队列入口 ----------
+            AppCard(modifier = Modifier.clickable { onOpenQueue() }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .background(LogisticsTheme.colors.warning, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (pendingCount > 0) "$pendingCount" else "0",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Spacer(Modifier.width(Spacing.md))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (pendingCount > 0) "待同步记录" else "离线队列",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = LogisticsTheme.colors.textPrimary,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            when {
+                                syncing -> "正在同步…"
+                                pendingCount > 0 -> "$pendingCount 条记录等待上传，点击查看"
+                                else -> "当前无待同步记录"
+                            },
+                            fontSize = 12.sp,
+                            color = LogisticsTheme.colors.textSecondary,
+                        )
+                    }
+                    Text("›", fontSize = 18.sp, color = LogisticsTheme.colors.textTertiary)
+                }
+            }
+
+            Spacer(Modifier.height(Spacing.md))
+
+            AppCard {
+                Text("当前角色", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    role.label,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LogisticsTheme.colors.textPrimary,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (readOnly) {
+                        "测试预览只读，不可提交入库、出库或库位变更"
+                    } else {
+                        buildString {
+                            append("可提交入库/出库申请")
+                            if (role.canApprove) append(" · 可审批")
+                            if (role.canAdmin) append(" · 可管理用户与审计")
+                        }
+                    },
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.textSecondary,
+                )
+            }
+
+            Spacer(Modifier.height(Spacing.xxl))
+        }
+
+        // 扫码结果确认卡：底部悬浮，点确认才跳转；点遮罩/重新扫描回到取景
+        confirmResult?.let { result ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable { /* 遮罩吞掉点击，按钮是唯一出口 */ },
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                ScanResultConfirmCard(
+                    result = result,
+                    onConfirm = {
+                        onResolved(result)
+                        viewModel.onScanConsumed()
+                        confirmResult = null
+                    },
+                    onRescan = {
+                        viewModel.onScanConsumed()
+                        confirmResult = null
+                    },
+                    modifier = Modifier.padding(
+                        start = Dimens.PagePadding,
+                        end = Dimens.PagePadding,
+                        top = Spacing.lg,
+                        bottom = Spacing.xl
+                    ),
+                )
             }
         }
-
-        Spacer(Modifier.height(Spacing.md))
-
-        AppCard {
-            Text("当前角色", fontSize = 11.sp, color = LogisticsTheme.colors.textTertiary)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                role.label,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = LogisticsTheme.colors.textPrimary,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                if (readOnly) {
-                    "测试预览只读，不可提交入库、出库或库位变更"
-                } else {
-                    buildString {
-                        append("可提交入库/出库申请")
-                        if (role.canApprove) append(" · 可审批")
-                        if (role.canAdmin) append(" · 可管理用户与审计")
-                    }
-                },
-                fontSize = 12.sp,
-                color = LogisticsTheme.colors.textSecondary,
-            )
-        }
-
-        Spacer(Modifier.height(Spacing.xxl))
     }
 }
 
@@ -922,4 +959,70 @@ private fun openAppSettings(context: android.content.Context) {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     context.startActivity(intent)
+}
+
+/**
+ * 扫码结果确认卡。
+ *
+ * 防错设计：识别成功后不直接跳转，先把「类型 + 条码内容」大字展示给用户，
+ * 确认无误点「确认进入」才跳转；扫错了点「重新扫描」回到取景。
+ * 卡片只拦跳转、不拦取景 —— 相机在卡片背后保持运行。
+ */
+@Composable
+private fun ScanResultConfirmCard(
+    result: ScanResult,
+    onConfirm: () -> Unit,
+    onRescan: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 8.dp,
+        color = LogisticsTheme.colors.cardBackground,
+    ) {
+        Column(modifier = Modifier.padding(Spacing.lg)) {
+            Text(
+                "扫码结果",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = LogisticsTheme.colors.textSecondary,
+            )
+            Spacer(Modifier.height(Spacing.sm))
+            Text(
+                result.type.label,
+                fontSize = 12.sp,
+                color = LogisticsTheme.colors.textTertiary,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                result.normalizedValue,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = LogisticsType.MonoFamily,
+                color = LogisticsTheme.colors.textPrimary,
+            )
+            if (result.type == ScanType.UNKNOWN) {
+                Spacer(Modifier.height(Spacing.sm))
+                Text(
+                    "该条码无法识别类型，确认进入后将提示手动处理",
+                    fontSize = 12.sp,
+                    color = LogisticsTheme.colors.warningText,
+                )
+            }
+            Spacer(Modifier.height(Spacing.md))
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                SecondaryButton(
+                    text = "重新扫描",
+                    onClick = onRescan,
+                    modifier = Modifier.weight(1f),
+                )
+                PrimaryButton(
+                    text = "确认进入",
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
 }

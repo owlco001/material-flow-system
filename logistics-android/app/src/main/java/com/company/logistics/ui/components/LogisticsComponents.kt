@@ -41,6 +41,9 @@ import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsTheme
 import com.company.logistics.ui.theme.LogisticsType
 import com.company.logistics.ui.theme.Spacing
+import com.company.logistics.model.MaterialStatusCode
+import com.company.logistics.model.SyncStatus
+import com.company.logistics.model.WorkspaceMaterialItem
 
 /**
  * 组件库 —— 统一的状态化组件，四态齐全（默认/按压/禁用/加载）。
@@ -234,6 +237,40 @@ fun StatusTag(
         }
     }
 }
+
+/**
+ * 主题感知的状态标签文字色。
+ *
+ * 浅色主题：用深色变体（对比度 ≥ 4.5:1），解决到货黄/在库绿/警告色文字
+ * 在浅底上不可读的问题；深色主题：容器为深底 tint，沿用 vivid 色。
+ * StatusTag 的 color 参数一律用这些 helper，containerColor 保持浅填充不变。
+ */
+@Composable
+fun MaterialStatusCode.tagTextColor(): Color = when (this) {
+    MaterialStatusCode.OUT_OF_STOCK -> LogisticsTheme.colors.shortageText
+    MaterialStatusCode.ARRIVED -> LogisticsTheme.colors.arrivedText
+    MaterialStatusCode.IN_STOCK -> LogisticsTheme.colors.inStockText
+    MaterialStatusCode.UNKNOWN -> LogisticsTheme.colors.unknownText
+}
+
+@Composable
+fun SyncStatus.tagTextColor(): Color = when (this) {
+    SyncStatus.PENDING -> LogisticsTheme.colors.arrivedText
+    SyncStatus.SYNCING -> Color(0xFF0E5FD8)
+    SyncStatus.SYNCED -> LogisticsTheme.colors.inStockText
+    SyncStatus.FAILED, SyncStatus.CONFLICT -> LogisticsTheme.colors.shortageText
+}
+
+@Composable
+fun WorkspaceMaterialItem.tagTextColor(): Color =
+    when (colorToken.uppercase(java.util.Locale.ROOT)) {
+        "STATUS-RED" -> LogisticsTheme.colors.shortageText
+        "STATUS-YELLOW" -> LogisticsTheme.colors.arrivedText
+        "STATUS-GREEN" -> LogisticsTheme.colors.inStockText
+        // 蓝色在浅底对比度足够（5.9:1），沿用 vivid 色
+        "STATUS-BLUE" -> Color(0xFF0E5FD8)
+        else -> LogisticsTheme.colors.unknownText
+    }
 
 /** 键值对展示（用于详情页的数据网格） */
 @Composable

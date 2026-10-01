@@ -36,6 +36,15 @@ object LogisticsColors {
     val Purple = Color(0xFF7B61FF)
     val Neutral = Color(0xFF6B7785)
 
+    // ========== 深色文字变体（浅色容器上的文字/图标） ==========
+    /**
+     * 警告深色文字 —— 替代 Warning(#F5A623) 用作浅底文字。
+     * Warning 白底仅约 1.9:1，此变体 ≥ 4.5:1（AA）。
+     */
+    val WarningText = Color(0xFF8A5300)
+    /** 成功深色文字 —— 替代 Success(#00A870) 用作浅底文字 */
+    val SuccessText = Color(0xFF0B6E4F)
+
     // ========== 中性色阶（浅色主题） ==========
     val BgPage = Color(0xFFF4F6F9)
     val BgCard = Color(0xFFFFFFFF)
@@ -80,4 +89,16 @@ object MaterialStatusColors {
     val ArrivedContainer = Color(0x24F2A900)
     val InStockContainer = Color(0x1F1F9D55)
     val UnknownContainer = Color(0x1F667085)
+
+    /**
+     * 深色文字变体 —— 浅色容器上的标签文字/图标专用。
+     *
+     * 到货黄 #F2A900 在浅底上仅约 1.5:1、在库绿 #1F9D55 约 3.3:1，
+     * 均低于 4.5:1(AA)。vivid 色继续用于色条/图标底等大面积色块，
+     * StatusTag 等文字一律用深色变体。
+     */
+    val ShortageText = Color(0xFF8A1C13)
+    val ArrivedText = Color(0xFF7A4A00)
+    val InStockText = Color(0xFF12613B)
+    val UnknownText = Color(0xFF3F4753)
 }

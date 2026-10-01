@@ -86,6 +86,8 @@ fun LogisticsApp(
     val snackbar = remember { SnackbarHostState() }
     var showUnauthenticatedEndpointConfig by rememberSaveable { mutableStateOf(false) }
     var showAdminActivation by rememberSaveable { mutableStateOf(false) }
+    // 网络连通性：离线横幅常驻的依据（断网但队列为空时也要提示离线）
+    val isOnline by rememberIsOnline()
 
     // 已认证页面的成功 / 错误统一走 Snackbar；登录页保留错误文案，避免
     // LaunchedEffect 在展示后立刻清掉登录失败或 refresh 失效提示。
@@ -194,11 +196,12 @@ fun LogisticsApp(
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                // 离线状态条常驻（有待同步时才显示）
-                if (state.pendingCount > 0) {
+                // 离线状态条常驻：断网时始终显示（即使队列为空），有待同步时显示数量
+                if (!isOnline || state.pendingCount > 0) {
                     OfflineBanner(
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
+                        offline = !isOnline,
                         onTap = { viewModel.navigate(Screen.QUEUE) }
                     )
                 }
@@ -405,6 +408,27 @@ fun LogisticsApp(
                 }
             }
         }
+    }
+}
+
+/**
+ * 持续监听网络连通性。
+ *
+ * 用 produceState + NetworkCallback，只在网络变化时更新一个 Boolean，
+ * 禁止在组合体内轮询 activeNetworkInfo（可能 ANR）。
+ */
+@Composable
+private fun rememberIsOnline(): androidx.compose.runtime.State<Boolean> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return androidx.compose.runtime.produceState(initialValue = true) {
+        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) { value = true }
+            override fun onLost(network: android.net.Network) { value = false }
+        }
+        cm.registerNetworkCallback(android.net.NetworkRequest.Builder().build(), callback)
+        value = cm.activeNetwork != null
+        awaitDispose { cm.unregisterNetworkCallback(callback) }
     }
 }
 

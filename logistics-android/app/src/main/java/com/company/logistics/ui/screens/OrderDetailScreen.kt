@@ -48,6 +48,7 @@ import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
+import com.company.logistics.ui.components.tagTextColor
 import com.company.logistics.ui.MultiOrderSnapshot
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
@@ -511,7 +512,7 @@ private fun DeviceStatusSummary(items: List<OrderMaterialItem>) {
         if (count > 0) {
             StatusTag(
                 label = "${status.label} $count",
-                color = status.color,
+                color = status.tagTextColor(),
                 containerColor = status.containerColor,
                 symbol = status.symbol,
             )
@@ -573,7 +574,7 @@ private fun OrderMaterialRow(item: OrderMaterialItem) {
             Spacer(Modifier.weight(1f))
             StatusTag(
                 label = item.effectiveStatusLabel,
-                color = statusColor,
+                color = item.statusCode.tagTextColor(),
                 containerColor = item.statusCode.containerColor,
                 symbol = item.statusCode.symbol
             )

@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 离线横幅常驻：监听网络连通性（普通权限，无需运行时申请） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 摄像头扫码：仅扫码页在页面可见时占用，禁止后台预占 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- 摄像头为可选硬件：无摄像头设备仍需能安装并用手动输入 -->

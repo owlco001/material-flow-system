@@ -243,15 +243,18 @@ private fun ScannerToolButton(
 }
 
 /**
- * 离线状态条 —— 常驻顶部，提示待同步数量。
- * 契约强调服务端时间为审计唯一依据，离线操作需明确标识为「暂存」。
+ * 离线状态条 —— 常驻顶部。
+ * 断网时始终显示（即使队列为空，避免用户在无网络时提交后静默失败）；
+ * 有待同步记录时显示数量。契约强调服务端时间为审计唯一依据，
+ * 离线操作需明确标识为「暂存」。
  */
 @Composable
 fun OfflineBanner(
     pendingCount: Int,
     syncing: Boolean,
     onTap: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    offline: Boolean = false
 ) {
     val warning = LogisticsTheme.colors.warning
     Surface(
@@ -264,17 +267,21 @@ fun OfflineBanner(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("!", color = LogisticsColors.Warning, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("!", color = LogisticsTheme.colors.warningText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(Spacing.sm))
             Text(
-                text = if (syncing) "同步中 · 剩余 $pendingCount 条"
-                else "离线中 · $pendingCount 条待同步",
-                color = LogisticsColors.Warning,
+                text = when {
+                    syncing -> "同步中 · 剩余 $pendingCount 条"
+                    offline && pendingCount > 0 -> "离线中 · $pendingCount 条待同步"
+                    offline -> "离线中 · 新提交将暂存本地"
+                    else -> "$pendingCount 条待同步"
+                },
+                color = LogisticsTheme.colors.warningText,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.weight(1f))
-            Text("查看 ›", color = LogisticsColors.Warning, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("查看 ›", color = LogisticsTheme.colors.warningText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

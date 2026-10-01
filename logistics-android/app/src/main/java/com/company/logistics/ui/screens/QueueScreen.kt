@@ -23,7 +23,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,12 +39,14 @@ import androidx.compose.ui.unit.sp
 import com.company.logistics.model.OfflineOperation
 import com.company.logistics.model.SyncStatus
 import com.company.logistics.ui.components.AppCard
+import com.company.logistics.ui.components.ConfirmDialog
 import com.company.logistics.ui.components.EmptyState
 import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
+import com.company.logistics.ui.components.tagTextColor
 import com.company.logistics.ui.components.VSpace
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsColors
@@ -73,6 +78,23 @@ fun QueueScreen(
 ) {
     val pending = queue.count { it.status == SyncStatus.PENDING || it.status == SyncStatus.FAILED }
     val conflicts = queue.count { it.status == SyncStatus.CONFLICT }
+    val syncedCount = queue.count { it.status == SyncStatus.SYNCED }
+    // 清理已同步是批量不可逆删除：必须二次确认
+    var showClearConfirm by remember { mutableStateOf(false) }
+
+    if (showClearConfirm) {
+        ConfirmDialog(
+            title = "清理已同步记录？",
+            message = "将删除本机 $syncedCount 条已同步的离线记录。服务端数据不受影响，未同步的记录不会被删除。",
+            confirmText = "清理",
+            danger = true,
+            onConfirm = {
+                showClearConfirm = false
+                onClearSynced()
+            },
+            onDismiss = { showClearConfirm = false }
+        )
+    }
 
     Column(
         modifier = modifier
@@ -169,7 +191,7 @@ fun QueueScreen(
                             color = Color.Transparent,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = clearEnabled, onClick = onClearSynced),
+                                .clickable(enabled = clearEnabled, onClick = { showClearConfirm = true }),
                         ) {
                             Text(
                                 "清理已同步记录",
@@ -220,8 +242,25 @@ private fun QueueItemCard(
     onDiscard: (String) -> Unit,
 ) {
     val statusColor = op.status.color
+    // 放弃是不可逆删除：必须二次确认，文案写明后果
+    var showDiscardConfirm by remember { mutableStateOf(false) }
     val timeText = remember(op.createdAt) {
         SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(op.createdAt))
+    }
+
+    if (showDiscardConfirm) {
+        ConfirmDialog(
+            title = "放弃这条离线记录？",
+            message = "「${op.opType.label} · ${op.materialCode}」将从本机永久删除，不再同步到服务端。已上传的服务端数据不受影响。",
+            confirmText = "放弃记录",
+            dismissText = "再想想",
+            danger = true,
+            onConfirm = {
+                showDiscardConfirm = false
+                onDiscard(op.id)
+            },
+            onDismiss = { showDiscardConfirm = false }
+        )
     }
 
     AppCard(accentColor = statusColor) {
@@ -257,7 +296,7 @@ private fun QueueItemCard(
             }
             StatusTag(
                 label = op.status.label,
-                color = statusColor,
+                color = op.status.tagTextColor(),
                 containerColor = statusColor.copy(alpha = 0.14f)
             )
         }
@@ -326,7 +365,7 @@ private fun QueueItemCard(
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                    onClick = { onDiscard(op.id) },
+                    onClick = { showDiscardConfirm = true },
                     enabled = !readOnly,
                     modifier = Modifier.weight(1f),
                 ) {
