@@ -12,8 +12,7 @@ material {
     ],
     shadingModel : unlit,
     blending : transparent,
-    depthWrite : false,
-    depthCulling : false,
+    depthWrite : true,
     culling : none
 }
 
