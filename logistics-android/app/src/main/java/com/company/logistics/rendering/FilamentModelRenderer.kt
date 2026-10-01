@@ -25,8 +25,6 @@ import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.google.android.filament.EntityManager
 import com.google.android.filament.LightManager
-import com.google.android.filament.IndirectLight
-import com.google.android.filament.Texture
 import com.google.android.filament.TransformManager
 import com.google.android.filament.View.ToneMapping
 import java.io.File
@@ -90,8 +88,6 @@ class FilamentModelRenderer(
     private var keyLightEntity: Int? = null
     private var fillLightEntity: Int? = null
     private var skybox: Skybox? = null
-    private var envTexture: Texture? = null
-    private var indirectLight: IndirectLight? = null
     private var assetLoader: AssetLoader? = null
     private var resourceLoader: ResourceLoader? = null
     private var initializationError: Throwable? = null
@@ -115,8 +111,6 @@ class FilamentModelRenderer(
         var createdRenderer: Renderer? = null
         var createdScene: Scene? = null
         var createdView: View? = null
-        var createdEnvTexture: Texture? = null
-        var createdIndirectLight: IndirectLight? = null
         var createdCamera: Camera? = null
         var createdKeyLight: Int? = null
         var createdFillLight: Int? = null
@@ -155,13 +149,6 @@ class FilamentModelRenderer(
             createdScene.skybox = createdSkybox
             // ACES 色调映射，对齐浏览器 Three.js 效果
             createdView.toneMapping = ToneMapping.ACES
-            // 环境光（IBL）：模拟浏览器的半球光，上亮下暗的渐变环境
-            createdEnvTexture = createGradientEnvironment(createdEngine)
-            createdIndirectLight = IndirectLight.Builder()
-                .reflections(createdEnvTexture)
-                .intensity(25_000f)
-                .build(createdEngine)
-            createdScene.indirectLight = createdIndirectLight
             createdAssetLoader = AssetLoader(createdEngine, createdMaterialProvider, createdEntityManager)
             createdResourceLoader = ResourceLoader(createdEngine)
 
@@ -175,8 +162,6 @@ class FilamentModelRenderer(
             keyLightEntity = createdKeyLight
             fillLightEntity = createdFillLight
             skybox = createdSkybox
-            envTexture = createdEnvTexture
-            indirectLight = createdIndirectLight
             assetLoader = createdAssetLoader
             resourceLoader = createdResourceLoader
             view?.scene = createdScene
@@ -329,43 +314,6 @@ class FilamentModelRenderer(
                 onResult(null, 0)
             }
         }
-    }
-
-    /**
-     * 生成上亮下暗的渐变等距柱状环境纹理，用于 IBL 环境光。
-     * 模拟 Three.js HemisphereLight（天白/地深蓝灰）的效果。
-     */
-    private fun createGradientEnvironment(engine: Engine): Texture {
-        val width = 64
-        val height = 32
-        val buffer = java.nio.ByteBuffer.allocateDirect(width * height * 3)
-        // 天空色 #FFFFFF → 地面色 #334155（对齐浏览器半球光）
-        val skyR = 1.0f; val skyG = 1.0f; val skyB = 1.0f
-        val gndR = 0.20f; val gndG = 0.25f; val gndB = 0.33f
-        for (y in 0 until height) {
-            val t = y.toFloat() / (height - 1).toFloat()
-            val r = (skyR + (gndR - skyR) * t).coerceIn(0f, 1f)
-            val g = (skyG + (gndG - skyG) * t).coerceIn(0f, 1f)
-            val b = (skyB + (gndB - skyB) * t).coerceIn(0f, 1f)
-            for (x in 0 until width) {
-                buffer.put((r * 255).toInt().toByte())
-                buffer.put((g * 255).toInt().toByte())
-                buffer.put((b * 255).toInt().toByte())
-            }
-        }
-        buffer.flip()
-        val texture = Texture.Builder()
-            .width(width)
-            .height(height)
-            .levels(1)
-            .format(Texture.InternalFormat.RGB8)
-            .sampler(Texture.Sampler.SAMPLER_2D)
-            .build(engine)
-        texture.setImage(
-            engine, 0,
-            Texture.PixelBufferDescriptor(buffer, Texture.Format.RGB, Texture.Type.UBYTE)
-        )
-        return texture
     }
 
     /**
@@ -668,11 +616,7 @@ class FilamentModelRenderer(
             entityManager?.destroy(it.getEntity())
         }
         skybox?.let { engine?.destroySkybox(it) }
-        indirectLight?.let { engine?.destroyIndirectLight(it) }
-        envTexture?.let { engine?.destroyTexture(it) }
         skybox = null
-        envTexture = null
-        indirectLight = null
         fillLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
         keyLightEntity?.let { entity -> engine?.lightManager?.destroy(entity); entityManager?.destroy(entity) }
         fillLightEntity = null
