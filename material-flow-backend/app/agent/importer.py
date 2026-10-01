@@ -620,10 +620,23 @@ def commit_import_job(
         raise ValueError("导入任务状态异常，无法提交")
     if prior:
         raise ValueError("幂等键冲突")
+    # 错误行自动记录待人工处理，不阻塞提交
     target = job["target"]
     file_name = job.get("file_name", "")
     errors = job.get("errors") or []
     logged_errors = 0
+    if errors:
+        import uuid as _uuid
+        for err in errors:
+            eid = "ERR" + _uuid.uuid4().hex[:12].upper()
+            conn.execute(
+                "INSERT INTO agent_import_error_logs(id, job_id, target, file_name, line_no, error_msg, row_data, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (eid, job_id, target, file_name, err.get("line_no", 0), err.get("message", ""),
+                 json.dumps(err.get("row", {}), ensure_ascii=False), _utcnow()),
+            )
+        logged_errors = len(errors)
+
     rows = job["rows"]
     ts = _utcnow()
     role_row = conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
@@ -632,23 +645,10 @@ def commit_import_job(
 
     try:
         conn.execute("BEGIN IMMEDIATE")
-        # 错误行自动记录待人工处理，不阻塞提交
-        if errors:
-            import uuid as _uuid
-            for err in errors:
-                eid = "ERR" + _uuid.uuid4().hex[:12].upper()
-                conn.execute(
-                    "INSERT INTO agent_import_error_logs(id, job_id, target, file_name, line_no, error_msg, row_data, created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    (eid, job_id, target, file_name, err.get("line_no", 0), err.get("message", ""),
-                     json.dumps(err.get("row", {}), ensure_ascii=False), _utcnow()),
-                )
-            logged_errors = len(errors)
         if target == "materials":
             _commit_materials(conn, rows, ts)
         elif target == "inventory":
             _commit_inventory(conn, rows, ts)
-            sync_result = _sync_inventory_to_requirements(conn)
         elif target == "orders":
             _commit_orders(conn, rows, ts)
         else:
@@ -660,7 +660,6 @@ def commit_import_job(
             "committed_rows": len(rows),
             "client_operation_id": client_operation_id,
             "logged_errors": logged_errors,
-            "synced_requirements": sync_result.get("updated_requirements", 0) if target == "inventory" else 0,
         }
         if target == "inventory":
             after_summary["created_materials"] = getattr(_commit_inventory, "created_materials", 0)
@@ -809,41 +808,6 @@ def _commit_inventory(conn: sqlite3.Connection, rows: list[dict], ts: str) -> No
     _commit_inventory.created_locations = created_locations
 _commit_inventory.created_materials = 0
 _commit_inventory.created_locations = 0
-
-
-def _sync_inventory_to_requirements(conn: sqlite3.Connection) -> dict:
-    """库存导入后，同步更新订单物料需求的在库数量和状态。"""
-    inv_rows = conn.execute(
-        "SELECT material_id, SUM(quantity) FROM inventory GROUP BY material_id"
-    ).fetchall()
-    remaining = {r[0]: (r[1] or 0) for r in inv_rows}
-    req_rows = conn.execute(
-        "SELECT id, material_id, required_quantity, arrived_quantity"
-        " FROM order_material_requirements ORDER BY created_at"
-    ).fetchall()
-    updated = 0
-    for rid, mid, req_qty, arr_qty in req_rows:
-        avail = remaining.get(mid, 0)
-        in_stock = min(req_qty or 0, avail)
-        remaining[mid] = avail - in_stock
-        # 保证约束 in_stock <= arrived <= required
-        new_arrived = max(arr_qty or 0, in_stock)
-        if new_arrived > (req_qty or 0):
-            new_arrived = req_qty or 0
-        if in_stock > new_arrived:
-            in_stock = new_arrived
-        if in_stock >= (req_qty or 0) and (req_qty or 0) > 0:
-            status = "IN_STOCK"
-        elif new_arrived > 0:
-            status = "ARRIVED"
-        else:
-            status = "OUT_OF_STOCK"
-        conn.execute(
-            "UPDATE order_material_requirements SET arrived_quantity=?, in_stock_quantity=?, status_code=?, updated_at=? WHERE id=?",
-            (new_arrived, in_stock, status, _utcnow(), rid),
-        )
-        updated += 1
-    return {"updated_requirements": updated}
 
 
 def _commit_orders(conn: sqlite3.Connection, rows: list[dict], ts: str) -> None:
