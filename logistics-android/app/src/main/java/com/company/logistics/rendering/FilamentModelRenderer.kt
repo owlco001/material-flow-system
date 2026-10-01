@@ -532,7 +532,7 @@ class FilamentModelRenderer(
     private fun createSectionPlane(eng: Engine) {
         val em = entityManager ?: return
         val scn = scene ?: return
-        val planeMat = ghostInstance(0.35f, 0.55f, 1.0f, 0.20f) ?: return
+        val planeMat = ghostInstance() ?: return
         val s = modelRadius * 2.2f
         val verts = when (sectionAxis) {
             0 -> floatArrayOf(0f, -s, -s, 0f, -s, s, 0f, s, s, 0f, s, -s) // YZ 平面
