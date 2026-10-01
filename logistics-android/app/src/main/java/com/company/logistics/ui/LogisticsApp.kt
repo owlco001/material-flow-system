@@ -351,14 +351,7 @@ fun LogisticsApp(
                         state.deviceMaterials,
                         state.deviceTransferRequests,
                         state.deviceLabor,
-                        onBack = { viewModel.navigate(Screen.SCANNER) },
-                        onSubmitMaterialRequest = { material, orderNo, qty, remark ->
-                            viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark)
-                        },
-                        onSubmitException = { deviceId, materialId, orderNo, actualQty, desc ->
-                            viewModel.submitDeviceException(deviceId, materialId, orderNo, actualQty, desc)
-                        },
-                    )
+                    ) { viewModel.navigate(Screen.SCANNER) }
 
                     Screen.INVENTORY -> InventoryScreen(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
