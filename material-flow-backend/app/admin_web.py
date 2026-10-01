@@ -2190,12 +2190,13 @@ async def admin_device_bind_model(request: Request):
     if not device_id:
         return _see_other("/admin/models?notice=bind_failed")
     try:
+        operation_id = str(uuid.uuid4())
         api_bind_device_model_3d(
             device_id,
-            DeviceModel3dBind(clientOperationId=uuid.uuid4(), model3dCode=model_code),
+            DeviceModel3dBind(clientOperationId=uuid.UUID(operation_id), model3dCode=model_code),
             user,
             x_request_id=str(uuid.uuid4()),
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=operation_id,
         )
     except (ApiError, ValidationError, HTTPException):
         return _see_other("/admin/models?notice=bind_failed")
