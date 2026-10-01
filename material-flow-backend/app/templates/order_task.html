@@ -53,18 +53,31 @@
   var panel = document.getElementById('task-mat-panel');
   if (!panel || panel.dataset.bound) return;
   panel.dataset.bound = '1';
+  function setLoading(on) {
+    var old = panel.querySelector('.mat-loading');
+    if (old) old.remove();
+    if (on) {
+      var tip = document.createElement('div');
+      tip.className = 'mat-loading';
+      tip.innerHTML = '<span class="mat-spinner"></span><span>加载中…</span>';
+      panel.appendChild(tip);
+      panel.querySelectorAll('input, select, button').forEach(function(el){ el.disabled = true; });
+    }
+  }
   function load(url) {
+    if (panel.dataset.loading === '1') return;
+    panel.dataset.loading = '1';
     var u = new URL(url, location.href);
     u.searchParams.set('partial', 'materials');
-    panel.style.opacity = '0.55';
+    setLoading(true);
     fetch(u.toString(), {headers: {'X-Requested-With': 'XMLHttpRequest'}}).then(function(r){
       if (!r.ok) throw new Error('http ' + r.status);
       return r.text();
     }).then(function(html){
       panel.innerHTML = html;
-      panel.style.opacity = '';
       history.replaceState(null, '', new URL(url, location.href).toString());
-    }).catch(function(){ location.href = url; });
+    }).catch(function(){ location.href = url; })
+    .finally(function(){ panel.dataset.loading = ''; });
   }
   panel.addEventListener('submit', function(e){
     var f = e.target;
