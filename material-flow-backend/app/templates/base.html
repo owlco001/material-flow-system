@@ -19,41 +19,111 @@
   --err: #b91c1c;  --err-soft: #fef2f2;
   --radius: 12px;
   --shadow: 0 1px 2px rgba(16,24,40,.06), 0 6px 20px -6px rgba(16,24,40,.10);
+  --side-w: 232px;
+  --side-w-min: 68px;
+  --top-h: 56px;
 }
 * { box-sizing: border-box; }
 body {
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
   margin: 0; background: var(--bg); color: var(--ink); font-size: 15px; line-height: 1.6;
 }
-/* ---- 顶栏 ---- */
-.topbar {
-  background: linear-gradient(120deg, #0d1930 0%, #15294d 55%, #1d3a6e 100%);
-  color: #fff; padding: 0 20px; min-height: 60px;
-  display: flex; justify-content: space-between; align-items: center; gap: 12px;
-  box-shadow: 0 2px 14px rgba(8,18,38,.35);
-  position: sticky; top: 0; z-index: 50;
+/* ---- 侧边栏 ---- */
+.sidebar {
+  position: fixed; left: 0; top: 0; bottom: 0; width: var(--side-w); z-index: 60;
+  background: linear-gradient(180deg, #0d1930 0%, #14294e 60%, #1d3a6e 100%);
+  color: #d7e2f5; display: flex; flex-direction: column;
+  transition: width .18s ease, transform .2s ease;
+  box-shadow: 2px 0 18px rgba(8,18,38,.35);
 }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; letter-spacing: .5px; white-space: nowrap; }
+.side-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 14px 12px; border-bottom: 1px solid rgba(255,255,255,.09);
+  font-weight: 700; font-size: 16px; letter-spacing: .5px; color: #fff; white-space: nowrap;
+}
 .brand-mark {
   width: 32px; height: 32px; border-radius: 9px; flex: none;
   background: linear-gradient(135deg, #3b82f6, #22d3ee);
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 17px; box-shadow: 0 2px 8px rgba(59,130,246,.5);
+  font-size: 17px; color: #fff; box-shadow: 0 2px 8px rgba(59,130,246,.5);
 }
-.topbar nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.nav-link { color: #d7e2f5; text-decoration: none; font-size: 14px; padding: 8px 12px; border-radius: 8px; transition: background .15s; }
-.nav-link:hover { background: rgba(255,255,255,.13); color: #fff; }
-.logout-form { margin: 0; display: inline-flex; }
-/* ---- 快捷导航 ---- */
-.quicknav {
-  display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 16px;
-  background: var(--surface); border-bottom: 1px solid var(--line);
-  position: sticky; top: 60px; z-index: 40;
+.side-brand-txt { overflow: hidden; text-overflow: ellipsis; }
+.side-collapse {
+  margin-left: auto; width: 28px; height: 28px; border-radius: 8px; flex: none;
+  background: rgba(255,255,255,.08); border: none; color: #b9c8e4; cursor: pointer; font-size: 15px; line-height: 1;
 }
-.quicknav a { color: var(--muted); text-decoration: none; font-size: 14px; padding: 7px 14px; border-radius: 999px; transition: all .15s; }
-.quicknav a:hover { background: var(--brand-soft); color: var(--brand-deep); font-weight: 600; }
+.side-collapse:hover { background: rgba(255,255,255,.16); color: #fff; }
+.side-nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 10px 16px; }
+.side-nav::-webkit-scrollbar { width: 6px; }
+.side-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+.side-group {
+  font-size: 12px; color: #8fa3c7; padding: 14px 12px 6px; letter-spacing: 1px; white-space: nowrap;
+}
+.side-group:first-child { padding-top: 6px; }
+.side-link {
+  display: flex; align-items: center; gap: 12px;
+  color: #c4d2ec; text-decoration: none; font-size: 14px;
+  padding: 9px 12px; border-radius: 9px; margin: 1px 0; white-space: nowrap;
+  border-left: 3px solid transparent; transition: background .13s, color .13s;
+}
+.side-link i { font-style: normal; width: 20px; text-align: center; font-size: 15px; flex: none; }
+.side-link span { overflow: hidden; text-overflow: ellipsis; }
+.side-link:hover { background: rgba(255,255,255,.09); color: #fff; }
+.side-link.active { background: rgba(59,130,246,.22); color: #fff; border-left-color: #3b82f6; font-weight: 600; }
+.side-foot { border-top: 1px solid rgba(255,255,255,.09); padding: 12px 14px; }
+.side-user { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.side-avatar {
+  width: 34px; height: 34px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, #3b82f6, #22d3ee); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px;
+}
+.side-user-txt { min-width: 0; }
+.side-user-txt b { display: block; color: #fff; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-user-txt i { display: block; font-style: normal; color: #8fa3c7; font-size: 12px; }
+.side-logout {
+  width: 100%; padding: 8px; font-size: 13px; border-radius: 8px;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); color: #d7e2f5; cursor: pointer;
+}
+.side-logout:hover { background: rgba(220,53,69,.35); border-color: rgba(220,53,69,.5); color: #fff; }
+.logout-form { margin: 0; }
+/* 收起状态：图标栏 */
+body.side-collapsed .sidebar { width: var(--side-w-min); }
+body.side-collapsed .side-brand-txt,
+body.side-collapsed .side-group span,
+body.side-collapsed .side-link span,
+body.side-collapsed .side-user-txt,
+body.side-collapsed .side-logout { display: none; }
+body.side-collapsed .side-group { text-align: center; padding: 10px 0 4px; }
+body.side-collapsed .side-group::after { content: "···"; color: #5b6f95; }
+body.side-collapsed .side-link { justify-content: center; padding: 10px 0; }
+body.side-collapsed .side-brand { justify-content: center; padding: 14px 6px 12px; }
+body.side-collapsed .side-collapse { display: none; }
+body.side-collapsed .side-user { justify-content: center; }
+body.side-collapsed .side-foot { padding: 12px 8px; }
+body.side-collapsed .page { margin-left: var(--side-w-min); }
+/* ---- 页面区 ---- */
+.page { margin-left: var(--side-w); min-height: 100vh; display: flex; flex-direction: column; transition: margin-left .18s ease; }
+body.no-side .page { margin-left: 0; }
+.topbar {
+  height: var(--top-h); flex: none; background: var(--surface); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 12px; padding: 0 20px;
+  position: sticky; top: 0; z-index: 50;
+}
+.hamburger {
+  display: none; width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--line);
+  background: #fff; font-size: 17px; cursor: pointer; color: var(--ink); flex: none;
+}
+.crumb { font-size: 15px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb b { color: var(--ink); font-weight: 700; }
+.crumb .sep { margin: 0 8px; color: #b6c2d4; }
+.top-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.top-user {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted);
+  background: #f1f5f9; border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px 5px 5px; white-space: nowrap;
+}
+.top-user .side-avatar { width: 26px; height: 26px; font-size: 12px; }
 /* ---- 主体 ---- */
-main { max-width: 1120px; margin: 24px auto 56px; padding: 0 20px; }
+main { flex: 1; width: 100%; max-width: 1560px; margin: 0 auto; padding: 20px 24px 56px; }
 main h2 { font-size: 21px; margin: 2px 0 16px; }
 main a { color: var(--brand); }
 main a:hover { color: var(--brand-deep); }
@@ -66,7 +136,7 @@ main a.btn-secondary:hover { color: var(--ink); }
 /* ---- 卡片 ---- */
 .card {
   background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow);
+  border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
 }
 .card h3 { margin: 0 0 10px; font-size: 16px; }
 .cards { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -136,13 +206,34 @@ tbody tr:last-child td { border-bottom: 0; }
 .auth-brand h1 { font-size: 20px; margin: 10px 0 2px; }
 .auth-brand p { margin: 0; color: var(--muted); font-size: 13px; }
 .auth-card button[type="submit"] { width: 100%; margin-top: 20px; padding: 11px; font-size: 16px; }
+/* 移动端：侧边栏变抽屉 */
+.side-overlay { display: none; }
+@media (max-width: 1024px) {
+  .sidebar { transform: translateX(-105%); width: var(--side-w); }
+  body.side-collapsed .sidebar { width: var(--side-w); }
+  body.side-collapsed .side-brand-txt,
+  body.side-collapsed .side-group span,
+  body.side-collapsed .side-link span,
+  body.side-collapsed .side-user-txt,
+  body.side-collapsed .side-logout { display: block; }
+  body.side-collapsed .side-group::after { content: none; }
+  body.side-collapsed .side-link { justify-content: flex-start; padding: 9px 12px; }
+  body.side-collapsed .side-brand { justify-content: flex-start; }
+  body.side-collapsed .side-collapse { display: none; }
+  body.side-collapsed .side-user { justify-content: flex-start; }
+  .sidebar.open { transform: none; }
+  .side-overlay.show {
+    display: block; position: fixed; inset: 0; z-index: 55; background: rgba(8,18,38,.45);
+  }
+  .page, body.side-collapsed .page { margin-left: 0; }
+  .hamburger { display: inline-flex; align-items: center; justify-content: center; }
+  .side-collapse { display: none; }
+  main { padding: 14px 12px 40px; }
+  .crumb { font-size: 14px; }
+  .top-user span.uname { display: none; }
+}
 /* S16 移动端适配：表格横滚 + 小屏布局 + 触控目标 */
 @media (max-width: 720px) {
-  .topbar { flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 14px; }
-  .topbar nav { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; }
-  .nav-link { padding: 8px 10px; }
-  .quicknav { gap: 2px 4px; padding: 6px 10px; top: 0; }
-  main { margin: 14px auto 40px; padding: 0 12px; }
   th, td { padding: 7px 9px; font-size: 13px; }
   input, select, button, .btn { max-width: 100%; min-height: 42px; box-sizing: border-box; }
   .cards .card { flex: 1 1 100%; }
@@ -162,30 +253,105 @@ tr.row-green{background:rgba(40,167,69,.06)}
 tr.row-blue{background:rgba(14,95,216,.06)}
 </style>
 </head>
-<body>
-<header class="topbar">
-  <div class="brand"><span class="brand-mark">◆</span><span>智慧工厂 · 管理后台</span></div>
-  <nav>{% block nav %}{% endblock %}</nav>
-</header>
+<body class="{% if not user %}no-side{% endif %}">
 {% if user %}
-<nav class="quicknav">
-  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}<a href="/admin/workspace">工作台</a>{% endif %}
-  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}<a href="/admin/exceptions">异常处理</a>{% endif %}
-  {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
-  <a href="/admin/reports">概览</a><a href="/admin/reports/labor">工时</a><a href="/admin/tasks">任务</a>
-  {% endif %}
-  {% if user.role in ("ADMIN", "WAREHOUSE_ADMIN") %}
-  <a href="/admin/flows">流转</a><a href="/admin/handovers">留痕</a><a href="/admin/warehouse">仓库</a><a href="/admin/models">模型</a>
-  {% endif %}
-  {% if user.role in ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR") %}<a href="/admin/boms">BOM</a>{% endif %}
-  {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}<a href="/admin/orders">订单</a>{% endif %}
-  {% if user.role in ("ADMIN", "PLANNER") %}<a href="/admin/orders/new">新建订单</a>{% endif %}
-  {% if user.role == "ADMIN" %}
-  <a href="/admin/users">用户</a><a href="/admin/audit">审计</a><a href="/admin/barcodes">条码</a><a href="/admin/u9">U9集成</a>
-  {% endif %}
-</nav>
+{% set _r = user.role %}
+{% set _p = request.path if request else "" %}
+{% set _role_labels = {"ADMIN": "管理员", "WAREHOUSE_ADMIN": "仓库管理员", "WORKSHOP_SUPERVISOR": "车间主管", "PLANNER": "计划员", "OPERATOR": "操作员", "MATERIAL": "物料员", "ASSEMBLER": "装配工"} %}
+{% set _uname = user.display_name or user.username %}
+<aside class="sidebar" id="sidebar">
+  <div class="side-brand">
+    <span class="brand-mark">◆</span><span class="side-brand-txt">智慧工厂</span>
+    <button class="side-collapse" id="sideCollapse" title="收起侧边栏">‹</button>
+  </div>
+  <nav class="side-nav">
+    {% if _r in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}
+    <div class="side-group"><span>工作区</span></div>
+    <a class="side-link {% if _p == '/admin/workspace' %}active{% endif %}" href="/admin/workspace" title="工作台"><i>◧</i><span>工作台</span></a>
+    <a class="side-link {% if _p.startswith('/admin/exceptions') %}active{% endif %}" href="/admin/exceptions" title="异常处理"><i>⚠</i><span>异常处理</span></a>
+    {% endif %}
+    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}
+    <div class="side-group"><span>生产管理</span></div>
+    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
+    <a class="side-link {% if _p == '/admin/reports' %}active{% endif %}" href="/admin/reports" title="概览"><i>◈</i><span>概览</span></a>
+    <a class="side-link {% if _p.startswith('/admin/reports/labor') %}active{% endif %}" href="/admin/reports/labor" title="工时"><i>◷</i><span>工时</span></a>
+    <a class="side-link {% if _p.startswith('/admin/tasks') %}active{% endif %}" href="/admin/tasks" title="任务"><i>☰</i><span>任务</span></a>
+    {% endif %}
+    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}
+    <a class="side-link {% if _p.startswith('/admin/orders') and _p != '/admin/orders/new' %}active{% endif %}" href="/admin/orders" title="订单"><i>▤</i><span>订单</span></a>
+    {% endif %}
+    {% if _r in ("ADMIN", "PLANNER") %}
+    <a class="side-link {% if _p == '/admin/orders/new' %}active{% endif %}" href="/admin/orders/new" title="新建订单"><i>＋</i><span>新建订单</span></a>
+    {% endif %}
+    {% if _r in ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR") %}
+    <a class="side-link {% if _p.startswith('/admin/boms') %}active{% endif %}" href="/admin/boms" title="BOM"><i>⧉</i><span>BOM</span></a>
+    {% endif %}
+    {% endif %}
+    {% if _r in ("ADMIN", "WAREHOUSE_ADMIN") %}
+    <div class="side-group"><span>仓库物流</span></div>
+    <a class="side-link {% if _p.startswith('/admin/flows') %}active{% endif %}" href="/admin/flows" title="流转"><i>⇄</i><span>流转</span></a>
+    <a class="side-link {% if _p.startswith('/admin/handovers') %}active{% endif %}" href="/admin/handovers" title="留痕"><i>✎</i><span>留痕</span></a>
+    <a class="side-link {% if _p == '/admin/warehouse' %}active{% endif %}" href="/admin/warehouse" title="仓库"><i>▥</i><span>仓库</span></a>
+    <a class="side-link {% if _p.startswith('/admin/models') %}active{% endif %}" href="/admin/models" title="模型"><i>❖</i><span>模型</span></a>
+    {% endif %}
+    {% if _r == "ADMIN" %}
+    <div class="side-group"><span>系统管理</span></div>
+    <a class="side-link {% if _p.startswith('/admin/agent') %}active{% endif %}" href="/admin/agent" title="智能助手"><i>✦</i><span>智能助手</span></a>
+    <a class="side-link {% if _p.startswith('/admin/users') %}active{% endif %}" href="/admin/users" title="用户"><i>◉</i><span>用户</span></a>
+    <a class="side-link {% if _p.startswith('/admin/audit') %}active{% endif %}" href="/admin/audit" title="审计"><i>◔</i><span>审计</span></a>
+    <a class="side-link {% if _p.startswith('/admin/barcodes') %}active{% endif %}" href="/admin/barcodes" title="条码"><i>▌</i><span>条码</span></a>
+    <a class="side-link {% if _p.startswith('/admin/u9') %}active{% endif %}" href="/admin/u9" title="U9集成"><i>◫</i><span>U9集成</span></a>
+    {% endif %}
+  </nav>
+  <div class="side-foot">
+    <div class="side-user">
+      <span class="side-avatar">{{ _uname[:1] }}</span>
+      <span class="side-user-txt"><b>{{ _uname }}</b><i>{{ _role_labels.get(_r, _r) }}</i></span>
+    </div>
+    <form method="post" action="/admin/logout" class="logout-form">
+      <input type="hidden" name="csrf_token" value="{{ user['csrf_token'] }}">
+      <button type="submit" class="side-logout">退出登录</button>
+    </form>
+  </div>
+</aside>
+<div class="side-overlay" id="sideOverlay"></div>
 {% endif %}
-<main>{% block content %}{% endblock %}</main>
+
+<div class="page">
+  {% if user %}
+  <header class="topbar">
+    <button class="hamburger" id="hamburger" title="菜单">☰</button>
+    <div class="crumb">智慧工厂<span class="sep">/</span><b>{{ self.title() }}</b></div>
+    <div class="top-right">
+      <span class="top-user"><span class="side-avatar">{{ _uname[:1] }}</span><span class="uname">{{ _uname }} · {{ _role_labels.get(_r, _r) }}</span></span>
+    </div>
+  </header>
+  {% endif %}
+  <main>{% block content %}{% endblock %}</main>
+</div>
+
+<script>
+(function(){
+  var body = document.body;
+  try {
+    if (localStorage.getItem('sf_side') === 'collapsed' && window.innerWidth > 1024) body.classList.add('side-collapsed');
+  } catch(e) {}
+  var collapseBtn = document.getElementById('sideCollapse');
+  if (collapseBtn) collapseBtn.addEventListener('click', function(){
+    body.classList.toggle('side-collapsed');
+    try { localStorage.setItem('sf_side', body.classList.contains('side-collapsed') ? 'collapsed' : ''); } catch(e) {}
+  });
+  var burger = document.getElementById('hamburger');
+  var sidebar = document.getElementById('sidebar');
+  var overlay = document.getElementById('sideOverlay');
+  function closeSide(){ if(sidebar) sidebar.classList.remove('open'); if(overlay) overlay.classList.remove('show'); }
+  if (burger) burger.addEventListener('click', function(){
+    if(sidebar) sidebar.classList.toggle('open');
+    if(overlay) overlay.classList.toggle('show');
+  });
+  if (overlay) overlay.addEventListener('click', closeSide);
+})();
+</script>
 
 <!-- 智能助手悬浮球 -->
 <style>
