@@ -473,7 +473,7 @@ tr.row-blue{background:rgba(14,95,216,.06)}
   <div class="ap-head"><span>智能助手</span><button onclick="toggleAgentPanel()">×</button></div>
   <div id="agent-msgs"><div class="msg asst">你好，我是智能助手，可以帮你查询库存、订单、流转单等数据。</div></div>
   <div class="ap-input">
-    <input id="agent-input" placeholder="输入问题…" onkeydown="if(event.key===Enter)sendAgentMsg()">
+    <input id="agent-input" placeholder="输入问题…" onkeydown="if(event.key==='Enter' && !event.isComposing)sendAgentMsg()">
     <button id="agent-send-btn" onclick="sendAgentMsg()">发送</button>
   </div>
 </div>
@@ -526,6 +526,88 @@ document.addEventListener("DOMContentLoaded", function() {
   var btn = document.getElementById("agent-send-btn");
   if (btn) btn.addEventListener("click", function(e) { e.preventDefault(); sendAgentMsg(); });
 });
+</script>
+
+<!-- 统一确认弹窗：替代浏览器原生 confirm()。
+     用法：表单/按钮加 data-confirm="说明"（可选 data-confirm-title / data-confirm-ok / data-confirm-danger）；
+     脚本里用 await uiConfirm("说明", {title, ok, danger})。 -->
+<style>
+.ui-confirm-mask { position: fixed; inset: 0; z-index: 2000; background: rgba(8,18,38,.45); display: none; align-items: center; justify-content: center; padding: 16px; }
+.ui-confirm-mask.show { display: flex; }
+.ui-confirm { background: var(--surface); border-radius: 14px; box-shadow: 0 12px 40px rgba(8,18,38,.3); width: 420px; max-width: 100%; padding: 22px 22px 18px; }
+.ui-confirm h3 { margin: 0 0 8px; font-size: 18px; color: var(--ink); }
+.ui-confirm p { margin: 0 0 20px; color: var(--muted); font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+.ui-confirm .btn-row { justify-content: flex-end; margin: 0; }
+.ui-confirm .btn-row button { margin: 0; min-width: 88px; }
+</style>
+<div class="ui-confirm-mask" id="uiConfirmMask" role="dialog" aria-modal="true" aria-labelledby="uiConfirmTitle">
+  <div class="ui-confirm">
+    <h3 id="uiConfirmTitle">确认操作？</h3>
+    <p id="uiConfirmText"></p>
+    <div class="btn-row">
+      <button type="button" class="btn btn-secondary" id="uiConfirmCancel">取消</button>
+      <button type="button" class="btn" id="uiConfirmOk">确认</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var mask = document.getElementById('uiConfirmMask');
+  var okBtn = document.getElementById('uiConfirmOk');
+  var cancelBtn = document.getElementById('uiConfirmCancel');
+  var resolver = null, lastFocus = null;
+  function close(result){
+    mask.classList.remove('show');
+    var r = resolver; resolver = null;
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+    if (r) r(result);
+  }
+  window.uiConfirm = function(text, opts){
+    opts = opts || {};
+    if (resolver) close(false);
+    document.getElementById('uiConfirmTitle').textContent = opts.title || '确认操作？';
+    document.getElementById('uiConfirmText').textContent = text || '';
+    okBtn.textContent = opts.ok || '确认';
+    okBtn.className = 'btn ' + (opts.danger ? 'btn-danger' : '');
+    lastFocus = document.activeElement;
+    mask.classList.add('show');
+    // 危险操作默认聚焦「取消」，防止回车误触
+    (opts.danger ? cancelBtn : okBtn).focus();
+    return new Promise(function(resolve){ resolver = resolve; });
+  };
+  okBtn.addEventListener('click', function(){ close(true); });
+  cancelBtn.addEventListener('click', function(){ close(false); });
+  mask.addEventListener('click', function(e){ if (e.target === mask) close(false); });
+  document.addEventListener('keydown', function(e){ if (resolver && e.key === 'Escape') close(false); });
+  function optsOf(el){
+    return { title: el.dataset.confirmTitle, ok: el.dataset.confirmOk, danger: el.hasAttribute('data-confirm-danger') };
+  }
+  // 按钮上的 data-confirm：保留 submitter（如 name=dry_run value=0）
+  document.addEventListener('click', function(e){
+    var b = e.target.closest && e.target.closest('button[data-confirm], a[data-confirm], input[type=submit][data-confirm]');
+    if (!b) return;
+    if (b.dataset.confirmed) { delete b.dataset.confirmed; return; }
+    e.preventDefault(); e.stopImmediatePropagation();
+    uiConfirm(b.dataset.confirm, optsOf(b)).then(function(ok){
+      if (!ok) return;
+      b.dataset.confirmed = '1';
+      b.click();
+    });
+  }, true);
+  // 表单上的 data-confirm
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f.matches || !f.matches('form[data-confirm]')) return;
+    if (f.dataset.confirmed) { delete f.dataset.confirmed; return; }
+    e.preventDefault(); e.stopImmediatePropagation();
+    var submitter = e.submitter;
+    uiConfirm(f.dataset.confirm, optsOf(f)).then(function(ok){
+      if (!ok) return;
+      f.dataset.confirmed = '1';
+      if (f.requestSubmit) f.requestSubmit(submitter || undefined); else f.submit();
+    });
+  }, true);
+})();
 </script>
 
 </body>
