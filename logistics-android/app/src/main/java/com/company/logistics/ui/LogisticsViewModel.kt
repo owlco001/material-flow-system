@@ -262,6 +262,8 @@ data class LogisticsUiState(
     // 离线
     val offlineQueue: List<OfflineOperation> = emptyList(),
     val pendingCount: Int = 0,
+    /** 失败/冲突、需用户处理的离线记录数 */
+    val attentionCount: Int = 0,
     val syncing: Boolean = false,
 
     // 提交表单
@@ -392,6 +394,11 @@ class LogisticsViewModel(
         operationScope.launch {
             repo.observePendingCount().collect { count ->
                 _state.update { it.copy(pendingCount = count) }
+            }
+        }
+        operationScope.launch {
+            repo.observeAttentionCount().collect { count ->
+                _state.update { it.copy(attentionCount = count) }
             }
         }
     }
