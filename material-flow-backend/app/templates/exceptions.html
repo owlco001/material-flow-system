@@ -14,6 +14,8 @@
     <p class="stat-label">待料任务</p><p class="stat-num">{{ todo.waiting_material_tasks }}</p></a>
   <a class="card todo-card" href="/admin/tasks?status=IN_PROGRESS">
     <p class="stat-label">装配进行中</p><p class="stat-num">{{ todo.in_progress_tasks }}</p></a>
+  <a class="card todo-card {% if todo.expiring_materials %}todo-warn{% endif %}" href="/admin/warehouse#expiry">
+    <p class="stat-label">临期/过期物料</p><p class="stat-num">{{ todo.expiring_materials }}</p></a>
 </div>
 <style>
 .todo-title { margin: 4px 0 8px; font-size: 15px; color: var(--muted); }
