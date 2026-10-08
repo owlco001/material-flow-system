@@ -137,6 +137,7 @@ class OfflinePersistenceRegressionTest {
             it.status == SyncStatus.PENDING.name || it.status == SyncStatus.FAILED.name
         }.sortedBy { it.createdAt }.take(20)
         override fun observePendingCount() = flowOf(pendingCount())
+        override fun observeAttentionCount() = flowOf(state.value.count { it.status == SyncStatus.FAILED.name || it.status == SyncStatus.CONFLICT.name })
         override suspend fun insert(operation: OfflineOperationEntity): Long {
             if (state.value.any { it.id == operation.id }) return -1L
             state.value = state.value + operation
