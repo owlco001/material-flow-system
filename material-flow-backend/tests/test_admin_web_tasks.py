@@ -84,7 +84,7 @@ def test_tasks_show_members_with_lead_label():
         r = client.get("/admin/tasks")
         assert r.status_code == 200
         assert "task_1" in r.text and "MC-001" in r.text
-        assert "LEAD" in r.text and "fitter1" in r.text
+        assert "组长" in r.text and "fitter1" in r.text  # 角色已本地化显示
 
 
 def test_assign_two_members_lead_first():
