@@ -4,6 +4,30 @@
 <div class="compact">
 <h2>异常处理</h2>
 
+<h3 class="todo-title">待办</h3>
+<div class="cards todo-cards">
+  <a class="card todo-card {% if todo.pending_transfers %}todo-hot{% endif %}" href="/admin/flows?status=PENDING_APPROVAL">
+    <p class="stat-label">待审批流转</p><p class="stat-num">{{ todo.pending_transfers }}</p></a>
+  <a class="card todo-card {% if todo.pending_handovers %}todo-hot{% endif %}" href="/admin/handovers">
+    <p class="stat-label">待确认交接</p><p class="stat-num">{{ todo.pending_handovers }}</p></a>
+  <a class="card todo-card {% if todo.waiting_material_tasks %}todo-warn{% endif %}" href="/admin/tasks?status=WAITING_MATERIAL">
+    <p class="stat-label">待料任务</p><p class="stat-num">{{ todo.waiting_material_tasks }}</p></a>
+  <a class="card todo-card" href="/admin/tasks?status=IN_PROGRESS">
+    <p class="stat-label">装配进行中</p><p class="stat-num">{{ todo.in_progress_tasks }}</p></a>
+</div>
+<style>
+.todo-title { margin: 4px 0 8px; font-size: 15px; color: var(--muted); }
+.todo-cards { margin-bottom: 18px; }
+a.todo-card { text-decoration: none; color: inherit; border-left: 4px solid var(--line); transition: transform .12s, box-shadow .12s; }
+a.todo-card:hover { transform: translateY(-1px); box-shadow: 0 6px 20px -6px rgba(16,24,40,.25); }
+a.todo-card.todo-hot { border-left-color: var(--err); }
+a.todo-card.todo-hot .stat-num { color: var(--err); }
+a.todo-card.todo-warn { border-left-color: var(--warn); }
+a.todo-card.todo-warn .stat-num { color: var(--warn); }
+</style>
+
+<h3 class="todo-title">异常概况</h3>
+
 <div class="cards">
   <div class="card"><p class="stat-label">待处理</p><p class="stat-num" style="color:#dc3545">{{ open_count }}</p></div>
   <div class="card"><p class="stat-label">处理中</p><p class="stat-num" style="color:#b7791f">{{ in_progress_count }}</p></div>
