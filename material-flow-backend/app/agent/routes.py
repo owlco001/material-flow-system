@@ -149,8 +149,8 @@ async def agent_import_preview(
     x_request_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     trace_id = _trace(x_request_id)
+    _check_import_role(user, trace_id)   # 先鉴权：无权限用户应得 403，而不是暴露 Agent 配置状态
     cfg = _agent_cfg(trace_id)
-    _check_import_role(user, trace_id)
     if target not in agent_importer.TARGETS:
         raise ApiError(
             400, "AGENT_BAD_TARGET",
