@@ -1517,6 +1517,42 @@ EXCEPTION_STATUS_LABELS = {
 }
 
 
+EXPIRY_WARN_DAYS = 30
+_EXPIRY_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d")
+
+
+def _parse_expiry(value: Any):
+    """宽松解析物料效期（导入数据格式不统一），失败返回 None。"""
+    text = str(value or "").strip()[:10]
+    for fmt in _EXPIRY_FORMATS:
+        try:
+            return datetime.strptime(text if fmt != "%Y%m%d" else text[:8], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _expiring_materials(c, warn_days: int = EXPIRY_WARN_DAYS) -> list[dict]:
+    """有可用库存且已过期 / warn_days 天内到期的物料，按到期日升序。以北京时间计“今天”。"""
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    rows = c.execute(
+        "SELECT code, name, batch_no, expiry_date, available_quantity, unit FROM materials"
+        " WHERE expiry_date IS NOT NULL AND TRIM(expiry_date) <> '' AND available_quantity > 0"
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = _parse_expiry(r["expiry_date"])
+        if d is None:
+            continue
+        days_left = (d - today).days
+        if days_left <= warn_days:
+            item = dict(r)
+            item["days_left"] = days_left
+            result.append(item)
+    result.sort(key=lambda x: x["days_left"])
+    return result
+
+
 @router.get("/admin/warehouse", response_class=HTMLResponse)
 def admin_warehouse(request: Request):
     user, denied = _manager_or_403(request)
@@ -1532,6 +1568,11 @@ def admin_warehouse(request: Request):
             material_error = f"{exc.status_code}：{exc.detail}"
     stocktakes = api_list_stocktakes(user=user)["items"]
     exceptions = api_list_exceptions(user=user)["items"]
+    c = db()
+    try:
+        expiring = _expiring_materials(c)
+    finally:
+        c.close()
     return templates.TemplateResponse(
         request,
         "warehouse.html",
@@ -1541,6 +1582,8 @@ def admin_warehouse(request: Request):
             "code": code,
             "material": material,
             "material_error": material_error,
+            "expiring": expiring,
+            "expiry_warn_days": EXPIRY_WARN_DAYS,
             "stocktakes": stocktakes,
             "exceptions": exceptions,
             "stocktake_ops": {s["id"]: str(uuid.uuid4()) for s in stocktakes},
@@ -1635,6 +1678,7 @@ def admin_exceptions(request: Request):
             "in_progress_tasks": c.execute(
                 "SELECT COUNT(*) FROM assembly_tasks WHERE status='IN_PROGRESS'"
             ).fetchone()[0],
+            "expiring_materials": len(_expiring_materials(c)),
         }
     finally:
         c.close()
