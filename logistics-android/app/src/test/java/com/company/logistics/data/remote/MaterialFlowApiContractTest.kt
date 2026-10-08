@@ -551,7 +551,9 @@ class MaterialFlowApiContractTest {
         }
 
         assertTrue(captured.body.contains("\\r\\n") == false)
-        assertTrue(captured.body.contains("\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\nM-1\r\n"))
+        // 已改用 OkHttp MultipartBody：每个 part 额外带 Content-Length 头，故分段断言
+        assertTrue(captured.body.contains("\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n"))
+        assertTrue(captured.body.contains("\r\n\r\nM-1\r\n"))
         assertTrue(captured.body.contains("\r\nContent-Disposition: form-data; name=\"file\"; filename=\"bom.csv\"\r\n"))
         assertTrue(captured.body.endsWith("\r\n"))
     }
