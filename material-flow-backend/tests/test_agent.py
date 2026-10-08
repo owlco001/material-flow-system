@@ -183,9 +183,16 @@ def test_import_preview_validation_errors_block_commit(tmp_path, monkeypatch):
         p = r.json()
         assert not p["canCommit"] and p["invalidRows"] == 3 and p["validRows"] == 1
         assert all("row" in e and "message" in e for e in p["errors"])
+        # eddf253 起错误行不阻塞提交：有效行写入，错误行记入 agent_import_error_logs 待人工处理
         c1 = client.post("/api/v1/agent/import/commit",
                          json={"job_id": p["jobId"], "client_operation_id": rid()}, headers=auth)
-        assert c1.status_code == 422
+        assert c1.status_code == 200, c1.text
+        c = backend.db()
+        try:
+            assert c.execute("SELECT COUNT(*) FROM agent_import_error_logs WHERE job_id=?", (p["jobId"],)).fetchone()[0] == 3
+            assert c.execute("SELECT COUNT(*) FROM materials WHERE code='MTR-202'").fetchone()[0] == 1
+        finally:
+            c.close()
 
 
 def test_import_orders_and_inventory(tmp_path, monkeypatch):
@@ -206,11 +213,16 @@ def test_import_orders_and_inventory(tmp_path, monkeypatch):
         r2 = preview(client, auth, "orders",
                      csv_bytes(["订单号"], [{"订单号": "PO-9001"}]))
         assert r2.status_code == 200 and not r2.json()["canCommit"]
-        # 库存：物料/库位不存在被拦
+        # 库存：物料/库位不存在时自动建档（eddf253 起），不再拦截
         r3 = preview(client, auth, "inventory",
                      csv_bytes(["物料编码", "库位编码", "数量"],
                                [{"物料编码": "NOPE", "库位编码": "A-01-03", "数量": "5"}]))
-        assert r3.status_code == 200 and not r3.json()["canCommit"]
+        assert r3.status_code == 200 and r3.json()["canCommit"]
+        # 数量非法仍被拦
+        r4 = preview(client, auth, "inventory",
+                     csv_bytes(["物料编码", "库位编码", "数量"],
+                               [{"物料编码": "NOPE", "库位编码": "A-01-03", "数量": "abc"}]))
+        assert r4.status_code == 200 and not r4.json()["canCommit"]
         c.close()
 
 
