@@ -30,7 +30,18 @@ jobs:
           ./gradlew :app:testDebugUnitTest --continue 2>&1 | tee gradle.log || {
             # 把编译错误与失败用例转成注解，未登录也能在 run 页面看到
             grep -E "^e: " gradle.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
-            grep -E " > .* FAILED$" gradle.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          n = 0
+          for f in glob.glob("app/build/test-results/**/*.xml", recursive=True):
+              for tc in ET.parse(f).getroot().iter("testcase"):
+                  for fail in list(tc.findall("failure")) + list(tc.findall("error")):
+                      msg = (fail.get("message") or fail.text or "").strip().splitlines()
+                      first = msg[0][:300] if msg else ""
+                      print(f"::error::{tc.get('classname')}.{tc.get('name')}: {first}")
+                      n += 1
+                      if n >= 40: raise SystemExit
+          PY
             exit 1
           }
       - name: 上传测试报告
