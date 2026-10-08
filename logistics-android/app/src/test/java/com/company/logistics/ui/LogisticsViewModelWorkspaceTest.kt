@@ -137,6 +137,7 @@ class LogisticsViewModelWorkspaceTest {
         override fun observeAll(): Flow<List<OfflineOperationEntity>> = emptyFlow()
         override suspend fun pending(): List<OfflineOperationEntity> = emptyList()
         override fun observePendingCount(): Flow<Int> = emptyFlow()
+        override fun observeAttentionCount(): Flow<Int> = emptyFlow()
         override suspend fun insert(operation: OfflineOperationEntity): Long = 1L
         override suspend fun updateStatus(id: String, status: String, error: String?) = Unit
         override suspend fun markSynced(id: String, status: String, serverTime: String?) = Unit
