@@ -150,7 +150,7 @@ async function previewAggBom() {
 }
 async function commitAggBom() {
   if (!aggbomPreviewId) return;
-  if (!confirm("确认导入聚合 BOM？")) return;
+  if (!(await uiConfirm("预览中的有效行将写入聚合 BOM。", {title: "导入聚合 BOM？", ok: "确认导入"}))) return;
   const box = document.getElementById("aggbom-preview");
   try {
     const r = await fetch("/admin/agent/import/aggbom/commit", {
@@ -466,7 +466,7 @@ async function previewBomImport() {
 }
 async function commitBomImport() {
   if (!bomPreviewId) return;
-  if (!confirm("确认提交 BOM 导入？")) return;
+  if (!(await uiConfirm("预览中的有效行将生成新的 BOM 版本。", {title: "提交 BOM 导入？", ok: "提交"}))) return;
   const preview = document.getElementById("import-preview");
   try {
     const r = await fetch("/admin/agent/import/bom/commit", {
@@ -483,7 +483,7 @@ async function commitBomImport() {
 }
 async function commitImport() {
   if (!previewJobId) return;
-  if (!confirm("确认提交导入？")) return;
+  if (!(await uiConfirm("有效行将写入系统，错误行会记录到错误日志，不会导入。", {title: "提交导入？", ok: "提交"}))) return;
   const preview = document.getElementById("import-preview");
   try {
     const res = await apiCall("/admin/agent/import/commit", "POST", { job_id: previewJobId });
