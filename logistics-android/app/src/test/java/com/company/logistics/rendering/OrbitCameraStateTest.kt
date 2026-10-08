@@ -11,17 +11,18 @@ class OrbitCameraStateTest {
         camera.pan(2f, 3f)
 
         camera.fit(radius = 2f)
-        assertEquals(5.55f, camera.distance, 0.01f)
+        // 取景系数 1.15 → 2.2（26e23d6，对齐 three.js fitCameraToObject）
+        assertEquals(10.62f, camera.distance, 0.01f)
         assertEquals(0f, camera.panX, 0.001f)
         assertEquals(0f, camera.panY, 0.001f)
 
         // 取景随模型尺度自适应：绝不被固定区间钳制（曾把 2cm 模型钳到 0.1 距离
        // 造成近平面裁剪"巨大化"，也曾把大模型钳在 20 单位而放不下）。
         camera.fit(radius = 100f)
-        assertEquals(277.7f, camera.distance, 0.1f)
+        assertEquals(531.1f, camera.distance, 0.2f)
 
         camera.fit(radius = 0.017f)
-        assertEquals(0.0472f, camera.distance, 0.0005f)
+        assertEquals(0.0903f, camera.distance, 0.0005f)
     }
 
     @Test
@@ -33,8 +34,9 @@ class OrbitCameraStateTest {
         camera.zoom(scale = 0.001f)
         assertEquals(framed * 50f, camera.distance, framed * 0.001f)
 
+        // 最近距离受包围球保护：max(fit/50, radius*1.15)，相机不会钻进模型
         camera.zoom(scale = 100000f)
-        assertEquals(framed / 50f, camera.distance, framed * 0.001f)
+        assertEquals(0.017f * 1.15f, camera.distance, framed * 0.001f)
     }
 
     @Test
@@ -60,8 +62,8 @@ class OrbitCameraStateTest {
         camera.fit(radius = 2f, aspect = 0.46f)
         val portraitDistance = camera.distance
         assert(portraitDistance > squareAspectDistance) { "portrait fit must back the camera up" }
-        // halfFovX = atan(tan(22.5deg) * 0.46); distance = radius / tan(halfFovX) * 1.15
-        assertEquals(12.07f, portraitDistance, 0.05f)
+        // halfFovX = atan(tan(22.5deg) * 0.46); distance = radius / tan(halfFovX) * 2.2
+        assertEquals(23.09f, portraitDistance, 0.05f)
     }
     @Test
     fun rotateClampsPitchAndWrapsYaw() {
