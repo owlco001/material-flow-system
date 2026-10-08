@@ -662,6 +662,7 @@ open class LogisticsRepository(
 
     /** 观察待同步数量（顶部横幅用） */
     fun observePendingCount(): Flow<Int> = dao.observePendingCount()
+    fun observeAttentionCount(): Flow<Int> = dao.observeAttentionCount()
 
     /**
      * 同步全部待处理记录。
