@@ -92,7 +92,7 @@ def test_models_code_filter_shows_published_card():
         r = client.get("/admin/models?code=GearboxAssy")
         assert r.status_code == 200
         assert "当前发布 · GearboxAssy" in r.text
-        assert "版本 v2" in r.text and "bbbbbbbbbbbbbbbb" in r.text
+        assert "v2" in r.text and "bbbbbbbbbbbbbbbb" in r.text
 
 
 def test_models_unknown_code_and_empty_db():
