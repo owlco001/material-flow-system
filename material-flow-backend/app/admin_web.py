@@ -1621,6 +1621,21 @@ def admin_exceptions(request: Request):
         open_count = sum(1 for e in exceptions if e["status"] in ("OPEN", "PENDING"))
         in_progress_count = sum(1 for e in exceptions if e["status"] == "IN_PROGRESS")
         resolved_count = sum(1 for e in exceptions if e["status"] in ("RESOLVED", "CLOSED", "APPROVED"))
+        # 首页待办：/admin/ 直接落在本页，把跨模块需要人处理的数量集中展示
+        todo_counts = {
+            "pending_transfers": c.execute(
+                "SELECT COUNT(*) FROM transfer_requests WHERE status='PENDING_APPROVAL'"
+            ).fetchone()[0],
+            "pending_handovers": c.execute(
+                "SELECT COUNT(*) FROM material_handovers WHERE status='PENDING'"
+            ).fetchone()[0],
+            "waiting_material_tasks": c.execute(
+                "SELECT COUNT(*) FROM assembly_tasks WHERE status='WAITING_MATERIAL'"
+            ).fetchone()[0],
+            "in_progress_tasks": c.execute(
+                "SELECT COUNT(*) FROM assembly_tasks WHERE status='IN_PROGRESS'"
+            ).fetchone()[0],
+        }
     finally:
         c.close()
     return templates.TemplateResponse(
@@ -1636,6 +1651,7 @@ def admin_exceptions(request: Request):
             "in_progress_count": in_progress_count,
             "resolved_count": resolved_count,
             "import_error_count": len(import_errors),
+            "todo": todo_counts,
             "exc_status_labels": {"OPEN": "待处理", "PENDING": "待处理", "IN_PROGRESS": "处理中",
                                   "RESOLVED": "已解决", "CLOSED": "已关闭",
                                   "APPROVED": "已通过", "REJECTED": "已驳回"},
