@@ -573,6 +573,9 @@ def init_db() -> None:
     try:
         _init_db(c)
         ensure_agent_tables(c)
+        # 导入操作/错误日志表原先只在首次导入时懒建，新库打开管理台首页会 no such table
+        from app.agent.importer import _ensure_operation_table
+        _ensure_operation_table(c)
     except Exception:
         c.rollback()
         raise
