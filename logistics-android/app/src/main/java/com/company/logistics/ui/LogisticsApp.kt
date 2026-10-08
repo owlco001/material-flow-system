@@ -191,11 +191,12 @@ fun LogisticsApp(
                     .padding(padding)
             ) {
                 // 离线状态条常驻：断网时始终显示（即使队列为空），有待同步时显示数量
-                if (!isOnline || state.pendingCount > 0) {
+                if (!isOnline || state.pendingCount > 0 || state.attentionCount > 0) {
                     OfflineBanner(
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
                         offline = !isOnline,
+                        attentionCount = state.attentionCount,
                         onTap = { viewModel.navigate(Screen.QUEUE) }
                     )
                 }
