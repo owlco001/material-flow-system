@@ -39,6 +39,22 @@
 {% endif %}
 {% endif %}
 
+<h3 id="expiry" style="margin-top:16px">效期预警 <span class="muted" style="font-size:13px;font-weight:400">有可用库存，已过期或 {{ expiry_warn_days }} 天内到期</span></h3>
+<table>
+  <tr><th>物料</th><th>批次</th><th>效期</th><th>可用</th><th>状态</th></tr>
+  {% for e in expiring %}
+  <tr class="{% if e.days_left < 0 %}row-red{% else %}row-yellow{% endif %}">
+    <td><a href="/admin/warehouse?code={{ e.code|urlencode }}">{{ e.code }}</a> {{ e.name }}</td>
+    <td>{{ e.batch_no or "—" }}</td>
+    <td>{{ e.expiry_date }}</td>
+    <td>{{ e.available_quantity }} {{ e.unit or "" }}</td>
+    <td>{% if e.days_left < 0 %}<span class="st st-red">已过期 {{ -e.days_left }} 天</span>{% elif e.days_left == 0 %}<span class="st st-red">今天到期</span>{% else %}<span class="st st-yellow">{{ e.days_left }} 天后到期</span>{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5">暂无临期或过期物料</td></tr>
+  {% endfor %}
+</table>
+
 <h3 style="margin-top:16px">盘点待确认</h3>
 <table>
   <tr><th>ID</th><th>物料</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>创建</th><th>确认</th><th>操作</th></tr>
