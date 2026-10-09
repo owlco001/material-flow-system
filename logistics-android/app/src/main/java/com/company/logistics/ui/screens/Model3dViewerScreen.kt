@@ -197,6 +197,8 @@ fun Model3dViewerScreen(
                             },
                         factory = { ctx ->
                             TextureView(ctx).also { view ->
+                                // 查看/对照装配时常常不碰屏幕：保持亮屏，避免自动锁屏销毁渲染表面
+                                view.keepScreenOn = true
                                 view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                     override fun onSurfaceTextureAvailable(
                                         surfaceTexture: SurfaceTexture, width: Int, height: Int,
@@ -204,11 +206,14 @@ fun Model3dViewerScreen(
                                         onStageChange("正在创建渲染表面…")
                                         renderer.attach(Surface(surfaceTexture)).fold(
                                             {
-                                                onStageChange("正在加载模型文件…")
-                                                loadGlbInto(renderer, glbFile) { renderStatus = it }
-                                                onStageChange("模型加载完成，正在渲染…")
-                                                // 模型加载后提取零件清单
-                                                parts = renderer.getParts()
+                                                // 锁屏/切后台回来 surface 重建：模型仍在内存，只需重新挂 surface
+                                                if (!renderer.hasModel) {
+                                                    onStageChange("正在加载模型文件…")
+                                                    loadGlbInto(renderer, glbFile) { renderStatus = it }
+                                                    onStageChange("模型加载完成，正在渲染…")
+                                                    // 模型加载后提取零件清单
+                                                    parts = renderer.getParts()
+                                                }
                                             },
                                             { renderStatus = "3D 不可用：${it.message ?: "设备不支持或初始化失败"}" },
                                         )
