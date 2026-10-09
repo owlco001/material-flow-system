@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.company.logistics.data.EndpointStore
-import com.company.logistics.data.remote.AppUpdateChecker
 import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.OfflineBanner
@@ -192,11 +191,12 @@ fun LogisticsApp(
                     .padding(padding)
             ) {
                 // 离线状态条常驻：断网时始终显示（即使队列为空），有待同步时显示数量
-                if (!isOnline || state.pendingCount > 0) {
+                if (!isOnline || state.pendingCount > 0 || state.attentionCount > 0) {
                     OfflineBanner(
                         pendingCount = state.pendingCount,
                         syncing = state.syncing,
                         offline = !isOnline,
+                        attentionCount = state.attentionCount,
                         onTap = { viewModel.navigate(Screen.QUEUE) }
                     )
                 }
@@ -377,17 +377,7 @@ fun LogisticsApp(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
                     )
 
-                    Screen.PROFILE -> {
-                        val _ctx = androidx.compose.ui.platform.LocalContext.current
-                        val _updateChecker = remember(endpointStore.effectiveUrl) {
-                            AppUpdateChecker(
-                                context = _ctx,
-                                api = viewModel.repository.apiHandle,
-                                baseUrl = { endpointStore.effectiveUrl },
-                            )
-                        }
-                        ProfileScreen(
-                        appUpdateChecker = _updateChecker,
+                    Screen.PROFILE -> ProfileScreen(
                         userName = state.currentUser,
                         role = state.role,
                         queue = state.offlineQueue,
@@ -402,7 +392,6 @@ fun LogisticsApp(
                         onRetryMyTransfers = { viewModel.loadMyTransferRequests() },
                         onLogout = { viewModel.logout() }
                     )
-                    }
 
                     Screen.ENDPOINT_CONFIG -> EndpointConfigScreen(
                         store = endpointStore,
