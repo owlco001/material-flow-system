@@ -573,6 +573,9 @@ def init_db() -> None:
     try:
         _init_db(c)
         ensure_agent_tables(c)
+        # 导入操作/错误日志表原先只在首次导入时懒建，新库打开管理台首页会 no such table
+        from app.agent.importer import _ensure_operation_table
+        _ensure_operation_table(c)
     except Exception:
         c.rollback()
         raise
@@ -6611,9 +6614,3 @@ try:
 except ImportError:
     from u9.routes import router as _u9_router
 app.include_router(_u9_router)
-# APP 更新通道 + 后端自更新通道（GitHub，手动）。
-try:
-    from .updates import router as _updates_router
-except ImportError:
-    from updates import router as _updates_router
-app.include_router(_updates_router)
