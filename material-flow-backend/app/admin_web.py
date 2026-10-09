@@ -6,9 +6,7 @@
 from __future__ import annotations
 
 import csv
-import functools
 import hmac
-import inspect
 import io
 import re
 import secrets
@@ -19,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -931,32 +929,46 @@ def _report_or_403(request: Request):
     return user, None
 
 
+def _with_plain_defaults(fn):
+    """直接调用路由函数时，把未传参数的 Query()/Header() 等 FieldInfo 默认值替换为其真实默认值。
+
+    否则 FieldInfo 对象会被原样传进 SQL（sqlite3.ProgrammingError: type 'Query' is not supported），
+    例如给 list_assembly_tasks 新增 deviceId 后 /admin/tasks 整页 500。
+    """
+    import functools
+    import inspect
+    from fastapi.params import Depends as _DependsParam
+    from pydantic.fields import FieldInfo
+    from pydantic_core import PydanticUndefined
+
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        bound = sig.bind_partial(*args, **kwargs)
+        for name, param in sig.parameters.items():
+            if name in bound.arguments:
+                continue
+            default = param.default
+            if isinstance(default, FieldInfo) and not isinstance(default, _DependsParam):
+                if default.default is not PydanticUndefined:
+                    kwargs[name] = default.default
+                elif default.default_factory is not None:
+                    kwargs[name] = default.default_factory()
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _api_endpoint(path: str, method: str = "GET"):
     """从 FastAPI 路由表解析既有 API 处理函数并直接调用（统计口径零漂移）。
 
     workshop 统计端点注册在 assembly_routes.register() 闭包内，无法按模块名导入；
     路由表解析保持「同一函数、同一 SQL」语义。
-
-    返回的包装函数会自动把调用方未传的 Query 参数还原为其默认值，
-    避免 FastAPI 的 Query 对象被当成真值拼进 SQL（全新部署 500 的根因之一）。
     """
     for route in backend_app.routes:
         if getattr(route, "path", "") == path and method in getattr(route, "methods", set()):
-            raw_endpoint = route.endpoint
-            sig = inspect.signature(raw_endpoint)
-
-            @functools.wraps(raw_endpoint)
-            def _wrapped(*args, **kwargs):
-                bound = sig.bind_partial(*args, **kwargs)
-                for pname, param in sig.parameters.items():
-                    if pname not in bound.arguments:
-                        default = param.default
-                        # Query(default=X) -> 还原为 X；其他默认值保持原样
-                        if isinstance(default, Query):
-                            bound.arguments[pname] = default.default
-                return raw_endpoint(*bound.args, **bound.kwargs)
-
-            return _wrapped
+            return _with_plain_defaults(route.endpoint)
     raise RuntimeError(f"API endpoint not found: {method} {path}")
 
 
@@ -1892,8 +1904,7 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     f_status = (request.query_params.get("status") or "").strip() or None
     try:
         tasks_data = _api_endpoint("/api/v1/assembly/tasks")(
-            page=page, pageSize=20, q=q, status=f_status,
-            deviceNo=None, deviceId=None, user=user
+            page=page, pageSize=20, q=q, status=f_status, user=user
         )
     except HTTPException as exc:
         return _api_http_error_response(exc)
@@ -2039,15 +2050,14 @@ def admin_boms(request: Request):
     except HTTPException as exc:
         return _api_http_error_response(exc)
     # 聚合 BOM 批次（智能导入）
-    import sqlite3 as _sq3
-    from pathlib import Path as _Path
-    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
-    _c = _sq3.connect(str(_db_path))
-    _c.row_factory = _sq3.Row
-    agg_batches = _c.execute(
-        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
-    ).fetchall()
-    _c.close()
+    # 走统一 db()，尊重 DATA_DIR 配置（原先硬编码 app/../data 路径，部署目录不同即打不开库）
+    _c = db()
+    try:
+        agg_batches = _c.execute(
+            "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+    finally:
+        _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
@@ -2103,15 +2113,14 @@ async def admin_bom_preview(request: Request):
 def _bom_error_page(request: Request, user: sqlite3.Row, error: str):
     data = api_bom_versions(modelCode=None, status=None, page=1, pageSize=20, user=user)
     # 聚合 BOM 批次（智能导入）
-    import sqlite3 as _sq3
-    from pathlib import Path as _Path
-    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
-    _c = _sq3.connect(str(_db_path))
-    _c.row_factory = _sq3.Row
-    agg_batches = _c.execute(
-        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
-    ).fetchall()
-    _c.close()
+    # 走统一 db()，尊重 DATA_DIR 配置（原先硬编码 app/../data 路径，部署目录不同即打不开库）
+    _c = db()
+    try:
+        agg_batches = _c.execute(
+            "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+    finally:
+        _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
@@ -3089,133 +3098,3 @@ async def admin_agent_settings_set(request: Request):
     finally:
         c.close()
     return JSONResponse({"ok": True})
-
-
-# --------------------------------------------------------------------------
-# APP 更新通道：APK 发布管理
-# --------------------------------------------------------------------------
-
-@router.get("/admin/releases", response_class=HTMLResponse)
-def admin_releases(request: Request):
-    user, denied = _admin_or_403(request)
-    if denied:
-        return denied
-    from app import updates as _updates
-    releases = _updates.list_releases()
-    return templates.TemplateResponse(
-        request, "releases.html",
-        {"_p": "/admin/releases", "_r": user["role"], "_u": user,
-         "releases": releases,
-         "notice": request.query_params.get("notice", ""),
-         "csrf_token": user["csrf_token"]},
-    )
-
-
-@router.post("/admin/releases/upload")
-async def admin_releases_upload(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return _see_other("/admin/login")
-    if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
-    form = await request.form()
-    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
-    upload = form.get("file")
-    if upload is None or not getattr(upload, "filename", ""):
-        return _see_other("/admin/releases?notice=no_file")
-    try:
-        version_code = int(str(form.get("version_code", "")).strip())
-    except (ValueError, AttributeError):
-        return _see_other("/admin/releases?notice=bad_version")
-    from app import updates as _updates
-    try:
-        data = await upload.read()
-        _updates.save_apk_upload(
-            data,
-            str(upload.filename),
-            version_code,
-            str(form.get("version_name", "")).strip(),
-            str(form.get("changelog", "")).strip(),
-            user["username"],
-        )
-    except ApiError as exc:
-        return _see_other(f"/admin/releases?notice={exc.code}")
-    except HTTPException as exc:
-        return _see_other(f"/admin/releases?notice={getattr(exc, 'detail', 'upload_failed')}")
-    return _see_other("/admin/releases?notice=uploaded")
-
-
-@router.post("/admin/releases/delete")
-async def admin_releases_delete(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return _see_other("/admin/login")
-    if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
-    form = await request.form()
-    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
-    try:
-        version_code = int(str(form.get("version_code", "")).strip())
-    except (ValueError, AttributeError):
-        return _see_other("/admin/releases?notice=bad_version")
-    from app import updates as _updates
-    ok = _updates.delete_release(version_code)
-    return _see_other(f"/admin/releases?notice={'deleted' if ok else 'not_found'}")
-
-
-# --------------------------------------------------------------------------
-# 后端自更新通道（GitHub，手动）
-# --------------------------------------------------------------------------
-
-@router.get("/admin/system", response_class=HTMLResponse)
-def admin_system(request: Request):
-    user, denied = _admin_or_403(request)
-    if denied:
-        return denied
-    from app import updates as _updates
-    from app.main import APP_VERSION
-    import json as _json2
-    check_raw = request.query_params.get("check", "")
-    try:
-        check_result = _json2.loads(check_raw) if check_raw else None
-    except ValueError:
-        check_result = None
-    return templates.TemplateResponse(
-        request, "system.html",
-        {"_p": "/admin/system", "_r": user["role"], "_u": user,
-         "app_version": APP_VERSION,
-         "deployed_sha": _updates.get_deployed_sha(),
-         "update_status": _updates.get_update_status(),
-         "check_result": check_result,
-         "notice": request.query_params.get("notice", ""),
-         "csrf_token": user["csrf_token"]},
-    )
-
-
-@router.post("/admin/system/update/check")
-async def admin_system_update_check(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return _see_other("/admin/login")
-    if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
-    form = await request.form()
-    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
-    from app import updates as _updates
-    try:
-        info = _updates.check_github_update()
-    except ApiError as exc:
-        return _see_other(f"/admin/system?notice={exc.code}")
-    import json as _json
-    from urllib.parse import quote as _quote
-    payload = _quote(_json.dumps({
-        "latestSha": info["latestSha"][:12],
-        "fullSha": info["latestSha"],
-        "message": info["latestMessage"],
-        "date": info["latestDate"],
-        "updateAvailable": info["updateAvailable"],
-    }, ensure_ascii=False))
-    return _see_other(f"/admin/system?check={payload}")
