@@ -30,16 +30,10 @@ android {
         applicationId = "com.company.logistics"
         minSdk = 26
         targetSdk = 34
-        versionCode = 42
-        versionName = "0.5.35"
+        versionCode = 43
+        versionName = "0.5.36"
 
         buildConfigField("String", "API_BASE_URL", "\"$escapedApiBaseUrl\"")
-
-        ndk {
-            // Filament 三件套（fix4 引入的 3D 查看器）默认全 4 ABI 打包，
-            // 使 debug 包从 59MB 涨到 93MB；部署目标为 arm64 真机，裁剪其余 ABI。
-            abiFilters += listOf("arm64-v8a")
-        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -96,9 +90,6 @@ dependencies {
     // 注意：filament 1.76.0+ 要求 compileSdk 37，项目当前为 34，故选用 1.75.x 中最高的 1.75.1。
     implementation("com.google.android.filament:filament-android:1.75.1")
     implementation("com.google.android.filament:gltfio-android:1.75.1")
-    // 运行时材质编译（MaterialBuilder）：网格线 / 零件高亮 / 半透明 ghost 程序化材质，
-    // 免去本地 matc 工具链；版本必须与 filament-android 完全一致（材质版本 75）。
-    implementation("com.google.android.filament:filamat-android:1.75.1")
 
     // 网络层：OkHttp（连接池 + HTTP/2 复用，扫码等高频请求不再每次重建 TLS）。
     // 4.12.0 为 4.x 稳定版；MaterialFlowApi 仅用同步 execute()，无需协程扩展。
