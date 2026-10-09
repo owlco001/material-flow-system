@@ -573,9 +573,6 @@ def init_db() -> None:
     try:
         _init_db(c)
         ensure_agent_tables(c)
-        # 导入操作/错误日志表原先只在首次导入时懒建，新库打开管理台首页会 no such table
-        from app.agent.importer import _ensure_operation_table
-        _ensure_operation_table(c)
     except Exception:
         c.rollback()
         raise
@@ -3348,9 +3345,6 @@ def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str
             "assignmentRole": m["assignment_role"],
             "assignedBy": m["assigned_by"], "assignedAt": m["assigned_at"],
             "removedAt": m["removed_at"],
-            # 兼容字段：管理台模板与 assembly_routes 的分配接口使用 snake_case（Android 两种都认）
-            "assembler_id": m["assembler_id"],
-            "assignment_role": m["assignment_role"],
         }
         for m in members
     ]
@@ -3409,13 +3403,12 @@ def list_assembly_tasks(
             args.append(deviceNo)
         if user["role"] == "ASSEMBLER":
             # 装配工只看分配给自己的任务（含成员表）
-            # 追加而非覆盖：原写法会丢掉上面的 deviceId/deviceNo 过滤，装配工在任一机台详情都看到自己全部任务
-            where += (
-                " AND (t.assigned_assembler_id = ? OR EXISTS ("
+            where = (
+                "(t.assigned_assembler_id = ? OR EXISTS ("
                 "SELECT 1 FROM assembly_task_members m "
                 "WHERE m.task_id = t.id AND m.assembler_id = ? AND m.removed_at IS NULL))"
             )
-            args += [user["id"], user["id"]]
+            args = [user["id"], user["id"]]
         if q:
             where += " AND (t.order_no LIKE ? OR t.device_no LIKE ?)"
             args += [f"%{q}%", f"%{q}%"]
@@ -6505,7 +6498,7 @@ def confirm_stocktake(
             if prior["stocktake_id"] != sid or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
                 raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id)
-            return result  # 幂等重放：交给 tx() 收尾；此处手动 close 会让 tx 的 commit 打在已关闭连接上 → 500
+            c.rollback(); c.close(); return result
         row = c.execute("SELECT * FROM stocktakes WHERE id=? AND status='PENDING_CONFIRM'", (sid,)).fetchone()
         if not row:
             _conflict("待确认盘点不存在或已处理", trace_id)
@@ -6574,7 +6567,7 @@ def review_exception(
             if prior["exception_id"] != eid or _payload_digest(prior["payload_json"]) != _payload_digest(payload):
                 raise ApiError(409, CODE_IDEMPOTENCY_PAYLOAD_MISMATCH, "相同幂等键的请求体不一致", trace_id=trace_id)
             result = json.loads(prior["result_json"]); result.update(idempotent=True, traceId=trace_id)
-            return result  # 幂等重放：交给 tx() 收尾；此处手动 close 会让 tx 的 commit 打在已关闭连接上 → 500
+            c.rollback(); c.close(); return result
         reviewed_at = now()
         cur = c.execute("UPDATE exceptions SET status=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status IN ('PENDING','OPEN')", (status, user["id"], reviewed_at, eid))
         if cur.rowcount != 1:
@@ -6618,3 +6611,9 @@ try:
 except ImportError:
     from u9.routes import router as _u9_router
 app.include_router(_u9_router)
+# APP 更新通道 + 后端自更新通道（GitHub，手动）。
+try:
+    from .updates import router as _updates_router
+except ImportError:
+    from updates import router as _updates_router
+app.include_router(_updates_router)

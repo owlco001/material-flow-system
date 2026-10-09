@@ -1621,21 +1621,6 @@ def admin_exceptions(request: Request):
         open_count = sum(1 for e in exceptions if e["status"] in ("OPEN", "PENDING"))
         in_progress_count = sum(1 for e in exceptions if e["status"] == "IN_PROGRESS")
         resolved_count = sum(1 for e in exceptions if e["status"] in ("RESOLVED", "CLOSED", "APPROVED"))
-        # 首页待办：/admin/ 直接落在本页，把跨模块需要人处理的数量集中展示
-        todo_counts = {
-            "pending_transfers": c.execute(
-                "SELECT COUNT(*) FROM transfer_requests WHERE status='PENDING_APPROVAL'"
-            ).fetchone()[0],
-            "pending_handovers": c.execute(
-                "SELECT COUNT(*) FROM material_handovers WHERE status='PENDING'"
-            ).fetchone()[0],
-            "waiting_material_tasks": c.execute(
-                "SELECT COUNT(*) FROM assembly_tasks WHERE status='WAITING_MATERIAL'"
-            ).fetchone()[0],
-            "in_progress_tasks": c.execute(
-                "SELECT COUNT(*) FROM assembly_tasks WHERE status='IN_PROGRESS'"
-            ).fetchone()[0],
-        }
     finally:
         c.close()
     return templates.TemplateResponse(
@@ -1651,7 +1636,6 @@ def admin_exceptions(request: Request):
             "in_progress_count": in_progress_count,
             "resolved_count": resolved_count,
             "import_error_count": len(import_errors),
-            "todo": todo_counts,
             "exc_status_labels": {"OPEN": "待处理", "PENDING": "待处理", "IN_PROGRESS": "处理中",
                                   "RESOLVED": "已解决", "CLOSED": "已关闭",
                                   "APPROVED": "已通过", "REJECTED": "已驳回"},
@@ -3085,3 +3069,133 @@ async def admin_agent_settings_set(request: Request):
     finally:
         c.close()
     return JSONResponse({"ok": True})
+
+
+# --------------------------------------------------------------------------
+# APP 更新通道：APK 发布管理
+# --------------------------------------------------------------------------
+
+@router.get("/admin/releases", response_class=HTMLResponse)
+def admin_releases(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    from app import updates as _updates
+    releases = _updates.list_releases()
+    return templates.TemplateResponse(
+        request, "releases.html",
+        {"_p": "/admin/releases", "_r": user["role"], "_u": user,
+         "releases": releases,
+         "notice": request.query_params.get("notice", ""),
+         "csrf_token": user["csrf_token"]},
+    )
+
+
+@router.post("/admin/releases/upload")
+async def admin_releases_upload(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return HTMLResponse("403 禁止访问", status_code=403)
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    upload = form.get("file")
+    if upload is None or not getattr(upload, "filename", ""):
+        return _see_other("/admin/releases?notice=no_file")
+    try:
+        version_code = int(str(form.get("version_code", "")).strip())
+    except (ValueError, AttributeError):
+        return _see_other("/admin/releases?notice=bad_version")
+    from app import updates as _updates
+    try:
+        data = await upload.read()
+        _updates.save_apk_upload(
+            data,
+            str(upload.filename),
+            version_code,
+            str(form.get("version_name", "")).strip(),
+            str(form.get("changelog", "")).strip(),
+            user["username"],
+        )
+    except ApiError as exc:
+        return _see_other(f"/admin/releases?notice={exc.code}")
+    except HTTPException as exc:
+        return _see_other(f"/admin/releases?notice={getattr(exc, 'detail', 'upload_failed')}")
+    return _see_other("/admin/releases?notice=uploaded")
+
+
+@router.post("/admin/releases/delete")
+async def admin_releases_delete(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return HTMLResponse("403 禁止访问", status_code=403)
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    try:
+        version_code = int(str(form.get("version_code", "")).strip())
+    except (ValueError, AttributeError):
+        return _see_other("/admin/releases?notice=bad_version")
+    from app import updates as _updates
+    ok = _updates.delete_release(version_code)
+    return _see_other(f"/admin/releases?notice={'deleted' if ok else 'not_found'}")
+
+
+# --------------------------------------------------------------------------
+# 后端自更新通道（GitHub，手动）
+# --------------------------------------------------------------------------
+
+@router.get("/admin/system", response_class=HTMLResponse)
+def admin_system(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    from app import updates as _updates
+    from app.main import APP_VERSION
+    import json as _json2
+    check_raw = request.query_params.get("check", "")
+    try:
+        check_result = _json2.loads(check_raw) if check_raw else None
+    except ValueError:
+        check_result = None
+    return templates.TemplateResponse(
+        request, "system.html",
+        {"_p": "/admin/system", "_r": user["role"], "_u": user,
+         "app_version": APP_VERSION,
+         "deployed_sha": _updates.get_deployed_sha(),
+         "update_status": _updates.get_update_status(),
+         "check_result": check_result,
+         "notice": request.query_params.get("notice", ""),
+         "csrf_token": user["csrf_token"]},
+    )
+
+
+@router.post("/admin/system/update/check")
+async def admin_system_update_check(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return _see_other("/admin/login")
+    if user["role"] not in WEB_ROLES:
+        return HTMLResponse("403 禁止访问", status_code=403)
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    from app import updates as _updates
+    try:
+        info = _updates.check_github_update()
+    except ApiError as exc:
+        return _see_other(f"/admin/system?notice={exc.code}")
+    import json as _json
+    from urllib.parse import quote as _quote
+    payload = _quote(_json.dumps({
+        "latestSha": info["latestSha"][:12],
+        "fullSha": info["latestSha"],
+        "message": info["latestMessage"],
+        "date": info["latestDate"],
+        "updateAvailable": info["updateAvailable"],
+    }, ensure_ascii=False))
+    return _see_other(f"/admin/system?check={payload}")

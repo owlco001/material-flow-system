@@ -235,11 +235,12 @@ def _github_json(url: str, timeout: int = 15) -> object:
 
 def check_github_update() -> dict:
     """查询 GitHub main 分支最新 commit。"""
-    data = _github_json(f"{GITHUB_API}/commits/{GITHUB_BRANCH}")
-    if not isinstance(data, dict) or not data.get("sha"):
+    data = _github_json(f"{GITHUB_API}/commits/{GITHUB_BRANCH}?per_page=1")
+    if not isinstance(data, list) or not data:
         raise ApiError(502, "GITHUB_ERROR", "GitHub 返回异常")
-    sha: str = data.get("sha", "")
-    commit = data.get("commit", {}) or {}
+    c0 = data[0]
+    sha: str = c0.get("sha", "")
+    commit = c0.get("commit", {}) or {}
     message: str = (commit.get("message") or "").split("\n")[0][:200]
     date: str = ((commit.get("author") or {}).get("date")) or ""
     deployed = get_deployed_sha()
