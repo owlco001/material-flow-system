@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -83,6 +84,7 @@ import com.company.logistics.ui.CameraStatus
 import com.company.logistics.ui.ScannerViewModel
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.LogisticsIcons
+import com.company.logistics.ui.components.ScanFeedback
 import com.company.logistics.ui.components.ScannerIcons
 import com.company.logistics.ui.components.PrimaryButton
 import com.company.logistics.ui.components.ScannerViewfinder
@@ -221,6 +223,30 @@ fun ScannerScreen(
         if (s is ScannerUiState.Resolved && confirmResult == null) {
             confirmResult = s.resolution
         }
+    }
+
+    // 扫码结果反馈：震动 + 提示音 + 全屏闪色。车间里戴手套、噪声大、视线不在屏幕上，
+    // 仅靠状态文字无法确认是否扫到。
+    val scanFeedback = remember { ScanFeedback(context) }
+    DisposableEffect(Unit) { onDispose { scanFeedback.release() } }
+    val flashAlpha = remember { Animatable(0f) }
+    var flashColor by remember { mutableStateOf(Color.Transparent) }
+    val successFlash = LogisticsTheme.colors.success
+    val errorFlash = LogisticsTheme.colors.danger
+    LaunchedEffect(uiState) {
+        when (uiState) {
+            is ScannerUiState.Resolved -> {
+                scanFeedback.success()
+                flashColor = successFlash
+            }
+            is ScannerUiState.Error -> {
+                scanFeedback.error()
+                flashColor = errorFlash
+            }
+            else -> return@LaunchedEffect
+        }
+        flashAlpha.snapTo(0.35f)
+        flashAlpha.animateTo(0f, tween(durationMillis = 450))
     }
 
     Box(modifier = modifier.fillMaxWidth()) {
@@ -509,6 +535,15 @@ fun ScannerScreen(
                     ),
                 )
             }
+        }
+
+        // 扫码结果闪色层：不拦截点击，仅视觉提示
+        if (flashAlpha.value > 0f) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(flashColor.copy(alpha = flashAlpha.value))
+            )
         }
     }
 }
