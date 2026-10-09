@@ -60,5 +60,10 @@ def ensure_agent_tables(conn: sqlite3.Connection) -> None:
             handle_note TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_errlog_status ON agent_import_error_logs(status);
+        CREATE TABLE IF NOT EXISTS agent_settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         """
     )

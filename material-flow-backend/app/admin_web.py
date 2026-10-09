@@ -1873,7 +1873,8 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     f_status = (request.query_params.get("status") or "").strip() or None
     try:
         tasks_data = _api_endpoint("/api/v1/assembly/tasks")(
-            page=page, pageSize=20, q=q, status=f_status, user=user
+            page=page, pageSize=20, q=q, status=f_status,
+            deviceNo=None, deviceId=None, user=user
         )
     except HTTPException as exc:
         return _api_http_error_response(exc)
