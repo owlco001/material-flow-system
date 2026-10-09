@@ -100,7 +100,7 @@ def test_flows_list_shows_pending_with_label():
         assert web_login(client, "wh-admin", "Wh@2026x").status_code == 303
         r = client.get("/admin/flows?status=PENDING_APPROVAL")
         assert r.status_code == 200
-        assert "tr_1" in r.text and "待审批" in r.text and "OUTBOUND" in r.text
+        assert "tr_1" in r.text and "待审批" in r.text and "出库" in r.text  # 类型已本地化显示
 
 
 def test_flow_detail_shows_payload_and_approve_form_only_when_pending():
