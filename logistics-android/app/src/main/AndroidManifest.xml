@@ -5,6 +5,8 @@
     <!-- 摄像头扫码：仅扫码页在页面可见时占用，禁止后台预占 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- APP 更新：下载后调起系统安装器（Android 8+ 必需） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 摄像头为可选硬件：无摄像头设备仍需能安装并用手动输入 -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -29,6 +31,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- APK 更新包安装：FileProvider 授权 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/filepaths" />
+        </provider>
         <!-- 3D 装配模型查看（正式入口，仅内部调用，不对外暴露） -->
         <activity
             android:name=".Model3dActivity"
