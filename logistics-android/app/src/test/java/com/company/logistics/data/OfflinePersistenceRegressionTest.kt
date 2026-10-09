@@ -153,19 +153,6 @@ class OfflinePersistenceRegressionTest {
         }
         override suspend fun clearSynced() { state.value = state.value.filter { it.status != SyncStatus.SYNCED.name } }
         override suspend fun findById(id: String) = state.value.firstOrNull { it.id == id }
-        override suspend fun resetStuckSyncing(): Int {
-            val stuck = state.value.count { it.status == SyncStatus.SYNCING.name }
-            state.value = state.value.map {
-                if (it.status == SyncStatus.SYNCING.name) it.copy(status = SyncStatus.PENDING.name, errorMessage = null) else it
-            }
-            return stuck
-        }
-        override suspend fun resetToPending(id: String) {
-            state.value = state.value.map {
-                if (it.id == id) it.copy(status = SyncStatus.PENDING.name, errorMessage = null) else it
-            }
-        }
-        override suspend fun deleteById(id: String) { state.value = state.value.filterNot { it.id == id } }
         private fun pendingCount() = state.value.count {
             it.status == SyncStatus.PENDING.name || it.status == SyncStatus.FAILED.name || it.status == SyncStatus.SYNCING.name
         }
