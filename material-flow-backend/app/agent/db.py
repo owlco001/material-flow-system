@@ -45,12 +45,20 @@ def ensure_agent_tables(conn: sqlite3.Connection) -> None:
             completion_tokens INTEGER NOT NULL,
             created_at TEXT NOT NULL
         );
-        -- agent_import_* 表由 app.agent.importer._ensure_operation_table() 创建（DRY，此处不重复）
-        -- agent_settings 独立建表（fix/admin-web-500s 未覆盖）
-        CREATE TABLE IF NOT EXISTS agent_settings(
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
+        CREATE TABLE IF NOT EXISTS agent_import_error_logs(
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            error_msg TEXT NOT NULL,
+            row_data TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT NOT NULL,
+            handled_at TEXT,
+            handled_by TEXT,
+            handle_note TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_errlog_status ON agent_import_error_logs(status);
         """
     )
