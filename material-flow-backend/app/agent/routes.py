@@ -38,7 +38,7 @@ class ImportCommitRequest(BaseModel):
     client_operation_id: str = Field(min_length=1, max_length=128)
 
 
-def _agent_cfg(trace_id: str, require_llm: bool = True) -> AgentConfig:
+def _agent_cfg(trace_id: str) -> AgentConfig:
     from dataclasses import replace
     cfg = AgentConfig.from_env()
     # 合并数据库里的配置（管理后台 Agent 页面保存的）
@@ -57,7 +57,7 @@ def _agent_cfg(trace_id: str, require_llm: bool = True) -> AgentConfig:
         pass
     if not cfg.enabled:
         raise ApiError(503, "AGENT_DISABLED", "Agent 功能未启用", trace_id=trace_id)
-    if require_llm and not cfg.api_key:
+    if not cfg.api_key:
         raise ApiError(503, "AGENT_LLM_ERROR", "AGENT_LLM_API_KEY 未配置", retryable=False, trace_id=trace_id)
     return cfg
 
@@ -150,8 +150,7 @@ async def agent_import_preview(
 ) -> dict[str, Any]:
     trace_id = _trace(x_request_id)
     _check_import_role(user, trace_id)   # 先鉴权：无权限用户应得 403，而不是暴露 Agent 配置状态
-    # 导入不依赖 LLM：未配置 key 时列映射走归一化精确匹配回退
-    cfg = _agent_cfg(trace_id, require_llm=False)
+    cfg = _agent_cfg(trace_id)
     if target not in agent_importer.TARGETS:
         raise ApiError(
             400, "AGENT_BAD_TARGET",
@@ -200,8 +199,8 @@ def agent_import_job(
     x_request_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     trace_id = _trace(x_request_id)
+    _agent_cfg(trace_id)
     _check_import_role(user, trace_id)
-    _agent_cfg(trace_id, require_llm=False)
     c = db()
     try:
         job = agent_importer.get_import_job(c, user["id"], job_id)
@@ -223,8 +222,8 @@ def agent_import_commit(
     x_request_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     trace_id = _trace(x_request_id)
+    _agent_cfg(trace_id)
     _check_import_role(user, trace_id)
-    _agent_cfg(trace_id, require_llm=False)
     c = db()
     try:
         try:
