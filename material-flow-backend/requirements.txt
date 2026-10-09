@@ -10,3 +10,5 @@ jinja2==3.1.4
 qrcode==8.2
 python-barcode==0.16.1
 pillow==12.3.0
+# 图纸拆页与缩略图：PDFium 绑定（Apache-2.0/BSD，自带二进制，无需系统库）
+pypdfium2==5.14.0
