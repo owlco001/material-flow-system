@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}App 发布 · 智慧工厂{% endblock %}
+{% block content %}
+<div class="compact">
+<h2>App 发布</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+
+<div class="card">
+  <h3>当前版本</h3>
+  {% if release %}
+  <p><b>{{ release.versionName }}</b>（versionCode {{ release.versionCode }}）{% if release.force %} · <span class="st st-red">强制更新</span>{% endif %}</p>
+  <p class="muted">发布于 {{ release.publishedAt[:16].replace("T", " ") }} · {{ release.publishedBy }} · {{ (release.size / 1048576) | round(1) }} MB</p>
+  <p class="muted">SHA-256：<code>{{ release.sha256 }}</code></p>
+  {% if release.notes %}<p style="white-space:pre-wrap">{{ release.notes }}</p>{% endif %}
+  <p><a class="btn btn-sm btn-secondary" href="/api/app/download">下载当前 APK</a></p>
+  {% else %}
+  <p class="muted">尚未发布。App 端“检查更新”会显示“暂无可用版本”。</p>
+  {% endif %}
+</div>
+
+<div class="card" style="max-width:560px;margin-top:12px">
+  <h3>发布新版本</h3>
+  <form method="post" action="/admin/app-release" enctype="multipart/form-data"
+        data-confirm="上传后，所有 App 检查更新时都会收到这个版本。确定发布？" data-confirm-title="发布新版本" data-confirm-ok="发布">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>APK 文件</label>
+    <input type="file" name="apk" accept=".apk,application/vnd.android.package-archive" required>
+    <label>versionCode（必须大于当前{% if release %} {{ release.versionCode }}{% endif %}）</label>
+    <input name="version_code" type="number" min="1" required style="max-width:160px">
+    <label>versionName</label>
+    <input name="version_name" placeholder="如 0.5.35" required style="max-width:200px">
+    <label>更新说明</label>
+    <textarea name="notes" rows="4" maxlength="2000" placeholder="本次更新内容，会显示在 App 的更新提示里"></textarea>
+    <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="force" value="1" style="width:auto"> 强制更新（旧版本不能跳过）</label>
+    <button type="submit" class="btn">上传并发布</button>
+  </form>
+  <p class="muted">versionCode / versionName 填 APK 里 build.gradle.kts 的值。</p>
+</div>
+</div>
+{% endblock %}
