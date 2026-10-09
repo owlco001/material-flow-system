@@ -365,6 +365,7 @@ tr.row-blue{background:rgba(14,95,216,.06)}
 <symbol id="i-barcode" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M8 7v10"/><path d="M12 7v10"/><path d="M17 7v10"/></symbol>
 <symbol id="i-sync" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+<symbol id="i-drawing" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 18l3-6 2 3 3-5"/></symbol>
 <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></symbol>
 <symbol id="i-factory" viewBox="0 0 24 24"><path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/></symbol>
 </svg>
@@ -402,6 +403,7 @@ tr.row-blue{background:rgba(14,95,216,.06)}
     <a class="side-link {% if _p.startswith('/admin/handovers') %}active{% endif %}" href="/admin/handovers" title="留痕"><i><svg class="ico" aria-hidden="true"><use href="#i-pen"/></svg></i><span>留痕</span></a>
     <a class="side-link {% if _p == '/admin/warehouse' %}active{% endif %}" href="/admin/warehouse" title="仓库"><i><svg class="ico" aria-hidden="true"><use href="#i-warehouse"/></svg></i><span>仓库</span></a>
     <a class="side-link {% if _p.startswith('/admin/models') %}active{% endif %}" href="/admin/models" title="模型"><i><svg class="ico" aria-hidden="true"><use href="#i-box"/></svg></i><span>模型</span></a>
+    {% if _r == "ADMIN" %}<a class="side-link {% if _p.startswith('/admin/drawings') %}active{% endif %}" href="/admin/drawings" title="图纸"><i><svg class="ico" aria-hidden="true"><use href="#i-drawing"/></svg></i><span>图纸</span></a>{% endif %}
     {% endif %}
     {% if _r == "ADMIN" %}
     <div class="side-group"><span>系统管理</span></div>
