@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}图纸 · 智慧工厂{% endblock %}
+{% block content %}
+<div class="compact">
+<h2>图纸管理</h2>
+<p class="page-desc">上传后自动按页拆分、压缩并生成缩略图；终端按页下载渲染，不会一次拉整份大文件。</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div class="card" style="flex:2;min-width:320px">
+  <h3>上传图纸</h3>
+  <form method="post" action="/admin/drawings/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div><label>文件（PDF{% if cad_converter %} / DWG / DXF{% endif %}，≤ 200 MB）</label>
+        <input type="file" name="file" required accept=".pdf{% if cad_converter %},.dwg,.dxf{% endif %}"></div>
+      <div><label>标题（留空用文件名）</label><input name="title" maxlength="120"></div>
+      <div><label>图号</label><input name="drawing_no" maxlength="80" style="max-width:220px"></div>
+      <div><label>版本</label><input name="revision" maxlength="20" style="max-width:120px" placeholder="如 A / V2"></div>
+      <div><label>绑定机台编号（逗号或换行分隔，可选）</label><textarea name="devices" rows="2"></textarea></div>
+      <div><label>绑定物料编码（逗号或换行分隔，可选）</label><textarea name="materials" rows="2"></textarea></div>
+    </div>
+    <button type="submit" class="btn btn-sm">上传</button>
+  </form>
+  {% if not cad_converter %}
+  <p class="muted" style="margin-top:8px">DWG/DXF 请先在 CAD 中「打印为 PDF」再上传（服务器未配置 CAD 转换器）。</p>
+  {% endif %}
+</div>
+<div class="card" style="flex:1;min-width:260px">
+  <h3>查询</h3>
+  <form method="get" action="/admin/drawings">
+    <label>标题 / 图号 / 机台编号 / 物料编码</label><input name="q" value="{{ q }}" style="max-width:240px">
+    <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">查询</button>
+    {% if q %}<a href="/admin/drawings" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
+  </form>
+</div>
+</div>
+
+<div class="card" style="margin-top:12px">
+{% if drawings %}
+<table>
+  <tr><th style="width:96px">预览</th><th>图纸</th><th>大小</th><th>绑定</th><th style="width:220px">操作</th></tr>
+  {% for d in drawings %}
+  <tr id="{{ d.id }}">
+    <td>{% if d.status == "READY" %}<a href="/admin/drawings/{{ d.id }}/pages/1" target="_blank" rel="noopener"><img src="/admin/drawings/{{ d.id }}/pages/1/thumb" alt="" loading="lazy" style="width:88px;height:62px;object-fit:contain;background:#fff;border:1px solid #e5e7eb;border-radius:4px"></a>{% endif %}</td>
+    <td>
+      <b>{{ d.title }}</b>{% if d.revision %} <span class="muted">· {{ d.revision }}</span>{% endif %}<br>
+      <span class="muted">{{ d.drawing_no or "无图号" }} · {{ d.file_kind }} · {{ d.page_count }} 页 · {{ d.created_at[:10] }}</span>
+      {% if d.status == "UNSUPPORTED" %}<br><span class="st st-yellow">未转换</span> <span class="muted">{{ d.error }}</span>
+      {% elif d.status == "FAILED" %}<br><span class="st st-red">转换失败</span> <span class="muted">{{ d.error }}</span>{% endif %}
+      {% if d.status == "READY" and d.page_count > 1 %}
+      <details style="margin-top:4px"><summary style="cursor:pointer;font-size:13px">全部 {{ d.page_count }} 页</summary>
+        {% for n in range(1, d.page_count + 1) %}<a href="/admin/drawings/{{ d.id }}/pages/{{ n }}" target="_blank" rel="noopener">{{ n }}</a> {% endfor %}
+      </details>{% endif %}
+    </td>
+    <td class="muted" style="white-space:nowrap">原件 {{ d.original_mb }} MB{% if d.status == "READY" %}<br>单页最大 {{ d.max_page_mb }} MB{% endif %}</td>
+    <td>
+      {% for b in d.bindings %}
+      <form method="post" action="/admin/drawings/{{ d.id }}/unbind" style="display:inline-block;margin:0 4px 4px 0"
+            data-confirm="解除「{{ b.label }}」与这张图纸的绑定？" data-confirm-title="解除绑定" data-confirm-ok="解除">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="binding_id" value="{{ b.id }}">
+        <span class="st {{ 'st-blue' if b.type == 'DEVICE' else 'st-green' }}">{{ "机台" if b.type == "DEVICE" else "物料" }} {{ b.label }}
+          <button type="submit" title="解除绑定" style="border:0;background:none;cursor:pointer;padding:0 0 0 4px">×</button></span>
+      </form>
+      {% else %}<span class="muted">未绑定</span>{% endfor %}
+      <form method="post" action="/admin/drawings/{{ d.id }}/bind" class="btn-row" style="margin-top:4px;gap:4px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="target_type" style="width:auto"><option value="DEVICE">机台</option><option value="MATERIAL">物料</option></select>
+        <input name="keys" placeholder="编号，逗号分隔" style="max-width:160px" required>
+        <button type="submit" class="btn btn-sm btn-secondary">绑定</button>
+      </form>
+    </td>
+    <td>
+      <div class="btn-row" style="gap:4px">
+        {% if d.status == "READY" %}<a class="btn btn-sm" href="/admin/drawings/{{ d.id }}/pages/1" target="_blank" rel="noopener">查看</a>{% endif %}
+        <a class="btn btn-sm btn-secondary" href="/admin/drawings/{{ d.id }}/original">原件</a>
+        <form method="post" action="/admin/drawings/{{ d.id }}/delete" style="display:inline"
+              data-confirm="删除「{{ d.title }}」及其全部绑定？终端将不再显示这张图纸。" data-confirm-title="删除图纸" data-confirm-ok="删除" data-confirm-danger="1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger btn-sm">删除</button>
+        </form>
+      </div>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">{% if q %}没有匹配的图纸{% else %}还没有图纸，先上传一份 PDF{% endif %}</p>
+{% endif %}
+</div>
+</div>
+{% endblock %}
