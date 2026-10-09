@@ -24,26 +24,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: 单元测试
         working-directory: logistics-android
-        run: |
-          chmod +x gradlew
-          set -o pipefail
-          ./gradlew :app:testDebugUnitTest --continue > gradle.log 2>&1 || {
-            # 汇总成单条注解（未登录也能在 run 页面看到）
-            python3 - <<'PY'
-          import glob, re, xml.etree.ElementTree as ET
-          lines = []
-          for f in glob.glob("app/build/test-results/**/*.xml", recursive=True):
-              for tc in ET.parse(f).getroot().iter("testcase"):
-                  for fail in list(tc.findall("failure")) + list(tc.findall("error")):
-                      msg = (fail.get("message") or fail.text or "").strip().splitlines()
-                      lines.append(f"{tc.get('classname').split('.')[-1]}.{tc.get('name')}: {(msg[0] if msg else '')[:200]}")
-          log = open("gradle.log", encoding="utf-8", errors="replace").read().splitlines()
-          keep = [l for l in log if re.search(r"^e: |FAILED|What went wrong|^> |Exception|error:", l)]
-          out = ["失败用例 %d 条" % len(lines)] + lines[:40] + ["--- gradle ---"] + keep[:40] + ["--- tail ---"] + log[-25:]
-          print("::error title=Android 单元测试失败::" + "%0A".join(x.replace("%", "%25").replace("\r", "") for x in out))
-          PY
-            exit 1
-          }
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
       - name: 上传测试报告
         if: failure()
         uses: actions/upload-artifact@v4
