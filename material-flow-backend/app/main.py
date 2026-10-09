@@ -657,6 +657,9 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS u9_sync_logs(id TEXT PRIMARY KEY, run_id TEXT NOT NULL, entity TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL DEFAULT 'RUNNING', dry_run INTEGER NOT NULL DEFAULT 1, total INTEGER NOT NULL DEFAULT 0, inserted INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, error TEXT, detail_json TEXT);
     CREATE INDEX IF NOT EXISTS idx_u9_sync_logs_run ON u9_sync_logs(run_id);
     CREATE INDEX IF NOT EXISTS idx_u9_sync_logs_entity ON u9_sync_logs(entity, started_at);
+    CREATE TABLE IF NOT EXISTS drawings(id TEXT PRIMARY KEY, title TEXT NOT NULL, drawing_no TEXT NOT NULL DEFAULT '', revision TEXT NOT NULL DEFAULT '', original_name TEXT NOT NULL, file_kind TEXT NOT NULL CHECK(file_kind IN ('PDF','DXF','DWG')), original_sha256 TEXT NOT NULL, original_size INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('READY','FAILED','UNSUPPORTED')), page_count INTEGER NOT NULL DEFAULT 0, pages_json TEXT NOT NULL DEFAULT '[]', error TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS drawing_bindings(id TEXT PRIMARY KEY, drawing_id TEXT NOT NULL REFERENCES drawings(id) ON DELETE CASCADE, target_type TEXT NOT NULL CHECK(target_type IN ('DEVICE','MATERIAL')), target_key TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(drawing_id, target_type, target_key));
+    CREATE INDEX IF NOT EXISTS idx_drawing_bindings_target ON drawing_bindings(target_type, target_key);
     CREATE TABLE IF NOT EXISTS admin_user_password_reset_operations(client_operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload_digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assembly_model_versions(
         id TEXT PRIMARY KEY,

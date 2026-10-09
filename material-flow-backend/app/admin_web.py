@@ -3158,3 +3158,9 @@ async def admin_agent_settings_set(request: Request):
     finally:
         c.close()
     return JSONResponse({"ok": True})
+
+
+# ==================== 机台/物料图纸（拆页 + 缩略图，终端按页渲染）====================
+from app.drawings import router as _drawings_router  # noqa: E402
+
+router.include_router(_drawings_router)
