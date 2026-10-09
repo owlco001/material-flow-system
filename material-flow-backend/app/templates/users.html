@@ -28,18 +28,18 @@
         <input name="newPassword" type="password" placeholder="新密码(至少8位)" required minlength="8" style="max-width:150px">
         <button type="submit" class="btn btn-secondary btn-sm" style="margin:0">重置密码</button>
       </form>
-      <form method="post" action="/admin/users/{{ row.id }}/revoke-sessions" style="display:inline" onsubmit="return confirm('确认强制下线该用户的全部会话？')">
+      <form method="post" action="/admin/users/{{ row.id }}/revoke-sessions" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」在所有设备上的登录会立即失效，需要重新登录。" data-confirm-title="强制下线？" data-confirm-ok="强制下线">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-warn btn-sm" style="margin:0">强制下线</button>
       </form>
       {% if row.active %}
-      <form method="post" action="/admin/users/{{ row.id }}/delete" style="display:inline" onsubmit="return confirm('确认停用该用户？历史记录保留。')">
+      <form method="post" action="/admin/users/{{ row.id }}/delete" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」将无法登录，历史操作记录全部保留，之后可以重新启用。" data-confirm-title="停用账号？" data-confirm-ok="停用" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ delete_ops[row.id] }}">
         <button type="submit" class="btn btn-danger btn-sm">停用</button>
       </form>
       {% else %}
-      <form method="post" action="/admin/users/{{ row.id }}/hard-delete" style="display:inline" onsubmit="return confirm('彻底删除该用户？仅无任何历史记录的用户可删除，此操作不可恢复。')">
+      <form method="post" action="/admin/users/{{ row.id }}/hard-delete" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」将被永久删除，无法恢复。仅没有任何历史记录的账号可以删除。" data-confirm-title="彻底删除账号？" data-confirm-ok="永久删除" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="clientOperationId" value="{{ hard_delete_ops[row.id] }}">
         <button type="submit" class="btn btn-danger btn-sm">删除</button>
