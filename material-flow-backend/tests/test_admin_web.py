@@ -84,7 +84,8 @@ def test_logged_in_login_page_redirects_to_home():
     with TestClient(backend.app) as client:
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
         r = client.get("/admin/login", follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/admin/"
+        # 首页已改为直接落到异常处理页
+        assert r.status_code == 303 and r.headers["location"] == "/admin/exceptions"
 
 
 def test_login_success_sets_httponly_cookie_and_session_row():
@@ -166,11 +167,11 @@ def test_dashboard_shows_counts_and_version():
     seed_business_rows()
     with TestClient(backend.app) as client:
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
-        r = client.get("/admin/")
+        # 首页仪表盘已下线，/admin/ 直接重定向到异常处理页
+        r = client.get("/admin/", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/admin/exceptions"
+        r = client.get("/admin/exceptions")
         assert r.status_code == 200
-        assert "总数 2 · 启用 2" in r.text
-        assert "待审批流转申请" in r.text and "待确认交接" in r.text
-        assert f"服务版本 {backend.APP_VERSION}" in r.text
 
 
 def test_no_password_echo_anywhere_in_web_flow():
