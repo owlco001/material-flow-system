@@ -232,7 +232,14 @@ fun LogisticsApp(
                                 readOnly = state.preview,
                                 onBack = { viewModel.navigate(Screen.SCANNER) },
                                 onInbound = { viewModel.submitInbound() },
-                                onBindLocation = { viewModel.navigate(Screen.LOCATION_BIND) }
+                                onBindLocation = { viewModel.navigate(Screen.LOCATION_BIND) },
+                                drawings = {
+                                    com.company.logistics.ui.screens.DrawingsCard(
+                                        api = viewModel.repository.apiHandle,
+                                        target = com.company.logistics.drawing.DrawingTarget.Material(inv.material.code),
+                                    )
+                                    androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(com.company.logistics.ui.theme.Spacing.md))
+                                },
                             )
                         }
                     }
@@ -371,6 +378,13 @@ fun LogisticsApp(
                             viewModel.submitDeviceException(deviceId, materialId, materialCode, orderNo, type, bookQty, actualQty, desc)
                         },
                         role = state.role,
+                        drawings = { deviceId ->
+                            com.company.logistics.ui.screens.DrawingsCard(
+                                api = viewModel.repository.apiHandle,
+                                target = com.company.logistics.drawing.DrawingTarget.Device(deviceId),
+                            )
+                            androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(com.company.logistics.ui.theme.Spacing.md))
+                        },
                     )
 
                     Screen.INVENTORY -> InventoryScreen(
