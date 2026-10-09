@@ -24,7 +24,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: 单元测试
         working-directory: logistics-android
-        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest --stacktrace
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --continue 2>&1 | tee gradle.log || {
+            # 把编译错误与失败用例转成注解，未登录也能在 run 页面看到
+            grep -E "^e: " gradle.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E " > .* FAILED$" gradle.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
       - name: 上传测试报告
         if: failure()
         uses: actions/upload-artifact@v4
