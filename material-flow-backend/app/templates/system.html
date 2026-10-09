@@ -45,7 +45,7 @@
   <p class="muted" id="applyMsg" style="margin-top:8px"></p>
   <script>
   async function confirmApply(sha) {
-    if (!confirm('确定更新到 ' + sha.substring(0,12) + ' 吗？\n更新期间服务会重启，期间短暂不可用。')) return;
+    if (!(await uiConfirm('确定更新到 ' + sha.substring(0,12) + ' 吗？\n更新期间服务会重启，期间短暂不可用。', {title: '系统更新', ok: '更新'}))) return;
     const msg = document.getElementById('applyMsg');
     msg.textContent = '正在下载更新包，请稍候…';
     try {

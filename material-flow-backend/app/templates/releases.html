@@ -44,7 +44,7 @@
       <td>{{ r.changelog }}</td>
       <td class="muted">{{ r.uploadedAt }}</td>
       <td>
-        <form method="post" action="/admin/releases/delete" style="display:inline" onsubmit="return confirm('确定删除 v{{ r.versionName }}（{{ r.versionCode }}）吗？')">
+        <form method="post" action="/admin/releases/delete" style="display:inline" data-confirm="确定删除 v{{ r.versionName }}（{{ r.versionCode }}）吗？" data-confirm-title="删除版本" data-confirm-ok="删除" data-confirm-danger>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="version_code" value="{{ r.versionCode }}">
           <button type="submit" class="btn btn-sm btn-danger">删除</button>
