@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}APP 更新 · 智慧工厂{% endblock %}
+{% block content %}
+<div class="compact">
+<h2>APP 更新通道</h2>
+<p class="page-desc">APK 托管在本后端上。APP 以「设置的后端地址」为基地址调用 <code>/api/v1/app/updates/latest</code> 检查更新，后端地址设在哪，更新源就在哪。</p>
+{% if notice == "uploaded" %}<p class="notice">上传成功，已发布。</p>{% endif %}
+{% if notice == "deleted" %}<p class="notice">已删除。</p>{% endif %}
+{% if notice == "not_found" %}<p class="error">未找到该版本。</p>{% endif %}
+{% if notice == "no_file" %}<p class="error">请选择 APK 文件。</p>{% endif %}
+{% if notice == "bad_version" %}<p class="error">versionCode 必须为正整数。</p>{% endif %}
+{% if notice == "INVALID_APK" %}<p class="error">文件不是有效的 APK。</p>{% endif %}
+{% if notice == "APK_TOO_LARGE" %}<p class="error">APK 超过 300MB 上限。</p>{% endif %}
+{% if notice == "RELEASE_EXISTS" %}<p class="error">该 versionCode 已存在，请先删除旧版。</p>{% endif %}
+{% if notice == "INVALID_VERSION_NAME" %}<p class="error">versionName 格式无效（仅允许字母数字 . _ -）。</p>{% endif %}
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div class="card" style="flex:1;min-width:320px">
+  <h3>发布新版本</h3>
+  <form method="post" action="/admin/releases/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      <div><label>versionCode（整数，递增）</label><input name="version_code" required inputmode="numeric" style="max-width:160px" placeholder="如 101"></div>
+      <div><label>versionName</label><input name="version_name" required style="max-width:160px" placeholder="如 1.0.1"></div>
+      <div><label>APK 文件（≤ 300MB）</label><input type="file" name="file" required accept=".apk"></div>
+      <div><label>更新说明</label><input name="changelog" style="max-width:340px" placeholder="本次更新内容"></div>
+    </div>
+    <button type="submit" class="btn btn-sm">上传并发布</button>
+  </form>
+</div>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <h3>已发布版本（{{ releases|length }}）</h3>
+  {% if releases %}
+  <table>
+    <tr><th>versionCode</th><th>versionName</th><th>大小</th><th>SHA-256</th><th>更新说明</th><th>发布时间</th><th>操作</th></tr>
+    {% for r in releases %}
+    <tr>
+      <td><b>{{ r.versionCode }}</b>{% if loop.first %} <span class="tag">最新</span>{% endif %}</td>
+      <td>{{ r.versionName }}</td>
+      <td class="muted">{{ (r.fileSize / 1048576) | round(1) }} MB</td>
+      <td class="muted" title="{{ r.sha256 }}">{{ r.sha256[:16] }}…</td>
+      <td>{{ r.changelog }}</td>
+      <td class="muted">{{ r.uploadedAt }}</td>
+      <td>
+        <form method="post" action="/admin/releases/delete" style="display:inline" onsubmit="return confirm('确定删除 v{{ r.versionName }}（{{ r.versionCode }}）吗？')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="version_code" value="{{ r.versionCode }}">
+          <button type="submit" class="btn btn-sm btn-danger">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted" style="margin-top:8px">APP 更新接口：<code>GET /api/v1/app/updates/latest</code>（公开）· <code>GET /api/v1/app/updates/download</code>（公开）</p>
+  {% else %}
+  <p class="muted">暂无已发布版本。上传第一个 APK 后，APP 即可检查到更新。</p>
+  {% endif %}
+</div>
+</div>
+{% endblock %}

@@ -6611,3 +6611,9 @@ try:
 except ImportError:
     from u9.routes import router as _u9_router
 app.include_router(_u9_router)
+# APP 更新通道 + 后端自更新通道（GitHub，手动）。
+try:
+    from .updates import router as _updates_router
+except ImportError:
+    from updates import router as _updates_router
+app.include_router(_updates_router)

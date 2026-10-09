@@ -55,6 +55,8 @@ rsync -a --delete \
 install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$PREFIX/data" "$PREFIX/uploads" "$PREFIX/backups" \
   2>/dev/null || { id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --home "$PREFIX" --shell /usr/sbin/nologin "$SERVICE_USER"; \
                    install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$PREFIX/data" "$PREFIX/uploads" "$PREFIX/backups"; }
+# APP 更新通道：APK 发布目录
+install -d -m 0755 -o "$SERVICE_USER" -g "$SERVICE_USER" "$PREFIX/app-releases"
 if [ ! -x "$PREFIX/.venv/bin/python" ]; then
   python3 -m venv "$PREFIX/.venv"
 fi
@@ -139,6 +141,16 @@ else
 fi
 
 log "7/7 部署完成"
+# 更新通道：授权 material-flow 免密执行更新脚本；记录部署 commit
+SUDOERS_FILE="/etc/sudoers.d/material-flow"
+if [ ! -f "$SUDOERS_FILE" ]; then
+  echo "material-flow ALL=(root) NOPASSWD: $PREFIX/deploy/apply-update.sh *" > "$SUDOERS_FILE"
+  chmod 0440 "$SUDOERS_FILE"
+  log "已写入 $SUDOERS_FILE（后端自更新提权）"
+fi
+if [ -d "$REPO/.git" ]; then
+  git -C "$REPO" rev-parse HEAD > "$PREFIX/DEPLOYED_SHA" 2>/dev/null || true
+fi
 cat <<'DONE'
 后续步骤：
   1. 用初始用户名 owlco 登录 Web 管理台 /admin/login，按提示改密（强制）。

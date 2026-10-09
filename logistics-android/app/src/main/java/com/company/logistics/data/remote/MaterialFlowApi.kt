@@ -574,6 +574,19 @@ open class MaterialFlowApi(
     suspend fun assemblyTasks(page: Int = 1, pageSize: Int = 20): List<AssemblyTask> =
         assemblyTaskPage(page, pageSize).items
 
+    /**
+     * APP 更新检查（公开接口，无需登录）。
+     * 以本 APP 配置的后端地址为基地址；无发布（404）或网络异常时返回 null。
+     */
+    open suspend fun checkAppUpdate(): AppUpdateInfo? = withContext(Dispatchers.IO) {
+        try {
+            val json = request("GET", "/api/v1/app/updates/latest", null, auth = false)
+            parseAppUpdateInfo(json)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     open suspend fun publishedAssemblyModel(modelCode: String): AssemblyModelMeta = withContext(Dispatchers.IO) {
         require(modelCode.isNotBlank()) { "modelCode 不能为空" }
         ApiParser.parseAssemblyModelMeta(request("GET", "/api/v1/assembly-models/${encodeQuery(modelCode)}/published", null))

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.company.logistics.data.EndpointStore
+import com.company.logistics.data.remote.AppUpdateChecker
 import com.company.logistics.data.LogisticsRepository
 import com.company.logistics.ui.components.LogisticsIcons
 import com.company.logistics.ui.components.OfflineBanner
@@ -376,7 +377,17 @@ fun LogisticsApp(
                         onGoScan = { viewModel.navigate(Screen.SCANNER) }
                     )
 
-                    Screen.PROFILE -> ProfileScreen(
+                    Screen.PROFILE -> {
+                        val _ctx = androidx.compose.ui.platform.LocalContext.current
+                        val _updateChecker = remember(endpointStore.effectiveUrl) {
+                            AppUpdateChecker(
+                                context = _ctx,
+                                api = viewModel.repository.apiHandle,
+                                baseUrl = { endpointStore.effectiveUrl },
+                            )
+                        }
+                        ProfileScreen(
+                        appUpdateChecker = _updateChecker,
                         userName = state.currentUser,
                         role = state.role,
                         queue = state.offlineQueue,
@@ -391,6 +402,7 @@ fun LogisticsApp(
                         onRetryMyTransfers = { viewModel.loadMyTransferRequests() },
                         onLogout = { viewModel.logout() }
                     )
+                    }
 
                     Screen.ENDPOINT_CONFIG -> EndpointConfigScreen(
                         store = endpointStore,

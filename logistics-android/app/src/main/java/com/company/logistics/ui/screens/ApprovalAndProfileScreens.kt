@@ -592,6 +592,7 @@ fun InventoryScreen(
 /** 我的页 —— 展示角色、权限、服务端配置与离线队列摘要 */
 @Composable
 fun ProfileScreen(
+    appUpdateChecker: com.company.logistics.data.remote.AppUpdateChecker? = null,
     userName: String,
     role: UserRole,
     queue: List<OfflineOperation>,
@@ -709,6 +710,12 @@ fun ProfileScreen(
         }
 
         VSpace(Spacing.md)
+
+        // APP 更新入口 —— 更新源为本 APP 配置的后端地址
+        if (appUpdateChecker != null) {
+            AppUpdateCard(checker = appUpdateChecker)
+            VSpace(Spacing.md)
+        }
 
         AppCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
