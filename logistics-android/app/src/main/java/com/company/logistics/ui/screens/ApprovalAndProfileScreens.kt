@@ -710,6 +710,11 @@ fun ProfileScreen(
 
         VSpace(Spacing.md)
 
+        // 检查更新 —— 走服务端公开接口 /api/app/latest，管理台「App发布」上传新版本
+        AppUpdateCard(endpointUrl = endpointUrl, endpointConfigured = endpointConfigured)
+
+        VSpace(Spacing.md)
+
         AppCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
