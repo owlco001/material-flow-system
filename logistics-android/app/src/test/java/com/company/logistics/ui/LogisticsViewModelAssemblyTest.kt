@@ -303,7 +303,7 @@ class LogisticsViewModelAssemblyTest {
             accumulatedLaborMinutes = 0,
             assignedAssemblerId = "assembler-1",
             assignedAssemblerName = "装配工",
-            members = listOf(AssemblyMember("a-1", assignmentRole = "ASSEMBLER"), AssemblyMember("a-2", assignmentRole = "ASSEMBLER")),
+            members = listOf(AssemblyMember("a-1", "ASSEMBLER"), AssemblyMember("a-2", "ASSEMBLER")),
         )
         val actions = mutableListOf<String>()
         val assignedIds = mutableListOf<String>()
@@ -323,7 +323,7 @@ class LogisticsViewModelAssemblyTest {
             actions += "assign"
             assignedIds += assemblerIds
             assignFailure?.let { return Result.failure(it) }
-            fixtureTask = fixtureTask.copy(members = assemblerIds.map { AssemblyMember(it, assignmentRole = "ASSEMBLER") })
+            fixtureTask = fixtureTask.copy(members = assemblerIds.map { AssemblyMember(it, "ASSEMBLER") })
             return Result.success(AssemblyAssignmentResponse(taskId, fixtureTask.members))
         }
 
@@ -347,7 +347,7 @@ class LogisticsViewModelAssemblyTest {
             user = User("user-1", username, "测试用户", loginRole),
         )
 
-        override suspend fun assemblyTaskPage(page: Int, pageSize: Int, deviceNo: String?, deviceId: String?): Result<AssemblyTaskPage> = Result.success(
+        override suspend fun assemblyTaskPage(page: Int, pageSize: Int): Result<AssemblyTaskPage> = Result.success(
             AssemblyTaskPage(listOf(fixtureTask), page, pageSize, 1, 1, "server-time")
         )
 
