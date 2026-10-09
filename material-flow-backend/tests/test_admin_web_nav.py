@@ -45,7 +45,7 @@ def test_quicknav_admin_sees_everything():
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
         r = client.get("/admin/users")
         assert r.status_code == 200
-        for href in ("/admin/", "/admin/workspace", "/admin/reports", "/admin/tasks",
+        for href in ("/admin/exceptions", "/admin/workspace", "/admin/reports", "/admin/tasks",
                      "/admin/flows", "/admin/handovers", "/admin/warehouse", "/admin/models",
                      "/admin/boms", "/admin/users", "/admin/orders", "/admin/audit"):
             assert f'href="{href}"' in r.text
