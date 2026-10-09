@@ -129,8 +129,13 @@ class FilamentModelRenderer(
     private var resourceLoader: ResourceLoader? = null
     private var initializationError: Throwable? = null
     private var swapChain: SwapChain? = null
+    // attach 时由调用方传入的 Surface（包着 TextureView 的 SurfaceTexture），detach 时由这里释放
+    private var attachedSurface: Surface? = null
     private var asset: FilamentAsset? = null
     private var released = false
+
+    /** 已加载模型：surface 重建（锁屏/切后台再回来）时不必重新解析 GLB、重编材质 */
+    val hasModel: Boolean get() = asset != null && !released
     private var frameCallbackPosted = false
     private var viewportWidth = 1
     private var viewportHeight = 1
@@ -244,18 +249,31 @@ class FilamentModelRenderer(
         check(!released) { "renderer has been released" }
         checkAvailable()
         val activeEngine = engine ?: error("Filament engine is unavailable")
-        swapChain?.let(activeEngine::destroySwapChain)
+        if (swapChain != null) detachSurface()
         swapChain = activeEngine.createSwapChain(surface)
+        attachedSurface = surface
         choreographer.removeFrameCallback(this)
         choreographer.postFrameCallback(this)
         frameCallbackPosted = true
     }
 
+    /**
+     * 解绑渲染表面。必须在 TextureView 释放 SurfaceTexture 之前同步完成：
+     * destroySwapChain 只是把销毁命令排进 Filament 渲染线程，若不 flushAndWait，
+     * 渲染线程可能仍在往已被系统回收的 Surface 上 eglSwapBuffers → native 崩溃（SIGSEGV）。
+     * 典型触发：查看一段时间后自动锁屏 / 切到后台 / 来电，surface 被销毁。
+     */
     fun detachSurface() {
         if (frameCallbackPosted) choreographer.removeFrameCallback(this)
         frameCallbackPosted = false
-        swapChain?.let { chain -> engine?.destroySwapChain(chain) }
+        val eng = engine
+        swapChain?.let { chain ->
+            eng?.destroySwapChain(chain)
+            runCatching { eng?.flushAndWait() }
+        }
         swapChain = null
+        attachedSurface?.let { runCatching { it.release() } }
+        attachedSurface = null
     }
 
     fun onViewportChanged(width: Int, height: Int) {
@@ -389,6 +407,8 @@ class FilamentModelRenderer(
             // Filament pick 的坑：点击位置没有 renderable 时，返回值可能是残留的垃圾实体号
             // （实测返回过引擎初始化期的实体 5/10，而非 0）。所以必须用 partEntities 白名单
             // 校验：不在列表里（含地面网格/剖面平面/垃圾实体）一律按点空处理 → 取消隔离。
+            // 异步回调：用户可能已经退出页面、渲染器已释放，此时不能再碰任何 Filament 对象
+            if (released) return@pick
             val hit = result.renderable
             val isPart = hit != 0 && partEntities.contains(hit)
             if (isPart) {
