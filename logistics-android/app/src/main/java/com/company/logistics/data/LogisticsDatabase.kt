@@ -55,6 +55,10 @@ interface OfflineOperationDao {
     @Query("SELECT COUNT(*) FROM offline_operations WHERE status IN ('PENDING','FAILED','SYNCING')")
     fun observePendingCount(): Flow<Int>
 
+    /** 需要人工处理的记录数：重放失败或与服务端冲突（冲突不会自动重试，必须提示用户）。 */
+    @Query("SELECT COUNT(*) FROM offline_operations WHERE status IN ('FAILED','CONFLICT')")
+    fun observeAttentionCount(): Flow<Int>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(operation: OfflineOperationEntity): Long
 
