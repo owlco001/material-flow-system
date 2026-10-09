@@ -34,6 +34,10 @@ android {
         versionName = "0.5.36"
 
         buildConfigField("String", "API_BASE_URL", "\"$escapedApiBaseUrl\"")
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -90,6 +94,7 @@ dependencies {
     // 注意：filament 1.76.0+ 要求 compileSdk 37，项目当前为 34，故选用 1.75.x 中最高的 1.75.1。
     implementation("com.google.android.filament:filament-android:1.75.1")
     implementation("com.google.android.filament:gltfio-android:1.75.1")
+    implementation("com.google.android.filament:filamat-android:1.75.1")
 
     // 网络层：OkHttp（连接池 + HTTP/2 复用，扫码等高频请求不再每次重建 TLS）。
     // 4.12.0 为 4.x 稳定版；MaterialFlowApi 仅用同步 execute()，无需协程扩展。
