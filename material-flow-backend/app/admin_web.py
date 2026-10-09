@@ -929,37 +929,6 @@ def _report_or_403(request: Request):
     return user, None
 
 
-def _with_plain_defaults(fn):
-    """直接调用路由函数时，把未传参数的 Query()/Header() 等 FieldInfo 默认值替换为其真实默认值。
-
-    否则 FieldInfo 对象会被原样传进 SQL（sqlite3.ProgrammingError: type 'Query' is not supported），
-    例如给 list_assembly_tasks 新增 deviceId 后 /admin/tasks 整页 500。
-    """
-    import functools
-    import inspect
-    from fastapi.params import Depends as _DependsParam
-    from pydantic.fields import FieldInfo
-    from pydantic_core import PydanticUndefined
-
-    sig = inspect.signature(fn)
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        bound = sig.bind_partial(*args, **kwargs)
-        for name, param in sig.parameters.items():
-            if name in bound.arguments:
-                continue
-            default = param.default
-            if isinstance(default, FieldInfo) and not isinstance(default, _DependsParam):
-                if default.default is not PydanticUndefined:
-                    kwargs[name] = default.default
-                elif default.default_factory is not None:
-                    kwargs[name] = default.default_factory()
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
 def _api_endpoint(path: str, method: str = "GET"):
     """从 FastAPI 路由表解析既有 API 处理函数并直接调用（统计口径零漂移）。
 
@@ -968,7 +937,7 @@ def _api_endpoint(path: str, method: str = "GET"):
     """
     for route in backend_app.routes:
         if getattr(route, "path", "") == path and method in getattr(route, "methods", set()):
-            return _with_plain_defaults(route.endpoint)
+            return route.endpoint
     raise RuntimeError(f"API endpoint not found: {method} {path}")
 
 
@@ -1652,6 +1621,21 @@ def admin_exceptions(request: Request):
         open_count = sum(1 for e in exceptions if e["status"] in ("OPEN", "PENDING"))
         in_progress_count = sum(1 for e in exceptions if e["status"] == "IN_PROGRESS")
         resolved_count = sum(1 for e in exceptions if e["status"] in ("RESOLVED", "CLOSED", "APPROVED"))
+        # 首页待办：/admin/ 直接落在本页，把跨模块需要人处理的数量集中展示
+        todo_counts = {
+            "pending_transfers": c.execute(
+                "SELECT COUNT(*) FROM transfer_requests WHERE status='PENDING_APPROVAL'"
+            ).fetchone()[0],
+            "pending_handovers": c.execute(
+                "SELECT COUNT(*) FROM material_handovers WHERE status='PENDING'"
+            ).fetchone()[0],
+            "waiting_material_tasks": c.execute(
+                "SELECT COUNT(*) FROM assembly_tasks WHERE status='WAITING_MATERIAL'"
+            ).fetchone()[0],
+            "in_progress_tasks": c.execute(
+                "SELECT COUNT(*) FROM assembly_tasks WHERE status='IN_PROGRESS'"
+            ).fetchone()[0],
+        }
     finally:
         c.close()
     return templates.TemplateResponse(
@@ -1667,6 +1651,7 @@ def admin_exceptions(request: Request):
             "in_progress_count": in_progress_count,
             "resolved_count": resolved_count,
             "import_error_count": len(import_errors),
+            "todo": todo_counts,
             "exc_status_labels": {"OPEN": "待处理", "PENDING": "待处理", "IN_PROGRESS": "处理中",
                                   "RESOLVED": "已解决", "CLOSED": "已关闭",
                                   "APPROVED": "已通过", "REJECTED": "已驳回"},
@@ -2050,14 +2035,15 @@ def admin_boms(request: Request):
     except HTTPException as exc:
         return _api_http_error_response(exc)
     # 聚合 BOM 批次（智能导入）
-    # 走统一 db()，尊重 DATA_DIR 配置（原先硬编码 app/../data 路径，部署目录不同即打不开库）
-    _c = db()
-    try:
-        agg_batches = _c.execute(
-            "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
-        ).fetchall()
-    finally:
-        _c.close()
+    import sqlite3 as _sq3
+    from pathlib import Path as _Path
+    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
+    _c = _sq3.connect(str(_db_path))
+    _c.row_factory = _sq3.Row
+    agg_batches = _c.execute(
+        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
@@ -2113,14 +2099,15 @@ async def admin_bom_preview(request: Request):
 def _bom_error_page(request: Request, user: sqlite3.Row, error: str):
     data = api_bom_versions(modelCode=None, status=None, page=1, pageSize=20, user=user)
     # 聚合 BOM 批次（智能导入）
-    # 走统一 db()，尊重 DATA_DIR 配置（原先硬编码 app/../data 路径，部署目录不同即打不开库）
-    _c = db()
-    try:
-        agg_batches = _c.execute(
-            "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
-        ).fetchall()
-    finally:
-        _c.close()
+    import sqlite3 as _sq3
+    from pathlib import Path as _Path
+    _db_path = _Path(__file__).parent.parent / "data" / "material_flow.db"
+    _c = _sq3.connect(str(_db_path))
+    _c.row_factory = _sq3.Row
+    agg_batches = _c.execute(
+        "SELECT * FROM agg_bom_batches ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    _c.close()
     return templates.TemplateResponse(
         request,
         "boms.html",
