@@ -254,34 +254,40 @@ fun OfflineBanner(
     syncing: Boolean,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
-    offline: Boolean = false
+    offline: Boolean = false,
+    attentionCount: Int = 0,
 ) {
-    val warning = LogisticsTheme.colors.warning
+    // 有失败/冲突时升级为红色：冲突不会自动重试，用户不处理就永远不会上传
+    val needsAttention = attentionCount > 0 && !syncing
+    val bg = if (needsAttention) LogisticsTheme.colors.danger else LogisticsTheme.colors.warning
+    val fg = if (needsAttention) LogisticsTheme.colors.danger else LogisticsTheme.colors.warningText
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .clickable { onTap() },
-        color = warning.copy(alpha = 0.16f)
+        color = bg.copy(alpha = 0.16f)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("!", color = LogisticsTheme.colors.warningText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("!", color = fg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(Spacing.sm))
             Text(
                 text = when {
                     syncing -> "同步中 · 剩余 $pendingCount 条"
+                    needsAttention && offline -> "离线中 · $attentionCount 条同步失败，需处理"
+                    needsAttention -> "$attentionCount 条同步失败，点此处理"
                     offline && pendingCount > 0 -> "离线中 · $pendingCount 条待同步"
                     offline -> "离线中 · 新提交将暂存本地"
                     else -> "$pendingCount 条待同步"
                 },
-                color = LogisticsTheme.colors.warningText,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold
+                color = fg,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.weight(1f))
-            Text("查看 ›", color = LogisticsTheme.colors.warningText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("查看 ›", color = fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
