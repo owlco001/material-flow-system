@@ -12,7 +12,8 @@
   过期后 pin 失效回退为普通系统信任链校验（不会直接断连，但请尽快发版更新）。
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false">
+    <!-- 内网（192.168/10/172.16）允许 HTTP 明文：工厂内网无 HTTPS 需求 -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
