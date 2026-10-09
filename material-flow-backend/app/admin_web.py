@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import csv
+import functools
 import hmac
+import inspect
 import io
 import re
 import secrets
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -934,10 +936,27 @@ def _api_endpoint(path: str, method: str = "GET"):
 
     workshop 统计端点注册在 assembly_routes.register() 闭包内，无法按模块名导入；
     路由表解析保持「同一函数、同一 SQL」语义。
+
+    返回的包装函数会自动把调用方未传的 Query 参数还原为其默认值，
+    避免 FastAPI 的 Query 对象被当成真值拼进 SQL（全新部署 500 的根因之一）。
     """
     for route in backend_app.routes:
         if getattr(route, "path", "") == path and method in getattr(route, "methods", set()):
-            return route.endpoint
+            raw_endpoint = route.endpoint
+            sig = inspect.signature(raw_endpoint)
+
+            @functools.wraps(raw_endpoint)
+            def _wrapped(*args, **kwargs):
+                bound = sig.bind_partial(*args, **kwargs)
+                for pname, param in sig.parameters.items():
+                    if pname not in bound.arguments:
+                        default = param.default
+                        # Query(default=X) -> 还原为 X；其他默认值保持原样
+                        if isinstance(default, Query):
+                            bound.arguments[pname] = default.default
+                return raw_endpoint(*bound.args, **bound.kwargs)
+
+            return _wrapped
     raise RuntimeError(f"API endpoint not found: {method} {path}")
 
 
