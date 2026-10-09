@@ -285,6 +285,8 @@ def suggest_column_mapping(
         f"- {name}: {', '.join(aliases)}" for name, (_, aliases) in fields.items()
     )
     header_lines = "\n".join(f"- {h}" for h in headers)
+    if not cfg.api_key:
+        return _fallback_mapping(target, headers)
     user_prompt = (
         f"导入目标：{target}\n目标字段（字段名: 别名）：\n{field_lines}\n"
         f"表格表头：\n{header_lines}\n只返回 JSON。"
