@@ -989,6 +989,73 @@ open class MaterialFlowApi(
         private const val TRANSFER_REQUEST_MAX_PAGES = 50
     }
 
+    // ==================== 图纸（机台/物料绑定，按页下载） ====================
+
+    /** GET /api/v1/devices/{id}/drawings */
+    suspend fun deviceDrawings(deviceId: String): List<com.company.logistics.drawing.Drawing> = withContext(Dispatchers.IO) {
+        com.company.logistics.drawing.DrawingParser.parseList(
+            request("GET", "/api/v1/devices/${encodePath(deviceId)}/drawings", null)
+        )
+    }
+
+    /** GET /api/v1/materials/{code}/drawings */
+    suspend fun materialDrawings(code: String): List<com.company.logistics.drawing.Drawing> = withContext(Dispatchers.IO) {
+        com.company.logistics.drawing.DrawingParser.parseList(
+            request("GET", "/api/v1/materials/${encodePath(code)}/drawings", null)
+        )
+    }
+
+    /** 带鉴权读取小文件（缩略图），超过 maxBytes 抛错。 */
+    suspend fun fetchAuthorizedBytes(path: String, maxBytes: Int = 2 * 1024 * 1024): ByteArray = withContext(Dispatchers.IO) {
+        val httpRequest = Request.Builder()
+            .url(fullUrl(path))
+            .header("Authorization", "Bearer ${requireToken()}")
+            .get()
+            .build()
+        httpClient.newCall(httpRequest).execute().use { response ->
+            if (response.code !in 200..299) {
+                throw ApiParser.parseError(response.code, response.body?.string() ?: "")
+            }
+            val bytes = response.body!!.bytes()
+            if (bytes.size > maxBytes) throw ApiException(413, "TOO_LARGE", "文件过大")
+            bytes
+        }
+    }
+
+    /** 带鉴权流式下载（单页图纸 PDF），不把整个文件读进内存。 */
+    open suspend fun downloadAuthorized(
+        path: String,
+        output: OutputStream,
+        onProgress: (received: Long, total: Long) -> Unit = { _, _ -> },
+    ): Long = withContext(Dispatchers.IO) {
+        val httpRequest = Request.Builder()
+            .url(fullUrl(path))
+            .header("Authorization", "Bearer ${requireToken()}")
+            .get()
+            .build()
+        httpClient.newCall(httpRequest).execute().use { response ->
+            if (response.code !in 200..299) {
+                throw ApiParser.parseError(response.code, response.body?.string() ?: "")
+            }
+            val body = response.body!!
+            val total = body.contentLength()
+            body.byteStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var received = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    received += count
+                    onProgress(received, total)
+                }
+                received
+            }
+        }
+    }
+
+    private fun encodePath(value: String): String = encodeQuery(value).replace("+", "%20")
+
     // ==================== 内部实现 ====================
 
     private fun requireToken(): String =

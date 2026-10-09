@@ -57,7 +57,8 @@ fun MaterialDetailScreen(
     onBack: () -> Unit,
     onInbound: () -> Unit,
     onBindLocation: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    drawings: @Composable () -> Unit = {},
 ) {
     val inv = inventory.inventory
     val m = inventory.material
@@ -158,6 +159,11 @@ fun MaterialDetailScreen(
                 modifier = Modifier.weight(1f)
             )
         }
+
+        VSpace(Spacing.md)
+
+        // 物料图纸（绑定后显示；按页查看）
+        drawings()
 
         VSpace(Spacing.md)
 

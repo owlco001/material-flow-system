@@ -93,6 +93,7 @@ fun DeviceDetailScreen(
     onSubmitMaterialRequestBatch: (items: List<OrderMaterialItem>, orderNo: String, remark: String) -> Unit = { _, _, _ -> },
     onSubmitException: (deviceId: String, materialId: String, materialCode: String, orderNo: String, type: String, bookQuantity: Int, actualQuantity: Int, description: String) -> Unit = { _, _, _, _, _, _, _, _ -> },
     role: UserRole = UserRole.OPERATOR,
+    drawings: @Composable (deviceId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     var showMaterialRequestDialog by remember { mutableStateOf(false) }
@@ -222,6 +223,11 @@ fun DeviceDetailScreen(
                         }
                     }
                 }
+
+                VSpace(Spacing.md)
+
+                // ---- 机台图纸 ----
+                drawings(detail.deviceId)
 
                 VSpace(Spacing.md)
 
