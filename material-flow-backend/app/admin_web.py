@@ -3129,3 +3129,9 @@ async def admin_agent_settings_set(request: Request):
     finally:
         c.close()
     return JSONResponse({"ok": True})
+
+
+# ==================== App 更新通道（管理台发布 + App 检查更新）====================
+from app.app_release import router as _app_release_router  # noqa: E402
+
+router.include_router(_app_release_router)
