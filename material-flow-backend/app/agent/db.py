@@ -45,5 +45,20 @@ def ensure_agent_tables(conn: sqlite3.Connection) -> None:
             completion_tokens INTEGER NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS agent_import_error_logs(
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            error_msg TEXT NOT NULL,
+            row_data TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT NOT NULL,
+            handled_at TEXT,
+            handled_by TEXT,
+            handle_note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_errlog_status ON agent_import_error_logs(status);
         """
     )
