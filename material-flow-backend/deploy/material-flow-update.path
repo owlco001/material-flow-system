@@ -1,0 +1,9 @@
+[Unit]
+Description=监听管理台更新请求
+
+[Path]
+PathExists=/srv/material-flow/backups/update-request
+Unit=material-flow-update.service
+
+[Install]
+WantedBy=multi-user.target

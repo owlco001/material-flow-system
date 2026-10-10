@@ -141,15 +141,17 @@ else
 fi
 
 log "7/7 部署完成"
-# 更新通道：授权 material-flow 免密执行更新脚本；记录部署 commit
-SUDOERS_FILE="/etc/sudoers.d/material-flow"
-if [ ! -f "$SUDOERS_FILE" ]; then
-  echo "material-flow ALL=(root) NOPASSWD: $PREFIX/deploy/apply-update.sh *" > "$SUDOERS_FILE"
-  chmod 0440 "$SUDOERS_FILE"
-  log "已写入 $SUDOERS_FILE（后端自更新提权）"
+# 后端更新通道：管理台「系统更新」写 backups/update-request → path 单元以 root 运行 deploy/update.sh
+install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$PREFIX/backups"
+if [ "$RUN_MIGRATE_SERVICE" -eq 1 ]; then
+  install -m 0644 "$PREFIX/deploy/material-flow-update.service" /etc/systemd/system/
+  install -m 0644 "$PREFIX/deploy/material-flow-update.path" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now material-flow-update.path >/dev/null 2>&1 || true
 fi
-if [ -d "$REPO/.git" ]; then
-  git -C "$REPO" rev-parse HEAD > "$PREFIX/DEPLOYED_SHA" 2>/dev/null || true
+rm -f /etc/sudoers.d/material-flow  # 旧 sudo 提权方式已废弃
+if git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+  git -C "$REPO_ROOT" rev-parse HEAD > "$PREFIX/DEPLOYED_SHA"
 fi
 cat <<'DONE'
 后续步骤：
@@ -157,6 +159,7 @@ cat <<'DONE'
   2. 建真实管理账号（Web「用户管理」，或 CLI：
      .venv/bin/python -m app.manage_admin create --employee-no <工号> --name <姓名>）。
   3. 按需停用临时账号：.venv/bin/python -m app.manage_admin list / reset-password。
-  4. 备份：data/、uploads/ 目录（SQLite 热备见 docs/DEPLOYMENT.md「Backup & upgrade」）。
-  5. 生产暴露请置于反向代理 TLS 之后（当前为 HTTP，仅限内网/受控网络）。
+  4. 以后升级：sudo bash /srv/material-flow/deploy/update.sh（或管理台「系统更新」）。
+  5. 备份：data/、uploads/ 目录（SQLite 热备见 docs/DEPLOYMENT.md「Backup & upgrade」）。
+  6. 生产暴露请置于反向代理 TLS 之后（当前为 HTTP，仅限内网/受控网络）。
 DONE

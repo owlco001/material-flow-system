@@ -3394,6 +3394,40 @@ async def admin_system_update_check(request: Request):
     return _see_other(f"/admin/system?check={payload}")
 
 
+@router.post("/admin/system/update/apply")
+async def admin_system_update_apply(request: Request):
+    """网页会话触发后端更新（原先 fetch 的是 Bearer 鉴权的 /api 接口，网页调用恒 401）。"""
+    user, denied = _admin_or_403(request)
+    if denied:
+        return JSONResponse({"ok": False, "message": "未登录或无权限"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    token = request.headers.get("X-CSRF-Token", "") or str((body or {}).get("csrf_token", ""))
+    if not _csrf_ok(token, user["csrf_token"]):
+        return JSONResponse({"ok": False, "message": "CSRF 校验失败，请刷新页面"}, status_code=403)
+    from app import updates as _updates
+    sha = str((body or {}).get("sha", "")).strip().lower()
+    try:
+        r = _updates.start_update(sha, user["username"])
+    except ApiError as exc:
+        return JSONResponse({"ok": False, "code": exc.code, "message": str(exc.detail)},
+                            status_code=exc.status_code)
+    return JSONResponse({"ok": True, **r})
+
+
+@router.get("/admin/system/update/status")
+def admin_system_update_status(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return JSONResponse({"state": "unknown"}, status_code=403)
+    from app import updates as _updates
+    st = _updates.get_update_status()
+    st["deployedSha"] = _updates.get_deployed_sha()
+    return JSONResponse(st)
+
+
 # ==================== 机台/物料图纸（拆页 + 缩略图，终端按页渲染）====================
 from app.drawings import router as _drawings_router  # noqa: E402
 

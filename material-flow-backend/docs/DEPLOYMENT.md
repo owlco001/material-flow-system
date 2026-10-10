@@ -170,15 +170,34 @@ temporary account (including `owlco`) once real accounts exist.
 
 ## Backup & upgrade
 
-1. Hot-backup the SQLite database before every change
-   (`sqlite3.Connection.backup()` — the `sqlite3` CLI may be absent; use
-   `.venv/bin/python`).
-2. Sync `app/`, `templates/`, `requirements.txt`, `tests/` into the
-   deployment directory; never touch `data/`, `uploads/`, `backups/`.
-3. `.venv/bin/pip install -r requirements.txt`, then
-   `systemctl restart material-flow`.
-4. Smoke: `/healthz` 200, `/admin/login` 200, an admin page returns 303
-   (auth guard), an API route returns 401 unauthenticated.
+One command (root), from the server:
+
+```bash
+sudo bash /srv/material-flow/deploy/update.sh            # latest main
+sudo bash /srv/material-flow/deploy/update.sh --check    # only report
+sudo bash /srv/material-flow/deploy/update.sh --ref v0.5.38 | --sha <commit>
+sudo bash /srv/material-flow/deploy/update.sh --rollback # previous code backup
+```
+
+Older servers without the script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owlco001/material-flow-system/main/material-flow-backend/deploy/update.sh | sudo bash
+```
+
+It hot-backs-up every `data/*.db` (`sqlite3.Connection.backup()`) and the code
+to `backups/update-<time>-<sha>/` (keeps 10), rsyncs the new
+`material-flow-backend/` over the prefix (never touching `data/`, `uploads/`,
+`app-releases/`, `backups/`, `.venv/`, the env file), reinstalls dependencies
+when `requirements.txt` changed, refreshes the systemd units, runs
+`app.migrate`, restarts and polls `/healthz`; on any failure after the code
+swap it rolls the code back automatically.
+
+The admin page 「系统更新」 uses the same script: the service (which runs with
+`NoNewPrivileges`) only writes `backups/update-request`; the root
+`material-flow-update.path` unit sees it and starts
+`material-flow-update.service` → `update.sh --from-request`. The first run of
+`update.sh` installs these units, so run it once by hand on existing servers.
 
 ## Health verification
 

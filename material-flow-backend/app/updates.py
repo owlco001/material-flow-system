@@ -18,8 +18,9 @@ APP 更新通道：
         GET  /api/v1/admin/system/version        当前版本与 SHA
         POST /api/v1/admin/system/update/check   查询 GitHub main 最新 commit
         POST /api/v1/admin/system/update/apply   下载并应用更新（body: {sha})
-    apply 的文件替换/迁移/重启由 deploy/apply-update.sh 以 root 执行，
-    通过 /etc/sudoers.d/material-flow 授权 material-flow 用户免密调用该脚本。
+    apply 只写 backups/update-request；systemd 的 material-flow-update.path 监听到后
+    以 root 运行 deploy/update.sh --from-request（下载、备份库与代码、替换、迁移、
+    重启、健康检查失败自动回滚）。命令行一键更新：sudo bash deploy/update.sh
 """
 from __future__ import annotations
 
@@ -28,7 +29,6 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -255,106 +255,66 @@ def check_github_update() -> dict:
     }
 
 
-def download_update_tarball(sha: str) -> Path:
-    """下载指定 commit 的 tarball 到 backups/，返回本地路径。"""
-    if not _SHA_RE.fullmatch(sha):
-        raise ApiError(400, "INVALID_SHA", "sha 格式无效（需 40 位 hex）")
-    dest = _backups_dir() / f"update-{sha}.tar.gz"
-    if dest.is_file() and dest.stat().st_size > 0:
-        return dest  # 已下载过，直接复用
-    _backups_dir().mkdir(parents=True, exist_ok=True)
-    url = f"{GITHUB_API}/tarball/{sha}"
-    req = urllib.request.Request(url, headers={"User-Agent": "material-flow-updater"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
-            while True:
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                f.write(chunk)
-    except Exception as e:
-        dest.unlink(missing_ok=True)
-        raise ApiError(502, "DOWNLOAD_FAILED", f"下载更新包失败：{e}")
-    if dest.stat().st_size < 1024:
-        dest.unlink(missing_ok=True)
-        raise ApiError(502, "DOWNLOAD_FAILED", "下载的更新包过小，可能已损坏")
-    return dest
-
-
 def _update_status_file() -> Path:
     return _backups_dir() / "update-status.json"
 
 
+def _update_request_file() -> Path:
+    return _backups_dir() / "update-request"
+
+
+# 状态超过该时长仍停在进行中，视为卡死（例如机器重启），允许重新发起
+_STALE_SECONDS = 20 * 60
+_ACTIVE_STATES = ("queued", "downloading", "applying")
+
+
 def get_update_status() -> dict:
     try:
-        return json.loads(_update_status_file().read_text(encoding="utf-8"))
+        st = json.loads(_update_status_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"state": "idle", "at": ""}
+    if st.get("state") in _ACTIVE_STATES:
+        try:
+            age = time.time() - _update_status_file().stat().st_mtime
+        except OSError:
+            age = 0
+        if age > _STALE_SECONDS:
+            st["state"] = "failed"
+            st["error"] = st.get("error") or "更新长时间无进展，可能未执行。请在服务器上运行 deploy/update.sh 查看原因"
+    return st
 
 
 def _set_update_status(state: str, **kw: object) -> None:
     _backups_dir().mkdir(parents=True, exist_ok=True)
     d = {"state": state, "at": _now()}
     d.update(kw)
-    _update_status_file().write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-
-
-def _apply_update_sync(sha: str, actor: str) -> dict:
-    """同步执行更新：下载包（若无）→ 提权脚本完成替换/迁移/重启。"""
-    _set_update_status("downloading", sha=sha, actor=actor)
-    tarball = download_update_tarball(sha)
-    script = _prefix() / "deploy" / "apply-update.sh"
-    if not script.is_file():
-        _set_update_status("failed", sha=sha, error="更新脚本缺失，请先部署新版后端")
-        raise ApiError(500, "UPDATE_SCRIPT_MISSING", "更新脚本缺失，请先部署新版后端")
-    _set_update_status("applying", sha=sha, actor=actor)
-    try:
-        proc = subprocess.run(
-            ["sudo", "-n", str(script), sha],
-            capture_output=True, text=True, timeout=600,
-        )
-    except subprocess.TimeoutExpired:
-        _set_update_status("failed", sha=sha, error="更新脚本执行超时")
-        raise ApiError(504, "UPDATE_TIMEOUT", "更新脚本执行超时，请检查服务状态")
-    except FileNotFoundError:
-        _set_update_status("failed", sha=sha, error="sudo 不可用")
-        raise ApiError(500, "UPDATE_SCRIPT_MISSING", "sudo 不可用，无法提权执行更新")
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:500]
-        _set_update_status("failed", sha=sha, error=err)
-        raise ApiError(500, "UPDATE_FAILED", f"更新失败：{err}")
-    _set_update_status("done", sha=sha, actor=actor,
-                       note="服务将在数秒后重启以加载新代码")
-    return {
-        "sha": sha,
-        "actor": actor,
-        "tarball": str(tarball),
-        "scriptOutput": (proc.stdout or "").strip()[:1000],
-        "appliedAt": _now(),
-        "note": "服务将在数秒后重启以加载新代码",
-    }
+    tmp = _update_status_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(_update_status_file())
 
 
 def start_update(sha: str, actor: str) -> dict:
-    """后台线程执行更新，立即返回；进度查 get_update_status()。"""
+    """提交更新请求：写 backups/update-request，由 root 的 material-flow-update.path
+    触发 deploy/update.sh --from-request 完成下载、备份、替换、迁移、重启与回滚。
+
+    服务本身开着 NoNewPrivileges，不能也不应提权；这里只落一个请求文件。
+    """
     if not _SHA_RE.fullmatch(sha):
         raise ApiError(400, "INVALID_SHA", "sha 格式无效（需 40 位 hex）")
     st = get_update_status()
-    if st.get("state") in ("downloading", "applying"):
+    if st.get("state") in _ACTIVE_STATES:
         raise ApiError(409, "UPDATE_IN_PROGRESS", "已有更新正在执行，请稍候")
-    import threading
-
-    def _run() -> None:
-        try:
-            _apply_update_sync(sha, actor)
-        except ApiError:
-            pass  # 状态已写入 failed
-        except Exception as e:  # noqa: BLE001
-            _set_update_status("failed", sha=sha, error=str(e)[:300])
-
-    _set_update_status("downloading", sha=sha, actor=actor)
-    threading.Thread(target=_run, daemon=True).start()
-    return {"sha": sha, "state": "downloading", "startedAt": _now()}
+    try:
+        _backups_dir().mkdir(parents=True, exist_ok=True)
+        _set_update_status("queued", sha=sha, actor=actor)
+        req = _update_request_file()
+        tmp = req.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"sha": sha, "actor": actor, "at": _now()}), encoding="utf-8")
+        tmp.replace(req)
+    except OSError as e:
+        raise ApiError(500, "UPDATE_REQUEST_FAILED",
+                       f"无法写入更新请求（{e}）。请在服务器上执行：sudo bash {_prefix()}/deploy/update.sh")
+    return {"sha": sha, "state": "queued", "startedAt": _now()}
 
 
 @router.get("/api/v1/admin/system/version")
