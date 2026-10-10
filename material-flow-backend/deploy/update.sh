@@ -160,14 +160,14 @@ backup_code() {
   local dest="$1"
   mkdir -p "$dest/code"
   rsync -a --exclude 'data/' --exclude 'uploads/' --exclude '.venv/' --exclude 'app-releases/' \
-    --exclude 'backups/' --exclude '__pycache__/' "$PREFIX/" "$dest/code/"
+    --exclude 'backups/' --exclude '__pycache__/' --exclude '*.bak*' "$PREFIX/" "$dest/code/"
 }
 
 sync_code() {  # sync_code <src_dir>
   rsync -a --delete \
     --exclude 'data/' --exclude 'uploads/' --exclude '.venv/' --exclude 'app-releases/' \
     --exclude 'backups/' --exclude 'DEPLOYED_SHA' --exclude '__pycache__/' --exclude '*.pyc' \
-    --exclude '.pytest_cache/' --exclude '.env' \
+    --exclude '.pytest_cache/' --exclude '.env' --exclude '*.bak*' --exclude '*.bak-*/' \
     "$1/" "$PREFIX/"
   chown -R root:root "$PREFIX/app" "$PREFIX/deploy" 2>/dev/null || true
   chmod -R a+rX "$PREFIX/app" "$PREFIX/deploy" 2>/dev/null || true
