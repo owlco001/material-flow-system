@@ -137,8 +137,11 @@ download_src() {
   # $1=sha $2=目标文件；按来源下载，GitHub 失败时（auto 模式）回退 Gitee
   local sha="$1" dst="$2"
   if [ "$SOURCE" != gitee ] && [ "${USED_SOURCE:-}" != gitee ]; then
-    curl -fsSL --retry 3 --max-time 300 -H 'User-Agent: material-flow-updater' \
-      -o "$dst" "https://codeload.github.com/$REPO/tar.gz/$sha" && return 0
+    # auto 模式下 GitHub 慢（<50KB/s 持续 15 秒）就立即放弃改用 Gitee，避免国内服务器卡十几分钟
+    local gh_opts=(--retry 3 --max-time 300)
+    [ "$SOURCE" = auto ] && gh_opts=(--retry 0 --connect-timeout 10 --max-time 180 --speed-limit 51200 --speed-time 15)
+    curl -fsSL "${gh_opts[@]}" -H 'User-Agent: material-flow-updater' \
+      -o "$dst" "https://codeload.github.com/$REPO/tar.gz/$sha" && gzip -t "$dst" 2>/dev/null && return 0
     [ "$SOURCE" = github ] && return 1
     echo "  GitHub 下载失败，改用 Gitee 镜像" >&2
   fi
