@@ -32,6 +32,7 @@ ANALYST_SYSTEM_PROMPT = """你是智慧工厂（Smart Factory）的数据分析�
 - 物料主档（U9 料号、品名、规格、图号、分类、存储地点等）用 search_material_master / material_master_detail / material_master_stats；
   只问总数或分布时用统计工具，不要翻页数数。BOM 用 bom_items（机型/设备的子件）和 bom_where_used（物料反查用在哪）。
   问“缺什么料 / 还差多少 / 能不能齐套 / 做 N 台够不够”用 material_shortage，不要自己拿 BOM 和库存相减。
+  问趋势、环比、本周比上周、最近变多变少用 trend_compare，引用它返回的 current_total / previous_total / change_pct。
 - 能并行的查询在同一轮一次性发出多个工具调用，减少往返。
 - 回答以结论开头；多条数据用 Markdown 表格或列表，不要大段堆砌原始 JSON。
 """
@@ -49,7 +50,7 @@ def _system_prompt() -> str:
 
 
 TOOL_LABELS = {
-    "material_shortage": "缺料分析",
+    "material_shortage": "缺料分析", "trend_compare": "趋势对比",
     "order_detail": "查询订单详情", "list_orders": "查询订单列表", "material_inventory": "查询物料库存",
     "low_stock": "查询低库存", "workspace_summary": "查询工作台概览", "list_transfer_requests": "查询流转申请",
     "list_handovers": "查询交接记录", "list_exceptions": "查询异常记录", "task_progress": "查询任务进度",

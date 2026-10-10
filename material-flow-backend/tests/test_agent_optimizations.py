@@ -409,3 +409,28 @@ def test_shortage_all_open_orders(sconn):
     r = _short(sconn)
     assert r["orders_affected"] == 1  # PO-3 已完成，不计
     assert r["items"][0]["material_code"] == "C3" and r["items"][0]["shortage"] == 2
+
+
+# ---------- 第二阶段：趋势对比 ----------
+
+def test_trend_compare_day_and_breakdown():
+    from datetime import datetime, timedelta, timezone
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE exceptions(id TEXT, type TEXT, status TEXT, created_at TEXT)")
+    now = datetime.now(timezone.utc)
+    rows = [(now, "SHORT"), (now - timedelta(days=1), "SHORT"), (now - timedelta(days=1), "DAMAGE"),
+            (now - timedelta(days=8), "SHORT")]
+    for i, (t, ty) in enumerate(rows):
+        c.execute("INSERT INTO exceptions VALUES(?,?,?,?)", (str(i), ty, "OPEN", t.isoformat()))
+    run = T.get_tool(T.ANALYSIS_TOOLS, "trend_compare").run
+    r = run(c, {"metric": "exceptions", "granularity": "day", "periods": 7, "group_by": "type"})
+    assert len(r["series"]) == 7 and r["current_total"] == 3 and r["previous_total"] == 1
+    assert r["change"] == 2 and r["change_pct"] == 200.0
+    assert r["breakdown"][0] == {"key": "SHORT", "value": 2}
+    assert sum(p["value"] for p in r["series"]) == 3
+    with pytest.raises(T.ToolError):
+        run(c, {"metric": "nope"})
+    with pytest.raises(T.ToolError):
+        run(c, {"metric": "exceptions", "group_by": "id; DROP TABLE x"})
+    r = run(c, {"metric": "exceptions", "granularity": "month", "periods": 2})
+    assert len(r["series"]) == 2 and r["current_total"] == 4

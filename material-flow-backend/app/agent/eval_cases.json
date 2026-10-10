@@ -238,5 +238,26 @@
     "expect_tools": [
       "material_shortage"
     ]
+  },
+  {
+    "id": "trend-exc-week",
+    "q": "这周异常比上周多还是少？",
+    "expect_tools": [
+      "trend_compare"
+    ]
+  },
+  {
+    "id": "trend-labor",
+    "q": "最近两周每天的工时趋势怎么样？",
+    "expect_tools": [
+      "trend_compare"
+    ]
+  },
+  {
+    "id": "trend-done-month",
+    "q": "最近半年每个月完工了多少装配任务？",
+    "expect_tools": [
+      "trend_compare"
+    ]
   }
 ]

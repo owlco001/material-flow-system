@@ -589,6 +589,100 @@ def _explode_model_bom(conn: sqlite3.Connection, need: dict, version_id: str, qt
 
 
 # ---------------------------------------------------------------------------
+# 趋势与对比（按北京时间切日/周/月，和上一个等长周期对比）
+# ---------------------------------------------------------------------------
+
+# metric -> (表, 时间列, 值表达式, 额外条件, 中文名, 单位)
+TREND_METRICS: dict[str, tuple[str, str, str, str, str, str]] = {
+    "exceptions": ("exceptions", "created_at", "COUNT(*)", "", "异常上报", "条"),
+    "labor_minutes": ("labor_records", "started_at", "SUM(COALESCE(duration_minutes,0))", "", "工时", "分钟"),
+    "handovers": ("material_handovers", "created_at", "COUNT(*)", "", "物料交接", "笔"),
+    "handover_quantity": ("material_handovers", "created_at", "SUM(quantity)", "AND status='CONFIRMED'", "已确认交接数量", "件"),
+    "transfers": ("transfer_requests", "created_at", "COUNT(*)", "", "流转申请", "笔"),
+    "tasks_completed": ("assembly_tasks", "completed_at", "COUNT(*)", "AND completed_at IS NOT NULL", "完工装配任务", "个"),
+    "stocktakes": ("stocktakes", "created_at", "COUNT(*)", "", "盘点", "次"),
+}
+_GRAN = {"day": ("%Y-%m-%d", 1), "week": ("%Y-W%W", 7), "month": ("%Y-%m", 30)}
+
+
+def _trend_compare(conn: sqlite3.Connection, args: dict) -> dict:
+    from datetime import datetime, timedelta, timezone
+    metric = str(_require(args, "metric")).strip()
+    if metric not in TREND_METRICS:
+        raise ToolError(f"metric 只能是：{'、'.join(TREND_METRICS)}")
+    table, col, expr, extra, label, unit = TREND_METRICS[metric]
+    _require_table(conn, table, label)
+    gran = str(args.get("granularity") or "day").strip()
+    if gran not in _GRAN:
+        raise ToolError("granularity 只能是 day / week / month")
+    fmt, unit_days = _GRAN[gran]
+    try:
+        periods = int(args.get("periods") or {"day": 14, "week": 8, "month": 6}[gran])
+    except (TypeError, ValueError):
+        raise ToolError("periods 必须是整数")
+    periods = max(1, min(periods, 60))
+    group_by = str(args.get("group_by") or "").strip()
+    group_cols = {"exceptions": {"type", "status"}, "labor_minutes": {"type", "worker_user_id"},
+                  "transfers": {"type", "status"}, "handovers": {"status"}, "handover_quantity": set(),
+                  "tasks_completed": {"assigned_assembler_id"}, "stocktakes": {"status"}}[metric]
+    if group_by and group_by not in group_cols:
+        raise ToolError(f"{metric} 的 group_by 只能是：{'、'.join(sorted(group_cols)) or '（不支持分组）'}")
+
+    bj = timezone(timedelta(hours=8))
+    today = datetime.now(bj).date()
+    if gran == "day":
+        start = today - timedelta(days=periods - 1)
+    elif gran == "week":
+        start = today - timedelta(days=today.weekday()) - timedelta(weeks=periods - 1)
+    else:
+        y, m = today.year, today.month - (periods - 1)
+        while m <= 0:
+            y, m = y - 1, m + 12
+        start = today.replace(year=y, month=m, day=1)
+    span = (today - start).days + 1
+    prev_start = start - timedelta(days=span)
+    # 存的是 UTC ISO 时间；换成北京时间再切桶
+    local = f"datetime(substr({col},1,19), '+8 hours')"
+    where = f"{col} IS NOT NULL AND date({local}) >= ? {extra}"
+
+    rows = conn.execute(
+        f"SELECT strftime('{fmt}', {local}) AS bucket, {expr} FROM {table} "
+        f"WHERE {where} AND date({local}) <= ? GROUP BY bucket ORDER BY bucket",
+        (start.isoformat(), today.isoformat())).fetchall()
+    by_bucket = {r[0]: (r[1] or 0) for r in rows}
+    series, d = [], start
+    seen = set()
+    while d <= today:
+        b = d.strftime(fmt)
+        if b not in seen:
+            seen.add(b)
+            series.append({"period": b, "value": by_bucket.get(b, 0)})
+        d += timedelta(days=1)
+
+    def total(a, b):
+        return conn.execute(
+            f"SELECT {expr} FROM {table} WHERE {where} AND date({local}) <= ?",
+            (a.isoformat(), b.isoformat())).fetchone()[0] or 0
+
+    cur = total(start, today)
+    prev = total(prev_start, start - timedelta(days=1))
+    out = {
+        "metric": metric, "label": label, "unit": unit, "granularity": gran,
+        "range": {"from": start.isoformat(), "to": today.isoformat(), "timezone": "Asia/Shanghai"},
+        "previous_range": {"from": prev_start.isoformat(), "to": (start - timedelta(days=1)).isoformat()},
+        "series": series, "current_total": cur, "previous_total": prev,
+        "change": cur - prev,
+        "change_pct": round((cur - prev) * 100.0 / prev, 1) if prev else None,
+        "note": "本期含今天（未过完）；change_pct 为 null 表示上期为 0",
+    }
+    if group_by:
+        out["breakdown"] = _fetch_dicts(conn.execute(
+            f"SELECT {group_by} AS key, {expr} AS value FROM {table} WHERE {where} AND date({local}) <= ? "
+            f"GROUP BY {group_by} ORDER BY value DESC LIMIT 20", (start.isoformat(), today.isoformat())))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 工具注册表
 # ---------------------------------------------------------------------------
 
@@ -842,6 +936,26 @@ ANALYSIS_TOOLS: list[Tool] = [
             },
         },
         run=_material_shortage,
+    ),
+    Tool(
+        name="trend_compare",
+        description=(
+            "趋势与对比：按北京时间按天/周/月统计某指标，并与上一个等长周期对比（环比）。"
+            "metric：exceptions 异常上报数、labor_minutes 工时分钟、handovers 物料交接笔数、"
+            "handover_quantity 已确认交接数量、transfers 流转申请数、tasks_completed 完工装配任务数、stocktakes 盘点次数。"
+            "可选 group_by 看构成（如异常按 type、工时按 worker_user_id）。问“最近/本周/上周/趋势/同比环比/变多变少”时用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "metric": {"type": "string", "enum": list(TREND_METRICS)},
+                "granularity": {"type": "string", "enum": ["day", "week", "month"], "description": "默认 day"},
+                "periods": {"type": "integer", "description": "统计多少个周期（含当前），默认 天14/周8/月6，最多 60"},
+                "group_by": {"type": "string", "description": "分组字段，如 type / status / worker_user_id"},
+            },
+            "required": ["metric"],
+        },
+        run=_trend_compare,
     ),
 ]
 
