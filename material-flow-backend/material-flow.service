@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/material-flow/data /srv/material-flow/uploads
+ReadWritePaths=/srv/material-flow/data /srv/material-flow/uploads /srv/material-flow/backups /srv/material-flow/app-releases
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Material Flow 后端更新（由管理台「系统更新」触发）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /srv/material-flow/deploy/update.sh --from-request
+TimeoutStartSec=900
