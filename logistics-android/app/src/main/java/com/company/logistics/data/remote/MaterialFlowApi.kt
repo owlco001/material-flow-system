@@ -1005,6 +1005,17 @@ open class MaterialFlowApi(
         )
     }
 
+    /** GET /api/v1/materials/{code}/master；未导入主档（404）时返回 null。 */
+    suspend fun materialMaster(code: String): com.company.logistics.model.MaterialMaster? = withContext(Dispatchers.IO) {
+        try {
+            com.company.logistics.model.MaterialMaster.parse(
+                request("GET", "/api/v1/materials/${encodePath(code)}/master", null)
+            )
+        } catch (e: ApiException) {
+            if (e.statusCode == 404) null else throw e
+        }
+    }
+
     /** 带鉴权读取小文件（缩略图），超过 maxBytes 抛错。 */
     suspend fun fetchAuthorizedBytes(path: String, maxBytes: Int = 2 * 1024 * 1024): ByteArray = withContext(Dispatchers.IO) {
         val httpRequest = Request.Builder()
