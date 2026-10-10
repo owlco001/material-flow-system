@@ -235,6 +235,10 @@ fun LogisticsApp(
                                 onInbound = { viewModel.submitInbound() },
                                 onBindLocation = { viewModel.navigate(Screen.LOCATION_BIND) },
                                 drawings = {
+                                    com.company.logistics.ui.screens.MaterialMasterCard(
+                                        api = viewModel.repository.apiHandle,
+                                        code = inv.material.code,
+                                    )
                                     com.company.logistics.ui.screens.DrawingsCard(
                                         api = viewModel.repository.apiHandle,
                                         target = com.company.logistics.drawing.DrawingTarget.Material(inv.material.code),
