@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -29,6 +30,43 @@ class ChatResult:
     completion_tokens: int = 0
 
 
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+
+
+def _error_snippet(e: urllib.error.HTTPError) -> str:
+    try:
+        body = e.read().decode("utf-8", "replace")
+        msg = (json.loads(body).get("error") or {}).get("message") or body
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"：{str(msg)[:200]}"
+
+
+def _post_with_retry(req: urllib.request.Request, timeout_s: float) -> tuple[int, bytes]:
+    """限流 / 服务端错误 / 网络抖动时指数退避重试（1s、2s），4xx 参数错误不重试。"""
+    last: LLMError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        if attempt:
+            time.sleep(2 ** (attempt - 1))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as e:
+            last = LLMError(f"LLM 返回 HTTP {e.code}{_error_snippet(e)}")
+            last.__cause__ = e
+            if e.code not in _RETRY_STATUS:
+                raise last
+        except urllib.error.URLError as e:
+            last = LLMError(f"LLM 请求失败: {e.reason}")
+        except TimeoutError:
+            last = LLMError(f"LLM 请求超时({timeout_s}s)")
+        except OSError as e:
+            last = LLMError(f"LLM 请求失败: {e}")
+    assert last is not None
+    raise last
+
+
 def chat(cfg: AgentConfig, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
     if not cfg.api_key:
         raise LLMError("AGENT_LLM_API_KEY 未配置")
@@ -52,18 +90,7 @@ def chat(cfg: AgentConfig, messages: list[dict], tools: list[dict] | None = None
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout_s) as resp:
-            status = resp.status
-            raw = resp.read()
-    except urllib.error.HTTPError as e:
-        raise LLMError(f"LLM 返回 HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise LLMError(f"LLM 请求失败: {e.reason}") from e
-    except TimeoutError as e:
-        raise LLMError(f"LLM 请求超时({cfg.timeout_s}s)") from e
-    except OSError as e:
-        raise LLMError(f"LLM 请求失败: {e}") from e
+    status, raw = _post_with_retry(req, cfg.timeout_s)
 
     if status != 200:
         raise LLMError(f"LLM 返回 HTTP {status}")

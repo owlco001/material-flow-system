@@ -239,6 +239,147 @@ def _labor_summary(conn: sqlite3.Connection, args: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# 物料主档 / BOM（只读）
+# ---------------------------------------------------------------------------
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def _require_table(conn: sqlite3.Connection, name: str, hint: str) -> None:
+    if not _table_exists(conn, name):
+        raise ToolError(hint)
+
+
+_MM_BRIEF = ("code", "name", "specification", "drawing_no", "unit_name", "item_form",
+             "main_category_name", "storage_location", "device_no", "project_no")
+
+
+def _search_material_master(conn: sqlite3.Connection, args: dict) -> dict:
+    _require_table(conn, "material_master", "物料主档尚未导入")
+    limit = _clamp_limit(args)
+    offset = _clamp_offset(args)
+    where, params = [], []
+    kw = str(args.get("keyword") or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        where.append("(code LIKE ? OR name LIKE ? OR specification LIKE ? OR drawing_no LIKE ? OR t6_code LIKE ?)")
+        params += [like] * 5
+    for key in ("device_no", "project_no", "item_form", "storage_location", "main_category_name"):
+        v = str(args.get(key) or "").strip()
+        if v:
+            where.append(f"{key} LIKE ?")
+            params.append(f"%{v}%")
+    sql_where = (" WHERE " + " AND ".join(where)) if where else ""
+    total = conn.execute(f"SELECT COUNT(*) FROM material_master{sql_where}", params).fetchone()[0]
+    rows = _fetch_dicts(conn.execute(
+        f"SELECT {', '.join(_MM_BRIEF)} FROM material_master{sql_where} ORDER BY code LIMIT ? OFFSET ?",
+        (*params, limit, offset)))
+    return {"total": total, "offset": offset, "count": len(rows), "items": rows}
+
+
+def _material_master_detail(conn: sqlite3.Connection, args: dict) -> dict:
+    _require_table(conn, "material_master", "物料主档尚未导入")
+    code = str(_require(args, "code")).strip()
+    row = _fetch_one(conn.execute("SELECT * FROM material_master WHERE code = ?", (code,)))
+    if row is None:
+        raise ToolError(f"物料主档中没有料号: {code}（可先用 search_material_master 模糊查找）")
+    try:
+        from app.material_master import FIELD_LABELS
+    except Exception:  # noqa: BLE001
+        FIELD_LABELS = {}
+    skip = {"extra_json", "row_hash", "source_batch_id"}
+    detail = {FIELD_LABELS.get(k, k): v for k, v in row.items()
+              if k not in skip and v not in (None, "")}
+    out: dict = {"material": detail}
+    if _table_exists(conn, "materials"):
+        inv = _fetch_one(conn.execute("SELECT * FROM materials WHERE code = ?", (code,)))
+        if inv:
+            out["inventory"] = inv
+    return out
+
+
+_MM_GROUPS = {"main_category": "main_category_name", "item_form": "item_form",
+              "storage_location": "storage_location", "project_no": "project_no",
+              "device_no": "device_no", "buyer": "buyer_name", "unit": "unit_name"}
+
+
+def _material_master_stats(conn: sqlite3.Connection, args: dict) -> dict:
+    _require_table(conn, "material_master", "物料主档尚未导入")
+    group = str(args.get("group_by") or "main_category")
+    col = _MM_GROUPS.get(group)
+    if col is None:
+        raise ToolError(f"group_by 仅支持: {', '.join(_MM_GROUPS)}")
+    limit = _clamp_limit(args, default=30)
+    total = conn.execute("SELECT COUNT(*) FROM material_master").fetchone()[0]
+    rows = _fetch_dicts(conn.execute(
+        f"""SELECT COALESCE(NULLIF({col}, ''), '(空)') AS value, COUNT(*) AS count
+            FROM material_master GROUP BY value ORDER BY count DESC LIMIT ?""", (limit,)))
+    return {"total": total, "group_by": group, "groups": rows}
+
+
+def _bom_items(conn: sqlite3.Connection, args: dict) -> dict:
+    """设备/机型的 BOM 明细：优先已发布的机型 BOM，其次最新一批汇总 BOM。"""
+    code = str(_require(args, "code")).strip()
+    limit = _clamp_limit(args, default=50)
+    offset = _clamp_offset(args)
+    if _table_exists(conn, "bom_versions"):
+        ver = _fetch_one(conn.execute(
+            """SELECT id, model_code, version_no, published_at FROM bom_versions
+               WHERE model_code = ? AND status = 'PUBLISHED' ORDER BY version_no DESC LIMIT 1""",
+            (code,)))
+        if ver:
+            total = conn.execute("SELECT COUNT(*) FROM bom_items WHERE bom_version_id=?",
+                                 (ver["id"],)).fetchone()[0]
+            items = _fetch_dicts(conn.execute(
+                """SELECT line_no, material_code, material_name, specification, unit, quantity, scrap_rate
+                   FROM bom_items WHERE bom_version_id = ? ORDER BY line_no LIMIT ? OFFSET ?""",
+                (ver["id"], limit, offset)))
+            return {"source": "机型BOM(已发布)", "bom": ver, "total": total, "items": items}
+    if _table_exists(conn, "agg_bom_items"):
+        batch = _fetch_one(conn.execute(
+            """SELECT b.id, b.project_name, b.file_name, b.created_at FROM agg_bom_batches b
+               JOIN agg_bom_items i ON i.batch_id = b.id
+               WHERE i.device_code = ? OR i.parent_code = ?
+               ORDER BY b.created_at DESC LIMIT 1""", (code, code)))
+        if batch:
+            cond = "batch_id = ? AND (device_code = ? OR parent_code = ?)"
+            total = conn.execute(f"SELECT COUNT(*) FROM agg_bom_items WHERE {cond}",
+                                 (batch["id"], code, code)).fetchone()[0]
+            items = _fetch_dicts(conn.execute(
+                f"""SELECT line_no, level_no, parent_code, material_code, material_name, specification,
+                           unit, quantity, material_form
+                    FROM agg_bom_items WHERE {cond} ORDER BY line_no LIMIT ? OFFSET ?""",
+                (batch["id"], code, code, limit, offset)))
+            return {"source": "汇总BOM(最新导入批次)", "batch": batch, "total": total, "items": items}
+    raise ToolError(f"没有找到 {code} 的 BOM（已发布机型 BOM 与汇总 BOM 中均无）")
+
+
+def _bom_where_used(conn: sqlite3.Connection, args: dict) -> dict:
+    """物料反查：哪些机型/设备的 BOM 用到了它。"""
+    code = str(_require(args, "material_code")).strip()
+    limit = _clamp_limit(args, default=30)
+    out: dict = {"material_code": code, "model_boms": [], "agg_boms": []}
+    if _table_exists(conn, "bom_items"):
+        out["model_boms"] = _fetch_dicts(conn.execute(
+            """SELECT v.model_code, v.version_no, v.status, i.quantity, i.unit
+               FROM bom_items i JOIN bom_versions v ON v.id = i.bom_version_id
+               WHERE i.material_code = ? ORDER BY v.model_code, v.version_no DESC LIMIT ?""",
+            (code, limit)))
+    if _table_exists(conn, "agg_bom_items"):
+        out["agg_boms"] = _fetch_dicts(conn.execute(
+            """SELECT b.project_name, i.device_code, i.device_name, i.parent_code, i.quantity, i.unit
+               FROM agg_bom_items i JOIN agg_bom_batches b ON b.id = i.batch_id
+               WHERE i.material_code = ? ORDER BY b.created_at DESC, i.device_code LIMIT ?""",
+            (code, limit)))
+    if not out["model_boms"] and not out["agg_boms"]:
+        raise ToolError(f"没有 BOM 用到物料 {code}")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 工具注册表
 # ---------------------------------------------------------------------------
 
@@ -394,6 +535,82 @@ ANALYSIS_TOOLS: list[Tool] = [
             },
         },
         run=_labor_summary,
+    ),
+    Tool(
+        name="search_material_master",
+        description=(
+            "在 U9 物料主档（约 3.7 万料号）中模糊搜索。keyword 同时匹配料号、品名、规格、U9图号、T6料号；"
+            "可再按设备编号、项目号、形态属性、存储地点、主分类过滤。返回 total 总数与分页结果。"
+            "用户只说了物料名称或图号时，先用它找到准确料号。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "料号/品名/规格/图号关键词"},
+                "device_no": {"type": "string"}, "project_no": {"type": "string"},
+                "item_form": {"type": "string", "description": "形态属性，如 采购件、自制件"},
+                "storage_location": {"type": "string"}, "main_category_name": {"type": "string"},
+                "limit": {"type": "integer", "description": "每页条数，1-50"},
+                "offset": {"type": "integer", "description": "分页偏移"},
+            },
+        },
+        run=_search_material_master,
+    ),
+    Tool(
+        name="material_master_detail",
+        description="按准确料号查询物料主档全部字段（中文字段名），若有库存记录一并返回。",
+        parameters={
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "料号"}},
+            "required": ["code"],
+        },
+        run=_material_master_detail,
+    ),
+    Tool(
+        name="material_master_stats",
+        description=(
+            "物料主档分组统计：返回总料号数及按某字段分组的数量（降序）。"
+            "group_by 可选 main_category / item_form / storage_location / project_no / device_no / buyer / unit。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "group_by": {"type": "string", "enum": ["main_category", "item_form", "storage_location",
+                                                        "project_no", "device_no", "buyer", "unit"]},
+                "limit": {"type": "integer", "description": "返回分组数，1-50"},
+            },
+        },
+        run=_material_master_stats,
+    ),
+    Tool(
+        name="bom_items",
+        description=(
+            "查询机型或设备的 BOM 明细。优先返回已发布的机型 BOM，没有则返回最新导入的汇总 BOM 中该设备/母项的子件。"
+            "code 为机型编码、设备编码或母项料号。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "机型编码 / 设备编码 / 母项料号"},
+                "limit": {"type": "integer", "description": "每页条数，1-50"},
+                "offset": {"type": "integer", "description": "分页偏移"},
+            },
+            "required": ["code"],
+        },
+        run=_bom_items,
+    ),
+    Tool(
+        name="bom_where_used",
+        description="物料反查：列出用到某料号的机型 BOM 与汇总 BOM（设备、母项、用量）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "material_code": {"type": "string", "description": "料号"},
+                "limit": {"type": "integer", "description": "条数，1-50"},
+            },
+            "required": ["material_code"],
+        },
+        run=_bom_where_used,
     ),
 ]
 

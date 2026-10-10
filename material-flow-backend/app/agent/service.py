@@ -29,7 +29,29 @@ ANALYST_SYSTEM_PROMPT = """你是智慧工厂（Smart Factory）的数据分析�
 - 工具返回错误时如实转告用户，不要编造结果。
 - 用户询问职责范围之外的问题（如写代码、闲聊、与工厂数据无关的事项）时，礼貌拒绝，并说明你只能做工厂数据分析。
 - 列表类工具支持 limit/offset 分页：需要统计总数或查看全量时，用 offset 翻页取完（如先 limit=50 offset=0，再 offset=50），不要只看默认 20 条就下结论。
+- 物料主档（U9 料号、品名、规格、图号、分类、存储地点等）用 search_material_master / material_master_detail / material_master_stats；
+  只问总数或分布时用统计工具，不要翻页数数。BOM 用 bom_items（机型/设备的子件）和 bom_where_used（物料反查用在哪）。
+- 能并行的查询在同一轮一次性发出多个工具调用，减少往返。
+- 回答以结论开头；多条数据用 Markdown 表格或列表，不要大段堆砌原始 JSON。
 """
+
+# 单个工具结果写回模型上下文的最大字符数，防止大结果撑爆上下文、拖慢响应
+_TOOL_RESULT_MAX_CHARS = 12000
+_HISTORY_LIMIT = 20
+
+
+def _system_prompt() -> str:
+    from datetime import timedelta
+    now = datetime.now(timezone(timedelta(hours=8)))
+    weekday = "一二三四五六日"[now.weekday()]
+    return ANALYST_SYSTEM_PROMPT + f"\n当前时间：{now:%Y-%m-%d %H:%M}（北京时间，星期{weekday}）。理解“今天/本周/上月”等相对时间以此为准。\n"
+
+
+def _truncate_result(result_json: str) -> str:
+    if len(result_json) <= _TOOL_RESULT_MAX_CHARS:
+        return result_json
+    return (result_json[:_TOOL_RESULT_MAX_CHARS]
+            + f"…（结果过长已截断，原长 {len(result_json)} 字符。请缩小 limit 或加过滤条件分页查询）")
 
 
 def _now() -> str:
@@ -103,7 +125,7 @@ def run_chat(
         conn.execute(
             """INSERT INTO agent_sessions(id, user_id, title, created_at, updated_at)
                VALUES(?,?,?,?,?)""",
-            (session_id, user_id, message[:20], now, now),
+            (session_id, user_id, " ".join(message.split())[:30], now, now),
         )
 
     # 2. 落库用户消息
@@ -115,13 +137,20 @@ def run_chat(
     )
 
     # 3. 取最近 20 条历史（不含刚写入的本条），拼 messages
+    # 只带 user 与最终 assistant 回复：中间的 tool 消息与带 tool_calls 的 assistant
+    # 若单独回放，会出现「tool 消息前没有对应 tool_calls」，OpenAI/DeepSeek 直接 HTTP 400。
     hist_rows = conn.execute(
         """SELECT role, content FROM agent_messages
            WHERE session_id = ? AND id != ?
-           ORDER BY rowid DESC LIMIT 20""",
-        (session_id, user_msg_id),
+             AND (role = 'user' OR (role = 'assistant' AND tool_calls_json IS NULL AND content != ''))
+           ORDER BY rowid DESC LIMIT ?""",
+        (session_id, user_msg_id, _HISTORY_LIMIT),
     ).fetchall()
-    messages: list[dict] = [{"role": "system", "content": ANALYST_SYSTEM_PROMPT}]
+    hist_rows = list(hist_rows)
+    # 历史以 assistant 开头没有意义（被截断的问答），丢掉
+    while hist_rows and hist_rows[-1][0] != "user":
+        hist_rows.pop()
+    messages: list[dict] = [{"role": "system", "content": _system_prompt()}]
     messages.extend({"role": r[0], "content": r[1]} for r in reversed(hist_rows))
     messages.append({"role": "user", "content": message})
 
@@ -131,6 +160,7 @@ def run_chat(
     completion_tokens = 0
     iterations = 0
     reply: str | None = None
+    tool_cache: dict[tuple[str, str], str] = {}
 
     for _ in range(cfg.max_iters):
         iterations += 1
@@ -170,20 +200,36 @@ def run_chat(
             json.dumps(tool_calls_payload, ensure_ascii=False),
         )
 
-        # 逐个执行工具调用
+        # 逐个执行工具调用（同一轮对话内相同调用直接复用结果）
         for tc in result.tool_calls:
-            tool_result = _run_tool(conn, tools, tc.name, tc.arguments_json)
-            try:
-                result_json = json.dumps(tool_result, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                result_json = json.dumps({"error": "工具返回了无法序列化的数据"}, ensure_ascii=False)
+            cache_key = (tc.name, tc.arguments_json or "{}")
+            if cache_key in tool_cache:
+                result_json = tool_cache[cache_key]
+            else:
+                tool_result = _run_tool(conn, tools, tc.name, tc.arguments_json)
+                try:
+                    result_json = json.dumps(tool_result, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    result_json = json.dumps({"error": "工具返回了无法序列化的数据"}, ensure_ascii=False)
+                result_json = _truncate_result(result_json)
+                tool_cache[cache_key] = result_json
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": result_json}
             )
             _save_message(conn, session_id, "tool", result_json, None)
 
     if reply is None:
-        reply = "抱歉，这个问题比较复杂，已达到最大推理轮次，请换一种问法重试。"
+        # 轮次用尽：不再给工具，让模型基于已查到的数据给出结论
+        messages.append({"role": "user", "content": "已达到工具调用上限。请只根据上面已经查到的数据直接回答；数据不足的部分明确说明。"})
+        try:
+            result = llm.chat(cfg, messages, None)
+            prompt_tokens += result.prompt_tokens
+            completion_tokens += result.completion_tokens
+            reply = result.content or None
+        except LLMError:
+            reply = None
+        if not reply:
+            reply = "抱歉，这个问题比较复杂，已达到最大推理轮次，请换一种问法重试。"
         _save_message(conn, session_id, "assistant", reply, None)
 
     # 5. 用量落库 + 更新会话时间
