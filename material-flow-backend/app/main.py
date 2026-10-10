@@ -1832,6 +1832,8 @@ def download_assembly_model(model_code: str, version: int, user: sqlite3.Row = D
 # ==================== BOM CSV/XLSX import (A1/2A) ====================
 BOM_COLUMNS = ("modelCode", "materialCode", "materialName", "specification", "unit", "quantity", "scrapRate", "substituteMaterialCodes")
 BOM_XLSX_REQUIRED_COLUMNS = ("料品编码", "料品名称", "规格", "单位名称", "实际用量", "是否生效")
+# U9 导出的 BOM母项 格式
+U9_BOM_REQUIRED_COLUMNS = ("母件料品_料号", "BOM子项.子件料品.料号", "BOM子项_用量")
 INVENTORY_XLSX_REQUIRED_COLUMNS = (
     "存储地点名称",
     "料号",
@@ -2070,7 +2072,7 @@ def _validate_bom_preview_rows(
             for field in ("modelCode", "materialCode", "materialName", "unit"):
                 if not values[field]:
                     item_errors.append({"lineNo": line_no, "field": field, "code": "REQUIRED", "message": "字段不能为空"})
-            if values["modelCode"] != model_code:
+            if values["modelCode"] != model_code and not row.get("_u9"):
                 item_errors.append({"lineNo": line_no, "field": "modelCode", "code": "MODEL_MISMATCH", "message": "机型不匹配"})
             key = (values["modelCode"], values["materialCode"])
             if key in seen:
@@ -2120,9 +2122,84 @@ def _csv_bom_rows(raw: bytes, *, trace_id: str) -> list[dict[str, str]]:
     return [{**row, "lineNo": str(line_no)} for line_no, row in enumerate(rows, 2)]
 
 
+
+def _xlsx_u9_bom_rows(rows, u9_header, *, model_code: str) -> list[dict[str, str]]:
+    """解析 U9 导出的 BOM母项 格式。用表头行文本直接定位列。”
+    """
+    # 拿到表头行的原始文本
+    header_row = None
+    for r in rows:
+        if r.index == u9_header.header_row_index:
+            header_row = [str(v or "").strip() for v in r.values]
+            break
+    if not header_row:
+        return []
+
+    def _col(*names):
+        for n in names:
+            for i, h in enumerate(header_row):
+                if h == n:
+                    return i
+        # 模糊：忽略点、下划线、空格
+        def _norm(s):
+            return s.replace(".", "").replace("_", "").replace(" ", "").replace("\u3000", "")
+        norm_headers = [_norm(h) for h in header_row]
+        for n in names:
+            nn = _norm(n)
+            for i, h in enumerate(norm_headers):
+                if h == nn:
+                    return i
+        return None
+
+    c_parent = _col("母件料品_料号")
+    c_child = _col("BOM子项.子件料品.料号")
+    c_name = _col("BOM子项_子项_品名", "子件品名", "品名")
+    c_spec = _col("子件规格", "规格")
+    c_unit = _col("BOM子项.发料单位.名称", "发料单位", "单位名称", "单位")
+    c_qty = _col("BOM子项_用量", "用量")
+    c_status = _col("状态")
+
+    def _v(row, idx):
+        if idx is None or idx >= len(row.values):
+            return ""
+        return str(row.values[idx] or "").strip()
+
+    preview_rows: list[dict[str, str]] = []
+    for row in rows:
+        if row.index <= u9_header.header_row_index:
+            continue
+        child_code = _v(row, c_child)
+        if not child_code:
+            continue
+        if c_status is not None:
+            st = _v(row, c_status)
+            if st and st != "已核准":
+                continue
+        preview_rows.append({
+            "lineNo": str(row.index),
+            "modelCode": _v(row, c_parent) or model_code,
+            "_u9": True,
+            "materialCode": child_code,
+            "materialName": _v(row, c_name),
+            "specification": _v(row, c_spec),
+            "unit": _v(row, c_unit),
+            "quantity": _v(row, c_qty),
+            "scrapRate": "0",
+            "substituteMaterialCodes": "",
+        })
+    return preview_rows
+
+
+
 def _xlsx_bom_rows(raw: bytes, *, model_code: str, trace_id: str) -> list[dict[str, str]]:
     try:
         rows = XlsxSheetReader.read_rows(raw, max_rows=20001)
+        # 先尝试 U9 格式
+        try:
+            u9_header = HeaderDetectService.detect_header(rows, U9_BOM_REQUIRED_COLUMNS)
+            return _xlsx_u9_bom_rows(rows, u9_header, model_code=model_code)
+        except HeaderMissingFieldsError:
+            pass
         header = HeaderDetectService.detect_header(rows, BOM_XLSX_REQUIRED_COLUMNS)
     except HeaderMissingFieldsError as exc:
         raise ApiError(
@@ -2445,7 +2522,10 @@ async def preview_bom_import(
     )
     valid_items, errors = _validate_bom_preview_rows(rows, model_code=modelCode)
     pid = str(uuid.uuid4()); digest = hashlib.sha256(raw).hexdigest()
-    BOM_PREVIEWS[pid] = {"userId": user["id"], "created": time.time(), "modelCode": modelCode, "sha": digest, "rows": valid_items, "errors": errors}
+    # U9 格式：机型来自文件里的母件编码
+    _is_u9 = bool(rows and rows[0].get("_u9"))
+    _eff_model = rows[0].get("modelCode") if _is_u9 and rows else modelCode
+    BOM_PREVIEWS[pid] = {"userId": user["id"], "created": time.time(), "modelCode": _eff_model, "sha": digest, "rows": valid_items, "errors": errors, "_u9": _is_u9}
     return {"previewId": pid, "fileSha256": digest, "modelCode": modelCode, "totalRows": len(rows), "validRows": len(valid_items), "invalidRows": len(rows) - len(valid_items), "canCommit": not errors and bool(valid_items), "errors": errors, "warnings": [], "items": valid_items, "traceId": trace_id, "serverTime": now()}
 
 
@@ -2463,8 +2543,9 @@ def commit_bom_import(body: BomCommitRequest, user: sqlite3.Row = Depends(curren
         if not preview or preview["userId"] != user["id"] or time.time() - preview["created"] > 1800:
             raise ApiError(409, "BOM_PREVIEW_EXPIRED", "预览不存在、已过期或不属于当前用户", trace_id=trace_id)
         if preview["errors"] or not preview["rows"]: raise ApiError(422, "BOM_VALIDATION_FAILED", "预览包含错误", trace_id=trace_id)
-        if not c.execute("SELECT 1 FROM production_order_models WHERE model_code=?", (preview["modelCode"],)).fetchone():
-            raise ApiError(422, "MODEL_NOT_FOUND", "机型不存在", trace_id=trace_id)
+        if not preview.get("_u9"):
+            if not c.execute("SELECT 1 FROM production_order_models WHERE model_code=?", (preview["modelCode"],)).fetchone():
+                raise ApiError(422, "MODEL_NOT_FOUND", "机型不存在", trace_id=trace_id)
         version = c.execute("SELECT COALESCE(MAX(version_no),0)+1 n FROM bom_versions WHERE model_code=?", (preview["modelCode"],)).fetchone()["n"]
         vid, ts = str(uuid.uuid4()), now(); status = "PUBLISHED" if body.publish else "DRAFT"
         c.execute("INSERT INTO bom_versions VALUES(?,?,?,?,?,?,?,?,?,?)", (vid, preview["modelCode"], version, status, preview["sha"], len(preview["rows"]), user["id"], ts, user["id"] if body.publish else None, ts if body.publish else None))
@@ -6630,3 +6711,10 @@ try:
 except ImportError:
     from material_master_routes import router as _material_master_router
 app.include_router(_material_master_router)
+
+# APP 更新通道（PVE 手工接入，GitHub main 暂无）
+try:
+    from .updates import router as _updates_router
+except ImportError:
+    from updates import router as _updates_router
+app.include_router(_updates_router)
