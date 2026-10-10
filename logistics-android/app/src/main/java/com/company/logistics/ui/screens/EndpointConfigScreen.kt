@@ -58,7 +58,7 @@ import kotlinx.coroutines.delay
  *    配错地址本身无提权风险，且现场常有运维代配的需求；
  *  - 保存后提供「测试连通性」，但不强制通过才允许保存 ——
  *    后端可能暂时没起来，不应因此卡住配置流程；
- *  - Debug 下的明文 http 给出显式警示；Release 只接受 HTTPS。
+ *  - Debug 下的明文 http 给出显式警示；Release 只接受 HTTPS，内网地址（10/8、172.16/12、192.168/16）允许 HTTP。
  *
  * 安全顺序（切换地址前强制退出登录）：
  *  - 「保存」先只做格式校验并弹出中文确认框，**不写存储**；
@@ -217,7 +217,7 @@ fun EndpointConfigScreen(
                 val normalized = EndpointStore.normalize(input)
                 when {
                     normalized == null -> errorText = EndpointStore.ERR_INVALID
-                    !BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true) ->
+                    !BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true) && !EndpointStore.isIntranetHttp(normalized) ->
                         errorText = EndpointStore.ERR_RELEASE_HTTP
                     normalized == store.effectiveUrl -> {
                         errorText = null

@@ -45,7 +45,7 @@ class EndpointStore private constructor(
     fun save(rawUrl: String): Result<String> {
         val normalized = normalize(rawUrl)
             ?: return Result.failure(IllegalArgumentException(ERR_INVALID))
-        if (!BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true)) {
+        if (!BuildConfig.DEBUG && normalized.startsWith("http://", ignoreCase = true) && !isIntranetHttp(normalized)) {
             return Result.failure(IllegalArgumentException(ERR_RELEASE_HTTP))
         }
         prefs.edit().putString(KEY_URL, normalized).apply()
@@ -58,6 +58,24 @@ class EndpointStore private constructor(
 
     companion object {
         private const val FILE_NAME = "logistics_endpoint"
+
+        /** 内网 HTTP 白名单：10/8、172.16/12、192.168/16、localhost，允许明文 */
+        fun isIntranetHttp(url: String): Boolean {
+            val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+            if (uri.scheme?.lowercase() != "http") return false
+            val host = uri.host?.lowercase() ?: return false
+            if (host == "localhost" || host == "127.0.0.1" || host == "::1") return true
+            val parts = host.split(".")
+            if (parts.size != 4) return false
+            val nums = parts.map { it.toIntOrNull() ?: return false }
+            if (nums.any { it < 0 || it > 255 }) return false
+            return when {
+                nums[0] == 10 -> true
+                nums[0] == 172 && nums[1] in 16..31 -> true
+                nums[0] == 192 && nums[1] == 168 -> true
+                else -> false
+            }
+        }
         private const val KEY_URL = "api_base_url"
 
         const val ERR_INVALID = "地址格式不正确，请填写形如 http://192.168.1.10:8000 的完整地址"
