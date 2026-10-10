@@ -63,6 +63,8 @@ android {
         }
         release {
             isDebuggable = false
+            // 与线上 0.5.36/0.5.37 同一把内部签名（SmartFactory Debug 证书），可覆盖安装。
+            signingConfig = signingConfigs.getByName("fixedDebug")
             // Release 开启 R8 混淆 + 资源压缩：减小包体积、提高逆向门槛。
             // keep 规则见 app/proguard-rules.pro（Room/OkHttp；Filament 仅 debug 用，不进 release）。
             isMinifyEnabled = true

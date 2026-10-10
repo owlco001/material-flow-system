@@ -38,6 +38,11 @@ jobs:
           path: logistics-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      - name: 构建 Release APK（仅标签）
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: logistics-android
+        run: ./gradlew :app:assembleRelease --stacktrace
+
       # 推 v* 标签时：按 app-{versionCode}-{versionName}.apk 命名并发布 GitHub Release
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -50,7 +55,7 @@ jobs:
           name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           if [ "v$name" != "$TAG" ]; then echo "标签 $TAG 与 versionName $name 不一致"; exit 1; fi
           out="app-$code-$name.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$out"
+          cp app/build/outputs/apk/release/app-release.apk "$out"
           sha256sum "$out" | tee "$out.sha256"
           notes="${RELEASE_NOTES:-$(git log -1 --pretty=%s)}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "$notes" --verify-tag
