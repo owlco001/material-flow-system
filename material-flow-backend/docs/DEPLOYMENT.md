@@ -257,3 +257,9 @@ in the deployment package or Git history.
 `app/agent/eval_cases.json` against the configured model on a temporary copy of
 the database and reports which tools each question triggered and the pass
 rate. Run it before and after changing the prompt or switching models.
+
+### 智能助手用量与上限
+
+- 管理台「智能助手」页的「用量看板」（仅 ADMIN）：最近 14 天按天、按人、按模型的对话次数与 tokens，以及回答的点赞/点踩数；按北京时间切日。
+- 每人每日 token 上限：在看板里设置（存 `agent_settings.daily_token_limit`），或用环境变量 `AGENT_DAILY_TOKEN_LIMIT`；`0` 为不限。超限后当天新提问直接报错，次日恢复。
+- 删除会话会删除其消息和反馈，用量记录保留。

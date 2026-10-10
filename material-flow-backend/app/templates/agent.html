@@ -54,10 +54,34 @@
   <p id="settings-msg" class="muted"></p>
 </div>
 
+{% if user.role == "ADMIN" %}
+<!-- 用量看板 -->
+<div class="card" style="margin-bottom:16px">
+  <h3>用量看板 <span class="muted" style="font-size:12px;font-weight:normal">最近 14 天 · 北京时间</span></h3>
+  <div id="usage-summary" class="muted">加载中…</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
+    <div><b>按天</b><div id="usage-by-day"></div></div>
+    <div><b>按人</b><div id="usage-by-user"></div></div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+    <label style="margin:0">每人每日上限（tokens，0 = 不限）</label>
+    <input id="usage-limit" type="number" min="0" step="10000" style="width:160px">
+    <button type="button" class="btn btn-sm" onclick="saveUsageLimit()">保存上限</button>
+    <span id="usage-limit-msg" class="muted"></span>
+  </div>
+</div>
+{% endif %}
+
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
 <!-- 数据分析对话 -->
 <div class="card">
   <h3>数据分析对话</h3>
+  <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+    <select id="session-select" style="flex:1;min-width:0" onchange="openSession(this.value)"><option value="">— 历史会话 —</option></select>
+    <button type="button" class="btn btn-sm" onclick="renameSession()" title="重命名">重命名</button>
+    <button type="button" class="btn btn-sm" id="pin-btn" onclick="togglePin()" title="置顶">置顶</button>
+    <button type="button" class="btn btn-sm" onclick="deleteSession()" title="删除">删除</button>
+  </div>
   <div id="chat-box" style="height:420px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafbfc">
     <p class="muted" style="text-align:center">在下方输入问题，例如：查询库存不足的物料、统计本月流转单数量</p>
   </div>
@@ -314,6 +338,7 @@ async function apiCall(path, method, body) {
   return r.json();
 }
 
+let apiKeySet = false;
 async function loadSettings() {
   try {
     const r = await fetch("/admin/agent/settings");
@@ -328,12 +353,13 @@ async function loadSettings() {
       if (!found) { const o = document.createElement("option"); o.value = s.model; o.textContent = s.model + " (自定义)"; sel.appendChild(o); sel.value = s.model; }
     }
     if (s.enabled) document.getElementById("set-enabled").value = s.enabled;
+    apiKeySet = !!s.api_key_set;
     document.getElementById("settings-msg").textContent = s.api_key_set ? "API Key 已配置（" + s.api_key + "）" : "API Key 未配置，请填写后保存";
   } catch (e) {}
 }
 async function saveSettings() {
   const key = document.getElementById("set-api-key").value.trim();
-  if (!key) { document.getElementById("settings-msg").textContent = "请填写 API Key"; return; }
+  if (!key && !apiKeySet) { document.getElementById("settings-msg").textContent = "请填写 API Key"; return; }
   const body = {
     base_url: document.getElementById("set-base-url").value.trim(),
     model: document.getElementById("set-model").value,
@@ -425,8 +451,10 @@ async function sendChat() {
       text += ev.text; if (!rafPending) { rafPending = true; requestAnimationFrame(paint); }
     } else if (ev.type === "done") {
       text = ev.reply || text; paint();
-      if (ev.usage) { const u = document.createElement("div"); u.className = "muted"; u.style.cssText = "font-size:11px;margin-top:4px";
-        u.textContent = (stepCount ? stepCount + " 次查询 · " : "") + (ev.usage.prompt_tokens + ev.usage.completion_tokens) + " tokens"; wrap.appendChild(u); }
+      steps.remove();
+      appendMeta(wrap, ev.message_id, ev.sources || [], null,
+        ev.usage ? ev.usage.prompt_tokens + ev.usage.completion_tokens : null);
+      loadSessions();
     } else if (ev.type === "error") { steps.textContent = ""; text = "出错：" + ev.message; paint(); }
   };
   try {
@@ -458,7 +486,129 @@ document.addEventListener("DOMContentLoaded", function() {
 function newChatSession() {
   chatSessionId = null;
   document.getElementById("chat-box").innerHTML = '<p class="muted" style="text-align:center">新会话已开始</p>';
+  syncSessionBar();
 }
+// 回答下方：依据（用了哪些查询、参数、结果摘要）+ 点赞点踩
+function appendMeta(wrap, messageId, sources, rating, tokens) {
+  const meta = document.createElement("div");
+  meta.style.cssText = "font-size:12px;margin-top:6px;border-top:1px dashed var(--line);padding-top:4px";
+  if (sources.length) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary"); sum.className = "muted"; sum.style.cursor = "pointer";
+    sum.textContent = "依据：" + sources.length + " 次查询"; det.appendChild(sum);
+    for (const src of sources) {
+      const d = document.createElement("div"); d.style.cssText = "margin:4px 0 4px 12px";
+      const args = Object.entries(src.args || {}).map(([k, v]) => k + "=" + (typeof v === "string" ? v : JSON.stringify(v))).join("，");
+      d.textContent = (src.ok === false ? "✗ " : "✓ ") + (src.label || src.name) + (args ? "（" + args + "）" : "") + (src.summary ? " → " + src.summary : "");
+      det.appendChild(d);
+    }
+    meta.appendChild(det);
+  } else {
+    const n = document.createElement("span"); n.className = "muted"; n.textContent = "未查询数据"; meta.appendChild(n);
+  }
+  const bar = document.createElement("div"); bar.style.cssText = "display:flex;gap:6px;align-items:center;margin-top:4px";
+  if (tokens != null) { const t = document.createElement("span"); t.className = "muted"; t.style.fontSize = "11px"; t.textContent = tokens + " tokens"; bar.appendChild(t); }
+  if (messageId) {
+    const mk = (val, label) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn btn-sm"; b.textContent = label;
+      b.style.opacity = rating === val ? "1" : "0.45"; b.dataset.v = val; return b; };
+    const up = mk(1, "👍"), down = mk(-1, "👎");
+    const set = async v => {
+      const next = rating === v ? 0 : v;
+      try { await apiCall("/admin/agent/feedback", "POST", { message_id: messageId, rating: next }); rating = next || null;
+        up.style.opacity = rating === 1 ? "1" : "0.45"; down.style.opacity = rating === -1 ? "1" : "0.45"; } catch (e) { alert("反馈失败：" + e.message); }
+    };
+    up.onclick = () => set(1); down.onclick = () => set(-1);
+    bar.appendChild(up); bar.appendChild(down);
+  }
+  meta.appendChild(bar);
+  wrap.appendChild(meta);
+}
+// ---- 会话管理 ----
+let sessionsCache = [];
+async function loadSessions() {
+  try {
+    const j = await apiCall("/admin/agent/sessions", "GET");
+    sessionsCache = j.sessions || [];
+    const sel = document.getElementById("session-select");
+    sel.innerHTML = '<option value="">— 历史会话 —</option>';
+    for (const x of sessionsCache) {
+      const o = document.createElement("option"); o.value = x.id;
+      o.textContent = (x.pinned ? "📌 " : "") + (x.title || "未命名") + " · " + (x.updated_at || "").slice(5, 10);
+      sel.appendChild(o);
+    }
+    syncSessionBar();
+  } catch (e) {}
+}
+function syncSessionBar() {
+  const sel = document.getElementById("session-select");
+  sel.value = chatSessionId || "";
+  const cur = sessionsCache.find(x => x.id === chatSessionId);
+  document.getElementById("pin-btn").textContent = cur && cur.pinned ? "取消置顶" : "置顶";
+}
+async function openSession(id) {
+  if (!id || chatBusy) { syncSessionBar(); return; }
+  try {
+    const j = await apiCall("/admin/agent/sessions/" + encodeURIComponent(id) + "/messages", "GET");
+    chatSessionId = id;
+    const box = document.getElementById("chat-box"); box.innerHTML = "";
+    for (const m of j.messages || []) {
+      const w = addMsg(m.role, m.content);
+      if (m.role === "assistant") appendMeta(w, m.id, m.sources || [], m.rating, null);
+    }
+    syncSessionBar();
+  } catch (e) { alert("打开失败：" + e.message); }
+}
+async function renameSession() {
+  if (!chatSessionId) return alert("先打开一个会话");
+  const cur = sessionsCache.find(x => x.id === chatSessionId);
+  const t = prompt("新的会话名称", cur ? cur.title : "");
+  if (!t || !t.trim()) return;
+  try { await apiCall("/admin/agent/sessions/" + encodeURIComponent(chatSessionId), "POST", { title: t.trim() }); loadSessions(); }
+  catch (e) { alert("重命名失败：" + e.message); }
+}
+async function togglePin() {
+  if (!chatSessionId) return alert("先打开一个会话");
+  const cur = sessionsCache.find(x => x.id === chatSessionId);
+  try { await apiCall("/admin/agent/sessions/" + encodeURIComponent(chatSessionId), "POST", { pinned: !(cur && cur.pinned) }); loadSessions(); }
+  catch (e) { alert("操作失败：" + e.message); }
+}
+async function deleteSession() {
+  if (!chatSessionId) return alert("先打开一个会话");
+  if (!(await uiConfirm("会话里的全部消息会被删除，用量统计保留。", {title: "删除这个会话？", ok: "删除", danger: true}))) return;
+  try {
+    const r = await fetch("/admin/agent/sessions/" + encodeURIComponent(chatSessionId), { method: "DELETE" });
+    if (!r.ok) throw new Error(r.status);
+    newChatSession(); loadSessions();
+  } catch (e) { alert("删除失败：" + e.message); }
+}
+loadSessions();
+// ---- 用量看板（仅管理员页面有此卡片） ----
+function usageTable(head, rows) {
+  if (!rows.length) return '<p class="muted">暂无数据</p>';
+  return '<div style="overflow-x:auto"><table class="tbl"><tr>' + head.map(h => "<th>" + escHtml(h) + "</th>").join("") + "</tr>" +
+    rows.map(r => "<tr>" + r.map(c => "<td>" + escHtml(String(c)) + "</td>").join("") + "</tr>").join("") + "</table></div>";
+}
+async function loadUsage() {
+  if (!document.getElementById("usage-summary")) return;
+  try {
+    const j = await apiCall("/admin/agent/usage?days=14", "GET");
+    const fmt = n => Number(n).toLocaleString("zh-CN");
+    document.getElementById("usage-summary").textContent =
+      "共 " + fmt(j.total_calls) + " 次对话，" + fmt(j.total_tokens) + " tokens" +
+      (j.by_model.length ? "；模型：" + j.by_model.map(m => m.model + " " + fmt(m.tokens)).join("、") : "") +
+      "；反馈 👍 " + j.feedback.up + " / 👎 " + j.feedback.down;
+    document.getElementById("usage-by-day").innerHTML = usageTable(["日期", "次数", "tokens"], j.by_day.map(d => [d.date, d.calls, fmt(d.tokens)]));
+    document.getElementById("usage-by-user").innerHTML = usageTable(["用户", "次数", "tokens", "今日"], j.by_user.map(u => [u.name, u.calls, fmt(u.tokens), fmt(u.today_tokens)]));
+    document.getElementById("usage-limit").value = j.daily_token_limit || 0;
+  } catch (e) { document.getElementById("usage-summary").textContent = "加载失败：" + e.message; }
+}
+async function saveUsageLimit() {
+  const v = Math.max(0, parseInt(document.getElementById("usage-limit").value || "0", 10) || 0);
+  const msg = document.getElementById("usage-limit-msg");
+  try { await apiCall("/admin/agent/settings", "POST", { daily_token_limit: String(v) }); msg.textContent = v ? "已保存" : "已保存（不限）"; }
+  catch (e) { msg.textContent = "保存失败：" + e.message; }
+}
+loadUsage();
 let previewJobId = null;
 let bomPreviewId = null;
 function toggleBomField() {

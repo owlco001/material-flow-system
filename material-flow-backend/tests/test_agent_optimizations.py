@@ -271,3 +271,72 @@ def test_templates_have_no_nested_script_tags():
     for f in root.glob("*.html"):
         for block in re.findall(r"<script[^>]*>(.*?)</script>", f.read_text(encoding="utf-8"), re.S):
             assert "<script" not in block, f"{f.name} 内嵌了重复的 <script> 标签"
+
+
+# ---------- 第一阶段收尾：可追溯、会话管理、反馈、用量 ----------
+
+def _two_step(monkeypatch):
+    script = iter([
+        ChatResult(content="", tool_calls=[ChatToolCall("t1", "search_material_master", '{"keyword": "轴承"}')],
+                   prompt_tokens=100, completion_tokens=10),
+        ChatResult(content="有 2 个", prompt_tokens=200, completion_tokens=20),
+    ])
+    monkeypatch.setattr(llm, "chat", lambda cfg, messages, tools=None: next(script))
+
+
+def test_reply_carries_sources_and_persists(monkeypatch, conn):
+    _two_step(monkeypatch)
+    r = service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    assert r["message_id"] and r["sources"][0]["name"] == "search_material_master"
+    assert r["sources"][0]["args"] == {"keyword": "轴承"} and r["sources"][0]["ok"] is True
+    msgs = service.get_messages(conn, "u1", r["session_id"])
+    final = [m for m in msgs if m["id"] == r["message_id"]][0]
+    assert final["sources"][0]["label"] and final["rating"] is None
+
+
+def test_session_manage_and_feedback(monkeypatch, conn):
+    _two_step(monkeypatch)
+    r = service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    sid, mid = r["session_id"], r["message_id"]
+    service.rename_session(conn, "u1", sid, "  轴承  统计 ")
+    service.pin_session(conn, "u1", sid, True)
+    s = service.list_sessions(conn, "u1")[0]
+    assert s["title"] == "轴承 统计" and s["pinned"] is True
+    with pytest.raises(ValueError):
+        service.rename_session(conn, "u2", sid, "x")  # 不是本人会话
+    service.set_feedback(conn, "u1", mid, -1, "数字不对")
+    assert [m for m in service.get_messages(conn, "u1", sid) if m["id"] == mid][0]["rating"] == -1
+    service.set_feedback(conn, "u1", mid, 0)
+    assert [m for m in service.get_messages(conn, "u1", sid) if m["id"] == mid][0]["rating"] is None
+    with pytest.raises(ValueError):
+        service.set_feedback(conn, "u2", mid, 1)
+    service.set_feedback(conn, "u1", mid, 1)
+    service.delete_session(conn, "u1", sid)
+    assert service.list_sessions(conn, "u1") == []
+    assert conn.execute("SELECT COUNT(*) FROM agent_messages").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM agent_feedback").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM agent_usage").fetchone()[0] == 1  # 用量保留
+
+
+def test_usage_stats_and_daily_limit(monkeypatch, conn):
+    from dataclasses import replace
+    _two_step(monkeypatch)
+    service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    # 一条 40 天前的记录不应计入
+    conn.execute("INSERT INTO agent_usage(session_id,user_id,model,prompt_tokens,completion_tokens,created_at)"
+                 " VALUES(NULL,'u2','m2',5,5,datetime('now','-40 days'))")
+    st = service.usage_stats(conn, 14)
+    assert st["total_calls"] == 1 and st["total_tokens"] == 330
+    assert st["by_user"][0] == {"user_id": "u1", "name": "u1", "calls": 1, "tokens": 330, "today_tokens": 330}
+    assert st["by_model"][0]["model"] == "m" and st["feedback"] == {"up": 0, "down": 0}
+    assert service.today_tokens(conn, "u1") == 330
+    with pytest.raises(LLMError, match="上限"):
+        service.run_chat(conn, replace(CFG, daily_token_limit=300), "u1", None, "再问")
+    _two_step(monkeypatch)
+    service.run_chat(conn, replace(CFG, daily_token_limit=300), "u3", None, "别人不受影响")
+
+
+def test_usage_stats_empty_db():
+    c = sqlite3.connect(":memory:")
+    st = service.usage_stats(c, 7)
+    assert st["total_calls"] == 0 and st["by_day"] == [] and st["by_user"] == []

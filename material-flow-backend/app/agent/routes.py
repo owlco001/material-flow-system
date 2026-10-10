@@ -52,6 +52,7 @@ def _agent_cfg(trace_id: str, require_llm: bool = True) -> AgentConfig:
         if s.get("api_key"): kw["api_key"] = s["api_key"]
         if s.get("model"): kw["model"] = s["model"]
         if s.get("enabled") in ("0", "1"): kw["enabled"] = s["enabled"] == "1"
+        if str(s.get("daily_token_limit") or "").isdigit(): kw["daily_token_limit"] = int(s["daily_token_limit"])
         if kw: cfg = replace(cfg, **kw)
     except Exception:
         pass

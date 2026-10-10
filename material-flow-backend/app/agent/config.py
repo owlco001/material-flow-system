@@ -14,6 +14,7 @@ class AgentConfig:
     model: str
     timeout_s: float
     max_iters: int
+    daily_token_limit: int = 0  # 每人每日 token 上限，0 = 不限
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -24,4 +25,5 @@ class AgentConfig:
             model=os.environ.get("AGENT_LLM_MODEL", "deepseek-chat"),
             timeout_s=float(os.environ.get("AGENT_LLM_TIMEOUT_S", "60")),
             max_iters=int(os.environ.get("AGENT_MAX_ITERS", "8")),
+            daily_token_limit=int(os.environ.get("AGENT_DAILY_TOKEN_LIMIT", "0") or 0),
         )

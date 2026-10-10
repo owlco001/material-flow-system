@@ -96,12 +96,16 @@ def _save_message(
     role: str,
     content: str,
     tool_calls_json: str | None,
-) -> None:
+    sources: list | None = None,
+) -> str:
+    mid = _new_id()
     conn.execute(
-        """INSERT INTO agent_messages(id, session_id, role, content, tool_calls_json, created_at)
-           VALUES(?,?,?,?,?,?)""",
-        (_new_id(), session_id, role, content or "", tool_calls_json, _now()),
+        """INSERT INTO agent_messages(id, session_id, role, content, tool_calls_json, created_at, sources_json)
+           VALUES(?,?,?,?,?,?,?)""",
+        (mid, session_id, role, content or "", tool_calls_json, _now(),
+         json.dumps(sources, ensure_ascii=False) if sources else None),
     )
+    return mid
 
 
 def _check_session_owner(conn: sqlite3.Connection, user_id: str, session_id: str) -> None:
@@ -147,6 +151,10 @@ def run_chat(
     if not cfg.enabled:
         raise LLMError("Agent 功能未启用")
     ensure_agent_tables(conn)
+    if cfg.daily_token_limit > 0:
+        used = today_tokens(conn, user_id)
+        if used >= cfg.daily_token_limit:
+            raise LLMError(f"今日 Agent 用量已达上限（{used}/{cfg.daily_token_limit} tokens），明天再试或联系管理员调高")
 
     # 1. 会话：新建或校验归属
     if session_id:
@@ -208,6 +216,8 @@ def run_chat(
     iterations = 0
     reply: str | None = None
     tool_cache: dict[tuple[str, str], str] = {}
+    sources: list[dict] = []  # 可追溯：本轮回答用到的工具、参数与结果摘要
+    reply_id: str | None = None
 
     for _ in range(cfg.max_iters):
         iterations += 1
@@ -217,7 +227,7 @@ def run_chat(
 
         if not result.tool_calls:
             reply = result.content
-            _save_message(conn, session_id, "assistant", result.content, None)
+            reply_id = _save_message(conn, session_id, "assistant", result.content, None, sources)
             break
 
         # assistant（含 tool_calls）追加进 messages 与 agent_messages
@@ -262,7 +272,10 @@ def run_chat(
                     result_json = json.dumps({"error": "工具返回了无法序列化的数据"}, ensure_ascii=False)
                 result_json = _truncate_result(result_json)
                 tool_cache[cache_key] = result_json
-            emit({"type": "tool_end", "name": tc.name, **_summarize_result(result_json)})
+            summary = _summarize_result(result_json)
+            emit({"type": "tool_end", "name": tc.name, **summary})
+            sources.append({"name": tc.name, "label": TOOL_LABELS.get(tc.name, tc.name),
+                            "args": _safe_args(tc.arguments_json), **summary})
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": result_json}
             )
@@ -280,7 +293,7 @@ def run_chat(
             reply = None
         if not reply:
             reply = "抱歉，这个问题比较复杂，已达到最大推理轮次，请换一种问法重试。"
-        _save_message(conn, session_id, "assistant", reply, None)
+        reply_id = _save_message(conn, session_id, "assistant", reply, None, sources)
 
     # 5. 用量落库 + 更新会话时间
     now = _now()
@@ -297,7 +310,9 @@ def run_chat(
 
     return {
         "session_id": session_id,
+        "message_id": reply_id,
         "reply": reply,
+        "sources": sources,
         "iterations": iterations,
         "usage": {
             "prompt_tokens": prompt_tokens,
@@ -309,12 +324,12 @@ def run_chat(
 def list_sessions(conn: sqlite3.Connection, user_id: str, limit: int = 20) -> list[dict]:
     """列出某用户的会话，按更新时间倒序。"""
     rows = conn.execute(
-        """SELECT id, title, created_at, updated_at FROM agent_sessions
-           WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?""",
+        """SELECT id, title, created_at, updated_at, pinned FROM agent_sessions
+           WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC LIMIT ?""",
         (user_id, limit),
     ).fetchall()
     return [
-        {"id": r[0], "title": r[1], "created_at": r[2], "updated_at": r[3]}
+        {"id": r[0], "title": r[1], "created_at": r[2], "updated_at": r[3], "pinned": bool(r[4])}
         for r in rows
     ]
 
@@ -325,9 +340,11 @@ def get_messages(
     """取某会话最近 limit 条消息（时间正序），先校验会话归属。"""
     _check_session_owner(conn, user_id, session_id)
     rows = conn.execute(
-        """SELECT id, role, content, tool_calls_json, created_at FROM agent_messages
-           WHERE session_id = ? ORDER BY rowid DESC LIMIT ?""",
-        (session_id, limit),
+        """SELECT m.id, m.role, m.content, m.tool_calls_json, m.created_at, m.sources_json, f.rating
+           FROM agent_messages m
+           LEFT JOIN agent_feedback f ON f.message_id = m.id AND f.user_id = ?
+           WHERE m.session_id = ? ORDER BY m.rowid DESC LIMIT ?""",
+        (user_id, session_id, limit),
     ).fetchall()
     return [
         {
@@ -336,6 +353,122 @@ def get_messages(
             "content": r[2],
             "tool_calls_json": r[3],
             "created_at": r[4],
+            "sources": json.loads(r[5]) if r[5] else [],
+            "rating": r[6],
         }
         for r in reversed(rows)
     ]
+
+
+def _safe_args(arguments_json: str | None) -> dict:
+    try:
+        v = json.loads(arguments_json or "{}")
+        return v if isinstance(v, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+# ---------- 会话管理 ----------
+
+def rename_session(conn: sqlite3.Connection, user_id: str, session_id: str, title: str) -> None:
+    title = " ".join((title or "").split())[:60]
+    if not title:
+        raise ValueError("标题不能为空")
+    _check_session_owner(conn, user_id, session_id)
+    conn.execute("UPDATE agent_sessions SET title = ? WHERE id = ?", (title, session_id))
+    conn.commit()
+
+
+def pin_session(conn: sqlite3.Connection, user_id: str, session_id: str, pinned: bool) -> None:
+    _check_session_owner(conn, user_id, session_id)
+    conn.execute("UPDATE agent_sessions SET pinned = ? WHERE id = ?", (1 if pinned else 0, session_id))
+    conn.commit()
+
+
+def delete_session(conn: sqlite3.Connection, user_id: str, session_id: str) -> None:
+    """删除会话及其消息、反馈；用量记录保留（统计口径不变）。"""
+    _check_session_owner(conn, user_id, session_id)
+    conn.execute("DELETE FROM agent_feedback WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM agent_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+
+
+def set_feedback(conn: sqlite3.Connection, user_id: str, message_id: str, rating: int,
+                 comment: str | None = None) -> None:
+    """点赞 1 / 点踩 -1 / 取消 0。只能评价自己会话里的助手回答。"""
+    if rating not in (1, -1, 0):
+        raise ValueError("rating 只能是 1、-1 或 0")
+    ensure_agent_tables(conn)
+    row = conn.execute(
+        """SELECT m.session_id, m.role, s.user_id FROM agent_messages m
+           JOIN agent_sessions s ON s.id = m.session_id WHERE m.id = ?""", (message_id,)).fetchone()
+    if row is None or row[2] != user_id:
+        raise ValueError("消息不存在")
+    if row[1] != "assistant":
+        raise ValueError("只能评价助手回答")
+    if rating == 0:
+        conn.execute("DELETE FROM agent_feedback WHERE message_id = ? AND user_id = ?", (message_id, user_id))
+    else:
+        conn.execute(
+            """INSERT INTO agent_feedback(message_id, user_id, session_id, rating, comment, created_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(message_id, user_id) DO UPDATE SET
+                 rating = excluded.rating, comment = excluded.comment, created_at = excluded.created_at""",
+            (message_id, user_id, row[0], rating, (comment or "")[:500] or None, _now()))
+    conn.commit()
+
+
+# ---------- 用量 ----------
+# created_at 存 UTC ISO；统计按北京时间切日
+
+_BJ = "'+8 hours'"
+
+
+def today_tokens(conn: sqlite3.Connection, user_id: str) -> int:
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM agent_usage
+            WHERE user_id = ? AND date(created_at, {_BJ}) = date('now', {_BJ})""",
+        (user_id,),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def usage_stats(conn: sqlite3.Connection, days: int = 14) -> dict:
+    """用量看板：最近 N 天按天、按人、按模型汇总，以及回答反馈。"""
+    ensure_agent_tables(conn)
+    days = max(1, min(int(days), 90))
+    since = f"date('now', {_BJ}, '-{days - 1} days')"
+    in_range = f"date(a.created_at, {_BJ}) >= {since}"
+    by_day = conn.execute(
+        f"""SELECT date(a.created_at, {_BJ}) AS d, COUNT(*),
+                   COALESCE(SUM(a.prompt_tokens), 0), COALESCE(SUM(a.completion_tokens), 0)
+            FROM agent_usage a WHERE {in_range} GROUP BY d ORDER BY d DESC""").fetchall()
+    has_users = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone() is not None
+    name_sel = "COALESCE(u.display_name, u.username, a.user_id)" if has_users else "a.user_id"
+    join = "LEFT JOIN users u ON u.id = a.user_id" if has_users else ""
+    by_user = conn.execute(
+        f"""SELECT a.user_id, {name_sel}, COUNT(*),
+                   COALESCE(SUM(a.prompt_tokens + a.completion_tokens), 0),
+                   COALESCE(SUM(CASE WHEN date(a.created_at, {_BJ}) = date('now', {_BJ})
+                                     THEN a.prompt_tokens + a.completion_tokens ELSE 0 END), 0)
+            FROM agent_usage a {join} WHERE {in_range}
+            GROUP BY a.user_id ORDER BY 4 DESC LIMIT 100""").fetchall()
+    by_model = conn.execute(
+        f"""SELECT a.model, COUNT(*), COALESCE(SUM(a.prompt_tokens + a.completion_tokens), 0)
+            FROM agent_usage a WHERE {in_range} GROUP BY a.model ORDER BY 3 DESC""").fetchall()
+    fb = conn.execute(
+        f"""SELECT COALESCE(SUM(rating = 1), 0), COALESCE(SUM(rating = -1), 0) FROM agent_feedback
+            WHERE date(created_at, {_BJ}) >= {since}""").fetchone()
+    return {
+        "days": days,
+        "total_calls": sum(r[1] for r in by_day),
+        "total_tokens": sum(r[2] + r[3] for r in by_day),
+        "by_day": [{"date": r[0], "calls": r[1], "prompt_tokens": r[2], "completion_tokens": r[3],
+                    "tokens": r[2] + r[3]} for r in by_day],
+        "by_user": [{"user_id": r[0], "name": r[1], "calls": r[2], "tokens": r[3], "today_tokens": r[4]}
+                    for r in by_user],
+        "by_model": [{"model": r[0], "calls": r[1], "tokens": r[2]} for r in by_model],
+        "feedback": {"up": int(fb[0]), "down": int(fb[1])},
+    }

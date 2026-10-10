@@ -103,3 +103,34 @@ def test_agent_stream_endpoint(monkeypatch):
         evs = [_j.loads(l[5:]) for l in r.text.splitlines() if l.startswith("data:")]
         assert [e["type"] for e in evs] == ["session", "delta", "done"]
         assert evs[-1]["reply"] == "你好"
+
+
+def test_agent_session_feedback_usage_endpoints(monkeypatch):
+    from app.agent import llm as _llm
+    from app.agent.llm import ChatResult as _CR
+    monkeypatch.setattr(_llm, "chat_stream", lambda cfg, messages, tools=None, on_delta=None: _CR(content="好"))
+    monkeypatch.setenv("AGENT_LLM_API_KEY", "k")
+    seed()
+    import json as _j
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        r = client.post("/admin/agent/chat/stream", json={"message": "会话管理测试"})
+        done = [_j.loads(l[5:]) for l in r.text.splitlines() if l.startswith("data:")][-1]
+        sid, mid = done["session_id"], done["message_id"]
+        assert done["sources"] == []
+        assert client.post(f"/admin/agent/sessions/{sid}", json={"title": "改名", "pinned": True}).status_code == 200
+        s = client.get("/admin/agent/sessions").json()["sessions"][0]
+        assert s["id"] == sid and s["title"] == "改名" and s["pinned"]
+        msgs = client.get(f"/admin/agent/sessions/{sid}/messages").json()["messages"]
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert client.post("/admin/agent/feedback", json={"message_id": mid, "rating": 1}).status_code == 200
+        assert client.post("/admin/agent/feedback", json={"message_id": mid, "rating": 5}).status_code == 400
+        u = client.get("/admin/agent/usage").json()
+        assert u["total_calls"] >= 1 and u["feedback"]["up"] >= 1 and "daily_token_limit" in u
+        assert client.post("/admin/agent/settings", json={"daily_token_limit": "50000"}).status_code == 200
+        assert client.get("/admin/agent/usage").json()["daily_token_limit"] == 50000
+        client.post("/admin/agent/settings", json={"daily_token_limit": "0"})
+        assert client.delete(f"/admin/agent/sessions/{sid}").status_code == 200
+        assert client.get(f"/admin/agent/sessions/{sid}/messages").status_code == 404
+        page = client.get("/admin/agent").text
+        assert "用量看板" in page and "session-select" in page
