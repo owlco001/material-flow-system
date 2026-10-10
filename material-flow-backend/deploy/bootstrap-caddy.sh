@@ -4,6 +4,8 @@
 #
 # 用法（VPS 上 root 执行一行即可；DNS 请先指向本机）：
 #   curl -sSL https://raw.githubusercontent.com/owlco001/material-flow-system/main/material-flow-backend/deploy/bootstrap-caddy.sh | sudo bash
+# 国内服务器（GitHub 不通）用 Gitee 镜像：
+#   curl -fsSL https://gitee.com/owlco001/material-flow-system/raw/main/material-flow-backend/deploy/bootstrap-caddy.sh | sudo bash
 #
 # 环境变量：DOMAIN（默认 factory.claws4u.com）、BACKEND_PORT（默认 8000）
 # 幂等：重复执行 = 更新到 GitHub main 最新版并重载服务。
@@ -19,7 +21,10 @@ fail() { printf '\033[31m部署失败：%s\033[0m\n' "$*" >&2; exit 1; }
 log "1/5 拉取代码"
 command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git || fail "git 安装失败"; }
 rm -rf /tmp/mf-deploy
-git clone --depth 1 https://github.com/owlco001/material-flow-system /tmp/mf-deploy || fail "代码拉取失败"
+timeout 60 git clone --depth 1 https://github.com/owlco001/material-flow-system /tmp/mf-deploy \
+  || { rm -rf /tmp/mf-deploy; echo "GitHub 拉取失败，改用 Gitee 镜像"; \
+       git clone --depth 1 https://gitee.com/owlco001/material-flow-system.git /tmp/mf-deploy; } \
+  || fail "代码拉取失败（GitHub 与 Gitee 均不可达）"
 
 log "2/5 官方 bootstrap（跳过 nginx，用 Caddy）"
 printf '%s\n' 'test123' | bash /tmp/mf-deploy/material-flow-backend/deploy/bootstrap.sh --no-nginx --admin-password-stdin

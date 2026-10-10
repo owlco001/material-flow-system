@@ -9,8 +9,11 @@
 #   sudo bash /srv/material-flow/deploy/update.sh --check    # 只看是否有更新
 #   sudo bash /srv/material-flow/deploy/update.sh --rollback # 回滚到最近一次代码备份
 #
-# 服务器上还没有本脚本时（老部署），一行搞定：
+# 服务器上还没有本脚本时（老部署），一行搞定（国内服务器用 Gitee 那行）：
 #   curl -fsSL https://raw.githubusercontent.com/owlco001/material-flow-system/main/material-flow-backend/deploy/update.sh | sudo bash
+#   curl -fsSL https://gitee.com/owlco001/material-flow-system/raw/main/material-flow-backend/deploy/update.sh | sudo UPDATE_SOURCE=gitee bash
+#
+# 代码来源 UPDATE_SOURCE：auto（默认，先 GitHub，10 秒连不上自动改用 Gitee 镜像）| github | gitee
 #
 # 管理台「系统更新」页的「开始更新」也调用本脚本：服务写入
 # backups/update-request，material-flow-update.path 触发以 root 运行的
@@ -23,7 +26,13 @@ PREFIX="${MATERIAL_FLOW_PREFIX:-/srv/material-flow}"
 ENV_FILE="${MATERIAL_FLOW_ENV_FILE:-/etc/material-flow/material-flow.env}"
 SERVICE_USER="${MATERIAL_FLOW_SERVICE_USER:-material-flow}"
 REPO="${UPDATE_GITHUB_REPO:-owlco001/material-flow-system}"
+GITEE_REPO="${UPDATE_GITEE_REPO:-owlco001/material-flow-system}"
 REF="${UPDATE_GITHUB_BRANCH:-main}"
+if [ -z "${UPDATE_SOURCE:-}" ] && [ -f "$ENV_FILE" ]; then
+  UPDATE_SOURCE="$(sed -n 's/^UPDATE_SOURCE=["'\'']\{0,1\}\([a-z]*\).*/\1/p' "$ENV_FILE" | tail -1)"
+fi
+SOURCE="${UPDATE_SOURCE:-auto}"
+case "$SOURCE" in auto|github|gitee) ;; *) SOURCE=auto ;; esac
 SERVICE="material-flow"
 HEALTH_URL="http://127.0.0.1:8000/healthz"
 KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
@@ -105,10 +114,49 @@ flock -n 9 || die "已有更新在执行"
 
 deployed_sha() { cat "$PREFIX/DEPLOYED_SHA" 2>/dev/null | tr -d '[:space:]' || true; }
 
-gh_api() { curl -fsSL --retry 3 --max-time 30 -H 'Accept: application/vnd.github+json' -H 'User-Agent: material-flow-updater' "https://api.github.com/repos/$REPO/$1"; }
+gh_api() { curl -fsSL --retry "${1:-3}" --max-time "${2:-30}" -H 'Accept: application/vnd.github+json' -H 'User-Agent: material-flow-updater' "https://api.github.com/repos/$REPO/$3"; }
+gitee_api() { curl -fsSL --retry 3 --max-time 30 "https://gitee.com/api/v5/repos/$GITEE_REPO/$1"; }
+PARSE_COMMIT='import json,sys;d=json.load(sys.stdin);print(d["sha"]);print(d["commit"]["message"].splitlines()[0][:120])'
 
 resolve_sha() {
-  gh_api "commits/$REF" | "$PY" -c 'import json,sys;d=json.load(sys.stdin);print(d["sha"]);print(d["commit"]["message"].splitlines()[0][:120])'
+  # 输出：sha、提交说明、实际使用的来源（github/gitee）
+  local out
+  if [ "$SOURCE" != gitee ]; then
+    if [ "$SOURCE" = github ]; then
+      out="$(gh_api 3 30 "commits/$REF" | "$PY" -c "$PARSE_COMMIT")" && { echo "$out"; echo github; return 0; }
+      return 1
+    fi
+    out="$(gh_api 0 10 "commits/$REF" 2>/dev/null | "$PY" -c "$PARSE_COMMIT" 2>/dev/null)" && { echo "$out"; echo github; return 0; }
+    echo "  GitHub 不可达，改用 Gitee 镜像 $GITEE_REPO" >&2
+  fi
+  out="$(gitee_api "commits/$REF" | "$PY" -c "$PARSE_COMMIT")" && { echo "$out"; echo gitee; return 0; }
+  return 1
+}
+
+download_src() {
+  # $1=sha $2=目标文件；按来源下载，GitHub 失败时（auto 模式）回退 Gitee
+  local sha="$1" dst="$2"
+  if [ "$SOURCE" != gitee ] && [ "${USED_SOURCE:-}" != gitee ]; then
+    curl -fsSL --retry 3 --max-time 300 -H 'User-Agent: material-flow-updater' \
+      -o "$dst" "https://codeload.github.com/$REPO/tar.gz/$sha" && return 0
+    [ "$SOURCE" = github ] && return 1
+    echo "  GitHub 下载失败，改用 Gitee 镜像" >&2
+  fi
+  # 注意：Gitee 对自定义 User-Agent 会返回网页而不是压缩包，这里用 curl 默认 UA
+  if curl -fsSL --retry 3 --max-time 300 -o "$dst" \
+       "https://gitee.com/$GITEE_REPO/repository/archive/$sha.tar.gz" && gzip -t "$dst" 2>/dev/null; then
+    return 0
+  fi
+  # 压缩包不可用时用 git 浅克隆兜底
+  command -v git >/dev/null || { echo "  Gitee 压缩包下载失败，且没有 git 可兜底" >&2; return 1; }
+  echo "  Gitee 压缩包不可用，改用 git 拉取" >&2
+  local d; d="$(mktemp -d)"
+  git -C "$d" init -q && git -C "$d" fetch -q --depth 1 "https://gitee.com/$GITEE_REPO.git" "$REF" \
+    && [ "$(git -C "$d" rev-parse FETCH_HEAD)" = "$sha" ] \
+    && git -C "$d" archive --format=tar.gz --prefix="src-$sha/" -o "$dst" FETCH_HEAD
+  local rc=$?; rm -rf "$d"
+  [ $rc -eq 0 ] || echo "  Gitee 上找不到 ${sha:0:12}（镜像可能尚未同步该版本）" >&2
+  return $rc
 }
 
 health_ok() {
@@ -215,10 +263,10 @@ fi
 
 CURRENT="$(deployed_sha)"
 if [ -z "$SHA" ]; then
-  log "查询 GitHub $REPO@$REF"
-  OUT="$(resolve_sha)" || die "查询 GitHub 失败（网络或仓库不可访问）"
-  SHA="$(sed -n 1p <<<"$OUT")"; MSG="$(sed -n 2p <<<"$OUT")"
-  echo "  最新：${SHA:0:12}  $MSG"
+  log "查询 $REF 最新版本（来源：$SOURCE）"
+  OUT="$(resolve_sha)" || die "查询最新版本失败（GitHub 与 Gitee 均不可访问，或分支不存在）"
+  SHA="$(sed -n 1p <<<"$OUT")"; MSG="$(sed -n 2p <<<"$OUT")"; USED_SOURCE="$(sed -n 3p <<<"$OUT")"
+  echo "  最新：${SHA:0:12}  $MSG  [$USED_SOURCE]"
 fi
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "sha 格式无效：$SHA"
 CUR_SHORT="${CURRENT:0:12}"; echo "  当前：${CUR_SHORT:-（未记录）}"
@@ -237,8 +285,7 @@ set_status downloading
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"; [ -n "${MF_UPDATE_REEXEC:-}" ] && rm -f "$MF_UPDATE_REEXEC"' EXIT
 log "1/6 下载 ${SHA:0:12}"
-curl -fsSL --retry 3 --max-time 300 -H 'User-Agent: material-flow-updater' \
-  -o "$WORK/src.tar.gz" "https://codeload.github.com/$REPO/tar.gz/$SHA" || die "下载更新包失败"
+download_src "$SHA" "$WORK/src.tar.gz" || die "下载更新包失败"
 tar -xzf "$WORK/src.tar.gz" -C "$WORK"
 SRC="$(echo "$WORK"/*/material-flow-backend)"
 [ -f "$SRC/app/main.py" ] || die "更新包结构异常（找不到 material-flow-backend/app/main.py）"

@@ -93,7 +93,7 @@ async function pollStatus(sha) {
 <div class="card" style="margin-top:12px">
   <h3>说明</h3>
   <ul class="muted" style="font-size:13px;line-height:1.8">
-    <li>更新源：GitHub <code>owlco001/material-flow-system</code> 的 main 分支（可经 <code>UPDATE_GITHUB_REPO</code> 环境变量覆盖）。</li>
+    <li>更新源：GitHub <code>owlco001/material-flow-system</code> 的 main 分支，连不上时自动改用 Gitee 镜像（<code>UPDATE_SOURCE=auto|github|gitee</code>，仓库可经 <code>UPDATE_GITHUB_REPO</code> / <code>UPDATE_GITEE_REPO</code> 覆盖）。</li>
     <li>更新前自动热备数据库和代码到 <code>backups/update-&lt;时间&gt;-&lt;commit&gt;/</code>（保留最近 10 份）；数据、上传、APK、虚拟环境、环境文件不受影响。</li>
     <li>自动安装新依赖、执行数据库迁移、重启并做健康检查；<b>健康检查失败自动回滚</b>。</li>
     <li>服务器命令行一键更新：<code>sudo bash /srv/material-flow/deploy/update.sh</code>（<code>--check</code> 只检查，<code>--rollback</code> 回滚到上一版）。</li>
