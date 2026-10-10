@@ -50,6 +50,10 @@ router = APIRouter()
 GITHUB_REPO = os.environ.get("UPDATE_GITHUB_REPO", "owlco001/material-flow-system")
 GITHUB_BRANCH = os.environ.get("UPDATE_GITHUB_BRANCH", "main")
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
+GITEE_REPO = os.environ.get("UPDATE_GITEE_REPO", "owlco001/material-flow-system")
+GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
+# auto：先 GitHub（短超时），失败改查 Gitee 镜像；github / gitee：只用该来源
+UPDATE_SOURCE = (os.environ.get("UPDATE_SOURCE") or "auto").strip().lower()
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _APK_RE = re.compile(r"^app-(\d+)-([A-Za-z0-9._-]+)\.apk$")
@@ -234,17 +238,35 @@ def _github_json(url: str, timeout: int = 15) -> object:
 
 
 def check_github_update() -> dict:
-    """查询 GitHub main 分支最新 commit。"""
-    data = _github_json(f"{GITHUB_API}/commits/{GITHUB_BRANCH}")
-    if not isinstance(data, dict) or not data.get("sha"):
-        raise ApiError(502, "GITHUB_ERROR", "GitHub 返回异常")
+    """查询 main 分支最新 commit：GitHub 优先，国内服务器连不上时用 Gitee 镜像。"""
+    data, source, repo, errors = None, "", GITHUB_REPO, []
+    order = {"github": ["github"], "gitee": ["gitee"]}.get(UPDATE_SOURCE, ["github", "gitee"])
+    for src in order:
+        try:
+            if src == "github":
+                data = _github_json(f"{GITHUB_API}/commits/{GITHUB_BRANCH}",
+                                    timeout=8 if len(order) > 1 else 15)
+                repo = GITHUB_REPO
+            else:
+                data = _github_json(f"{GITEE_API}/commits/{GITHUB_BRANCH}")
+                repo = GITEE_REPO
+            if isinstance(data, dict) and data.get("sha"):
+                source = src
+                break
+            errors.append(f"{src}: 返回异常")
+        except Exception as e:  # noqa: BLE001 - 网络错误换下一个来源
+            errors.append(f"{src}: {e}")
+        data = None
+    if not data:
+        raise ApiError(502, "GITHUB_ERROR", "查询更新源失败：" + "；".join(errors)[:300])
     sha: str = data.get("sha", "")
     commit = data.get("commit", {}) or {}
     message: str = (commit.get("message") or "").split("\n")[0][:200]
     date: str = ((commit.get("author") or {}).get("date")) or ""
     deployed = get_deployed_sha()
     return {
-        "repo": GITHUB_REPO,
+        "repo": repo,
+        "source": source,
         "branch": GITHUB_BRANCH,
         "deployedSha": deployed,
         "latestSha": sha,
@@ -323,7 +345,8 @@ def system_version(user: sqlite3.Row = Depends(current_user)) -> dict:
     return {
         "appVersion": APP_VERSION,
         "deployedSha": get_deployed_sha(),
-        "repo": GITHUB_REPO,
+        "repo": repo,
+        "source": source,
         "branch": GITHUB_BRANCH,
     }
 

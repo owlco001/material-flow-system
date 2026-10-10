@@ -183,6 +183,8 @@ Older servers without the script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/owlco001/material-flow-system/main/material-flow-backend/deploy/update.sh | sudo bash
+# China mainland servers (GitHub blocked/slow) — Gitee mirror:
+curl -fsSL https://gitee.com/owlco001/material-flow-system/raw/main/material-flow-backend/deploy/update.sh | sudo UPDATE_SOURCE=gitee bash
 ```
 
 It hot-backs-up every `data/*.db` (`sqlite3.Connection.backup()`) and the code
@@ -263,3 +265,16 @@ rate. Run it before and after changing the prompt or switching models.
 - 管理台「智能助手」页的「用量看板」（仅 ADMIN）：最近 14 天按天、按人、按模型的对话次数与 tokens，以及回答的点赞/点踩数；按北京时间切日。
 - 每人每日 token 上限：在看板里设置（存 `agent_settings.daily_token_limit`），或用环境变量 `AGENT_DAILY_TOKEN_LIMIT`；`0` 为不限。超限后当天新提问直接报错，次日恢复。
 - 删除会话会删除其消息和反馈，用量记录保留。
+
+
+### Update source (GitHub / Gitee mirror)
+
+`update.sh` and the admin「系统更新」page read `UPDATE_SOURCE` (also from
+`/etc/material-flow/material-flow.env`):
+
+- `auto` (default): try GitHub with a short timeout, fall back to the Gitee mirror
+  `https://gitee.com/owlco001/material-flow-system`.
+- `github` / `gitee`: use only that source.
+
+For servers in mainland China put `UPDATE_SOURCE=gitee` in the env file. The Gitee
+mirror is pushed from GitHub `main` after each merge.
