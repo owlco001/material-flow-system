@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}BOM 明细 · {{ ver.model_code }}{% endblock %}
+{% block content %}
+<h2>BOM 明细</h2>
+<p class="page-desc">机型：<b>{{ ver.model_code }}</b> · 版本 v{{ ver.version_no }} · {{ ver.status }} · 共 {{ items|length }} 行</p>
+<p><a href="/admin/boms" class="btn btn-sm btn-secondary">返回 BOM 管理</a>
+<a href="/admin/boms/versions/{{ ver.id }}/edit" class="btn btn-sm btn-primary">编辑</a></p>
+
+<div class="card" style="overflow-x:auto">
+<table>
+  <tr><th>行号</th><th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>数量</th><th>损耗率</th></tr>
+  {% for r in items %}
+  <tr>
+    <td class="muted">{{ r.line_no }}</td>
+    <td style="white-space:nowrap"><b>{{ r.material_code }}</b></td>
+    <td>{{ r.material_name }}</td>
+    <td class="muted">{{ r.specification or '' }}</td>
+    <td>{{ r.unit }}</td>
+    <td>{{ r.quantity }}</td>
+    <td class="muted">{{ r.scrap_rate }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}
