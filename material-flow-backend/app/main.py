@@ -576,6 +576,9 @@ def init_db() -> None:
         # 导入操作/错误日志表原先只在首次导入时懒建，新库打开管理台首页会 no such table
         from app.agent.importer import _ensure_operation_table
         _ensure_operation_table(c)
+        from app.material_master import ensure_tables as _ensure_material_master_tables
+        _ensure_material_master_tables(c)
+        c.commit()
     except Exception:
         c.rollback()
         raise
@@ -6621,3 +6624,9 @@ try:
 except ImportError:
     from u9.routes import router as _u9_router
 app.include_router(_u9_router)
+# 物料主档（U9 ItemMaster.xlsx）导入与查询
+try:
+    from .material_master_routes import router as _material_master_router
+except ImportError:
+    from material_master_routes import router as _material_master_router
+app.include_router(_material_master_router)

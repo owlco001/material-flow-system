@@ -403,6 +403,7 @@ tr.row-blue{background:rgba(14,95,216,.06)}
     <a class="side-link {% if _p.startswith('/admin/handovers') %}active{% endif %}" href="/admin/handovers" title="留痕"><i><svg class="ico" aria-hidden="true"><use href="#i-pen"/></svg></i><span>留痕</span></a>
     <a class="side-link {% if _p == '/admin/warehouse' %}active{% endif %}" href="/admin/warehouse" title="仓库"><i><svg class="ico" aria-hidden="true"><use href="#i-warehouse"/></svg></i><span>仓库</span></a>
     <a class="side-link {% if _p.startswith('/admin/models') %}active{% endif %}" href="/admin/models" title="模型"><i><svg class="ico" aria-hidden="true"><use href="#i-box"/></svg></i><span>模型</span></a>
+    {% if _r == "ADMIN" %}<a class="side-link {% if _p.startswith('/admin/material-master') %}active{% endif %}" href="/admin/material-master" title="物料主档"><i><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg></i><span>物料主档</span></a>{% endif %}
     {% if _r == "ADMIN" %}<a class="side-link {% if _p.startswith('/admin/drawings') %}active{% endif %}" href="/admin/drawings" title="图纸"><i><svg class="ico" aria-hidden="true"><use href="#i-drawing"/></svg></i><span>图纸</span></a>{% endif %}
     {% endif %}
     {% if _r == "ADMIN" %}

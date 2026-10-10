@@ -385,7 +385,8 @@ def _validate_materials(mapped_rows: list[dict]) -> tuple[list[dict], list[dict]
         for field, label in (("total_quantity", "总数量"), ("available_quantity", "可用数量")):
             raw_value = _clean(row.get(field))
             if not raw_value:
-                quantities[field] = 0
+                # 未提供数量（如只导入档案）时保留库内数量，不能清零
+                quantities[field] = None
                 continue
             parsed = _parse_non_negative_int(raw_value)
             if parsed is None:
@@ -727,8 +728,10 @@ def _commit_materials(conn: sqlite3.Connection, rows: list[dict], ts: str) -> No
         ).fetchone()
         if existing:
             conn.execute(
-                "UPDATE materials SET name=?, specification=?, unit=?, batch_no=?,"
-                " expiry_date=?, total_quantity=?, available_quantity=?,"
+                "UPDATE materials SET name=?, specification=?, unit=?,"
+                " batch_no=COALESCE(?, batch_no), expiry_date=COALESCE(?, expiry_date),"
+                " total_quantity=COALESCE(?, total_quantity),"
+                " available_quantity=COALESCE(?, available_quantity),"
                 " version=version+1 WHERE id=?",
                 (
                     row["name"],
@@ -754,8 +757,8 @@ def _commit_materials(conn: sqlite3.Connection, rows: list[dict], ts: str) -> No
                     row["unit"],
                     row.get("batch_no") or None,
                     row.get("expiry_date") or None,
-                    row["total_quantity"],
-                    row["available_quantity"],
+                    row["total_quantity"] or 0,
+                    row["available_quantity"] or 0,
                 ),
             )
 
