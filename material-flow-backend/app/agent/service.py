@@ -47,6 +47,34 @@ def _system_prompt() -> str:
     return ANALYST_SYSTEM_PROMPT + f"\n当前时间：{now:%Y-%m-%d %H:%M}（北京时间，星期{weekday}）。理解“今天/本周/上月”等相对时间以此为准。\n"
 
 
+TOOL_LABELS = {
+    "order_detail": "查询订单详情", "list_orders": "查询订单列表", "material_inventory": "查询物料库存",
+    "low_stock": "查询低库存", "workspace_summary": "查询工作台概览", "list_transfer_requests": "查询流转申请",
+    "list_handovers": "查询交接记录", "list_exceptions": "查询异常记录", "task_progress": "查询任务进度",
+    "labor_summary": "统计工时", "search_material_master": "搜索物料主档", "material_master_detail": "查询物料主档详情",
+    "material_master_stats": "统计物料主档", "bom_items": "查询 BOM 明细", "bom_where_used": "物料反查 BOM",
+}
+
+
+def _summarize_result(result_json: str) -> dict:
+    """给前端步骤条的一句话摘要（不含原始数据）。"""
+    try:
+        data = json.loads(result_json)
+    except ValueError:
+        return {"ok": True, "summary": "结果已截断"}
+    if isinstance(data, dict) and "error" in data and len(data) == 1:
+        return {"ok": False, "summary": str(data["error"])[:120]}
+    if isinstance(data, list):
+        return {"ok": True, "summary": f"{len(data)} 条"}
+    if isinstance(data, dict):
+        if "total" in data:
+            return {"ok": True, "summary": f"共 {data['total']} 条"}
+        for k in ("items", "groups", "models"):
+            if isinstance(data.get(k), list):
+                return {"ok": True, "summary": f"{len(data[k])} 条"}
+    return {"ok": True, "summary": "已返回"}
+
+
 def _truncate_result(result_json: str) -> str:
     if len(result_json) <= _TOOL_RESULT_MAX_CHARS:
         return result_json
@@ -110,7 +138,11 @@ def run_chat(
     session_id: str | None,
     message: str,
     tools: list = ANALYSIS_TOOLS,
+    on_event=None,
 ) -> dict:
+    """on_event(dict) 不为空时走流式：
+    {"type":"session","session_id"} / {"type":"tool_start","name","args"} /
+    {"type":"tool_end","name","ok","summary"} / {"type":"delta","text"}"""
     """ReAct 对话循环：模型推理 -> 工具调用 -> 模型汇总，直到无 tool_calls 或达到最大轮次。"""
     if not cfg.enabled:
         raise LLMError("Agent 功能未启用")
@@ -127,6 +159,21 @@ def run_chat(
                VALUES(?,?,?,?,?)""",
             (session_id, user_id, " ".join(message.split())[:30], now, now),
         )
+
+    def emit(ev: dict) -> None:
+        if on_event is not None:
+            try:
+                on_event(ev)
+            except Exception:  # noqa: BLE001  前端断开不影响对话落库
+                pass
+
+    def call_llm(msgs: list[dict], schemas):
+        if on_event is None:
+            return llm.chat(cfg, msgs, schemas)
+        return llm.chat_stream(cfg, msgs, schemas,
+                               on_delta=lambda t: emit({"type": "delta", "text": t}))
+
+    emit({"type": "session", "session_id": session_id})
 
     # 2. 落库用户消息
     user_msg_id = _new_id()
@@ -164,7 +211,7 @@ def run_chat(
 
     for _ in range(cfg.max_iters):
         iterations += 1
-        result = llm.chat(cfg, messages, tool_schemas)
+        result = call_llm(messages, tool_schemas)
         prompt_tokens += result.prompt_tokens
         completion_tokens += result.completion_tokens
 
@@ -203,6 +250,8 @@ def run_chat(
         # 逐个执行工具调用（同一轮对话内相同调用直接复用结果）
         for tc in result.tool_calls:
             cache_key = (tc.name, tc.arguments_json or "{}")
+            emit({"type": "tool_start", "name": tc.name, "label": TOOL_LABELS.get(tc.name, tc.name),
+                  "args": tc.arguments_json or "{}"})
             if cache_key in tool_cache:
                 result_json = tool_cache[cache_key]
             else:
@@ -213,6 +262,7 @@ def run_chat(
                     result_json = json.dumps({"error": "工具返回了无法序列化的数据"}, ensure_ascii=False)
                 result_json = _truncate_result(result_json)
                 tool_cache[cache_key] = result_json
+            emit({"type": "tool_end", "name": tc.name, **_summarize_result(result_json)})
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": result_json}
             )
@@ -222,7 +272,7 @@ def run_chat(
         # 轮次用尽：不再给工具，让模型基于已查到的数据给出结论
         messages.append({"role": "user", "content": "已达到工具调用上限。请只根据上面已经查到的数据直接回答；数据不足的部分明确说明。"})
         try:
-            result = llm.chat(cfg, messages, None)
+            result = call_llm(messages, None)
             prompt_tokens += result.prompt_tokens
             completion_tokens += result.completion_tokens
             reply = result.content or None

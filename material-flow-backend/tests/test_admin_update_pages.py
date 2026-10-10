@@ -82,3 +82,24 @@ def test_service_unit_allows_writing_backups_and_releases():
     unit = (Path(__file__).resolve().parents[1] / "material-flow.service").read_text()
     rw = next(l for l in unit.splitlines() if l.startswith("ReadWritePaths="))
     assert "/srv/material-flow/backups" in rw and "/srv/material-flow/app-releases" in rw
+
+
+def test_agent_stream_endpoint(monkeypatch):
+    from app.agent import llm as _llm
+    from app.agent.llm import ChatResult as _CR
+
+    def fake_stream(cfg, messages, tools=None, on_delta=None):
+        on_delta and on_delta("你好")
+        return _CR(content="你好")
+
+    monkeypatch.setattr(_llm, "chat_stream", fake_stream)
+    monkeypatch.setenv("AGENT_LLM_API_KEY", "k")
+    seed()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        r = client.post("/admin/agent/chat/stream", json={"message": "hi"})
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+        import json as _j
+        evs = [_j.loads(l[5:]) for l in r.text.splitlines() if l.startswith("data:")]
+        assert [e["type"] for e in evs] == ["session", "delta", "done"]
+        assert evs[-1]["reply"] == "你好"

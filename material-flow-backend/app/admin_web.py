@@ -2955,6 +2955,56 @@ async def admin_agent_chat(request: Request):
     return JSONResponse(result)
 
 
+@router.post("/admin/agent/chat/stream")
+async def admin_agent_chat_stream(request: Request):
+    """流式对话（SSE）：逐字输出 + 工具步骤事件。事件见 agent.service.run_chat 的 on_event。"""
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "消息不能为空"}}, status_code=400)
+    session_id = body.get("session_id")
+    import asyncio
+    import json as _json
+    import threading
+    from fastapi.responses import StreamingResponse
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def push(ev: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, ev)
+
+    def worker() -> None:
+        c = db()
+        try:
+            cfg = _agent_cfg_effective(c)
+            result = agent_service.run_chat(c, cfg, user["id"], session_id, message, on_event=push)
+            push({"type": "done", **result})
+        except Exception as e:  # noqa: BLE001
+            push({"type": "error", "message": str(e)[:500]})
+        finally:
+            c.close()
+            push(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def gen():
+        while True:
+            ev = await queue.get()
+            if ev is None:
+                break
+            yield "data: " + _json.dumps(ev, ensure_ascii=False, default=str) + "\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # 智能导入 Session 包装（管理后台用 Web Session，不走 Token）
 from fastapi import UploadFile as _UploadFile, File as _File, Form as _Form
 from app.agent import importer as _agent_importer

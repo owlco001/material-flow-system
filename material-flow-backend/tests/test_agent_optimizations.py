@@ -163,3 +163,111 @@ def test_llm_400_not_retried_and_shows_message(monkeypatch):
     with pytest.raises(LLMError, match="bad tool msg"):
         llm.chat(CFG, [{"role": "user", "content": "x"}])
     assert calls["n"] == 1
+
+
+# ---------- 流式 ----------
+
+class _SSE:
+    status = 200
+
+    def __init__(self, chunks):
+        self.lines = [("data: " + json.dumps(c) + "\n").encode() for c in chunks] + [b"data: [DONE]\n"]
+
+    def __iter__(self):
+        return iter(self.lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_chat_stream_assembles_text_and_tool_calls(monkeypatch):
+    chunks = [
+        {"choices": [{"delta": {"content": "共"}}]},
+        {"choices": [{"delta": {"content": "3 个"}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bom_items", "arguments": "{\"co"}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "de\":\"D\"}"}}]}}]},
+        {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+    ]
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: _SSE(chunks))
+    deltas = []
+    r = llm.chat_stream(CFG, [{"role": "user", "content": "x"}], [{"type": "function"}], on_delta=deltas.append)
+    assert deltas == ["共", "3 个"] and r.content == "共3 个"
+    assert r.tool_calls[0].name == "bom_items" and json.loads(r.tool_calls[0].arguments_json) == {"code": "D"}
+    assert r.prompt_tokens == 7 and r.completion_tokens == 3
+
+
+def test_chat_stream_falls_back_when_unsupported(monkeypatch):
+    def urlopen(req, timeout):
+        if json.loads(req.data).get("stream"):
+            raise urllib.error.HTTPError("u", 400, "no stream", {}, io.BytesIO(b"{}"))
+        return _Resp(json.dumps({"choices": [{"message": {"content": "非流式"}}]}).encode())
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
+    got = []
+    assert llm.chat_stream(CFG, [{"role": "user", "content": "x"}], on_delta=got.append).content == "非流式"
+    assert got == ["非流式"]
+
+
+def test_run_chat_emits_events(monkeypatch, conn):
+    script = iter([ChatResult(content="", tool_calls=[ChatToolCall("t1", "material_master_stats", "{}")]),
+                   ChatResult(content="共 3 个")])
+
+    def fake_stream(cfg, messages, tools=None, on_delta=None):
+        r = next(script)
+        if r.content and on_delta:
+            on_delta(r.content)
+        return r
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+    events = []
+    service.run_chat(conn, CFG, "u1", None, "q", on_event=events.append)
+    types = [e["type"] for e in events]
+    assert types == ["session", "tool_start", "tool_end", "delta"]
+    assert events[1]["label"] == "统计物料主档"
+    assert events[2]["ok"] and events[2]["summary"] == "共 3 条"
+
+
+# ---------- 评测集 ----------
+
+def test_eval_cases_reference_real_tools():
+    from app.agent import eval as ev
+    names = {t.name for t in T.ANALYSIS_TOOLS}
+    cases = ev.load_cases()
+    assert len(cases) >= 30 and len({c["id"] for c in cases}) == len(cases)
+    for c in cases:
+        assert set(c.get("expect_tools") or []) <= names, c["id"]
+
+
+def test_eval_judge():
+    from app.agent.eval import judge
+    assert judge({"expect_tools": ["a", "b"]}, ["b"])
+    assert not judge({"expect_tools": ["a", "b"], "expect_all": True}, ["b"])
+    assert judge({"expect_no_tools": True}, [])
+    assert not judge({"expect_no_tools": True}, ["a"])
+
+
+def test_eval_runner_with_stub(monkeypatch, conn):
+    from app.agent import eval as ev
+
+    def fake_stream(cfg, messages, tools=None, on_delta=None):
+        if messages[-1]["role"] == "tool":
+            return ChatResult(content="完成")
+        return ChatResult(content="", tool_calls=[ChatToolCall("t", "material_master_stats", "{}")])
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+    out = io.StringIO()
+    s = ev.run_eval(conn, CFG, [{"id": "a", "q": "多少", "expect_tools": ["material_master_stats"]},
+                                {"id": "b", "q": "x", "expect_tools": ["bom_items"]}], out=out)
+    assert s["passed"] == 1 and s["total"] == 2 and "通过 1/2" in out.getvalue()
+
+
+def test_templates_have_no_nested_script_tags():
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app" / "templates"
+    for f in root.glob("*.html"):
+        for block in re.findall(r"<script[^>]*>(.*?)</script>", f.read_text(encoding="utf-8"), re.S):
+            assert "<script" not in block, f"{f.name} 内嵌了重复的 <script> 标签"

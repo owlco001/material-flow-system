@@ -250,3 +250,10 @@ The four direct scripts are intentionally excluded from pytest collection
 because they own their isolated test database and process lifecycle. No test
 database, runtime environment file, machine identifier, or credential belongs
 in the deployment package or Git history.
+
+## Agent evaluation
+
+`python -m app.agent.eval` runs the fixed question set in
+`app/agent/eval_cases.json` against the configured model on a temporary copy of
+the database and reports which tools each question triggered and the pass
+rate. Run it before and after changing the prompt or switching models.

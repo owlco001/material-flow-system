@@ -58,12 +58,12 @@
 <!-- 数据分析对话 -->
 <div class="card">
   <h3>数据分析对话</h3>
-  <div id="chat-box" style="height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafbfc">
+  <div id="chat-box" style="height:420px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafbfc">
     <p class="muted" style="text-align:center">在下方输入问题，例如：查询库存不足的物料、统计本月流转单数量</p>
   </div>
   <div style="display:flex;gap:8px">
-    <input id="chat-input" placeholder="输入问题…" style="flex:1" onkeydown="if(event.key==='Enter')sendChat()">
-    <button id="chat-send-btn" onclick="sendChat()" class="btn">发送</button>
+    <input id="chat-input" placeholder="输入问题…" style="flex:1">
+    <button id="chat-send-btn" type="button" class="btn">发送</button>
     <button onclick="newChatSession()" class="btn btn-sm" title="新会话">新会话</button>
   </div>
 </div>
@@ -235,7 +235,7 @@ async function doAggBomAggregate(all) {
 loadAggBomBatches();
 </script>
 
-<script><script>
+<script>
 async function loadAggModels() {
   try {
     const r = await fetch("/admin/agent/bom/models");
@@ -356,33 +356,104 @@ loadSettings();
 function addMsg(role, text) {
   const box = document.getElementById("chat-box");
   const div = document.createElement("div");
-  div.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;" +
-    (role === "user" ? "background:#e3f0ff;margin-left:auto;text-align:right" : "background:#fff;border:1px solid var(--line)");
-  div.textContent = text;
+  div.className = "chat-msg chat-" + role;
+  div.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:92%;" +
+    (role === "user" ? "background:#e3f0ff;margin-left:auto;width:fit-content;white-space:pre-wrap" : "background:#fff;border:1px solid var(--line)");
+  if (role === "user") div.textContent = text; else div.innerHTML = renderMd(text || "");
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
+  return div;
 }
+function escHtml(t) { return t.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function inlineMd(t) {
+  return escHtml(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+}
+// 轻量 Markdown：表格、列表、标题、粗体、行内代码；先转义，杜绝注入
+function renderMd(src) {
+  const lines = src.split("\n"); const out = []; let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
+      const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => inlineMd(c.trim()));
+      let h = '<div style="overflow-x:auto"><table class="tbl"><tr>' + cells(l).map(c => "<th>" + c + "</th>").join("") + "</tr>";
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { h += "<tr>" + cells(lines[i]).map(c => "<td>" + c + "</td>").join("") + "</tr>"; i++; }
+      out.push(h + "</table></div>"); continue;
+    }
+    if (/^\s*([-*]|\d+\.)\s+/.test(l)) {
+      const ordered = /^\s*\d+\./.test(l); let h = ordered ? "<ol>" : "<ul>";
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) { h += "<li>" + inlineMd(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, "")) + "</li>"; i++; }
+      out.push(h + (ordered ? "</ol>" : "</ul>")); continue;
+    }
+    const m = l.match(/^(#{1,4})\s+(.*)/);
+    if (m) { out.push("<b>" + inlineMd(m[2]) + "</b>"); i++; continue; }
+    out.push(l.trim() ? "<div>" + inlineMd(l) + "</div>" : "<div style=\"height:6px\"></div>"); i++;
+  }
+  return out.join("");
+}
+let chatBusy = false;
 async function sendChat() {
   const input = document.getElementById("chat-input");
   const msg = input.value.trim();
-  if (!msg) return;
+  if (!msg || chatBusy) return;
+  chatBusy = true;
   input.value = "";
   addMsg("user", msg);
-  addMsg("assistant", "思考中…");
+  const wrap = addMsg("assistant", "");
+  const steps = document.createElement("div");
+  steps.className = "muted"; steps.style.cssText = "font-size:12px;line-height:1.7";
+  steps.textContent = "思考中…";
+  const body = document.createElement("div");
+  wrap.appendChild(steps); wrap.appendChild(body);
+  const box = document.getElementById("chat-box");
+  let text = "", stepCount = 0, rafPending = false;
+  const paint = () => { rafPending = false; body.innerHTML = renderMd(text); box.scrollTop = box.scrollHeight; };
+  const handle = ev => {
+    if (ev.type === "session") { chatSessionId = ev.session_id; }
+    else if (ev.type === "tool_start") {
+      if (!stepCount) steps.textContent = "";
+      stepCount++;
+      const d = document.createElement("div"); d.dataset.tool = ev.name;
+      d.textContent = "⏳ " + (ev.label || ev.name);
+      d.title = ev.args; steps.appendChild(d);
+    } else if (ev.type === "tool_end") {
+      const d = [...steps.querySelectorAll("div")].reverse().find(x => x.dataset.tool === ev.name && x.textContent.startsWith("⏳"));
+      if (d) d.textContent = (ev.ok ? "✓ " : "✗ ") + d.textContent.slice(2) + " · " + ev.summary;
+      text = "";  // 工具前的过渡文字作废，等待最终回答
+    } else if (ev.type === "delta") {
+      if (!stepCount && steps.textContent === "思考中…") steps.textContent = "";
+      text += ev.text; if (!rafPending) { rafPending = true; requestAnimationFrame(paint); }
+    } else if (ev.type === "done") {
+      text = ev.reply || text; paint();
+      if (ev.usage) { const u = document.createElement("div"); u.className = "muted"; u.style.cssText = "font-size:11px;margin-top:4px";
+        u.textContent = (stepCount ? stepCount + " 次查询 · " : "") + (ev.usage.prompt_tokens + ev.usage.completion_tokens) + " tokens"; wrap.appendChild(u); }
+    } else if (ev.type === "error") { steps.textContent = ""; text = "出错：" + ev.message; paint(); }
+  };
   try {
-    const res = await apiCall("/admin/agent/chat", "POST", { session_id: chatSessionId, message: msg });
-    chatSessionId = res.session_id || res.sessionId || chatSessionId;
-    const box = document.getElementById("chat-box");
-    box.lastChild.textContent = res.reply || res.answer || JSON.stringify(res).slice(0, 500);
-    box.scrollTop = box.scrollHeight;
+    const r = await fetch("/admin/agent/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: chatSessionId, message: msg }) });
+    if (!r.ok || !r.body) { const t = await r.text(); let m = t.slice(0, 200); try { m = JSON.parse(t).error.message; } catch (e) {} throw new Error(m); }
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let k;
+      while ((k = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, k); buf = buf.slice(k + 2);
+        const line = chunk.split("\n").find(x => x.startsWith("data:"));
+        if (line) { try { handle(JSON.parse(line.slice(5))); } catch (e) {} }
+      }
+    }
   } catch (e) {
-    const box = document.getElementById("chat-box");
-    box.lastChild.textContent = "出错：" + e.message;
-  }
+    steps.textContent = ""; text = "出错：" + e.message; paint();
+  } finally { chatBusy = false; }
 }
 document.addEventListener("DOMContentLoaded", function() {
-  var btn = document.getElementById("chat-send-btn");
-  if (btn) btn.addEventListener("click", function(e) { e.preventDefault(); sendChat(); });
+  document.getElementById("chat-send-btn").addEventListener("click", function(e) { e.preventDefault(); sendChat(); });
+  document.getElementById("chat-input").addEventListener("keydown", function(e) {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendChat(); }
+  });
 });
 function newChatSession() {
   chatSessionId = null;
@@ -501,56 +572,5 @@ async function commitImport() {
     preview.innerHTML = "<p class=\"error\">提交失败：" + e.message + "</p>";
   }
 }
-</script>
-<script>
-// 兜底：确保发送按钮可用
-(function() {
-  function doSend() {
-    try {
-      if (typeof sendChat === "function") { sendChat(); return; }
-    } catch (e) {}
-    // 如果 sendChat 不可用，手动实现
-    var input = document.getElementById("chat-input");
-    var box = document.getElementById("chat-box");
-    if (!input || !box) return;
-    var msg = input.value.trim();
-    if (!msg) return;
-    input.value = "";
-    var d1 = document.createElement("div");
-    d1.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;background:#e3f0ff;margin-left:auto;text-align:right";
-    d1.textContent = msg;
-    box.appendChild(d1);
-    var d2 = document.createElement("div");
-    d2.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:8px;max-width:90%;background:#fff;border:1px solid #e5e7eb";
-    d2.textContent = "思考中…";
-    box.appendChild(d2);
-    box.scrollTop = box.scrollHeight;
-    fetch("/admin/agent/chat", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message: msg})
-    }).then(function(r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    }).then(function(j) {
-      d2.textContent = j.reply || j.answer || "(空回复)";
-      box.scrollTop = box.scrollHeight;
-    }).catch(function(e) {
-      d2.textContent = "出错：" + e.message;
-    });
-  }
-  document.addEventListener("DOMContentLoaded", function() {
-    var btn = document.getElementById("chat-send-btn");
-    if (btn) {
-      btn.addEventListener("click", function(e) { e.preventDefault(); e.stopPropagation(); doSend(); }, true);
-    }
-    var input = document.getElementById("chat-input");
-    if (input) {
-      input.addEventListener("keydown", function(e) {
-        if (e.key === "Enter") { e.preventDefault(); doSend(); }
-      });
-    }
-  });
-})();
 </script>
 {% endblock %}
