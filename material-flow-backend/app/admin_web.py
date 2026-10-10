@@ -2955,6 +2955,171 @@ async def admin_agent_chat(request: Request):
     return JSONResponse(result)
 
 
+@router.post("/admin/agent/chat/stream")
+async def admin_agent_chat_stream(request: Request):
+    """流式对话（SSE）：逐字输出 + 工具步骤事件。事件见 agent.service.run_chat 的 on_event。"""
+    user = _session_user(request)
+    if user is None:
+        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "消息不能为空"}}, status_code=400)
+    session_id = body.get("session_id")
+    import asyncio
+    import json as _json
+    import threading
+    from fastapi.responses import StreamingResponse
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def push(ev: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, ev)
+
+    def worker() -> None:
+        c = db()
+        try:
+            cfg = _agent_cfg_effective(c)
+            result = agent_service.run_chat(c, cfg, user["id"], session_id, message, on_event=push)
+            push({"type": "done", **result})
+        except Exception as e:  # noqa: BLE001
+            push({"type": "error", "message": str(e)[:500]})
+        finally:
+            c.close()
+            push(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def gen():
+        while True:
+            ev = await queue.get()
+            if ev is None:
+                break
+            yield "data: " + _json.dumps(ev, ensure_ascii=False, default=str) + "\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------- 会话管理 / 反馈 / 用量（管理台） ----------
+
+def _agent_json_user(request: Request):
+    user = _session_user(request)
+    if user is None:
+        return None, JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+    return user, None
+
+
+def _agent_bad(msg: str, code: int = 400):
+    return JSONResponse({"error": {"code": "BAD_REQUEST" if code == 400 else "NOT_FOUND", "message": msg}},
+                        status_code=code)
+
+
+@router.get("/admin/agent/sessions")
+def admin_agent_sessions(request: Request):
+    user, err = _agent_json_user(request)
+    if err: return err
+    c = db()
+    try:
+        from app.agent.db import ensure_agent_tables
+        ensure_agent_tables(c)
+        return JSONResponse({"sessions": agent_service.list_sessions(c, user["id"], limit=50)})
+    finally:
+        c.close()
+
+
+@router.get("/admin/agent/sessions/{session_id}/messages")
+def admin_agent_session_messages(request: Request, session_id: str):
+    user, err = _agent_json_user(request)
+    if err: return err
+    c = db()
+    try:
+        msgs = agent_service.get_messages(c, user["id"], session_id, limit=200)
+    except ValueError as e:
+        return _agent_bad(str(e), 404)
+    finally:
+        c.close()
+    # 前端只展示用户提问与最终回答
+    out = [m for m in msgs if m["role"] == "user" or (m["role"] == "assistant" and not m["tool_calls_json"] and m["content"])]
+    for m in out:
+        m.pop("tool_calls_json", None)
+    return JSONResponse({"messages": out})
+
+
+@router.post("/admin/agent/sessions/{session_id}")
+async def admin_agent_session_update(request: Request, session_id: str):
+    """body: {"title": "..."} 重命名；{"pinned": true/false} 置顶。"""
+    user, err = _agent_json_user(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _agent_bad("请求体解析失败")
+    c = db()
+    try:
+        if "title" in body:
+            agent_service.rename_session(c, user["id"], session_id, str(body.get("title") or ""))
+        if "pinned" in body:
+            agent_service.pin_session(c, user["id"], session_id, bool(body.get("pinned")))
+    except ValueError as e:
+        return _agent_bad(str(e))
+    finally:
+        c.close()
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/admin/agent/sessions/{session_id}")
+def admin_agent_session_delete(request: Request, session_id: str):
+    user, err = _agent_json_user(request)
+    if err: return err
+    c = db()
+    try:
+        agent_service.delete_session(c, user["id"], session_id)
+    except ValueError as e:
+        return _agent_bad(str(e), 404)
+    finally:
+        c.close()
+    return JSONResponse({"ok": True})
+
+
+@router.post("/admin/agent/feedback")
+async def admin_agent_feedback(request: Request):
+    user, err = _agent_json_user(request)
+    if err: return err
+    try:
+        body = await request.json()
+        rating = int(body.get("rating"))
+    except Exception:
+        return _agent_bad("参数错误")
+    c = db()
+    try:
+        agent_service.set_feedback(c, user["id"], str(body.get("message_id") or ""), rating, body.get("comment"))
+    except ValueError as e:
+        return _agent_bad(str(e))
+    finally:
+        c.close()
+    return JSONResponse({"ok": True})
+
+
+@router.get("/admin/agent/usage")
+def admin_agent_usage(request: Request, days: int = 14):
+    user, err = _agent_json_user(request)
+    if err: return err
+    if user["role"] != "ADMIN":
+        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "仅管理员可查看用量"}}, status_code=403)
+    c = db()
+    try:
+        stats = agent_service.usage_stats(c, days)
+        stats["daily_token_limit"] = _agent_cfg_effective(c).daily_token_limit
+    finally:
+        c.close()
+    return JSONResponse(stats)
+
+
 # 智能导入 Session 包装（管理后台用 Web Session，不走 Token）
 from fastapi import UploadFile as _UploadFile, File as _File, Form as _Form
 from app.agent import importer as _agent_importer
@@ -3209,6 +3374,7 @@ def _agent_cfg_effective(c, trace_id="admin"):
     if s.get("api_key"): kw["api_key"] = s["api_key"]
     if s.get("model"): kw["model"] = s["model"]
     if s.get("enabled") in ("0", "1"): kw["enabled"] = s["enabled"] == "1"
+    if str(s.get("daily_token_limit") or "").isdigit(): kw["daily_token_limit"] = int(s["daily_token_limit"])
     if kw: cfg = replace(cfg, **kw)
     return cfg
 
@@ -3243,7 +3409,7 @@ async def admin_agent_settings_set(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请求体解析失败"}}, status_code=400)
-    allowed = ("base_url", "api_key", "model", "enabled")
+    allowed = ("base_url", "api_key", "model", "enabled", "daily_token_limit")
     c = db()
     try:
         now_ts = int(_time.time())

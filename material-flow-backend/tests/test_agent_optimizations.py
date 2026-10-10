@@ -163,3 +163,249 @@ def test_llm_400_not_retried_and_shows_message(monkeypatch):
     with pytest.raises(LLMError, match="bad tool msg"):
         llm.chat(CFG, [{"role": "user", "content": "x"}])
     assert calls["n"] == 1
+
+
+# ---------- 流式 ----------
+
+class _SSE:
+    status = 200
+
+    def __init__(self, chunks):
+        self.lines = [("data: " + json.dumps(c) + "\n").encode() for c in chunks] + [b"data: [DONE]\n"]
+
+    def __iter__(self):
+        return iter(self.lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_chat_stream_assembles_text_and_tool_calls(monkeypatch):
+    chunks = [
+        {"choices": [{"delta": {"content": "共"}}]},
+        {"choices": [{"delta": {"content": "3 个"}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bom_items", "arguments": "{\"co"}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "de\":\"D\"}"}}]}}]},
+        {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+    ]
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: _SSE(chunks))
+    deltas = []
+    r = llm.chat_stream(CFG, [{"role": "user", "content": "x"}], [{"type": "function"}], on_delta=deltas.append)
+    assert deltas == ["共", "3 个"] and r.content == "共3 个"
+    assert r.tool_calls[0].name == "bom_items" and json.loads(r.tool_calls[0].arguments_json) == {"code": "D"}
+    assert r.prompt_tokens == 7 and r.completion_tokens == 3
+
+
+def test_chat_stream_falls_back_when_unsupported(monkeypatch):
+    def urlopen(req, timeout):
+        if json.loads(req.data).get("stream"):
+            raise urllib.error.HTTPError("u", 400, "no stream", {}, io.BytesIO(b"{}"))
+        return _Resp(json.dumps({"choices": [{"message": {"content": "非流式"}}]}).encode())
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
+    got = []
+    assert llm.chat_stream(CFG, [{"role": "user", "content": "x"}], on_delta=got.append).content == "非流式"
+    assert got == ["非流式"]
+
+
+def test_run_chat_emits_events(monkeypatch, conn):
+    script = iter([ChatResult(content="", tool_calls=[ChatToolCall("t1", "material_master_stats", "{}")]),
+                   ChatResult(content="共 3 个")])
+
+    def fake_stream(cfg, messages, tools=None, on_delta=None):
+        r = next(script)
+        if r.content and on_delta:
+            on_delta(r.content)
+        return r
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+    events = []
+    service.run_chat(conn, CFG, "u1", None, "q", on_event=events.append)
+    types = [e["type"] for e in events]
+    assert types == ["session", "tool_start", "tool_end", "delta"]
+    assert events[1]["label"] == "统计物料主档"
+    assert events[2]["ok"] and events[2]["summary"] == "共 3 条"
+
+
+# ---------- 评测集 ----------
+
+def test_eval_cases_reference_real_tools():
+    from app.agent import eval as ev
+    names = {t.name for t in T.ANALYSIS_TOOLS}
+    cases = ev.load_cases()
+    assert len(cases) >= 30 and len({c["id"] for c in cases}) == len(cases)
+    for c in cases:
+        assert set(c.get("expect_tools") or []) <= names, c["id"]
+
+
+def test_eval_judge():
+    from app.agent.eval import judge
+    assert judge({"expect_tools": ["a", "b"]}, ["b"])
+    assert not judge({"expect_tools": ["a", "b"], "expect_all": True}, ["b"])
+    assert judge({"expect_no_tools": True}, [])
+    assert not judge({"expect_no_tools": True}, ["a"])
+
+
+def test_eval_runner_with_stub(monkeypatch, conn):
+    from app.agent import eval as ev
+
+    def fake_stream(cfg, messages, tools=None, on_delta=None):
+        if messages[-1]["role"] == "tool":
+            return ChatResult(content="完成")
+        return ChatResult(content="", tool_calls=[ChatToolCall("t", "material_master_stats", "{}")])
+
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
+    out = io.StringIO()
+    s = ev.run_eval(conn, CFG, [{"id": "a", "q": "多少", "expect_tools": ["material_master_stats"]},
+                                {"id": "b", "q": "x", "expect_tools": ["bom_items"]}], out=out)
+    assert s["passed"] == 1 and s["total"] == 2 and "通过 1/2" in out.getvalue()
+
+
+def test_templates_have_no_nested_script_tags():
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app" / "templates"
+    for f in root.glob("*.html"):
+        for block in re.findall(r"<script[^>]*>(.*?)</script>", f.read_text(encoding="utf-8"), re.S):
+            assert "<script" not in block, f"{f.name} 内嵌了重复的 <script> 标签"
+
+
+# ---------- 第一阶段收尾：可追溯、会话管理、反馈、用量 ----------
+
+def _two_step(monkeypatch):
+    script = iter([
+        ChatResult(content="", tool_calls=[ChatToolCall("t1", "search_material_master", '{"keyword": "轴承"}')],
+                   prompt_tokens=100, completion_tokens=10),
+        ChatResult(content="有 2 个", prompt_tokens=200, completion_tokens=20),
+    ])
+    monkeypatch.setattr(llm, "chat", lambda cfg, messages, tools=None: next(script))
+
+
+def test_reply_carries_sources_and_persists(monkeypatch, conn):
+    _two_step(monkeypatch)
+    r = service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    assert r["message_id"] and r["sources"][0]["name"] == "search_material_master"
+    assert r["sources"][0]["args"] == {"keyword": "轴承"} and r["sources"][0]["ok"] is True
+    msgs = service.get_messages(conn, "u1", r["session_id"])
+    final = [m for m in msgs if m["id"] == r["message_id"]][0]
+    assert final["sources"][0]["label"] and final["rating"] is None
+
+
+def test_session_manage_and_feedback(monkeypatch, conn):
+    _two_step(monkeypatch)
+    r = service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    sid, mid = r["session_id"], r["message_id"]
+    service.rename_session(conn, "u1", sid, "  轴承  统计 ")
+    service.pin_session(conn, "u1", sid, True)
+    s = service.list_sessions(conn, "u1")[0]
+    assert s["title"] == "轴承 统计" and s["pinned"] is True
+    with pytest.raises(ValueError):
+        service.rename_session(conn, "u2", sid, "x")  # 不是本人会话
+    service.set_feedback(conn, "u1", mid, -1, "数字不对")
+    assert [m for m in service.get_messages(conn, "u1", sid) if m["id"] == mid][0]["rating"] == -1
+    service.set_feedback(conn, "u1", mid, 0)
+    assert [m for m in service.get_messages(conn, "u1", sid) if m["id"] == mid][0]["rating"] is None
+    with pytest.raises(ValueError):
+        service.set_feedback(conn, "u2", mid, 1)
+    service.set_feedback(conn, "u1", mid, 1)
+    service.delete_session(conn, "u1", sid)
+    assert service.list_sessions(conn, "u1") == []
+    assert conn.execute("SELECT COUNT(*) FROM agent_messages").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM agent_feedback").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM agent_usage").fetchone()[0] == 1  # 用量保留
+
+
+def test_usage_stats_and_daily_limit(monkeypatch, conn):
+    from dataclasses import replace
+    _two_step(monkeypatch)
+    service.run_chat(conn, CFG, "u1", None, "轴承有几个")
+    # 一条 40 天前的记录不应计入
+    conn.execute("INSERT INTO agent_usage(session_id,user_id,model,prompt_tokens,completion_tokens,created_at)"
+                 " VALUES(NULL,'u2','m2',5,5,datetime('now','-40 days'))")
+    st = service.usage_stats(conn, 14)
+    assert st["total_calls"] == 1 and st["total_tokens"] == 330
+    assert st["by_user"][0] == {"user_id": "u1", "name": "u1", "calls": 1, "tokens": 330, "today_tokens": 330}
+    assert st["by_model"][0]["model"] == "m" and st["feedback"] == {"up": 0, "down": 0}
+    assert service.today_tokens(conn, "u1") == 330
+    with pytest.raises(LLMError, match="上限"):
+        service.run_chat(conn, replace(CFG, daily_token_limit=300), "u1", None, "再问")
+    _two_step(monkeypatch)
+    service.run_chat(conn, replace(CFG, daily_token_limit=300), "u3", None, "别人不受影响")
+
+
+def test_usage_stats_empty_db():
+    c = sqlite3.connect(":memory:")
+    st = service.usage_stats(c, 7)
+    assert st["total_calls"] == 0 and st["by_day"] == [] and st["by_user"] == []
+
+
+# ---------- 第二阶段：缺料分析 ----------
+
+@pytest.fixture
+def sconn():
+    c = sqlite3.connect(":memory:")
+    c.executescript("""
+    CREATE TABLE materials(id TEXT PRIMARY KEY, code TEXT UNIQUE, name TEXT, unit TEXT, available_quantity INTEGER);
+    INSERT INTO materials VALUES('m1','A1','螺栓','个',10),('m2','B2','垫片','个',100),('m3','C3','电机','台',0);
+    CREATE TABLE production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE, product_name TEXT, status TEXT);
+    INSERT INTO production_orders VALUES('o1','PO-1','产品一','IN_PROGRESS'),('o2','PO-2','产品二','IN_PROGRESS'),
+                                         ('o3','PO-3','产品三','COMPLETED');
+    CREATE TABLE order_material_requirements(id TEXT, order_id TEXT, device_id TEXT, material_id TEXT,
+      required_quantity INT, arrived_quantity INT, in_stock_quantity INT);
+    INSERT INTO order_material_requirements VALUES('r1','o1',NULL,'m1',8,8,8),('r2','o1',NULL,'m3',2,1,0),
+                                                  ('r3','o3',NULL,'m3',9,0,0);
+    CREATE TABLE production_order_models(id TEXT, order_id TEXT, model_code TEXT, planned_quantity INT, bom_version_id TEXT);
+    INSERT INTO production_order_models VALUES('pm1','o2','MD-1',3,NULL);
+    CREATE TABLE bom_versions(id TEXT, model_code TEXT, version_no INT, status TEXT);
+    INSERT INTO bom_versions VALUES('v1','MD-1',1,'PUBLISHED'),('v0','MD-1',2,'DRAFT');
+    CREATE TABLE bom_items(bom_version_id TEXT, material_code TEXT, material_name TEXT, unit TEXT, quantity REAL, scrap_rate REAL);
+    INSERT INTO bom_items VALUES('v1','A1','螺栓','个',4,0),('v1','B2','垫片','个',8,0.2),('v1','Z9','新料','件',1,0);
+    CREATE TABLE agg_bom_batches(id TEXT, project_name TEXT, created_at TEXT);
+    CREATE TABLE agg_bom_items(batch_id TEXT, device_code TEXT, material_code TEXT, material_name TEXT, unit TEXT, quantity REAL);
+    INSERT INTO agg_bom_batches VALUES('b1','项目','2026-10-01');
+    INSERT INTO agg_bom_items VALUES('b1','D1','A1','螺栓','个',6),('b1','D2','A1','螺栓','个',6),('b1','D1','C3','电机','台',1);
+    """)
+    yield c
+    c.close()
+
+
+def _short(c, **a):
+    return T.get_tool(T.ANALYSIS_TOOLS, "material_shortage").run(c, a)
+
+
+def test_shortage_from_order_requirements(sconn):
+    r = _short(sconn, order_no="PO-1")
+    assert r["source"] == "订单物料需求" and r["short_types"] == 1
+    assert r["items"] == [{"material_code": "C3", "material_name": "电机", "unit": "台", "required": 2, "arrived": 1,
+                           "in_stock": 0, "shortage": 2, "not_arrived": 1}]
+    assert len(_short(sconn, order_no="PO-1", only_short=False)["items"]) == 2
+
+
+def test_shortage_from_order_models_bom(sconn):
+    r = _short(sconn, order_no="PO-2")
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["A1"]["required"] == 12 and by["A1"]["shortage"] == 2
+    assert "B2" not in by  # 8×3/(1-0.2)=30 ≤ 100
+    assert by["Z9"]["no_stock_record"] is True and by["Z9"]["shortage"] == 3
+
+
+def test_shortage_by_model_and_devices(sconn):
+    r = _short(sconn, model_code="MD-1", quantity=20)
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["B2"]["required"] == 200 and by["B2"]["shortage"] == 100
+    r = _short(sconn, device_codes=["D1", "D2", "DX"], quantity=1)
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["A1"]["shortage"] == 2 and by["C3"]["shortage"] == 1 and r["devices_not_found"] == ["DX"]
+    with pytest.raises(T.ToolError):
+        _short(sconn, model_code="NOPE")
+    with pytest.raises(T.ToolError):
+        _short(sconn, model_code="MD-1", quantity=-1)
+
+
+def test_shortage_all_open_orders(sconn):
+    r = _short(sconn)
+    assert r["orders_affected"] == 1  # PO-3 已完成，不计
+    assert r["items"][0]["material_code"] == "C3" and r["items"][0]["shortage"] == 2

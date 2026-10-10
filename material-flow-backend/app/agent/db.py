@@ -52,5 +52,23 @@ def ensure_agent_tables(conn: sqlite3.Connection) -> None:
             value TEXT NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS agent_feedback(
+            message_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            comment TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(message_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_created ON agent_usage(created_at);
         """
     )
+    _add_column(conn, "agent_sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "agent_messages", "sources_json", "TEXT")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
