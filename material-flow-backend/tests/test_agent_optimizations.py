@@ -340,3 +340,72 @@ def test_usage_stats_empty_db():
     c = sqlite3.connect(":memory:")
     st = service.usage_stats(c, 7)
     assert st["total_calls"] == 0 and st["by_day"] == [] and st["by_user"] == []
+
+
+# ---------- 第二阶段：缺料分析 ----------
+
+@pytest.fixture
+def sconn():
+    c = sqlite3.connect(":memory:")
+    c.executescript("""
+    CREATE TABLE materials(id TEXT PRIMARY KEY, code TEXT UNIQUE, name TEXT, unit TEXT, available_quantity INTEGER);
+    INSERT INTO materials VALUES('m1','A1','螺栓','个',10),('m2','B2','垫片','个',100),('m3','C3','电机','台',0);
+    CREATE TABLE production_orders(id TEXT PRIMARY KEY, order_no TEXT UNIQUE, product_name TEXT, status TEXT);
+    INSERT INTO production_orders VALUES('o1','PO-1','产品一','IN_PROGRESS'),('o2','PO-2','产品二','IN_PROGRESS'),
+                                         ('o3','PO-3','产品三','COMPLETED');
+    CREATE TABLE order_material_requirements(id TEXT, order_id TEXT, device_id TEXT, material_id TEXT,
+      required_quantity INT, arrived_quantity INT, in_stock_quantity INT);
+    INSERT INTO order_material_requirements VALUES('r1','o1',NULL,'m1',8,8,8),('r2','o1',NULL,'m3',2,1,0),
+                                                  ('r3','o3',NULL,'m3',9,0,0);
+    CREATE TABLE production_order_models(id TEXT, order_id TEXT, model_code TEXT, planned_quantity INT, bom_version_id TEXT);
+    INSERT INTO production_order_models VALUES('pm1','o2','MD-1',3,NULL);
+    CREATE TABLE bom_versions(id TEXT, model_code TEXT, version_no INT, status TEXT);
+    INSERT INTO bom_versions VALUES('v1','MD-1',1,'PUBLISHED'),('v0','MD-1',2,'DRAFT');
+    CREATE TABLE bom_items(bom_version_id TEXT, material_code TEXT, material_name TEXT, unit TEXT, quantity REAL, scrap_rate REAL);
+    INSERT INTO bom_items VALUES('v1','A1','螺栓','个',4,0),('v1','B2','垫片','个',8,0.2),('v1','Z9','新料','件',1,0);
+    CREATE TABLE agg_bom_batches(id TEXT, project_name TEXT, created_at TEXT);
+    CREATE TABLE agg_bom_items(batch_id TEXT, device_code TEXT, material_code TEXT, material_name TEXT, unit TEXT, quantity REAL);
+    INSERT INTO agg_bom_batches VALUES('b1','项目','2026-10-01');
+    INSERT INTO agg_bom_items VALUES('b1','D1','A1','螺栓','个',6),('b1','D2','A1','螺栓','个',6),('b1','D1','C3','电机','台',1);
+    """)
+    yield c
+    c.close()
+
+
+def _short(c, **a):
+    return T.get_tool(T.ANALYSIS_TOOLS, "material_shortage").run(c, a)
+
+
+def test_shortage_from_order_requirements(sconn):
+    r = _short(sconn, order_no="PO-1")
+    assert r["source"] == "订单物料需求" and r["short_types"] == 1
+    assert r["items"] == [{"material_code": "C3", "material_name": "电机", "unit": "台", "required": 2, "arrived": 1,
+                           "in_stock": 0, "shortage": 2, "not_arrived": 1}]
+    assert len(_short(sconn, order_no="PO-1", only_short=False)["items"]) == 2
+
+
+def test_shortage_from_order_models_bom(sconn):
+    r = _short(sconn, order_no="PO-2")
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["A1"]["required"] == 12 and by["A1"]["shortage"] == 2
+    assert "B2" not in by  # 8×3/(1-0.2)=30 ≤ 100
+    assert by["Z9"]["no_stock_record"] is True and by["Z9"]["shortage"] == 3
+
+
+def test_shortage_by_model_and_devices(sconn):
+    r = _short(sconn, model_code="MD-1", quantity=20)
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["B2"]["required"] == 200 and by["B2"]["shortage"] == 100
+    r = _short(sconn, device_codes=["D1", "D2", "DX"], quantity=1)
+    by = {i["material_code"]: i for i in r["items"]}
+    assert by["A1"]["shortage"] == 2 and by["C3"]["shortage"] == 1 and r["devices_not_found"] == ["DX"]
+    with pytest.raises(T.ToolError):
+        _short(sconn, model_code="NOPE")
+    with pytest.raises(T.ToolError):
+        _short(sconn, model_code="MD-1", quantity=-1)
+
+
+def test_shortage_all_open_orders(sconn):
+    r = _short(sconn)
+    assert r["orders_affected"] == 1  # PO-3 已完成，不计
+    assert r["items"][0]["material_code"] == "C3" and r["items"][0]["shortage"] == 2

@@ -1,32 +1,242 @@
 [
-  {"id": "mm-count", "q": "物料主档里一共有多少个料号？", "expect_tools": ["material_master_stats", "search_material_master"]},
-  {"id": "mm-by-form", "q": "物料主档按形态属性分别有多少？", "expect_tools": ["material_master_stats"]},
-  {"id": "mm-by-category", "q": "主分类里料号最多的前 5 类是什么？", "expect_tools": ["material_master_stats"]},
-  {"id": "mm-by-storage", "q": "各存储地点分别放了多少种物料？", "expect_tools": ["material_master_stats"]},
-  {"id": "mm-search-name", "q": "帮我找一下品名里带“轴承”的物料", "expect_tools": ["search_material_master"]},
-  {"id": "mm-search-spec", "q": "规格是 6204 的物料有哪些？", "expect_tools": ["search_material_master"]},
-  {"id": "mm-search-drawing", "q": "图号 DW-1 对应哪个料号？", "expect_tools": ["search_material_master"]},
-  {"id": "mm-project", "q": "项目号 P1 下有哪些物料？", "expect_tools": ["search_material_master"]},
-  {"id": "mm-detail", "q": "料号 M001 的采购员、存储地点和安全库存是多少？", "expect_tools": ["material_master_detail"]},
-  {"id": "mm-detail-lead", "q": "M002 的采购提前期是几天？", "expect_tools": ["material_master_detail"]},
-  {"id": "bom-items", "q": "设备 DEV-1 的 BOM 里有哪些物料？", "expect_tools": ["bom_items"]},
-  {"id": "bom-qty", "q": "DEV-1 需要多少个 M001？", "expect_tools": ["bom_items", "bom_where_used"]},
-  {"id": "bom-where", "q": "M002 用在哪些设备上？", "expect_tools": ["bom_where_used"]},
-  {"id": "bom-where-name", "q": "深沟球轴承被哪些设备用到？", "expect_tools": ["search_material_master", "bom_where_used"]},
-  {"id": "inv-low", "q": "现在哪些物料库存不足？", "expect_tools": ["low_stock"]},
-  {"id": "inv-one", "q": "M001 现在库存多少？", "expect_tools": ["material_inventory", "material_master_detail"]},
-  {"id": "order-list", "q": "最近的生产订单有哪些？", "expect_tools": ["list_orders"]},
-  {"id": "order-detail", "q": "订单 PO-2026-001 的进度怎么样？", "expect_tools": ["order_detail", "task_progress"]},
-  {"id": "order-status", "q": "进行中的订单有几个？", "expect_tools": ["list_orders", "workspace_summary"]},
-  {"id": "ws-summary", "q": "给我一个今天工厂整体情况的概览", "expect_tools": ["workspace_summary"]},
-  {"id": "task-progress", "q": "装配任务整体完成到什么程度了？", "expect_tools": ["task_progress", "workspace_summary"]},
-  {"id": "transfer", "q": "最近有哪些流转申请还没处理？", "expect_tools": ["list_transfer_requests"]},
-  {"id": "handover", "q": "最近的交接记录给我看看", "expect_tools": ["list_handovers"]},
-  {"id": "exception-open", "q": "现在有哪些未关闭的异常？", "expect_tools": ["list_exceptions"]},
-  {"id": "labor-30d", "q": "最近 30 天谁的工时最多？", "expect_tools": ["labor_summary"]},
-  {"id": "labor-type", "q": "最近一个月各类工时分别多少分钟？", "expect_tools": ["labor_summary"]},
-  {"id": "multi-1", "q": "M001 的主档信息和它用在哪些设备上", "expect_tools": ["material_master_detail", "bom_where_used"], "expect_all": true},
-  {"id": "multi-2", "q": "今天概览，再列出库存不足的物料", "expect_tools": ["workspace_summary", "low_stock"], "expect_all": true},
-  {"id": "refuse-code", "q": "帮我写一段 Python 快速排序", "expect_tools": [], "expect_no_tools": true},
-  {"id": "refuse-chat", "q": "今天天气怎么样？", "expect_tools": [], "expect_no_tools": true}
+  {
+    "id": "mm-count",
+    "q": "物料主档里一共有多少个料号？",
+    "expect_tools": [
+      "material_master_stats",
+      "search_material_master"
+    ]
+  },
+  {
+    "id": "mm-by-form",
+    "q": "物料主档按形态属性分别有多少？",
+    "expect_tools": [
+      "material_master_stats"
+    ]
+  },
+  {
+    "id": "mm-by-category",
+    "q": "主分类里料号最多的前 5 类是什么？",
+    "expect_tools": [
+      "material_master_stats"
+    ]
+  },
+  {
+    "id": "mm-by-storage",
+    "q": "各存储地点分别放了多少种物料？",
+    "expect_tools": [
+      "material_master_stats"
+    ]
+  },
+  {
+    "id": "mm-search-name",
+    "q": "帮我找一下品名里带“轴承”的物料",
+    "expect_tools": [
+      "search_material_master"
+    ]
+  },
+  {
+    "id": "mm-search-spec",
+    "q": "规格是 6204 的物料有哪些？",
+    "expect_tools": [
+      "search_material_master"
+    ]
+  },
+  {
+    "id": "mm-search-drawing",
+    "q": "图号 DW-1 对应哪个料号？",
+    "expect_tools": [
+      "search_material_master"
+    ]
+  },
+  {
+    "id": "mm-project",
+    "q": "项目号 P1 下有哪些物料？",
+    "expect_tools": [
+      "search_material_master"
+    ]
+  },
+  {
+    "id": "mm-detail",
+    "q": "料号 M001 的采购员、存储地点和安全库存是多少？",
+    "expect_tools": [
+      "material_master_detail"
+    ]
+  },
+  {
+    "id": "mm-detail-lead",
+    "q": "M002 的采购提前期是几天？",
+    "expect_tools": [
+      "material_master_detail"
+    ]
+  },
+  {
+    "id": "bom-items",
+    "q": "设备 DEV-1 的 BOM 里有哪些物料？",
+    "expect_tools": [
+      "bom_items"
+    ]
+  },
+  {
+    "id": "bom-qty",
+    "q": "DEV-1 需要多少个 M001？",
+    "expect_tools": [
+      "bom_items",
+      "bom_where_used"
+    ]
+  },
+  {
+    "id": "bom-where",
+    "q": "M002 用在哪些设备上？",
+    "expect_tools": [
+      "bom_where_used"
+    ]
+  },
+  {
+    "id": "bom-where-name",
+    "q": "深沟球轴承被哪些设备用到？",
+    "expect_tools": [
+      "search_material_master",
+      "bom_where_used"
+    ]
+  },
+  {
+    "id": "inv-low",
+    "q": "现在哪些物料库存不足？",
+    "expect_tools": [
+      "low_stock"
+    ]
+  },
+  {
+    "id": "inv-one",
+    "q": "M001 现在库存多少？",
+    "expect_tools": [
+      "material_inventory",
+      "material_master_detail"
+    ]
+  },
+  {
+    "id": "order-list",
+    "q": "最近的生产订单有哪些？",
+    "expect_tools": [
+      "list_orders"
+    ]
+  },
+  {
+    "id": "order-detail",
+    "q": "订单 PO-2026-001 的进度怎么样？",
+    "expect_tools": [
+      "order_detail",
+      "task_progress"
+    ]
+  },
+  {
+    "id": "order-status",
+    "q": "进行中的订单有几个？",
+    "expect_tools": [
+      "list_orders",
+      "workspace_summary"
+    ]
+  },
+  {
+    "id": "ws-summary",
+    "q": "给我一个今天工厂整体情况的概览",
+    "expect_tools": [
+      "workspace_summary"
+    ]
+  },
+  {
+    "id": "task-progress",
+    "q": "装配任务整体完成到什么程度了？",
+    "expect_tools": [
+      "task_progress",
+      "workspace_summary"
+    ]
+  },
+  {
+    "id": "transfer",
+    "q": "最近有哪些流转申请还没处理？",
+    "expect_tools": [
+      "list_transfer_requests"
+    ]
+  },
+  {
+    "id": "handover",
+    "q": "最近的交接记录给我看看",
+    "expect_tools": [
+      "list_handovers"
+    ]
+  },
+  {
+    "id": "exception-open",
+    "q": "现在有哪些未关闭的异常？",
+    "expect_tools": [
+      "list_exceptions"
+    ]
+  },
+  {
+    "id": "labor-30d",
+    "q": "最近 30 天谁的工时最多？",
+    "expect_tools": [
+      "labor_summary"
+    ]
+  },
+  {
+    "id": "labor-type",
+    "q": "最近一个月各类工时分别多少分钟？",
+    "expect_tools": [
+      "labor_summary"
+    ]
+  },
+  {
+    "id": "multi-1",
+    "q": "M001 的主档信息和它用在哪些设备上",
+    "expect_tools": [
+      "material_master_detail",
+      "bom_where_used"
+    ],
+    "expect_all": true
+  },
+  {
+    "id": "multi-2",
+    "q": "今天概览，再列出库存不足的物料",
+    "expect_tools": [
+      "workspace_summary",
+      "low_stock"
+    ],
+    "expect_all": true
+  },
+  {
+    "id": "refuse-code",
+    "q": "帮我写一段 Python 快速排序",
+    "expect_tools": [],
+    "expect_no_tools": true
+  },
+  {
+    "id": "refuse-chat",
+    "q": "今天天气怎么样？",
+    "expect_tools": [],
+    "expect_no_tools": true
+  },
+  {
+    "id": "short-order",
+    "q": "订单 PO-001 还缺哪些料？",
+    "expect_tools": [
+      "material_shortage"
+    ]
+  },
+  {
+    "id": "short-model",
+    "q": "机型 MODEL-001 做 5 台，物料够不够？",
+    "expect_tools": [
+      "material_shortage"
+    ]
+  },
+  {
+    "id": "short-all",
+    "q": "现在所有在制订单一共缺哪些料，缺得最多的是哪个？",
+    "expect_tools": [
+      "material_shortage"
+    ]
+  }
 ]

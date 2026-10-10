@@ -380,6 +380,215 @@ def _bom_where_used(conn: sqlite3.Connection, args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 缺料分析：需求（订单需求 / 机型 BOM / 汇总 BOM）× 库存
+# ---------------------------------------------------------------------------
+
+def _stock_by_code(conn: sqlite3.Connection, codes: list[str]) -> tuple[dict[str, float], str]:
+    """可用库存：优先 materials.available_quantity；系统里没有的料号再看最新一次库存快照（U9 导入）。"""
+    stock: dict[str, float] = {}
+    sources = []
+    codes = list(dict.fromkeys(c for c in codes if c))
+    for i in range(0, len(codes), 500):
+        chunk = codes[i:i + 500]
+        ph = ",".join("?" * len(chunk))
+        if _table_exists(conn, "materials"):
+            for code, qty in conn.execute(
+                    f"SELECT code, available_quantity FROM materials WHERE code IN ({ph})", chunk):
+                stock[code] = float(qty or 0)
+    if stock:
+        sources.append("系统库存")
+    missing = [c for c in codes if c not in stock]
+    if missing and _table_exists(conn, "inventory_snapshots"):
+        snap = conn.execute(
+            "SELECT id, snapshot_name FROM inventory_snapshots ORDER BY created_at DESC LIMIT 1").fetchone()
+        if snap:
+            hit = False
+            for i in range(0, len(missing), 500):
+                chunk = missing[i:i + 500]
+                ph = ",".join("?" * len(chunk))
+                for code, qty in conn.execute(
+                        f"""SELECT material_code, SUM(CAST(available_quantity_decimal AS REAL))
+                            FROM inventory_snapshot_rows WHERE snapshot_id = ? AND material_code IN ({ph})
+                            GROUP BY material_code""", (snap[0], *chunk)):
+                    stock[code] = float(qty or 0)
+                    hit = True
+            if hit:
+                sources.append(f"库存快照「{snap[1]}」")
+    return stock, "、".join(sources) or "无库存记录"
+
+
+def _shortage_rows(conn: sqlite3.Connection, need: dict[str, dict], only_short: bool, limit: int) -> dict:
+    stock, stock_src = _stock_by_code(conn, list(need))
+    rows = []
+    for code, n in need.items():
+        req = round(n["required"], 4)
+        avail = round(stock.get(code, 0.0), 4)
+        short = round(max(req - avail, 0.0), 4)
+        rows.append({"material_code": code, "material_name": n.get("name", ""), "unit": n.get("unit", ""),
+                     "required": req, "available": avail, "shortage": short,
+                     "no_stock_record": code not in stock})
+    rows.sort(key=lambda r: (-r["shortage"], r["material_code"]))
+    short_rows = [r for r in rows if r["shortage"] > 0]
+    shown = short_rows if only_short else rows
+    return {
+        "stock_source": stock_src,
+        "material_types": len(rows),
+        "short_types": len(short_rows),
+        "fully_covered": not short_rows,
+        "total": len(shown),
+        "items": shown[:limit],
+        "truncated": len(shown) > limit,
+    }
+
+
+def _add_need(need: dict, code: str, name: str, unit: str, qty: float) -> None:
+    if not code or not qty or qty <= 0:
+        return
+    n = need.setdefault(code, {"name": name or "", "unit": unit or "", "required": 0.0})
+    n["required"] += float(qty)
+
+
+def _material_shortage(conn: sqlite3.Connection, args: dict) -> dict:
+    order_no = str(args.get("order_no") or "").strip()
+    model_code = str(args.get("model_code") or "").strip()
+    dev = args.get("device_codes") or []
+    device_codes = [str(x).strip() for x in (dev.split(",") if isinstance(dev, str) else dev) if str(x).strip()]
+    try:
+        qty = float(args.get("quantity") or 1)
+    except (TypeError, ValueError):
+        raise ToolError("quantity 必须是数字")
+    if qty <= 0 or qty > 100000:
+        raise ToolError("quantity 需在 0-100000 之间")
+    only_short = args.get("only_short", True) is not False
+    limit = _clamp_limit(args, default=30)
+    need: dict[str, dict] = {}
+
+    if order_no:
+        _require_table(conn, "production_orders", "生产订单")
+        order = _fetch_one(conn.execute(
+            "SELECT id, order_no, product_name, status FROM production_orders WHERE order_no = ?", (order_no,)))
+        if not order:
+            raise ToolError(f"订单 {order_no} 不存在")
+        # 1) 订单上已维护的物料需求（含已到货、在库口径）——直接用订单自己的数
+        if _table_exists(conn, "order_material_requirements"):
+            reqs = _fetch_dicts(conn.execute(
+                """SELECT m.code AS material_code, m.name AS material_name, m.unit,
+                          SUM(r.required_quantity) AS required, SUM(r.arrived_quantity) AS arrived,
+                          SUM(r.in_stock_quantity) AS in_stock
+                   FROM order_material_requirements r JOIN materials m ON m.id = r.material_id
+                   WHERE r.order_id = ? GROUP BY m.code ORDER BY m.code""", (order["id"],)))
+            if reqs:
+                items = []
+                for r in reqs:
+                    short = max((r["required"] or 0) - (r["in_stock"] or 0), 0)
+                    items.append({"material_code": r["material_code"], "material_name": r["material_name"],
+                                  "unit": r["unit"], "required": r["required"], "arrived": r["arrived"],
+                                  "in_stock": r["in_stock"], "shortage": short,
+                                  "not_arrived": max((r["required"] or 0) - (r["arrived"] or 0), 0)})
+                items.sort(key=lambda x: (-x["shortage"], x["material_code"]))
+                short_items = [x for x in items if x["shortage"] > 0]
+                shown = short_items if only_short else items
+                return {"source": "订单物料需求", "order": order, "material_types": len(items),
+                        "short_types": len(short_items), "fully_covered": not short_items,
+                        "total": len(shown), "items": shown[:limit], "truncated": len(shown) > limit,
+                        "note": "shortage = 需求 − 在库；not_arrived = 需求 − 已到货"}
+        # 2) 订单没维护需求：按订单机型的已发布 BOM × 计划台数展开
+        models = _fetch_dicts(conn.execute(
+            "SELECT model_code, planned_quantity, bom_version_id FROM production_order_models WHERE order_id = ?",
+            (order["id"],))) if _table_exists(conn, "production_order_models") else []
+        if not models:
+            raise ToolError(f"订单 {order_no} 既没有物料需求，也没有关联机型，无法计算缺料")
+        no_bom = []
+        for m in models:
+            vid = m["bom_version_id"] or _latest_bom_version(conn, m["model_code"])
+            if not vid:
+                no_bom.append(m["model_code"])
+                continue
+            _explode_model_bom(conn, need, vid, float(m["planned_quantity"] or 0))
+        if not need:
+            raise ToolError(f"订单 {order_no} 的机型都没有已发布 BOM：{'、'.join(no_bom)}")
+        out = _shortage_rows(conn, need, only_short, limit)
+        out.update({"source": "订单机型 BOM × 计划台数", "order": order,
+                    "models": [{"model_code": m["model_code"], "planned_quantity": m["planned_quantity"]} for m in models],
+                    "models_without_bom": no_bom})
+        return out
+
+    if model_code:
+        vid = _latest_bom_version(conn, model_code)
+        if not vid:
+            raise ToolError(f"机型 {model_code} 没有已发布 BOM")
+        _explode_model_bom(conn, need, vid, qty)
+        out = _shortage_rows(conn, need, only_short, limit)
+        out.update({"source": f"机型 BOM（已发布）× {qty:g} 台", "model_code": model_code})
+        return out
+
+    if device_codes:
+        _require_table(conn, "agg_bom_items", "汇总 BOM")
+        batch_id = str(args.get("batch_id") or "").strip()
+        if not batch_id:
+            ph = ",".join("?" * len(device_codes))
+            row = conn.execute(
+                f"""SELECT b.id FROM agg_bom_batches b JOIN agg_bom_items i ON i.batch_id = b.id
+                    WHERE i.device_code IN ({ph}) ORDER BY b.created_at DESC LIMIT 1""", device_codes).fetchone()
+            if not row:
+                raise ToolError(f"汇总 BOM 中没有设备：{'、'.join(device_codes)}")
+            batch_id = row[0]
+        ph = ",".join("?" * len(device_codes))
+        found = {r[0] for r in conn.execute(
+            f"SELECT DISTINCT device_code FROM agg_bom_items WHERE batch_id = ? AND device_code IN ({ph})",
+            (batch_id, *device_codes))}
+        for r in conn.execute(
+                f"""SELECT material_code, MAX(material_name), MAX(unit), SUM(quantity) FROM agg_bom_items
+                    WHERE batch_id = ? AND device_code IN ({ph}) AND quantity > 0 GROUP BY material_code""",
+                (batch_id, *device_codes)):
+            _add_need(need, r[0], r[1], r[2], (r[3] or 0) * qty)
+        if not need:
+            raise ToolError("这些设备在汇总 BOM 中没有物料行")
+        out = _shortage_rows(conn, need, only_short, limit)
+        out.update({"source": f"汇总 BOM × {qty:g} 套", "batch_id": batch_id, "devices": sorted(found),
+                    "devices_not_found": [d for d in device_codes if d not in found]})
+        return out
+
+    # 不指定：所有进行中订单的物料需求汇总
+    _require_table(conn, "order_material_requirements", "订单物料需求")
+    rows = _fetch_dicts(conn.execute(
+        """SELECT o.order_no, m.code AS material_code, m.name AS material_name, m.unit,
+                  SUM(r.required_quantity) AS required, SUM(r.in_stock_quantity) AS in_stock
+           FROM order_material_requirements r
+           JOIN production_orders o ON o.id = r.order_id
+           JOIN materials m ON m.id = r.material_id
+           WHERE o.status NOT IN ('COMPLETED','CLOSED','CANCELLED')
+           GROUP BY o.order_no, m.code HAVING SUM(r.required_quantity) > SUM(r.in_stock_quantity)
+           ORDER BY (SUM(r.required_quantity) - SUM(r.in_stock_quantity)) DESC"""))
+    agg: dict[str, dict] = {}
+    for r in rows:
+        a = agg.setdefault(r["material_code"], {"material_code": r["material_code"], "material_name": r["material_name"],
+                                                "unit": r["unit"], "shortage": 0, "orders": []})
+        a["shortage"] += (r["required"] or 0) - (r["in_stock"] or 0)
+        a["orders"].append(r["order_no"])
+    items = sorted(agg.values(), key=lambda x: (-x["shortage"], x["material_code"]))
+    return {"source": "进行中订单的物料需求（需求 − 在库）", "short_types": len(items),
+            "orders_affected": len({r["order_no"] for r in rows}), "total": len(items),
+            "items": items[:limit], "truncated": len(items) > limit}
+
+
+def _latest_bom_version(conn: sqlite3.Connection, model_code: str) -> str | None:
+    if not _table_exists(conn, "bom_versions"):
+        return None
+    row = conn.execute(
+        """SELECT id FROM bom_versions WHERE model_code = ? AND status = 'PUBLISHED'
+           ORDER BY version_no DESC LIMIT 1""", (model_code,)).fetchone()
+    return row[0] if row else None
+
+
+def _explode_model_bom(conn: sqlite3.Connection, need: dict, version_id: str, qty: float) -> None:
+    for code, name, unit, q, scrap in conn.execute(
+            "SELECT material_code, material_name, unit, quantity, scrap_rate FROM bom_items WHERE bom_version_id = ?",
+            (version_id,)):
+        _add_need(need, code, name, unit, (q or 0) * qty / (1 - (scrap or 0)))
+
+
+# ---------------------------------------------------------------------------
 # 工具注册表
 # ---------------------------------------------------------------------------
 
@@ -611,6 +820,28 @@ ANALYSIS_TOOLS: list[Tool] = [
             "required": ["material_code"],
         },
         run=_bom_where_used,
+    ),
+    Tool(
+        name="material_shortage",
+        description=(
+            "缺料分析：需求 × 可用库存，算出缺哪些料、各缺多少。四种用法（只给一种）："
+            "order_no=某订单（优先用订单维护的物料需求，否则按订单机型 BOM × 计划台数展开）；"
+            "model_code + quantity=某机型做 N 台；device_codes(+quantity)=汇总 BOM 里的设备做 N 套；"
+            "都不给=所有进行中订单的缺料汇总。数字只能引用本工具返回值。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "order_no": {"type": "string", "description": "生产订单号"},
+                "model_code": {"type": "string", "description": "机型编码（用已发布 BOM）"},
+                "device_codes": {"type": "array", "items": {"type": "string"}, "description": "汇总 BOM 中的设备编码"},
+                "batch_id": {"type": "string", "description": "汇总 BOM 批次，可省略（默认最新含这些设备的批次）"},
+                "quantity": {"type": "number", "description": "台数/套数，默认 1"},
+                "only_short": {"type": "boolean", "description": "只返回缺料行，默认 true"},
+                "limit": {"type": "integer", "description": "返回行数，1-50"},
+            },
+        },
+        run=_material_shortage,
     ),
 ]
 
