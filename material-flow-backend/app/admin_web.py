@@ -2135,6 +2135,110 @@ def admin_boms(request: Request):
     )
 
 
+@router.get("/admin/boms/versions/{version_id}", response_class=HTMLResponse)
+def admin_bom_detail(version_id: str, request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    _c = db()
+    try:
+        ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
+        if not ver:
+            return HTMLResponse("版本不存在", status_code=404)
+        items = _c.execute(
+            "SELECT material_code, material_name, specification, unit, quantity, scrap_rate, line_no FROM bom_items WHERE bom_version_id=? ORDER BY line_no",
+            (version_id,)
+        ).fetchall()
+    finally:
+        _c.close()
+    return templates.TemplateResponse(
+        request,
+        "bom_detail.html",
+        {"user": user, "csrf_token": user["csrf_token"], "ver": dict(ver), "items": [dict(r) for r in items]},
+    )
+
+
+@router.get("/admin/boms/versions/{version_id}/edit", response_class=HTMLResponse)
+def admin_bom_edit_form(version_id: str, request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    _c = db()
+    try:
+        ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
+        if not ver:
+            return HTMLResponse("版本不存在", status_code=404)
+        items = _c.execute(
+            "SELECT * FROM bom_items WHERE bom_version_id=? ORDER BY line_no",
+            (version_id,)
+        ).fetchall()
+    finally:
+        _c.close()
+    return templates.TemplateResponse(
+        request, "bom_edit.html",
+        {"user": user, "csrf_token": user["csrf_token"], "ver": dict(ver), "items": [dict(r) for r in items]},
+    )
+
+
+@router.post("/admin/boms/versions/{version_id}/edit")
+async def admin_bom_edit_save(version_id: str, request: Request):
+    user, denied = _bom_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return HTMLResponse("CSRF 校验失败", status_code=403)
+    new_model = str(form.get("model_code", "")).strip()
+    if not new_model:
+        return _bom_error_page(request, user, "机型码不能为空")
+    # 解析 rows
+    rows = {}
+    for k in form.keys():
+        if k.startswith("rows["):
+            # rows[0][material_code]
+            parts = k[5:].split("][")
+            idx = int(parts[0])
+            field = parts[1].rstrip("]")
+            rows.setdefault(idx, {})[field] = str(form.get(k, "")).strip()
+    row_list = [rows[i] for i in sorted(rows.keys()) if rows[i].get("material_code")]
+    if not row_list:
+        return _bom_error_page(request, user, "至少需要一行物料")
+    _c = db()
+    try:
+        ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
+        if not ver:
+            return HTMLResponse("版本不存在", status_code=404)
+        old_model = ver["model_code"]
+        # 新版本号
+        if new_model == old_model:
+            new_ver_no = _c.execute("SELECT COALESCE(MAX(version_no),0)+1 FROM bom_versions WHERE model_code=?", (new_model,)).fetchone()[0]
+        else:
+            new_ver_no = _c.execute("SELECT COALESCE(MAX(version_no),0)+1 FROM bom_versions WHERE model_code=?", (new_model,)).fetchone()[0]
+        import uuid as _uuid, time as _time
+        new_vid = str(_uuid.uuid4())
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+        # 创建新版本
+        _c.execute(
+            "INSERT INTO bom_versions(id, model_code, version_no, status, source_file_sha256, row_count, created_by, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (new_vid, new_model, new_ver_no, "PUBLISHED", ver["source_file_sha256"], len(row_list), user["id"], ts)
+        )
+        # 复制物料行（需要 material_id，查 materials 表）
+        for r in row_list:
+            mat = _c.execute("SELECT id FROM materials WHERE code=?", (r["material_code"],)).fetchone()
+            mat_id = mat["id"] if mat else str(_uuid.uuid4())
+            _c.execute(
+                "INSERT INTO bom_items(id, bom_version_id, material_id, material_code, material_name, specification, unit, quantity, scrap_rate, substitute_material_codes, line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (str(_uuid.uuid4()), new_vid, mat_id, r["material_code"], r["material_name"], r.get("specification", ""), r["unit"], float(r["quantity"] or 0), float(r.get("scrap_rate") or 0), "[]", int(r.get("line_no") or 0))
+            )
+        # 旧版本归档（同机型才归档）
+        if new_model == old_model:
+            _c.execute("UPDATE bom_versions SET status='ARCHIVED' WHERE model_code=? AND status='PUBLISHED' AND id<>?", (new_model, new_vid))
+        _c.commit()
+    finally:
+        _c.close()
+    return _see_other(f"/admin/boms/versions/{new_vid}?notice=bom_imported")
+
+
 @router.post("/admin/boms/import", response_class=HTMLResponse)
 async def admin_bom_preview(request: Request):
     user, denied = _bom_or_403(request)

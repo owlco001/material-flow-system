@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}编辑 BOM · {{ ver.model_code }}{% endblock %}
+{% block content %}
+<h2>编辑 BOM</h2>
+<p class="page-desc">基于 v{{ ver.version_no }} 修改，保存后生成新版本</p>
+
+<form method="post" action="/admin/boms/versions/{{ ver.id }}/edit" id="bomEditForm">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="card" style="margin-bottom:12px;padding:12px">
+  <label>机型码：<input type="text" name="model_code" value="{{ ver.model_code }}" required style="width:200px"></label>
+  <span class="muted" style="margin-left:12px">改机型码会为新机型创建 v1 版本</span>
+</div>
+
+<div class="card" style="overflow-x:auto">
+<table id="bomTable">
+  <tr><th></th><th>行号</th><th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>数量</th><th>损耗率</th></tr>
+  {% for r in items %}
+  <tr data-idx="{{ loop.index0 }}">
+    <td><button type="button" class="btn btn-sm btn-danger" onclick="delRow(this)">删</button></td>
+    <td><input type="number" name="rows[{{ loop.index0 }}][line_no]" value="{{ r.line_no }}" style="width:60px" required></td>
+    <td><input type="text" name="rows[{{ loop.index0 }}][material_code]" value="{{ r.material_code }}" required style="width:140px"></td>
+    <td><input type="text" name="rows[{{ loop.index0 }}][material_name]" value="{{ r.material_name }}" required style="width:120px"></td>
+    <td><input type="text" name="rows[{{ loop.index0 }}][specification]" value="{{ r.specification or '' }}" style="width:100px"></td>
+    <td><input type="text" name="rows[{{ loop.index0 }}][unit]" value="{{ r.unit }}" required style="width:60px"></td>
+    <td><input type="number" step="any" min="0" name="rows[{{ loop.index0 }}][quantity]" value="{{ r.quantity }}" required style="width:80px"></td>
+    <td><input type="number" step="any" min="0" max="0.99" name="rows[{{ loop.index0 }}][scrap_rate]" value="{{ r.scrap_rate }}" style="width:70px"></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+
+<div style="margin-top:12px">
+  <button type="button" class="btn btn-secondary" onclick="addRow()">+ 加一行</button>
+  <button type="submit" class="btn btn-primary">保存为新版本</button>
+  <a href="/admin/boms/versions/{{ ver.id }}" class="btn btn-secondary">取消</a>
+</div>
+</form>
+
+<script>
+let rowIdx = {{ items|length }};
+function addRow() {
+  const tbl = document.getElementById('bomTable');
+  const tr = document.createElement('tr');
+  tr.setAttribute('data-idx', rowIdx);
+  tr.innerHTML = `<td><button type="button" class="btn btn-sm btn-danger" onclick="delRow(this)">删</button></td>
+    <td><input type="number" name="rows[${rowIdx}][line_no]" value="${rowIdx+1}" style="width:60px" required></td>
+    <td><input type="text" name="rows[${rowIdx}][material_code]" required style="width:140px"></td>
+    <td><input type="text" name="rows[${rowIdx}][material_name]" required style="width:120px"></td>
+    <td><input type="text" name="rows[${rowIdx}][specification]" style="width:100px"></td>
+    <td><input type="text" name="rows[${rowIdx}][unit]" required style="width:60px"></td>
+    <td><input type="number" step="any" min="0" name="rows[${rowIdx}][quantity]" required style="width:80px"></td>
+    <td><input type="number" step="any" min="0" max="0.99" name="rows[${rowIdx}][scrap_rate]" value="0" style="width:70px"></td>`;
+  tbl.appendChild(tr);
+  rowIdx++;
+}
+function delRow(btn) {
+  btn.closest('tr').remove();
+}
+</script>
+{% endblock %}

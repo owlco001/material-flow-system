@@ -62,7 +62,7 @@
   <tr>
     <td>{{ item.id }}</td>
     <td><a href="/admin/models?code={{ item.model_code }}">{{ item.model_code }}</a></td>
-    <td>v{{ item.version_no }}</td>
+    <td><a href="/admin/boms/versions/{{ item.id }}">v{{ item.version_no }}</a></td>
     <td>{{ {"DRAFT": "草稿", "PUBLISHED": "已发布", "ARCHIVED": "已归档"}.get(item.status, item.status) }}</td>
     <td>{{ item.row_count }}</td>
     <td>{{ (item.source_file_sha256 or "")[:12] }}…</td>

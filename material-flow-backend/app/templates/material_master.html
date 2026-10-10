@@ -19,18 +19,34 @@
 </div>
 <div class="card" style="flex:1;min-width:300px">
   <h3>查询 <span class="muted" style="font-weight:400">共 {{ grand_total }} 条</span></h3>
-  <form method="get" action="/admin/material-master">
+  <form method="get" action="/admin/material-master" id="searchForm">
     <label>料号 / 品名 / 规格 / 图号 / T6料号 / 设备编号 / 项目号</label>
-    <input name="q" value="{{ q }}" style="max-width:280px">
+    <input name="q" id="searchInput" value="{{ q }}" style="max-width:280px" placeholder="输入自动搜索…" autocomplete="off">
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-      <select name="form"><option value="">全部形态</option>{% for f in facets.itemForm %}<option value="{{ f.value }}" {% if f.value == form %}selected{% endif %}>{{ f.value }}（{{ f.count }}）</option>{% endfor %}</select>
-      <select name="storage"><option value="">全部存储地点</option>{% for f in facets.storageLocation %}<option value="{{ f.value }}" {% if f.value == storage %}selected{% endif %}>{{ f.value }}（{{ f.count }}）</option>{% endfor %}</select>
+      <select name="form" id="formSelect"><option value="">全部形态</option>{% for f in facets.itemForm %}<option value="{{ f.value }}" {% if f.value == form %}selected{% endif %}>{{ f.value }}（{{ f.count }}）</option>{% endfor %}</select>
+      <select name="storage" id="storageSelect"><option value="">全部存储地点</option>{% for f in facets.storageLocation %}<option value="{{ f.value }}" {% if f.value == storage %}selected{% endif %}>{{ f.value }}（{{ f.count }}）</option>{% endfor %}</select>
     </div>
     <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">查询</button>
     {% if q or form or storage %}<a href="/admin/material-master" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
   </form>
 </div>
 </div>
+
+<script>
+(function() {
+  var form = document.getElementById('searchForm');
+  var input = document.getElementById('searchInput');
+  var timer = null;
+  // 输入停止 600ms 后自动提交
+  input.addEventListener('input', function() {
+    clearTimeout(timer);
+    timer = setTimeout(function() { form.submit(); }, 600);
+  });
+  // 下拉筛选变化立即提交
+  document.getElementById('formSelect').addEventListener('change', function() { form.submit(); });
+  document.getElementById('storageSelect').addEventListener('change', function() { form.submit(); });
+})();
+</script>
 
 {% if batches %}
 <div class="card" style="margin-top:12px">
@@ -72,9 +88,17 @@
   {% endfor %}
 </table>
 {% if pages > 1 %}
-<div class="btn-row" style="margin-top:10px">
+<div class="btn-row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
   {% if page > 1 %}<a class="btn btn-sm btn-secondary" href="?q={{ q|urlencode }}&form={{ form|urlencode }}&storage={{ storage|urlencode }}&page={{ page - 1 }}">上一页</a>{% endif %}
+  {% set base_qs = "q=" ~ q|urlencode ~ "&form=" ~ form|urlencode ~ "&storage=" ~ storage|urlencode ~ "&page=" %}
+  {% if page > 3 %}<a class="btn btn-sm btn-secondary" href="?{{ base_qs }}1">1</a><span class="muted">…</span>{% endif %}
+  {% for p in range(1, pages + 1) if p >= page - 2 and p <= page + 2 %}
+    {% if p == page %}<span class="btn btn-sm btn-primary" style="pointer-events:none">{{ p }}</span>
+    {% else %}<a class="btn btn-sm btn-secondary" href="?{{ base_qs }}{{ p }}">{{ p }}</a>{% endif %}
+  {% endfor %}
+  {% if page < pages - 2 %}<span class="muted">…</span><a class="btn btn-sm btn-secondary" href="?{{ base_qs }}{{ pages }}">{{ pages }}</a>{% endif %}
   {% if page < pages %}<a class="btn btn-sm btn-secondary" href="?q={{ q|urlencode }}&form={{ form|urlencode }}&storage={{ storage|urlencode }}&page={{ page + 1 }}">下一页</a>{% endif %}
+  <span class="muted" style="margin-left:8px">共 {{ pages }} 页 / {{ total }} 条</span>
 </div>
 {% endif %}
 {% else %}
