@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}物料主档导入 · 智慧工厂{% endblock %}
+{% block content %}
+<div class="compact">
+<p><a href="/admin/material-master">← 物料主档</a></p>
+<h2>{{ b.fileName }}</h2>
+<p class="page-desc">工作表「{{ b.sheetName }}」· 表头在第 {{ b.headerRow }} 行 · 识别 {{ b.summary.recognizedColumns }} 列
+{% if b.status == 'PREVIEW' %}· 预览有效至 {{ b.expiresAt[:16].replace('T', ' ') }}（UTC）{% endif %}</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+
+<div class="cards">
+  <div class="card"><p class="stat-label">总行数</p><p class="stat-num">{{ b.preview.totalRows }}</p></div>
+  <div class="card"><p class="stat-label">新增</p><p class="stat-num" style="color:#28a745">{{ b.preview.newRows }}</p></div>
+  <div class="card"><p class="stat-label">变更</p><p class="stat-num" style="color:#b7791f">{{ b.preview.changedRows }}</p></div>
+  <div class="card"><p class="stat-label">未变化</p><p class="stat-num" style="color:#6c757d">{{ b.preview.unchangedRows }}</p></div>
+  <div class="card"><p class="stat-label">错误</p><p class="stat-num" style="color:#dc3545">{{ b.preview.invalidRows }}</p></div>
+  <div class="card"><p class="stat-label">库内有、文件无</p><p class="stat-num" style="color:#6c757d">{{ b.preview.missingInFile }}</p></div>
+</div>
+
+{% if b.status == 'PREVIEW' %}
+<div class="card" style="margin-top:12px">
+  <form method="post" action="/admin/material-master/import/{{ b.batchId }}/commit"
+        data-confirm="写入 {{ b.preview.newRows + b.preview.changedRows }} 条主档变更？库存数量不受影响。" data-confirm-title="确认导入" data-confirm-ok="导入">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="op_id" value="{{ op_id }}">
+    {% if b.preview.invalidRows %}
+    <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="skip_invalid" value="1" style="width:auto"> 跳过 {{ b.preview.invalidRows }} 行错误，只导入有效行</label>
+    {% endif %}
+    <p class="muted">新建物料 {{ b.summary.newMaterials }} 个；文件里没有的本地料号不会删除。</p>
+    <button type="submit" class="btn btn-sm" {% if not b.preview.canCommit %}disabled{% endif %}>确认导入</button>
+  </form>
+</div>
+{% elif b.result %}
+<div class="card" style="margin-top:12px">
+  <h3>导入结果</h3>
+  <p>主档新增 {{ b.result.masterInserted }} · 更新 {{ b.result.masterUpdated }} · 未变化 {{ b.result.masterUnchanged }} ·
+     物料新建 {{ b.result.materialsCreated }} · 同步名称/规格/单位 {{ b.result.materialsUpdated }}{% if b.result.skippedInvalid %} · 跳过错误 {{ b.result.skippedInvalid }}{% endif %}</p>
+  <p class="muted">{{ b.committedAt[:16].replace('T', ' ') }}（UTC）</p>
+</div>
+{% endif %}
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;align-items:flex-start">
+{% if b.summary.itemFormCounts %}
+<div class="card" style="flex:1;min-width:220px">
+  <h3>形态属性</h3>
+  <table>{% for k, v in b.summary.itemFormCounts.items() %}<tr><td>{{ k }}</td><td style="text-align:right">{{ v }}</td></tr>{% endfor %}</table>
+</div>
+{% endif %}
+{% if b.summary.fieldChangeCounts %}
+<div class="card" style="flex:1;min-width:220px">
+  <h3>变更字段</h3>
+  <table>{% for k, v in b.summary.fieldChangeCounts.items() %}<tr><td>{{ k }}</td><td style="text-align:right">{{ v }}</td></tr>{% endfor %}</table>
+</div>
+{% endif %}
+{% if b.summary.missingOptionalHeaders or b.summary.extraHeaders %}
+<div class="card" style="flex:1;min-width:220px">
+  <h3>列识别</h3>
+  {% if b.summary.missingOptionalHeaders %}<p><b>缺少的可选列</b><br><span class="muted">{{ b.summary.missingOptionalHeaders|join('、') }}</span></p>{% endif %}
+  {% if b.summary.extraHeaders %}<p><b>原样保存的其他列</b><br><span class="muted">{{ b.summary.extraHeaders|join('、') }}</span></p>{% endif %}
+</div>
+{% endif %}
+</div>
+
+{% if b.errors %}
+<div class="card" style="margin-top:12px;overflow-x:auto">
+  <h3>错误（显示前 {{ b.errors|length }} 条）</h3>
+  <table><tr><th>行</th><th>列</th><th>问题</th><th>原值</th></tr>
+  {% for e in b.errors %}<tr><td>{{ e.lineNo }}</td><td>{{ e.field }}</td><td>{{ e.message }}</td><td class="muted">{{ e.value or '' }}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% if b.changes %}
+<div class="card" style="margin-top:12px;overflow-x:auto">
+  <h3>变更样本（前 {{ b.changes|length }} 条）</h3>
+  <table><tr><th>行</th><th>料号</th><th>品名</th><th>变化</th></tr>
+  {% for ch in b.changes %}<tr><td>{{ ch.lineNo }}</td><td>{{ ch.code }}</td><td>{{ ch.name }}</td>
+    <td>{% for f in ch.fields %}<div><b>{{ f.field }}</b> <span class="muted">{{ f.before if f.before is not none else '空' }}</span> → {{ f.after if f.after is not none else '空' }}</div>{% endfor %}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endif %}
+</div>
+{% endblock %}
