@@ -10,7 +10,7 @@
   <h3>当前版本</h3>
   <table>
     <tr><th style="width:160px">应用版本</th><td>{{ app_version }}</td></tr>
-    <tr><th>部署 Commit</th><td><code>{{ deployed_sha[:12] if deployed_sha != "unknown" else "unknown" }}</code>{% if deployed_sha != "unknown" %} <span class="muted">{{ deployed_sha }}</span>{% endif %}</td></tr>
+    <tr><th>部署 Commit</th><td><code>{{ deployed_sha[:12] if deployed_sha != "unknown" else "unknown" }}</code>{% if deployed_sha != "unknown" %} <span class="muted">{{ deployed_sha }}</span>{% else %}<div class="muted" style="font-size:12px">未读到部署记录（首次手动部署、或未经「系统更新」脚本部署时会这样，下次通过系统更新后即会显示）。{% for t in deployed_sha_diag.tried %}<br>{{ t }}{% endfor %}</div>{% endif %}</td></tr>
     <tr><th>更新状态</th><td>
       {% if update_status.state == "idle" %}<span class="muted">空闲</span>
       {% elif update_status.state == "queued" %}<span class="tag">已提交，等待执行…</span>

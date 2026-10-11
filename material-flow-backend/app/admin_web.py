@@ -3594,6 +3594,7 @@ def admin_system(request: Request):
         {"user": user,
          "app_version": APP_VERSION,
          "deployed_sha": _updates.get_deployed_sha(),
+         "deployed_sha_diag": _updates.deployed_sha_diagnose(),
          "update_status": _updates.get_update_status(),
          "check_result": check_result,
          "notice": request.query_params.get("notice", ""),

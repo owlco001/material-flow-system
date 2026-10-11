@@ -220,11 +220,38 @@ def app_updates_download() -> FileResponse:
 # 后端自更新通道（GitHub，手动）
 # --------------------------------------------------------------------------
 
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _deployed_sha_candidates() -> list[Path]:
+    """依次尝试：显式配置 → 安装前缀 → 代码目录上一级（/srv/material-flow/app/.. ）。"""
+    cands = [_deployed_sha_file(), _prefix() / "DEPLOYED_SHA",
+             Path(__file__).resolve().parents[2] / "DEPLOYED_SHA",
+             Path(__file__).resolve().parents[1] / "DEPLOYED_SHA"]
+    out: list[Path] = []
+    for p in cands:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def deployed_sha_diagnose() -> dict:
+    tried = []
+    for p in _deployed_sha_candidates():
+        try:
+            v = p.read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            tried.append(f"{p}: 不存在"); continue
+        except OSError as e:
+            tried.append(f"{p}: {e.strerror or e}"); continue
+        if _SHA_RE.fullmatch(v):
+            return {"sha": v, "path": str(p), "tried": tried}
+        tried.append(f"{p}: 内容不是 commit")
+    return {"sha": "unknown", "path": "", "tried": tried}
+
+
 def get_deployed_sha() -> str:
-    try:
-        return _deployed_sha_file().read_text(encoding="ascii").strip() or "unknown"
-    except OSError:
-        return "unknown"
+    return deployed_sha_diagnose()["sha"]
 
 
 def _github_json(url: str, timeout: int = 15) -> object:

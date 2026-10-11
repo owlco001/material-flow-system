@@ -2781,6 +2781,14 @@ def assign_device(order_no: str, model_code: str, body: AssignDeviceRequest, use
         c.execute("UPDATE production_order_models SET version=version+1 WHERE id=? AND version=?", (model["id"], body.expectedVersion))
         result = {"taskId": task_id, "orderNo": order_no, "modelCode": model_code, "deviceId": device["id"], "deviceNo": device["device_no"], "status": "WAITING_MATERIAL", "expectedVersion": body.expectedVersion + 1, "serverTime": ts, "traceId": trace_id, "idempotent": False}
         c.execute("INSERT INTO device_assignment_operations VALUES(?,?,?,?)", (op, payload, json.dumps(result, ensure_ascii=False), ts)); audit(c, user["id"], user["role"], "ASSIGN", "ASSEMBLY_TASK", task_id, "SUCCESS", trace_id); return result
+def _deployed_commit() -> str:
+    try:
+        from app.updates import get_deployed_sha
+        return get_deployed_sha()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 @app.get("/healthz")
 def health() -> dict[str, str]:
     c: sqlite3.Connection | None = None
@@ -2800,6 +2808,7 @@ def health() -> dict[str, str]:
             "service": SERVICE_NAME,
             "database": "ok",
             "version": APP_VERSION,
+            "commit": _deployed_commit()[:12],
             "serverTime": now(),
         }
     except (OSError, RuntimeError, sqlite3.Error):
