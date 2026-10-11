@@ -73,7 +73,8 @@ async function aggLoad() {
     const j = await r.json(); aggModels = j.models || []; aggOrders = j.orders || [];
     const sel = document.getElementById("agg-order");
     aggOrders.forEach(o => { const op = document.createElement("option"); op.value = o.order_no;
-      op.textContent = o.order_no + (o.product_name ? " · " + o.product_name : "") + "（" + o.model_codes.length + " 个机型）"; sel.appendChild(op); });
+      op.textContent = o.order_no + (o.product_name ? " · " + o.product_name : "") +
+        (o.model_codes.length ? "（" + o.model_codes.length + " 个机型，" + o.with_bom + " 个有 BOM）" : "（未关联机型）"); sel.appendChild(op); });
     const q = new URLSearchParams(location.search).get("aggOrder");
     if (q) { sel.value = q; aggPickOrder(q); aggregateBom(); document.getElementById("agg").scrollIntoView(); }
     else aggRenderModels();
@@ -85,11 +86,14 @@ function aggRenderModels() {
   const list = aggModels.filter(m => !f || (m.model_code + m.model_name + m.order_no).toLowerCase().includes(f));
   box.innerHTML = list.map(m => {
     const on = m.model_code in aggSel;
-    return '<label class="' + (on ? "on" : "") + (m.has_bom ? "" : " dis") + '" title="' + aggEsc(m.order_no ? "订单 " + m.order_no + "，计划 " + m.planned_quantity + " 台" : "") + '">' +
+    return '<label class="' + (on ? "on" : "") + (m.has_bom ? "" : " dis") + '" title="' + aggEsc(m.order_no ? "订单 " + m.order_no + "，计划 " + m.planned_quantity + " 台" : "未挂订单") + '">' +
       '<input type="checkbox" data-code="' + aggEsc(m.model_code) + '"' + (on ? " checked" : "") + (m.has_bom ? "" : " disabled") + '> ' +
       aggEsc(m.model_code) + (m.model_name ? '<span class="agg-tag">' + aggEsc(m.model_name) + "</span>" : "") +
-      (m.has_bom ? (on ? ' × <input type="number" min="0.01" step="1" data-qty="' + aggEsc(m.model_code) + '" value="' + aggSel[m.model_code] + '"> 台' : "") : ' <span class="agg-tag">无BOM</span>') + "</label>";
+      (m.has_bom ? (on ? ' × <input type="number" min="0.01" step="1" data-qty="' + aggEsc(m.model_code) + '" value="' + aggSel[m.model_code] + '"> 台' : "") : ' <span class="agg-tag">' + (m.draft_only ? "BOM 未发布" : "无BOM") + "</span>") + "</label>";
   }).join("") || '<span class="muted">暂无机型</span>';
+  const usable = list.filter(m => m.has_bom).length;
+  if (list.length && !usable) box.innerHTML += '<div class="muted" style="width:100%;font-size:12px">这些机型还没有已发布的 BOM，灰色不可选。先在上方「导入 BOM」上传并在版本详情里发布，发布后即可聚合。' +
+    (list.some(m => m.draft_only) ? "其中标「BOM 未发布」的已有草稿，直接去版本列表发布即可。" : "") + "</div>";
   box.querySelectorAll("input[data-code]").forEach(i => i.onchange = () => {
     const m = aggModels.find(x => x.model_code === i.dataset.code);
     if (i.checked) aggSel[i.dataset.code] = m && m.planned_quantity > 0 ? m.planned_quantity : 1; else delete aggSel[i.dataset.code];
@@ -100,6 +104,9 @@ function aggRenderModels() {
 function aggPickOrder(no) {
   aggSel = {};
   const o = aggOrders.find(x => x.order_no === no);
+  const box = document.getElementById("agg-result");
+  box.innerHTML = o && !o.model_codes.length ? '<p class="muted">订单 ' + aggEsc(no) + ' 还没有关联机型，可在订单里维护机型与计划台数，或直接手选机型。</p>'
+    : o && !o.with_bom ? '<p class="muted">订单 ' + aggEsc(no) + ' 的机型都还没有已发布 BOM。</p>' : "";
   if (o) aggModels.filter(m => m.order_no === no && m.has_bom).forEach(m => aggSel[m.model_code] = m.planned_quantity > 0 ? m.planned_quantity : 1);
   aggRenderModels();
 }

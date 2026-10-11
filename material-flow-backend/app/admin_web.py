@@ -3242,14 +3242,29 @@ async def admin_agent_bom_models(request: Request):
     c = db()
     try:
         rows = c.execute("""
-            SELECT m.model_code, m.model_name, m.planned_quantity, o.order_no, o.product_name, o.status AS order_status,
-                   (SELECT COUNT(*) FROM bom_versions v WHERE v.model_code = m.model_code AND v.status = 'PUBLISHED') as pub_count
+            SELECT m.model_code, m.model_name, m.planned_quantity, o.order_no, o.product_name, o.status AS order_status
             FROM production_order_models m LEFT JOIN production_orders o ON o.id = m.order_id
             ORDER BY o.created_at DESC, m.model_code
         """).fetchall()
-        models = [{"model_code": r["model_code"], "model_name": r["model_name"], "has_bom": r["pub_count"] > 0,
-                   "planned_quantity": r["planned_quantity"] or 0, "order_no": r["order_no"] or "",
-                   "product_name": r["product_name"] or "", "order_status": r["order_status"] or ""} for r in rows]
+        bom = {r["model_code"]: (r["pub"], r["draft"]) for r in c.execute("""
+            SELECT model_code, SUM(status = 'PUBLISHED') AS pub, SUM(status = 'DRAFT') AS draft
+            FROM bom_versions GROUP BY model_code""").fetchall()}
+        models = []
+        for r in rows:
+            pub, draft = bom.get(r["model_code"], (0, 0))
+            models.append({"model_code": r["model_code"], "model_name": r["model_name"], "has_bom": (pub or 0) > 0,
+                           "draft_only": not pub and (draft or 0) > 0,
+                           "planned_quantity": r["planned_quantity"] or 0, "order_no": r["order_no"] or "",
+                           "product_name": r["product_name"] or "", "order_status": r["order_status"] or ""})
+        # 有 BOM 但没挂在任何订单上的机型也可手选
+        listed = {m["model_code"] for m in models}
+        for code, (pub, draft) in sorted(bom.items()):
+            if code not in listed:
+                models.append({"model_code": code, "model_name": "", "has_bom": (pub or 0) > 0,
+                               "draft_only": not pub and (draft or 0) > 0, "planned_quantity": 0,
+                               "order_no": "", "product_name": "", "order_status": ""})
+        # 有 BOM 的排前面
+        models.sort(key=lambda m: (not m["has_bom"], m["order_no"] == "", m["model_code"]))
         orders = []
         seen = {}
         for m in models:
@@ -3257,9 +3272,15 @@ async def admin_agent_bom_models(request: Request):
                 continue
             if m["order_no"] not in seen:
                 seen[m["order_no"]] = {"order_no": m["order_no"], "product_name": m["product_name"],
-                                       "status": m["order_status"], "model_codes": []}
+                                       "status": m["order_status"], "model_codes": [], "with_bom": 0}
                 orders.append(seen[m["order_no"]])
             seen[m["order_no"]]["model_codes"].append(m["model_code"])
+            seen[m["order_no"]]["with_bom"] += 1 if m["has_bom"] else 0
+        # 没关联机型的订单也列出（选中时提示）
+        for r in c.execute("SELECT order_no, product_name, status FROM production_orders ORDER BY created_at DESC").fetchall():
+            if r["order_no"] not in seen:
+                orders.append({"order_no": r["order_no"], "product_name": r["product_name"] or "",
+                               "status": r["status"], "model_codes": [], "with_bom": 0})
     finally:
         c.close()
     return JSONResponse({"models": models, "orders": orders})
