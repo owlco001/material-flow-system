@@ -3242,53 +3242,100 @@ async def admin_agent_bom_models(request: Request):
     c = db()
     try:
         rows = c.execute("""
-            SELECT m.model_code, m.model_name,
+            SELECT m.model_code, m.model_name, m.planned_quantity, o.order_no, o.product_name, o.status AS order_status,
                    (SELECT COUNT(*) FROM bom_versions v WHERE v.model_code = m.model_code AND v.status = 'PUBLISHED') as pub_count
-            FROM production_order_models m ORDER BY m.model_code
+            FROM production_order_models m LEFT JOIN production_orders o ON o.id = m.order_id
+            ORDER BY o.created_at DESC, m.model_code
         """).fetchall()
-        models = [{"model_code": r["model_code"], "model_name": r["model_name"], "has_bom": r["pub_count"] > 0} for r in rows]
+        models = [{"model_code": r["model_code"], "model_name": r["model_name"], "has_bom": r["pub_count"] > 0,
+                   "planned_quantity": r["planned_quantity"] or 0, "order_no": r["order_no"] or "",
+                   "product_name": r["product_name"] or "", "order_status": r["order_status"] or ""} for r in rows]
+        orders = []
+        seen = {}
+        for m in models:
+            if not m["order_no"]:
+                continue
+            if m["order_no"] not in seen:
+                seen[m["order_no"]] = {"order_no": m["order_no"], "product_name": m["product_name"],
+                                       "status": m["order_status"], "model_codes": []}
+                orders.append(seen[m["order_no"]])
+            seen[m["order_no"]]["model_codes"].append(m["model_code"])
     finally:
         c.close()
-    return JSONResponse({"models": models})
+    return JSONResponse({"models": models, "orders": orders})
+
+
+def _parse_bom_agg_items(items: str, model_codes: str) -> list[tuple[str, float]]:
+    """items=CODE:台数,CODE2:台数；兼容旧参数 model_codes（每个机型按 1 台）。"""
+    out: dict[str, float] = {}
+    for part in (items or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        code, _, q = part.partition(":")
+        try:
+            qty = float(q) if q.strip() else 1.0
+        except ValueError:
+            raise ValueError(f"台数无效：{part}")
+        if qty <= 0 or qty > 100000:
+            raise ValueError(f"台数需在 0-100000 之间：{part}")
+        out[code.strip()] = out.get(code.strip(), 0) + qty
+    for code in (model_codes or "").split(","):
+        if code.strip() and code.strip() not in out:
+            out[code.strip()] = 1.0
+    return [(k, v) for k, v in out.items() if k]
+
 
 @router.get("/admin/agent/bom/aggregate")
-async def admin_agent_bom_aggregate(request: Request, model_codes: str = ""):
+async def admin_agent_bom_aggregate(request: Request, model_codes: str = "", items: str = ""):
     user = _session_user(request)
     if user is None:
         return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
-    codes = [c.strip() for c in model_codes.split(",") if c.strip()]
-    if not codes:
+    try:
+        pairs = _parse_bom_agg_items(items, model_codes)
+    except ValueError as e:
+        return JSONResponse({"error": {"code": "BAD_REQUEST", "message": str(e)}}, status_code=400)
+    if not pairs:
         return JSONResponse({"error": {"code": "BAD_REQUEST", "message": "请选择机型"}}, status_code=400)
+    from app.agent.tools import _stock_by_code
     c = db()
     try:
         agg = {}
         per_model = {}
-        for code in codes:
+        for code, qty in pairs:
             v = c.execute(
-                "SELECT id FROM bom_versions WHERE model_code = ? AND status = 'PUBLISHED' ORDER BY version_no DESC LIMIT 1",
+                "SELECT id, version_no FROM bom_versions WHERE model_code = ? AND status = 'PUBLISHED' ORDER BY version_no DESC LIMIT 1",
                 (code,)).fetchone()
             if not v:
-                per_model[code] = {"error": "无已发布 BOM"}
+                per_model[code] = {"error": "无已发布 BOM", "quantity": qty}
                 continue
-            items = c.execute(
-                "SELECT material_code, material_name, specification, unit, quantity FROM bom_items WHERE bom_version_id = ?",
+            rows = c.execute(
+                "SELECT material_code, material_name, specification, unit, quantity, scrap_rate FROM bom_items WHERE bom_version_id = ?",
                 (v["id"],)).fetchall()
-            per_model[code] = {"rows": len(items)}
-            for it in items:
+            per_model[code] = {"rows": len(rows), "quantity": qty, "version_no": v["version_no"]}
+            for it in rows:
                 mc = it["material_code"]
                 if mc not in agg:
                     agg[mc] = {"material_code": mc, "material_name": it["material_name"],
                                "specification": it["specification"], "unit": it["unit"],
-                               "total_quantity": 0, "models": []}
-                agg[mc]["total_quantity"] += it["quantity"] or 0
+                               "total_quantity": 0.0, "models": []}
+                agg[mc]["total_quantity"] += (it["quantity"] or 0) * qty / (1 - (it["scrap_rate"] or 0))
                 agg[mc]["models"].append(code)
+        stock, stock_src = _stock_by_code(c, list(agg)) if agg else ({}, "")
         result = sorted(agg.values(), key=lambda x: -x["total_quantity"])
+        short_types = 0
         for r in result:
+            r["total_quantity"] = round(r["total_quantity"], 4)
             r["models"] = sorted(set(r["models"]))
             r["model_count"] = len(r["models"])
+            r["available"] = round(stock.get(r["material_code"], 0.0), 4)
+            r["shortage"] = round(max(r["total_quantity"] - r["available"], 0.0), 4)
+            r["no_stock_record"] = r["material_code"] not in stock
+            short_types += 1 if r["shortage"] > 0 else 0
     finally:
         c.close()
-    return JSONResponse({"materials": result, "per_model": per_model, "model_count": len(codes)})
+    return JSONResponse({"materials": result, "per_model": per_model, "model_count": len(pairs),
+                         "short_types": short_types, "stock_source": stock_src})
 
 
 # 聚合 BOM 导入 Session 包装（智能助手页用）

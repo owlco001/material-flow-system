@@ -150,3 +150,34 @@ def test_bom_upload_without_csrf_rejected():
         count = c.execute("SELECT COUNT(*) FROM bom_versions WHERE model_code='M-TEST'").fetchone()[0]
         c.close()
         assert count == 0
+
+
+def test_bom_aggregate_linked_to_order():
+    c = backend.db()
+    c.execute("UPDATE materials SET available_quantity=5, total_quantity=5 WHERE id='mat_1'")
+    c.execute("INSERT INTO production_orders(id,order_no,product_name,status,created_at) VALUES(?,?,?,?,?)",
+              ("po_agg", "PO-AGG", "测试产品", "IN_PROGRESS", backend.now()))
+    c.execute("UPDATE production_order_models SET order_id='po_agg', planned_quantity=3 WHERE id='pom_test'")
+    c.execute("INSERT INTO bom_versions(id,model_code,version_no,status,source_file_sha256,row_count,created_by,created_at)"
+              " VALUES(?,?,?,?,?,?,?,?)", ("bv_agg", "M-TEST", 1, "PUBLISHED", "b" * 64, 2, "u_sup", backend.now()))
+    c.execute("INSERT INTO bom_items(id,bom_version_id,material_id,material_code,material_name,specification,unit,quantity,scrap_rate,line_no)"
+              " VALUES(?,?,?,?,?,?,?,?,?,?)", ("bi1", "bv_agg", "mat_1", "MAT-1", "零件A", "规格甲", "个", 2, 0, 1))
+    c.execute("INSERT INTO bom_items(id,bom_version_id,material_id,material_code,material_name,specification,unit,quantity,scrap_rate,line_no)"
+              " VALUES(?,?,?,?,?,?,?,?,?,?)", ("bi2", "bv_agg", "mat_2", "MAT-2", "零件B", "规格乙", "个", 1, 0, 2))
+    c.commit(); c.close()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        j = client.get("/admin/agent/bom/models").json()
+        m = next(x for x in j["models"] if x["model_code"] == "M-TEST")
+        assert m["order_no"] == "PO-AGG" and m["planned_quantity"] == 3 and m["has_bom"] is True
+        assert j["orders"][0]["model_codes"] == ["M-TEST"]
+        r = client.get("/admin/agent/bom/aggregate", params={"items": "M-TEST:3"}).json()
+        by = {x["material_code"]: x for x in r["materials"]}
+        assert by["MAT-1"]["total_quantity"] == 6 and by["MAT-1"]["available"] == 5 and by["MAT-1"]["shortage"] == 1
+        assert by["MAT-2"]["total_quantity"] == 3 and r["short_types"] == 2
+        assert r["per_model"]["M-TEST"]["quantity"] == 3
+        # 兼容旧参数：每机型 1 台
+        r = client.get("/admin/agent/bom/aggregate", params={"model_codes": "M-TEST"}).json()
+        assert {x["material_code"]: x["total_quantity"] for x in r["materials"]}["MAT-1"] == 2
+        assert client.get("/admin/agent/bom/aggregate", params={"items": "M-TEST:-1"}).status_code == 400
+        assert 'id="agg"' in client.get("/admin/boms").text

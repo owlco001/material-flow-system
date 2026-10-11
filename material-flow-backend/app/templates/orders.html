@@ -21,6 +21,7 @@
        · 状态：{% set _os = order.get("orderStatus") or order.get("status") or "—" %}{{ status_labels.get(_os, _os) if status_labels else _os }}</p>
     <div class="btn-row">
       <a class="btn btn-sm" href="/admin/barcodes?entity=order&key={{ d_order_no }}">生成订单码</a>
+      <a class="btn btn-sm" href="/admin/boms?aggOrder={{ d_order_no|urlencode }}#agg">BOM 聚合 / 缺料</a>
       <a class="btn btn-sm btn-secondary" href="/admin/orders/{{ d_order_no }}/barcodes">批量生成机台码</a>
     </div>
   </div>

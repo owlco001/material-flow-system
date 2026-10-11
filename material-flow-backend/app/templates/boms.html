@@ -38,6 +38,117 @@
 </div>
 </div>
 
+
+<!-- 多机型 BOM 聚合（与订单联动） -->
+<style>
+.agg-models{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;max-height:220px;overflow-y:auto}
+.agg-models label{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;margin:0;font-size:13px;cursor:pointer;background:#fff}
+.agg-models label.on{border-color:#0E5FD8;background:#f2f7fe}
+.agg-models label.dis{opacity:.5;cursor:default}
+.agg-models input[type=number]{width:58px;padding:2px 4px;margin:0;font-size:12px}
+.agg-tag{font-size:11px;color:#888}
+#agg-result table td.num,#agg-result table th.num{text-align:right;font-variant-numeric:tabular-nums}
+#agg-result tr.short td{background:#fff6f5}
+</style>
+<div class="card" id="agg" style="margin-top:16px">
+  <h3>多机型 BOM 聚合 <span class="muted" style="font-size:12px;font-weight:normal">按订单或手选机型，BOM × 台数（含损耗）汇总需求，对比可用库存算缺口</span></h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label style="margin:0">按订单</label>
+    <select id="agg-order" style="max-width:320px;margin:0" onchange="aggPickOrder(this.value)"><option value="">— 选择订单，自动勾选其机型和计划台数 —</option></select>
+    <input id="agg-filter" placeholder="筛选机型…" style="max-width:160px;margin:0" oninput="aggRenderModels()">
+    <label style="margin:0;font-size:13px"><input type="checkbox" id="agg-only-short"> 只看缺料</label>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="aggClear()">清空</button>
+    <button type="button" class="btn btn-sm" onclick="aggregateBom()">聚合</button>
+  </div>
+  <div id="agg-models" class="agg-models"><span class="muted">加载中…</span></div>
+  <div id="agg-result"></div>
+</div>
+<script>
+let aggModels = [], aggOrders = [], aggSel = {}, aggLast = null;
+const aggEsc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const aggFmt = n => Number(n).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+async function aggLoad() {
+  try {
+    const r = await fetch("/admin/agent/bom/models"); if (!r.ok) throw new Error(r.status);
+    const j = await r.json(); aggModels = j.models || []; aggOrders = j.orders || [];
+    const sel = document.getElementById("agg-order");
+    aggOrders.forEach(o => { const op = document.createElement("option"); op.value = o.order_no;
+      op.textContent = o.order_no + (o.product_name ? " · " + o.product_name : "") + "（" + o.model_codes.length + " 个机型）"; sel.appendChild(op); });
+    const q = new URLSearchParams(location.search).get("aggOrder");
+    if (q) { sel.value = q; aggPickOrder(q); aggregateBom(); document.getElementById("agg").scrollIntoView(); }
+    else aggRenderModels();
+  } catch (e) { document.getElementById("agg-models").innerHTML = '<span class="error">机型加载失败：' + aggEsc(e.message) + "</span>"; }
+}
+function aggRenderModels() {
+  const f = document.getElementById("agg-filter").value.trim().toLowerCase();
+  const box = document.getElementById("agg-models");
+  const list = aggModels.filter(m => !f || (m.model_code + m.model_name + m.order_no).toLowerCase().includes(f));
+  box.innerHTML = list.map(m => {
+    const on = m.model_code in aggSel;
+    return '<label class="' + (on ? "on" : "") + (m.has_bom ? "" : " dis") + '" title="' + aggEsc(m.order_no ? "订单 " + m.order_no + "，计划 " + m.planned_quantity + " 台" : "") + '">' +
+      '<input type="checkbox" data-code="' + aggEsc(m.model_code) + '"' + (on ? " checked" : "") + (m.has_bom ? "" : " disabled") + '> ' +
+      aggEsc(m.model_code) + (m.model_name ? '<span class="agg-tag">' + aggEsc(m.model_name) + "</span>" : "") +
+      (m.has_bom ? (on ? ' × <input type="number" min="0.01" step="1" data-qty="' + aggEsc(m.model_code) + '" value="' + aggSel[m.model_code] + '"> 台' : "") : ' <span class="agg-tag">无BOM</span>') + "</label>";
+  }).join("") || '<span class="muted">暂无机型</span>';
+  box.querySelectorAll("input[data-code]").forEach(i => i.onchange = () => {
+    const m = aggModels.find(x => x.model_code === i.dataset.code);
+    if (i.checked) aggSel[i.dataset.code] = m && m.planned_quantity > 0 ? m.planned_quantity : 1; else delete aggSel[i.dataset.code];
+    aggRenderModels();
+  });
+  box.querySelectorAll("input[data-qty]").forEach(i => { i.onclick = e => e.stopPropagation(); i.onchange = () => { aggSel[i.dataset.qty] = Math.max(0.01, parseFloat(i.value) || 1); }; });
+}
+function aggPickOrder(no) {
+  aggSel = {};
+  const o = aggOrders.find(x => x.order_no === no);
+  if (o) aggModels.filter(m => m.order_no === no && m.has_bom).forEach(m => aggSel[m.model_code] = m.planned_quantity > 0 ? m.planned_quantity : 1);
+  aggRenderModels();
+}
+function aggClear() { aggSel = {}; document.getElementById("agg-order").value = ""; document.getElementById("agg-result").innerHTML = ""; aggRenderModels(); }
+async function aggregateBom() {
+  const items = Object.entries(aggSel).map(([k, v]) => k + ":" + v);
+  const box = document.getElementById("agg-result");
+  if (!items.length) { box.innerHTML = '<p class="muted">请先选择订单或勾选机型</p>'; return; }
+  box.innerHTML = "<p>聚合中…</p>";
+  try {
+    const r = await fetch("/admin/agent/bom/aggregate?items=" + encodeURIComponent(items.join(",")));
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+    aggLast = j; aggShow();
+  } catch (e) { box.innerHTML = '<p class="error">聚合失败：' + aggEsc(e.message) + "</p>"; }
+}
+function aggShow() {
+  const j = aggLast; if (!j) return;
+  const box = document.getElementById("agg-result");
+  const onlyShort = document.getElementById("agg-only-short").checked;
+  const mats = (j.materials || []).filter(m => !onlyShort || m.shortage > 0);
+  const order = document.getElementById("agg-order").value;
+  const pm = j.per_model || {};
+  const used = Object.entries(pm).filter(([k, v]) => !v.error).map(([k, v]) => aggEsc(k) + " ×" + aggFmt(v.quantity) + (v.version_no ? " (v" + v.version_no + ")" : ""));
+  const missing = Object.entries(pm).filter(([k, v]) => v.error).map(([k]) => aggEsc(k));
+  let h = '<p style="margin:8px 0"><b>' + (j.short_types ? '<span style="color:#c0392b">' + j.short_types + " 种物料缺料</span>" : '<span style="color:#1e8449">全部齐套</span>') + "</b>" +
+    "，共 " + (j.materials || []).length + " 种物料" + (order ? ' · 订单 <a href="/admin/orders?order_no=' + encodeURIComponent(order) + '">' + aggEsc(order) + "</a>" : "") +
+    '<br><span class="muted" style="font-size:12px">' + used.join("、") + (missing.length ? "；无已发布 BOM：" + missing.join("、") : "") +
+    (j.stock_source ? "；库存口径：" + aggEsc(j.stock_source) : "") + "</span></p>";
+  if (mats.length) {
+    h += '<div style="overflow-x:auto"><table><tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>单位</th><th class="num">总需求</th><th class="num">可用库存</th><th class="num">缺口</th><th>涉及机型</th></tr>' +
+      mats.map(m => '<tr class="' + (m.shortage > 0 ? "short" : "") + '"><td>' + aggEsc(m.material_code) + "</td><td>" + aggEsc(m.material_name) + "</td><td>" + aggEsc(m.specification) +
+        "</td><td>" + aggEsc(m.unit) + '</td><td class="num"><b>' + aggFmt(m.total_quantity) + '</b></td><td class="num">' + (m.no_stock_record ? '<span class="muted">无记录</span>' : aggFmt(m.available)) +
+        '</td><td class="num">' + (m.shortage > 0 ? '<b style="color:#c0392b">' + aggFmt(m.shortage) + "</b>" : "—") + "</td><td>" + m.models.map(aggEsc).join("、") + "</td></tr>").join("") + "</table></div>";
+    h += '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn btn-sm btn-secondary" onclick="aggCsv()">导出 CSV</button></div>';
+  } else h += '<p class="muted">没有符合条件的物料</p>';
+  box.innerHTML = h;
+}
+function aggCsv() {
+  const rows = [["物料编码", "物料名称", "规格", "单位", "总需求", "可用库存", "缺口", "涉及机型"]].concat(
+    (aggLast.materials || []).map(m => [m.material_code, m.material_name, m.specification, m.unit, m.total_quantity, m.available, m.shortage, m.models.join("/")]));
+  const csv = "\ufeff" + rows.map(r => r.map(c => '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"').join(",")).join("\r\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "BOM聚合" + (document.getElementById("agg-order").value ? "_" + document.getElementById("agg-order").value : "") + ".csv"; a.click();
+}
+document.getElementById("agg-only-short").onchange = aggShow;
+aggLoad();
+</script>
+
 <h3 style="margin-top:16px">聚合 BOM（智能导入，共 {{ agg_batches|length }} 批）</h3>
 <table>
   <tr><th>项目</th><th>文件名</th><th>机台数</th><th>物料数</th><th>行数</th><th>导入时间</th></tr>

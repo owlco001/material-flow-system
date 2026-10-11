@@ -6,14 +6,26 @@
   <p class="page-desc">数据分析对话与智能导入。所有操作经服务端鉴权，导入需预览确认后执行。</p>
 </div>
 
-<!-- LLM 设置 -->
+<!-- 模型与用量（LLM 设置 + 用量看板合并） -->
+<style>
+.ag-cfg{display:grid;grid-template-columns:minmax(300px,420px) 1fr;gap:20px;align-items:start}
+.ag-cfg .f{display:grid;grid-template-columns:72px 1fr;gap:6px 8px;align-items:center}
+.ag-cfg .f label{margin:0;font-size:13px;color:#666}
+.ag-cfg .f input,.ag-cfg .f select{margin:0;padding:5px 8px;font-size:13px}
+.ag-kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.ag-kpi{background:#f5f8fc;border-radius:8px;padding:6px 12px;min-width:92px}
+.ag-kpi b{display:block;font-size:17px}.ag-kpi span{font-size:12px;color:#888}
+.ag-usage-tbl{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ag-usage-tbl table{font-size:12.5px}.ag-usage-tbl th,.ag-usage-tbl td{padding:3px 8px}
+@media (max-width:900px){.ag-cfg,.ag-usage-tbl{grid-template-columns:1fr}}
+</style>
 <div class="card" style="margin-bottom:16px">
-  <h3>LLM 设置</h3>
-  <p class="muted">选模型、填 API Key 即可用。设置存数据库，优先于环境变量。</p>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:720px">
+  <h3 style="margin-bottom:10px">模型与用量 <span class="muted" style="font-size:12px;font-weight:normal">设置存数据库，优先于环境变量{% if user.role == "ADMIN" %} · 用量为最近 14 天（北京时间）{% endif %}</span></h3>
+  <div class="ag-cfg">
     <div>
-      <label>模型</label>
-      <select id="set-model">
+      <div class="f">
+        <label>模型</label>
+        <select id="set-model">
         <optgroup label="国产旗舰">
         <option value="kimi-k3">Kimi K3（月之暗面，国产国际验证最强）</option>
         <option value="mimo-v2.6-pro">MiMo V2.6 Pro（小米，开源最强+最便宜）</option>
@@ -36,41 +48,38 @@
         <option value="grok-4.7">Grok 4.7</option>
         </optgroup>
       </select>
+        <label>Base URL</label><input id="set-base-url" placeholder="https://api.deepseek.com">
+        <label>API Key</label><input id="set-api-key" type="password" placeholder="sk-...（留空不修改）">
+        <label>状态</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="set-enabled" style="width:90px"><option value="1">启用</option><option value="0">禁用</option></select>
+          <button onclick="saveSettings()" class="btn btn-sm">保存</button>
+          <span id="settings-msg" class="muted" style="font-size:12px"></span>
+        </div>
+        {% if user.role == "ADMIN" %}
+        <label>每日上限</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="usage-limit" type="number" min="0" step="10000" style="width:120px" title="每人每日 tokens，0 = 不限">
+          <button type="button" class="btn btn-sm" onclick="saveUsageLimit()">保存</button>
+          <span id="usage-limit-msg" class="muted" style="font-size:12px">tokens/人/天，0 不限</span>
+        </div>
+        {% endif %}
+      </div>
     </div>
+    {% if user.role == "ADMIN" %}
     <div>
-      <label>Base URL</label>
-      <input id="set-base-url" placeholder="https://api.deepseek.com">
+      <div id="usage-summary" class="ag-kpis"><span class="muted">加载中…</span></div>
+      <details>
+        <summary class="muted" style="cursor:pointer;font-size:13px">按天 / 按人明细</summary>
+        <div class="ag-usage-tbl" style="margin-top:6px">
+          <div id="usage-by-day"></div>
+          <div id="usage-by-user"></div>
+        </div>
+      </details>
     </div>
-    <div>
-      <label>API Key</label>
-      <input id="set-api-key" type="password" placeholder="sk-...">
-    </div>
-    <div>
-      <label>状态</label>
-      <select id="set-enabled"><option value="1">启用</option><option value="0">禁用</option></select>
-    </div>
-  </div>
-  <div class="btn-row" style="margin-top:12px"><button onclick="saveSettings()" class="btn">保存</button></div>
-  <p id="settings-msg" class="muted"></p>
-</div>
-
-{% if user.role == "ADMIN" %}
-<!-- 用量看板 -->
-<div class="card" style="margin-bottom:16px">
-  <h3>用量看板 <span class="muted" style="font-size:12px;font-weight:normal">最近 14 天 · 北京时间</span></h3>
-  <div id="usage-summary" class="muted">加载中…</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
-    <div><b>按天</b><div id="usage-by-day"></div></div>
-    <div><b>按人</b><div id="usage-by-user"></div></div>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
-    <label style="margin:0">每人每日上限（tokens，0 = 不限）</label>
-    <input id="usage-limit" type="number" min="0" step="10000" style="width:160px">
-    <button type="button" class="btn btn-sm" onclick="saveUsageLimit()">保存上限</button>
-    <span id="usage-limit-msg" class="muted"></span>
+    {% endif %}
   </div>
 </div>
-{% endif %}
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
 <!-- 数据分析对话 -->
@@ -123,16 +132,6 @@
   <div id="import-preview" style="margin-top:12px"></div>
 </div>
 </div>
-
-<!-- 多机型 BOM 聚合 -->
-<div class="card" style="margin-top:16px">
-  <h3>多机型 BOM 聚合</h3>
-  <p class="muted">勾选多个机型，汇总各物料的总需求量。</p>
-  <div id="agg-models" style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0"><span class="muted">加载中…</span></div>
-  <div class="btn-row"><button onclick="aggregateBom()" class="btn">聚合</button></div>
-  <div id="agg-result" style="margin-top:12px"></div>
-</div>
-
 
 <!-- 聚合 BOM 导入（ERP 多设备格式） -->
 <div class="card" style="margin-top:16px">
@@ -265,48 +264,7 @@ async function doAggBomAggregate(all) {
 loadAggBomBatches();
 </script>
 
-<script>
-async function loadAggModels() {
-  try {
-    const r = await fetch("/admin/agent/bom/models");
-    if (!r.ok) return;
-    const j = await r.json();
-    const box = document.getElementById("agg-models");
-    box.innerHTML = (j.models || []).map(m =>
-      '<label style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer">' +
-      '<input type="checkbox" value="' + m.model_code + '"' + (m.has_bom ? "" : " disabled") + '> ' +
-      m.model_code + (m.model_name ? "（" + m.model_name + "）" : "") + (m.has_bom ? "" : " <span class=\"muted\">无BOM</span>") +
-      '</label>'
-    ).join("") || '<span class="muted">暂无机型</span>';
-  } catch (e) {}
-}
-async function aggregateBom() {
-  const codes = [...document.querySelectorAll("#agg-models input:checked")].map(i => i.value);
-  const box = document.getElementById("agg-result");
-  if (!codes.length) { box.innerHTML = '<p class="muted">请先勾选机型</p>'; return; }
-  box.innerHTML = "<p>聚合中…</p>";
-  try {
-    const r = await fetch("/admin/agent/bom/aggregate?model_codes=" + encodeURIComponent(codes.join(",")));
-    const j = await r.json();
-    if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
-    const mats = j.materials || [];
-    let html = "<p><strong>聚合结果</strong>：共 " + codes.length + " 个机型，" + mats.length + " 种物料</p>";
-    const pm = j.per_model || {};
-    const missing = Object.entries(pm).filter(([k, v]) => v.error).map(([k]) => k);
-    if (missing.length) html += '<p class="muted">以下机型无已发布 BOM：' + missing.join("、") + '</p>';
-    if (mats.length) {
-      html += '<div style="overflow-x:auto"><table class="tbl"><tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>单位</th><th>总需求量</th><th>涉及机型</th></tr>' +
-        mats.map(m => "<tr><td>" + m.material_code + "</td><td>" + (m.material_name || "") + "</td><td>" +
-          (m.specification || "") + "</td><td>" + (m.unit || "") + "</td><td><strong>" + m.total_quantity + "</strong></td><td>" +
-          m.models.join("、") + "</td></tr>").join("") + "</table></div>";
-    }
-    box.innerHTML = html;
-  } catch (e) {
-    box.innerHTML = "<p class=\"error\">聚合失败：" + e.message + "</p>";
-  }
-}
-loadAggModels();
-</script>
+
 
 <script>
 let chatSessionId = null;
@@ -577,10 +535,12 @@ async function loadUsage() {
   try {
     const j = await apiCall("/admin/agent/usage?days=14", "GET");
     const fmt = n => Number(n).toLocaleString("zh-CN");
-    document.getElementById("usage-summary").textContent =
-      "共 " + fmt(j.total_calls) + " 次对话，" + fmt(j.total_tokens) + " tokens" +
-      (j.by_model.length ? "；模型：" + j.by_model.map(m => m.model + " " + fmt(m.tokens)).join("、") : "") +
-      "；反馈 👍 " + j.feedback.up + " / 👎 " + j.feedback.down;
+    const today = (j.by_day.find(d => d.date === new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10)) || {}).tokens || 0;
+    const kpi = (v, l, t) => '<div class="ag-kpi"' + (t ? ' title="' + escHtml(t) + '"' : "") + '><b>' + v + '</b><span>' + l + '</span></div>';
+    document.getElementById("usage-summary").innerHTML =
+      kpi(fmt(j.total_calls), "对话次数") + kpi(fmt(j.total_tokens), "tokens（14 天）") + kpi(fmt(today), "今日 tokens") +
+      kpi("👍 " + j.feedback.up + " · 👎 " + j.feedback.down, "反馈") +
+      (j.by_model.length ? kpi(escHtml(j.by_model[0].model), "主用模型", j.by_model.map(m => m.model + " " + fmt(m.tokens)).join("、")) : "");
     document.getElementById("usage-by-day").innerHTML = usageTable(["日期", "次数", "tokens"], j.by_day.map(d => [d.date, d.calls, fmt(d.tokens)]));
     document.getElementById("usage-by-user").innerHTML = usageTable(["用户", "次数", "tokens", "今日"], j.by_user.map(u => [u.name, u.calls, fmt(u.tokens), fmt(u.today_tokens)]));
     document.getElementById("usage-limit").value = j.daily_token_limit || 0;
