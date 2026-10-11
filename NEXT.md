@@ -200,3 +200,8 @@ python3 scripts/check_emoji_icons.py --verbose
 > **教训（务必内化）**：提交前把 emoji 扫描扫**全仓**，不要只扫 `git diff` 里的文件。
 > 2026-09-13 那次就是只扫了改动文件，差点漏掉 11 个文件的历史欠账。
 > 现已固化为 `scripts/check_emoji_icons.py`，按纪律跑即可，不要再手工 grep。
+
+## 版本号规则（2026-10-11 起）
+- 后端每个改动运行代码的 PR 必须递增 `material-flow-backend/VERSION`，CI「后端版本号必须递增」强制检查。
+- 修复/小调整：patch +1（0.6.0 → 0.6.1）；新功能：minor +1（0.6.x → 0.7.0）。
+- 0.6.0 = PR #20–#26（Gitee 回退、trend_compare、Agent 输出、悬浮球流式、BOM 聚合、物料主档整改）。

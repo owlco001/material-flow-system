@@ -27,3 +27,27 @@ jobs:
           cache-dependency-path: material-flow-backend/requirements-test.txt
       - run: pip install -r requirements-test.txt
       - run: python -m pytest tests -q
+
+  version-bump:
+    name: 后端版本号必须递增
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 改了后端代码就要升 VERSION
+        run: |
+          BASE=origin/${{ github.base_ref }}
+          CHANGED=$(git diff --name-only "$BASE"...HEAD -- material-flow-backend/app material-flow-backend/deploy material-flow-backend/requirements.txt)
+          if [ -z "$CHANGED" ]; then echo "未改后端运行代码，跳过"; exit 0; fi
+          OLD=$(git show "$BASE":material-flow-backend/VERSION | tr -d '[:space:]')
+          NEW=$(tr -d '[:space:]' < material-flow-backend/VERSION)
+          echo "VERSION: $OLD -> $NEW"
+          python3 - "$OLD" "$NEW" <<'PY'
+          import sys
+          k = lambda v: tuple(int(x) for x in v.split("-")[0].split("+")[0].split("."))
+          old, new = sys.argv[1], sys.argv[2]
+          if k(new) <= k(old):
+              sys.exit(f"::error::改了后端代码但 VERSION 未递增（{old} -> {new}）。修复用 patch+1，新功能用 minor+1。")
+          PY
