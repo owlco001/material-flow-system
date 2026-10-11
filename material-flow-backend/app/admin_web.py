@@ -3443,7 +3443,7 @@ def admin_releases(request: Request):
     releases = _updates.list_releases()
     return templates.TemplateResponse(
         request, "releases.html",
-        {"_p": "/admin/releases", "_r": user["role"], "_u": user,
+        {"user": user,
          "releases": releases,
          "notice": request.query_params.get("notice", ""),
          "csrf_token": user["csrf_token"]},
@@ -3523,7 +3523,7 @@ def admin_system(request: Request):
         check_result = None
     return templates.TemplateResponse(
         request, "system.html",
-        {"_p": "/admin/system", "_r": user["role"], "_u": user,
+        {"user": user,
          "app_version": APP_VERSION,
          "deployed_sha": _updates.get_deployed_sha(),
          "update_status": _updates.get_update_status(),
