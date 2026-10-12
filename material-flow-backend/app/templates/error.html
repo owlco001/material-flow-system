@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="error-page">
+  <div class="card error-card">
+    <p class="error-code">{{ status_code }}</p>
+    <h2>{{ title }}</h2>
+    <p class="error-msg">{{ message }}</p>
+    {% if trace_id %}<p class="muted error-trace">追踪编号（traceId）：<code>{{ trace_id }}</code></p>{% endif %}
+    <div class="btn-row">
+      {% if back_url %}<a class="btn" href="{{ back_url }}">{{ back_label or "返回" }}</a>{% endif %}
+      {% if user %}<a class="btn" href="/admin/">返回首页</a>{% else %}<a class="btn" href="/admin/login">去登录</a>{% endif %}
+      <a class="btn btn-secondary" href="javascript:history.back()">返回上一页</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

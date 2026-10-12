@@ -57,8 +57,11 @@ def test_upload_splits_pages_binds_and_serves():
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
         r = _upload(client, _pdf(3))
         assert r.status_code == 303
-        assert "%E5%85%B1%203%20%E9%A1%B5" in r.headers["location"]  # 共 3 页
-        assert "NOPE-9" in r.headers["location"]  # 未找到的编码会提示
+        loc = r.headers["location"]
+        assert "notice=uploaded" in loc and "n=3" in loc  # 共 3 页（提示代码 + 整数参数）
+        assert "NOPE-9" in loc  # 未找到的编码会提示
+        shown = client.get(loc.split("#")[0]).text
+        assert "已上传，共 3 页" in shown and "未找到：NOPE-9" in shown
 
         listing = client.get("/admin/drawings")
         assert "总装图" in listing.text and "JT-001" in listing.text and "MAT-001" in listing.text
@@ -96,7 +99,7 @@ def test_rejects_non_pdf_and_marks_cad_unsupported(monkeypatch):
     with TestClient(backend.app) as client:
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
         r = _upload(client, b"hello", name="x.pdf")
-        assert "%E4%B8%8D%E6%98%AF%E6%9C%89%E6%95%88" in r.headers["location"]  # 不是有效
+        assert "notice=bad_pdf" in r.headers["location"]  # 不是有效的 PDF
         r = _upload(client, b"AC1032 fake dwg", name="y.dwg", materials="")
         assert r.status_code == 303
         c = backend.db()

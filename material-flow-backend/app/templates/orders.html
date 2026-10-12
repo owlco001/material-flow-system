@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block title %}生产订单 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>生产订单</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if request and request.query_params.get("notice") == "order_created" %}<p class="notice">生产订单已创建</p>{% endif %}
-{% if request and request.query_params.get("notice") == "order_status_changed" %}<p class="notice">订单状态已推进</p>{% endif %}
+{{ flash(error=error) }}
+{{ flash(notice_text) }}
 {% if detail %}
 {% set order = detail.get("order") or detail %}
 {% set d_order_no = order.get("orderNo") or order.get("order_no") or order_no %}
@@ -105,13 +105,7 @@
     <p class="muted">暂无机台</p>
     {% endfor %}
   </div>
-  {% if task_pages > 1 %}
-  <div style="margin:8px 0;display:flex;gap:6px;align-items:center;font-size:14px">
-    {% if task_page > 1 %}<a href="?order_no={{ order_no }}&task_page={{ task_page-1 }}&task_size={{ task_size }}&task_q={{ task_q }}" class="btn btn-sm">上一页</a>{% endif %}
-    <span>第 {{ task_page }} / {{ task_pages }} 页</span>
-    {% if task_page < task_pages %}<a href="?order_no={{ order_no }}&task_page={{ task_page+1 }}&task_size={{ task_size }}&task_q={{ task_q }}" class="btn btn-sm">下一页</a>{% endif %}
-  </div>
-  {% endif %}
+  {{ pager(task_page, task_pages, none, "", {"order_no": order_no, "task_size": task_size, "task_q": task_q}, "task_page") }}
   <div id="mat-panel">
   {% include "_order_materials.html" %}
   </div>

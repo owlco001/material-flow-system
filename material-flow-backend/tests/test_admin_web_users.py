@@ -56,12 +56,13 @@ def web_login(client, username, password):
 
 
 def op_id_for(html: str, action_suffix: str) -> str:
+    """v0.6.3 起行内操作共用一个弹窗：按钮带 data-user-action，弹窗表单带兜底 clientOperationId。"""
+    action = {"password-reset": "reset", "delete": "delete", "hard-delete": "hard-delete"}[action_suffix]
+    assert f'data-user-action="{action}"' in html, f"未找到 {action_suffix} 操作按钮"
     match = re.search(
-        rf'action="/admin/users/[a-zA-Z0-9_]+/{action_suffix}".*?name="clientOperationId" value="([^"]+)"',
-        html,
-        re.S,
+        r'id="userActionForm".*?name="clientOperationId" id="userActionOp" value="([^"]+)"', html, re.S
     )
-    assert match, f"未找到 {action_suffix} 表单的 clientOperationId"
+    assert match, f"未找到 {action_suffix} 弹窗的 clientOperationId"
     return match.group(1)
 
 

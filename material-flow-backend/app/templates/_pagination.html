@@ -1,7 +1,9 @@
 {#- 共享分页控件（样式沿用物料主档页）。
-    用法：{% from "_pagination.html" import pager %}
+    用法：{% from "_pagination.html" import pager, simple_pager %}
           {{ pager(page, pages, total, "/admin/flows", {"status": status_filter}) }}
-    params 里值为空的键不会出现在链接中；param 为页码参数名（同页多个列表时区分）。 -#}
+          {{ simple_pager(page, has_next, "/admin/audit", {...}) }}   —— 总数未知（按「本页是否有数据」翻页）
+    params 里值为空的键不会出现在链接中；param 为页码参数名（同页多个列表时区分）；
+    base 为空串时生成相对链接（?a=1&page=2）；partial=true 时链接带 data-partial-link（局部刷新）。 -#}
 {% macro page_href(base, params, param, p) -%}
 {%- set qs = [] -%}
 {%- for k, v in params.items() if v not in (none, "") -%}{%- set _ = qs.append(k ~ "=" ~ (v|string|urlencode)) -%}{%- endfor -%}
@@ -9,20 +11,30 @@
 {{ base }}?{{ qs|join("&") }}
 {%- endmacro %}
 
-{% macro pager(page, pages, total, base, params={}, param="page") -%}
+{% macro pager(page, pages, total=none, base="", params={}, param="page", partial=false) -%}
 {% if pages > 1 %}
 <div class="pager" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
-  {% if page > 1 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page - 1) }}">上一页</a>{% endif %}
-  {% if page > 3 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, 1) }}">1</a><span class="muted">…</span>{% endif %}
+  {% if page > 1 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page - 1) }}"{% if partial %} data-partial-link{% endif %}>上一页</a>{% endif %}
+  {% if page > 3 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, 1) }}"{% if partial %} data-partial-link{% endif %}>1</a><span class="muted">…</span>{% endif %}
   {% for p in range(1, pages + 1) if p >= page - 2 and p <= page + 2 %}
     {% if p == page %}<span class="btn btn-sm btn-primary" style="pointer-events:none">{{ p }}</span>
-    {% else %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, p) }}">{{ p }}</a>{% endif %}
+    {% else %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, p) }}"{% if partial %} data-partial-link{% endif %}>{{ p }}</a>{% endif %}
   {% endfor %}
-  {% if page < pages - 2 %}<span class="muted">…</span><a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, pages) }}">{{ pages }}</a>{% endif %}
-  {% if page < pages %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page + 1) }}">下一页</a>{% endif %}
-  <span class="muted" style="margin-left:8px">共 {{ pages }} 页 / {{ total }} 条</span>
+  {% if page < pages - 2 %}<span class="muted">…</span><a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, pages) }}"{% if partial %} data-partial-link{% endif %}>{{ pages }}</a>{% endif %}
+  {% if page < pages %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page + 1) }}"{% if partial %} data-partial-link{% endif %}>下一页</a>{% endif %}
+  <span class="muted" style="margin-left:8px">共 {{ pages }} 页{% if total is not none %} / {{ total }} 条{% endif %}</span>
 </div>
 {% elif total %}
 <div class="pager muted" style="margin-top:10px">共 {{ total }} 条</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro simple_pager(page, has_next, base="", params={}, param="page") -%}
+{% if page > 1 or has_next %}
+<div class="pager" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+  {% if page > 1 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page - 1) }}">上一页</a>{% endif %}
+  <span class="muted">第 {{ page }} 页</span>
+  {% if has_next %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page + 1) }}">下一页</a>{% endif %}
+</div>
 {% endif %}
 {%- endmacro %}

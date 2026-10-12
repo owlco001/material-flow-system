@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}条码生成 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <div class="page-head">
   <h2>条码生成</h2>
@@ -26,7 +27,7 @@
     <div class="btn-row"><button type="submit">生成预览</button></div>
   </form>
 </div>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(error=error) }}
 {% if preview %}
 <div class="card" style="max-width:560px;margin-top:16px;text-align:center">
   <p><strong>{{ preview.label }}：{{ preview.payload }}</strong></p>

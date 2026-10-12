@@ -73,14 +73,5 @@
     <p class="muted">暂无物料需求（或不在您的可见范围内）</p>
     {% endfor %}
   </div>
-  {% if total_pages > 1 %}
-  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-    {% if page > 1 %}
-    <a href="?order_no={{ order_no }}&mat_q={{ mat_q }}&mat_cat={{ mat_cat }}&mat_size={{ per_page }}&mat_page={{ page - 1 }}" class="btn" data-partial-link>上一页</a>
-    {% endif %}
-    <span class="muted">{{ page }}/{{ total_pages }}</span>
-    {% if page < total_pages %}
-    <a href="?order_no={{ order_no }}&mat_q={{ mat_q }}&mat_cat={{ mat_cat }}&mat_size={{ per_page }}&mat_page={{ page + 1 }}" class="btn" data-partial-link>下一页</a>
-    {% endif %}
-  </div>
-  {% endif %}
+  {% from "_pagination.html" import pager %}
+  {{ pager(page, total_pages, none, "", {"order_no": order_no, "mat_q": mat_q, "mat_cat": mat_cat, "mat_size": per_page}, "mat_page", partial=true) }}

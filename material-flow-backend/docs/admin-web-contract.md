@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
   user_id      TEXT NOT NULL REFERENCES users(id),
   csrf_token   TEXT NOT NULL,               -- secrets.token_urlsafe(32)
   created_at   TEXT NOT NULL,               -- ISO8601 UTC，沿用 now()
-  expires_at   INTEGER NOT NULL,            -- unix 秒；固定 8 小时，不滑动续期
+  expires_at   INTEGER NOT NULL,            -- unix 秒；8 小时，活跃时滑动续期（v0.6.3）
   last_seen_at INTEGER NOT NULL             -- unix 秒；仅观测用，不延长有效期
 );
 CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
 
 1. Cookie 名固定 `mf_session`，属性：`HttpOnly; SameSite=Lax; Path=/`（Secure 由 HTTPS
    部署层保证，开发明文仅限本机测试）。
-2. 会话有效期固定 8 小时（`expires_at = now_epoch + 8*3600`），到期即失效，不滑动。
+2. 会话有效期 8 小时（`expires_at = now_epoch + 8*3600`）。v0.6.3 起滑动续期：请求命中且剩余有效期不足一半（< 4 小时）时顺延为 `now + 8*3600` 并重发 Cookie；8 小时无活动即失效。过期会话在登录成功与服务启动时清理。
 3. 登录失败一律返回 `error=1`，不区分「用户不存在/密码错误/账号停用」。
 4. 登出删除 web_sessions 行并使 Cookie 过期（Max-Age=0）。
 5. 过期/不存在的会话一律 303 → `/admin/login`。
@@ -101,6 +101,12 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
 ## 6. 路由签名与精确响应（S1）
 
 统一约定：303 See Other 用于 POST 后跳转；Location 头精确如列。
+
+v0.6.3 起：
+- 表单 POST 业务失败（订单状态推进、强制下线、创建任务等）渲染继承 base.html 的「操作失败」错误页，
+  状态码取业务错误码（409/404 等，校验失败 422），文案由模板转义，并带「返回列表」链接；不再返回拼接的 HTML 片段。
+- `?notice=` 只接受固定代码（物料主档、图纸、发布、系统等页面），未知代码不显示；动态值仅限整数参数
+  （如图纸 `?notice=uploaded&n=3`），图纸未找到的编码放 `miss=`，按白名单字符过滤后附在「未找到：」之后。
 
 - `GET /admin/login`
   - 无会话：200 HTML（base 继承，含 username/password/csrf 表单）。

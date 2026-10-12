@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}BOM 管理 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import simple_pager %}
 <div class="compact">
 <h2>BOM 版本管理与导入</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
+{{ flash(notice_text, error) }}
 
 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
 <div class="card" style="flex:2;min-width:300px">
@@ -191,10 +192,6 @@ aggLoad();
   <tr><td colspan="8">暂无数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}<a href="/admin/boms?page={{ page - 1 }}&modelCode={{ filters.modelCode }}&status={{ filters.status }}">上一页</a>{% endif %}
-  第 {{ page }} 页
-  {% if items %}<a href="/admin/boms?page={{ page + 1 }}&modelCode={{ filters.modelCode }}&status={{ filters.status }}">下一页</a>{% endif %}
-</p>
+{{ simple_pager(page, items|length > 0, "/admin/boms", {"modelCode": filters.modelCode, "status": filters.status}) }}
 </div>
 {% endblock %}

@@ -164,5 +164,5 @@ def test_status_web_invalid_transition_inline_error():
             data={"csrf_token": form_csrf(page.text), "status": "COMPLETED"},
             follow_redirects=False,
         )
-        assert r.status_code == 200
-        assert "订单状态不允许变更" in r.text
+        assert r.status_code in (400, 409, 422)  # v0.6.3：样式化错误页，带返回链接
+        assert "订单状态不允许变更" in r.text and "/admin/orders" in r.text

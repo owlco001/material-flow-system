@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}物料状态工作台 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>物料状态工作台</h2>
 <p style="color:#6b7280">当前角色视图：{{ summary.role }}（{{ summary.authenticatedRole }}）· 生成 {{ summary.generatedAt }}</p>
@@ -65,14 +66,6 @@ function wsFilter(){
   <tr><td colspan="14">暂无数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}
-  <a href="/admin/workspace?page={{ page - 1 }}&status={{ filters.status }}&orderNo={{ filters.orderNo }}">上一页</a>
-  {% endif %}
-  第 {{ page }} / {{ total_pages }} 页
-  {% if page < total_pages %}
-  <a href="/admin/workspace?page={{ page + 1 }}&status={{ filters.status }}&orderNo={{ filters.orderNo }}">下一页</a>
-  {% endif %}
-</p>
+{{ pager(page, total_pages, total_rows, "/admin/workspace", {"status": filters.status, "orderNo": filters.orderNo}) }}
 </div>
 {% endblock %}

@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block title %}新建生产订单 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <h2>新建生产订单</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(error=error) }}
 <form method="post" action="/admin/orders/create">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <label>订单号</label>

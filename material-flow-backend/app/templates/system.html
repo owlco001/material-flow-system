@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}系统更新 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <h2>后端自更新（GitHub）</h2>
 <p class="page-desc">从 GitHub 拉取后端代码更新，全程手动触发。更新前自动备份当前代码，更新后服务自动重启。</p>
-{% if notice %}<p class="error">{{ notice }}</p>{% endif %}
+{{ flash(error=notice_error) }}
 
 <div class="card">
   <h3>当前版本</h3>

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}机台详情 · {{ order_no }} · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <h2>机台详情</h2>
 <p class="page-desc">订单 <a href="/admin/orders?order_no={{ order_no }}">{{ order_no }}</a> 下的机台任务</p>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(error=error) }}
 {% if detail %}
 {% set pct = (detail.progressStage or 0) * 100 // 3 %}
 <div class="card">

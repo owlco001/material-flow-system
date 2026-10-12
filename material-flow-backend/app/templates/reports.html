@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}车间概览 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_pagination.html" import simple_pager %}
 <div class="compact">
 <h2>车间概览</h2>
 <div class="cards">
@@ -28,11 +29,7 @@
   <tr><td colspan="7">暂无机台数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}<a href="/admin/reports?page={{ page - 1 }}">上一页</a>{% endif %}
-  第 {{ page }} 页
-  {% if machines %}<a href="/admin/reports?page={{ page + 1 }}">下一页</a>{% endif %}
-</p>
+{{ simple_pager(page, machines|length > 0, "/admin/reports") }}
 <p style="color:#6b7280;margin-top:8px">生成时间 {{ summary.generatedAt }}</p>
 </div>
 {% endblock %}

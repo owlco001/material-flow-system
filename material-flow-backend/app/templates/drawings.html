@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}图纸 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <h2>图纸管理</h2>
 <p class="page-desc">上传后自动按页拆分、压缩并生成缩略图；终端按页下载渲染，不会一次拉整份大文件。</p>
-{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{{ flash(notice_text, notice_error) }}
 
 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
 <div class="card" style="flex:2;min-width:320px">

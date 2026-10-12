@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -21,6 +22,7 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -352,11 +354,73 @@ def _check_csrf(form, user) -> bool:
     return _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"])
 
 
-def _redirect(notice: str, drawing_id: str | None = None):
-    from urllib.parse import quote
+# 页面提示一律用「代码 → 固定文案」（v0.6.3，与物料主档一致）：不再把任意文本塞进 ?notice= 原样回显，
+# 防止构造链接伪造提示。动态值只接受整数参数；「未找到」的编码单独放 miss=，按白名单字符过滤后附在固定前缀后。
+DRAWING_NOTICES: dict[str, tuple[str, str]] = {
+    "no_file": ("error", "请选择图纸文件"),
+    "too_large": ("error", "文件超过 200 MB 上限"),
+    "bad_type": ("error", "只支持 PDF、DWG、DXF 文件"),
+    "bad_pdf": ("error", "文件不是有效的 PDF"),
+    "pdf_unreadable": ("error", "无法打开 PDF（可能已加密或损坏）"),
+    "pdf_empty": ("error", "PDF 没有页面"),
+    "too_many_pages": ("error", "页数 {n} 超过上限 " + str(MAX_PAGES)),
+    "upload_failed": ("error", "上传失败，请重试"),
+    "uploaded": ("notice", "已上传，共 {n} 页"),
+    "saved_unconverted": ("error", "已保存原件，但未能转换（原因见下方图纸列表）"),
+    "bad_target": ("error", "绑定类型无效"),
+    "not_found": ("error", "图纸不存在"),
+    "bound": ("notice", "已绑定 {n} 项"),
+    "unbound": ("notice", "已解除绑定"),
+    "deleted": ("notice", "图纸已删除"),
+}
+_DRAWING_ERROR_CODES = (
+    ("只支持 PDF、DWG、DXF", "bad_type"), ("文件不是有效的 PDF", "bad_pdf"), ("无法打开 PDF", "pdf_unreadable"),
+    ("PDF 没有页面", "pdf_empty"),
+)
+_MISS_KEY_RE = re.compile(r"^[\w.\-/#+]{1,40}$")
+_MISS_MAX = 10
+
+
+def _upload_error_notice(message: str) -> tuple[str, int | None]:
+    m = re.match(r"页数 (\d+) 超过上限", message or "")
+    if m:
+        return "too_many_pages", int(m.group(1))
+    for prefix, code in _DRAWING_ERROR_CODES:
+        if (message or "").startswith(prefix):
+            return code, None
+    return "upload_failed", None
+
+
+def _clean_missing(keys) -> list[str]:
+    return [k for k in (str(x).strip() for x in keys or []) if _MISS_KEY_RE.match(k)][:_MISS_MAX]
+
+
+def drawing_notice_ctx(query_params) -> dict[str, str | None]:
+    code = str(query_params.get("notice", "") or "")
+    kind, text = DRAWING_NOTICES.get(code, ("", ""))
+    if not text:
+        return {"notice_text": None, "notice_error": None}
+    if "{n}" in text:
+        raw = str(query_params.get("n", "0") or "0")
+        text = text.format(n=int(raw) if raw.isdigit() and len(raw) <= 9 else 0)
+    missing = _clean_missing(str(query_params.get("miss", "") or "").split(","))
+    if missing and code in ("uploaded", "saved_unconverted", "bound"):
+        text += "；未找到：" + "、".join(missing)
+    return {"notice_text": text if kind == "notice" else None, "notice_error": text if kind == "error" else None}
+
+
+def _redirect(notice: str, drawing_id: str | None = None, *, n: int | None = None, missing=None):
     from app.admin_web import _see_other
-    anchor = f"#{drawing_id}" if drawing_id else ""
-    return _see_other(f"/admin/drawings?notice={quote(notice)}{anchor}")
+    if notice not in DRAWING_NOTICES:
+        raise ValueError(f"unknown drawing notice code: {notice}")
+    qs = f"notice={quote(notice)}"
+    if n is not None:
+        qs += f"&n={int(n)}"
+    miss = _clean_missing(missing)
+    if miss:
+        qs += "&miss=" + quote(",".join(miss))
+    anchor = f"#{quote(drawing_id)}" if drawing_id else ""
+    return _see_other(f"/admin/drawings?{qs}{anchor}")
 
 
 @router.get("/admin/drawings", response_class=HTMLResponse)
@@ -405,7 +469,7 @@ def admin_drawings(request: Request):
     from app.admin_web import templates
     return templates.TemplateResponse(request, "drawings.html", {
         "user": user, "csrf_token": user["csrf_token"], "drawings": drawings, "q": q,
-        "notice": request.query_params.get("notice"),
+        **drawing_notice_ctx(request.query_params),
         "cad_converter": bool(os.environ.get("DRAWING_CAD_TO_PDF", "").strip()),
     })
 
@@ -417,10 +481,11 @@ async def admin_drawing_upload(request: Request):
         return denied
     form = await request.form()
     if not _check_csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     upload = form.get("file")
     if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", ""):
-        return _redirect("请选择图纸文件")
+        return _redirect("no_file")
     title = str(form.get("title", "")).strip()[:120] or Path(upload.filename).stem[:120]
     drawing_no = str(form.get("drawing_no", "")).strip()[:80]
     revision = str(form.get("revision", "")).strip()[:20]
@@ -434,7 +499,7 @@ async def admin_drawing_upload(request: Request):
             while chunk := await upload.read(1 << 20):
                 size += len(chunk)
                 if size > MAX_DRAWING_BYTES:
-                    return _redirect("文件超过 200 MB 上限")
+                    return _redirect("too_large")
                 f.write(chunk)
         c = _main.db()
         try:
@@ -442,7 +507,8 @@ async def admin_drawing_upload(request: Request):
                 res = process_upload(c, data_path=tmp, original_name=upload.filename, title=title,
                                      drawing_no=drawing_no, revision=revision, user=user)
             except ValueError as e:
-                return _redirect(str(e))
+                code, n = _upload_error_notice(str(e))
+                return _redirect(code, n=n)
             dev_ids, dev_missing = resolve_device_keys(c, split_keys(str(form.get("devices", ""))))
             mat_codes, mat_missing = resolve_material_keys(c, split_keys(str(form.get("materials", ""))))
             bind(c, res["id"], "DEVICE", dev_ids, user)
@@ -453,13 +519,10 @@ async def admin_drawing_upload(request: Request):
     finally:
         tmp.unlink(missing_ok=True)
 
+    missing = dev_missing + mat_missing
     if res["status"] == "READY":
-        msg = f"已上传，共 {res['page_count']} 页"
-    else:
-        msg = f"已保存原件，但未能转换：{res['error']}"
-    if dev_missing or mat_missing:
-        msg += "；未找到：" + "、".join(dev_missing + mat_missing)
-    return _redirect(msg, res["id"])
+        return _redirect("uploaded", res["id"], n=res["page_count"], missing=missing)
+    return _redirect("saved_unconverted", res["id"], missing=missing)
 
 
 @router.post("/admin/drawings/{drawing_id}/bind")
@@ -469,14 +532,15 @@ async def admin_drawing_bind(drawing_id: str, request: Request):
         return denied
     form = await request.form()
     if not _check_csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     target_type = str(form.get("target_type", ""))
     if target_type not in TARGET_TYPES:
-        return _redirect("绑定类型无效", drawing_id)
+        return _redirect("bad_target", drawing_id)
     c = _main.db()
     try:
         if not c.execute("SELECT 1 FROM drawings WHERE id=?", (drawing_id,)).fetchone():
-            return _redirect("图纸不存在")
+            return _redirect("not_found")
         raw = split_keys(str(form.get("keys", "")))
         resolver = resolve_device_keys if target_type == "DEVICE" else resolve_material_keys
         keys, missing = resolver(c, raw)
@@ -484,10 +548,7 @@ async def admin_drawing_bind(drawing_id: str, request: Request):
         c.commit()
     finally:
         c.close()
-    msg = f"已绑定 {added} 项"
-    if missing:
-        msg += "；未找到：" + "、".join(missing)
-    return _redirect(msg, drawing_id)
+    return _redirect("bound", drawing_id, n=added, missing=missing)
 
 
 @router.post("/admin/drawings/{drawing_id}/unbind")
@@ -497,7 +558,8 @@ async def admin_drawing_unbind(drawing_id: str, request: Request):
         return denied
     form = await request.form()
     if not _check_csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     c = _main.db()
     try:
         cur = c.execute("DELETE FROM drawing_bindings WHERE id=? AND drawing_id=?",
@@ -507,7 +569,7 @@ async def admin_drawing_unbind(drawing_id: str, request: Request):
         c.commit()
     finally:
         c.close()
-    return _redirect("已解除绑定", drawing_id)
+    return _redirect("unbound", drawing_id)
 
 
 @router.post("/admin/drawings/{drawing_id}/delete")
@@ -517,7 +579,8 @@ async def admin_drawing_delete(drawing_id: str, request: Request):
         return denied
     form = await request.form()
     if not _check_csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     drawing_dir(drawing_id)
     c = _main.db()
     try:
@@ -529,7 +592,7 @@ async def admin_drawing_delete(drawing_id: str, request: Request):
     finally:
         c.close()
     delete_drawing_files(drawing_id)
-    return _redirect("图纸已删除")
+    return _redirect("deleted")
 
 
 def _admin_file(request: Request, drawing_id: str, page: int, thumb: bool):

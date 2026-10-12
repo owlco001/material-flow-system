@@ -1,0 +1,8 @@
+{#- 共享提示消息（v0.6.3）。
+    用法：{% from "_notice.html" import flash %}
+          {{ flash(notice_text, error) }}            —— 成功提示 + 错误提示，值为空则不输出
+    notice 一律由服务端用「代码 → 固定文案」映射得到，模板不回显 ?notice= 原文。 -#}
+{% macro flash(notice=none, error=none) -%}
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{%- endmacro %}

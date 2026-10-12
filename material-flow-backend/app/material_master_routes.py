@@ -239,9 +239,72 @@ def _csrf(form, user) -> bool:
     return _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"])
 
 
-def _redirect(path: str, notice: str = ""):
+# 页面提示一律用「代码 → 固定文案」（v0.6.3，评审 P2-12）：不再把任意文本塞进 ?notice= 原样回显，
+# 防止构造链接伪造提示。动态数字只接受整数参数。
+MM_NOTICES: dict[str, tuple[str, str]] = {
+    "no_file": ("error", "请选择 .xlsx 文件"),
+    "bad_type": ("error", "仅支持 .xlsx 文件"),
+    "tpl_header": ("error", "未找到物料主档表头（需要「料号」「品名」列）"),
+    "tpl_parse": ("error", "XLSX 文件无法解析"),
+    "tpl_unit": ("error", "缺少库存单位列（「库存单位.名称」或「库存主单位」）"),
+    "tpl_invalid": ("error", "文件不符合物料主档模板"),
+    "too_many_rows": ("error", f"行数超过 {mm.MAX_ROWS}"),
+    "too_large": ("error", "文件过大"),
+    "empty": ("error", "表头之后没有数据行"),
+    "preview_expired": ("error", "预览不存在、已过期或已提交，请重新上传"),
+    "preview_lost": ("error", "预览文件已丢失，请重新上传"),
+    "no_valid_rows": ("error", "没有可导入的有效行"),
+    "has_invalid": ("error", "有 {n} 行错误；修正后重新上传，或勾选「跳过错误行」"),
+    "stale": ("error", "数据已变化，请重新预览"),
+    "batch_not_found": ("error", "批次不存在"),
+    "import_failed": ("error", "导入失败，请重试"),
+    "imported": ("notice", "已导入：主档新增 {mi}、更新 {mu}、未变化 {mn}；物料新建 {mc}、同步 {ms}"),
+}
+_MM_MESSAGE_CODES = (
+    ("未找到物料主档表头", "tpl_header"), ("XLSX 文件无法解析", "tpl_parse"), ("缺少库存单位列", "tpl_unit"),
+    ("行数超过", "too_many_rows"), ("表头之后没有数据行", "empty"), ("预览文件已丢失", "preview_lost"),
+    ("预览不存在", "preview_expired"), ("预览已过期", "preview_expired"), ("没有可导入的有效行", "no_valid_rows"),
+    ("数据已变化", "stale"), ("仅支持 .xlsx", "bad_type"),
+)
+_MM_CODE_FALLBACK = {
+    "MATERIAL_MASTER_TEMPLATE_INVALID": "tpl_invalid", "MATERIAL_MASTER_FILE_TOO_LARGE": "too_large",
+    "MATERIAL_MASTER_EMPTY": "empty", "MATERIAL_MASTER_PREVIEW_EXPIRED": "preview_expired",
+    "MATERIAL_MASTER_PREVIEW_STALE": "stale", "MATERIAL_MASTER_VALIDATION_FAILED": "no_valid_rows",
+}
+
+
+def _mm_error_notice(code: str, message: str) -> tuple[str, dict[str, int]]:
+    """业务异常（code + 本项目固定文案）→ 提示代码 + 整数参数。"""
+    import re as _re
+    m = _re.match(r"有 (\d+) 行错误", message or "")
+    if m:
+        return "has_invalid", {"n": int(m.group(1))}
+    for prefix, notice in _MM_MESSAGE_CODES:
+        if (message or "").startswith(prefix):
+            return notice, {}
+    return _MM_CODE_FALLBACK.get(code, "import_failed"), {}
+
+
+def mm_notice_ctx(query_params) -> dict[str, str | None]:
+    code = str(query_params.get("notice", "") or "")
+    kind, text = MM_NOTICES.get(code, ("", ""))
+    if not text:
+        return {"notice_text": None, "notice_error": None}
+    if "{" in text:
+        values = {}
+        for key in ("n", "mi", "mu", "mn", "mc", "ms"):
+            raw = str(query_params.get(key, "0") or "0")
+            values[key] = int(raw) if raw.isdigit() and len(raw) <= 9 else 0
+        text = text.format(**values)
+    return {"notice_text": text if kind == "notice" else None, "notice_error": text if kind == "error" else None}
+
+
+def _redirect(path: str, notice: str = "", **params: int):
     from app.admin_web import _see_other
-    return _see_other(path + (f"?notice={quote(notice)}" if notice else ""))
+    if notice and notice not in MM_NOTICES:
+        raise ValueError(f"unknown material-master notice code: {notice}")
+    qs = "&".join([f"notice={quote(notice)}"] + [f"{k}={int(v)}" for k, v in params.items()]) if notice else ""
+    return _see_other(path + (f"?{qs}" if qs else ""))
 
 
 def _tpl(request: Request, name: str, ctx: dict[str, Any]):
@@ -276,7 +339,7 @@ def admin_page(request: Request):
     return _tpl(request, "material_master.html", {
         "user": user, "csrf_token": user["csrf_token"], "rows": rows, "total": total, "grand_total": grand,
         "q": q, "form": form, "storage": storage, "page": page, "pages": max(1, (total + size - 1) // size),
-        "facets": fc, "batches": batches, "notice": qp.get("notice"),
+        "facets": fc, "batches": batches, **mm_notice_ctx(qp),
         "max_mb": mm.MAX_UPLOAD_BYTES // 1048576,
     })
 
@@ -288,17 +351,19 @@ async def admin_import(request: Request):
         return denied
     form = await request.form()
     if not _csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     upload = form.get("file")
     if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", ""):
-        return _redirect("/admin/material-master", "请选择 .xlsx 文件")
+        return _redirect("/admin/material-master", "no_file")
     if not upload.filename.lower().endswith(".xlsx"):
-        return _redirect("/admin/material-master", "仅支持 .xlsx 文件")
+        return _redirect("/admin/material-master", "bad_type")
     try:
         tmp, _ = await _save_upload(upload)
         out = await run_in_threadpool(_preview_sync, tmp, upload.filename, user["id"])
     except mm.TemplateError as e:
-        return _redirect("/admin/material-master", str(e))
+        notice, params = _mm_error_notice(getattr(e, "code", ""), str(e))
+        return _redirect("/admin/material-master", notice, **params)
     return _redirect(f"/admin/material-master/import/{out['batchId']}")
 
 
@@ -313,10 +378,10 @@ def admin_batch(batch_id: str, request: Request):
     finally:
         c.close()
     if r is None:
-        return _redirect("/admin/material-master", "批次不存在")
+        return _redirect("/admin/material-master", "batch_not_found")
     return _tpl(request, "material_master_preview.html", {
         "user": user, "csrf_token": user["csrf_token"], "b": mm.batch_view(r),
-        "notice": request.query_params.get("notice"), "op_id": str(uuid.uuid4()),
+        **mm_notice_ctx(request.query_params), "op_id": str(uuid.uuid4()),
     })
 
 
@@ -327,7 +392,8 @@ async def admin_commit(batch_id: str, request: Request):
         return denied
     form = await request.form()
     if not _csrf(form, user):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        from app.admin_web import _error_page
+        return _error_page(request, 403, "CSRF 校验失败")
     skip = str(form.get("skip_invalid", "")) in ("1", "on", "true")
     try:
         op = str(uuid.UUID(str(form.get("op_id", ""))))
@@ -337,9 +403,10 @@ async def admin_commit(batch_id: str, request: Request):
     try:
         res = await run_in_threadpool(_commit_sync, batch_id, user, op, payload, skip, str(uuid.uuid4()))
     except ApiError as e:
-        return _redirect(f"/admin/material-master/import/{batch_id}", str(e.detail))
+        notice, params = _mm_error_notice(e.code, str(e.detail))
+        return _redirect(f"/admin/material-master/import/{batch_id}", notice, **params)
     except ValueError:
-        return _redirect("/admin/material-master", "批次不存在")
-    msg = (f"已导入：主档新增 {res['masterInserted']}、更新 {res['masterUpdated']}、未变化 {res['masterUnchanged']}；"
-           f"物料新建 {res['materialsCreated']}、同步 {res['materialsUpdated']}")
-    return _redirect(f"/admin/material-master/import/{batch_id}", msg)
+        return _redirect("/admin/material-master", "batch_not_found")
+    return _redirect(f"/admin/material-master/import/{batch_id}", "imported",
+                     mi=res["masterInserted"], mu=res["masterUpdated"], mn=res["masterUnchanged"],
+                     mc=res["materialsCreated"], ms=res["materialsUpdated"])

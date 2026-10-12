@@ -3,11 +3,12 @@ import re
 from pathlib import Path
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "app" / "templates"
+STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
 
 
 def test_templates_do_not_use_native_confirm():
     offenders = []
-    for path in TEMPLATES.glob("*.html"):
+    for path in [*TEMPLATES.glob("*.html"), *STATIC.rglob("*.js")]:
         text = path.read_text(encoding="utf-8")
         text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
         for m in re.finditer(r"(?<![\w.])confirm\(", text):
@@ -18,5 +19,7 @@ def test_templates_do_not_use_native_confirm():
 
 def test_base_provides_ui_confirm():
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    base += (STATIC / "admin" / "base-body.js").read_text(encoding="utf-8")
+    assert "static_url('admin/base-body.js')" in base
     assert "window.uiConfirm" in base
     assert 'id="uiConfirmMask"' in base

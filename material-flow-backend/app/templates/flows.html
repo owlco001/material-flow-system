@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}流转申请 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>流转申请</h2>
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
+{{ flash(notice_text) }}
 <p>
   <a href="/admin/flows">全部</a> ·
   <a href="/admin/flows?status=PENDING_APPROVAL">待审批</a> ·

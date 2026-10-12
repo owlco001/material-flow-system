@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% block title %}审计日志 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import simple_pager %}
 <div class="compact">
 <h2>审计日志</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(error=error) }}
 <div class="card">
   <h3>筛选</h3>
   <form method="get" action="/admin/audit">
@@ -49,14 +51,6 @@
   <tr><td colspan="9">暂无数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}
-  <a href="/admin/audit?page={{ page - 1 }}&from={{ filters['from'] or '' }}&to={{ filters['to'] or '' }}&eventType={{ filters.eventType or '' }}&entityType={{ filters.entityType or '' }}&operatorId={{ filters.operatorId or '' }}&entityId={{ filters.entityId or '' }}">上一页</a>
-  {% endif %}
-  第 {{ page }} 页
-  {% if items %}
-  <a href="/admin/audit?page={{ page + 1 }}&from={{ filters['from'] or '' }}&to={{ filters['to'] or '' }}&eventType={{ filters.eventType or '' }}&entityType={{ filters.entityType or '' }}&operatorId={{ filters.operatorId or '' }}&entityId={{ filters.entityId or '' }}">下一页</a>
-  {% endif %}
-</p>
+{{ simple_pager(page, items|length > 0, "/admin/audit", {"from": filters['from'], "to": filters['to'], "eventType": filters.eventType, "entityType": filters.entityType, "operatorId": filters.operatorId, "entityId": filters.entityId}) }}
 </div>
 {% endblock %}

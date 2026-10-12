@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import csv
 import hmac
+import html
 import io
+import logging
 import re
 import secrets
 import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,8 @@ from app.main import (
     LOGIN_MAX_FAILURES,
     LOGIN_WINDOW_SECONDS,
     ApiError,
+    _request_trace_id,
+    _safe_trace_id,
     BomCommitRequest,
     Decision,
     DeleteUserRequest,
@@ -95,11 +100,14 @@ from app.main import (
 )
 
 router = APIRouter()
+_log = logging.getLogger("material_flow.admin")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+from app.web_assets import static_url as _static_url  # noqa: E402
+templates.env.globals["static_url"] = _static_url
 
 SESSION_COOKIE = "mf_session"
 ANON_CSRF_COOKIE = "anon_csrf"
-SESSION_SECONDS = 8 * 3600  # 固定 8 小时，不滑动续期（契约 §5.2）
+SESSION_SECONDS = 8 * 3600  # 8 小时；v0.6.3 起滑动续期：活跃使用时剩余不足一半即顺延（契约 §5.2 已更新）
 DEFAULT_PAGE_SIZE = 20  # 列表页默认分页大小
 # S1 准入仅 ADMIN；S3 起放宽 WAREHOUSE_ADMIN（契约 §1）
 WEB_ROLES = ("ADMIN",)
@@ -113,10 +121,75 @@ def _csrf_ok(form_value: str | None, expected: str | None) -> bool:
     return bool(form_value) and bool(expected) and hmac.compare_digest(form_value, expected)
 
 
+# ---------- 管理页 HTML 错误页（v0.6.3）----------
+ERROR_TITLES = {400: "请求有误", 403: "禁止访问", 404: "页面不存在", 405: "请求方式不支持",
+                413: "内容过大", 500: "服务器内部错误", 503: "服务暂时不可用"}
+_ERROR_PREFIX_RE = re.compile(r"^\s*\d{3}\s*")
+
+
+def _error_page(request: Request, status_code: int, message: str = "", *, trace_id: str | None = None,
+                user: sqlite3.Row | None = None, title: str | None = None,
+                back_url: str | None = None, back_label: str | None = None) -> HTMLResponse:
+    """/admin 页面的 403/404/500 等：继承 base.html 的样式化错误页，带 traceId。"""
+    if user is None:
+        try:
+            user = _session_user(request)
+        except Exception:  # noqa: BLE001 — 错误页本身不能再抛
+            user = None
+    title = title or ERROR_TITLES.get(status_code, "出错了")
+    text = _ERROR_PREFIX_RE.sub("", message or "") or title
+    if text.startswith(title + "：") or text.startswith(title + ":"):
+        text = text[len(title) + 1:].strip() or title
+    if status_code == 403 and "CSRF" in text and "刷新" not in text:
+        text += "，请刷新页面后重试"
+    trace = trace_id or _request_trace_id(request)
+    try:
+        return templates.TemplateResponse(
+            request, "error.html",
+            {"user": user, "status_code": status_code, "title": title, "message": text, "trace_id": trace,
+             "back_url": back_url if (back_url or "").startswith("/admin/") else None, "back_label": back_label},
+            status_code=status_code, headers={"Cache-Control": "no-store"},
+        )
+    except Exception:  # noqa: BLE001 — 模板异常时退回纯文本，保证错误页可用
+        _log.exception("error page render failed traceId=%s", trace)
+        return HTMLResponse(html.escape(f"{status_code} {title}（traceId: {trace}）"), status_code=status_code)
+
+
+def _action_failed(request: Request, exc: Exception, back_url: str, back_label: str) -> HTMLResponse:
+    """管理页表单 POST 业务失败（v0.6.3）：统一走样式化错误页，文案经模板自动转义，不再拼 f-string HTML。"""
+    if isinstance(exc, HTTPException) and not isinstance(exc, ApiError):
+        status, msg = exc.status_code, str(exc.detail or "")
+    else:
+        status = exc.status_code if isinstance(exc, ApiError) else 422
+        msg = _api_error_message(exc)
+    if status < 400:
+        status = 400
+    return _error_page(request, status, msg, title="操作失败", back_url=back_url, back_label=back_label)
+
+
+def wants_admin_html(request: Request) -> bool:
+    """全局异常处理器用：浏览器导航到 /admin 页面（非 JSON 接口）时渲染 HTML 错误页。"""
+    path = request.url.path
+    if not path.startswith("/admin") or path.startswith("/admin/agent/"):
+        return False
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept
+
+
 def _session_user(request: Request) -> sqlite3.Row | None:
+    """当前 web 会话用户。同一请求内结果缓存在 request.state（错误页 / 守卫重复调用不再查库）。
+
+    滑动续期（v0.6.3，评审 P2-14）：剩余有效期不足一半时把 expires_at 顺延到 now + SESSION_SECONDS，
+    并由 SessionCookieRefreshMiddleware 在响应里重发 Cookie（Max-Age 同步顺延）。每个会话最多每 4 小时写一次库。
+    """
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token:
         return None
+    state = request.scope.setdefault("state", {})
+    cached = state.get("mf_session_user")
+    if cached is not None and cached[0] == token:
+        return cached[1]
+    now_ts = int(time.time())
     c = db()
     try:
         row = c.execute(
@@ -126,11 +199,55 @@ def _session_user(request: Request) -> sqlite3.Row | None:
             " WHERE ws.id=? AND u.active=1",
             (token,),
         ).fetchone()
+        if row is not None and row["expires_at"] >= now_ts and row["expires_at"] - now_ts < SESSION_SECONDS // 2:
+            c.execute(
+                "UPDATE web_sessions SET expires_at=?, last_seen_at=? WHERE id=?",
+                (now_ts + SESSION_SECONDS, now_ts, token),
+            )
+            c.commit()
+            state["mf_session_refresh"] = token
     finally:
         c.close()
-    if row is None or row["expires_at"] < int(time.time()):
-        return None
+    if row is None or row["expires_at"] < now_ts:
+        row = None
+    state["mf_session_user"] = (token, row)
     return row
+
+
+def _purge_expired_web_sessions(c: sqlite3.Connection) -> int:
+    """删除已过期的 web 会话（登录成功时与服务启动时执行）。"""
+    return c.execute("DELETE FROM web_sessions WHERE expires_at < ?", (int(time.time()),)).rowcount
+
+
+class SessionCookieRefreshMiddleware:
+    """_session_user 续期了会话时，在响应头追加刷新后的 mf_session Cookie（Max-Age 顺延）。"""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/admin"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message) -> None:
+            if message["type"] == "http.response.start":
+                token = (scope.get("state") or {}).get("mf_session_refresh")
+                if token:
+                    from http.cookies import SimpleCookie
+                    cookie = SimpleCookie()
+                    cookie[SESSION_COOKIE] = token
+                    morsel = cookie[SESSION_COOKIE]
+                    morsel["max-age"] = SESSION_SECONDS
+                    morsel["path"] = "/"
+                    morsel["httponly"] = True
+                    morsel["samesite"] = "lax"
+                    headers = list(message.get("headers", []))
+                    headers.append((b"set-cookie", morsel.OutputString().encode("latin-1")))
+                    message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 def _authenticate(username: str, password: str) -> sqlite3.Row | None:
@@ -198,7 +315,7 @@ def admin_login_page(request: Request):
 async def admin_login(request: Request):
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), request.cookies.get(ANON_CSRF_COOKIE)):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     username = str(form.get("username", "")).strip()
     password = str(form.get("password", ""))
     user = _authenticate(username, password) if username and password else None
@@ -208,6 +325,7 @@ async def admin_login(request: Request):
     csrf_token = secrets.token_urlsafe(32)
     c = db()
     try:
+        _purge_expired_web_sessions(c)
         c.execute(
             "INSERT INTO web_sessions(id, user_id, csrf_token, created_at, expires_at,"
             " last_seen_at) VALUES(?,?,?,?,?,?)",
@@ -243,7 +361,7 @@ async def admin_logout(request: Request):
         return _see_other("/admin/login")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     c = db()
     try:
         c.execute("DELETE FROM web_sessions WHERE id=?", (request.cookies.get(SESSION_COOKIE, ""),))
@@ -260,40 +378,8 @@ def admin_home(request: Request):
     user = _session_user(request)
     if user is None:
         return _see_other("/admin/login")
+    # 首页即异常处理页（原仪表盘 home.html 已下线，v0.6.3 删除死代码）
     return _see_other("/admin/exceptions")
-    if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
-    c = db()
-    try:
-        users_total, users_active = c.execute(
-            "SELECT COUNT(*), COALESCE(SUM(active),0) FROM users"
-        ).fetchone()
-        pending_transfers = c.execute(
-            "SELECT COUNT(*) FROM transfer_requests WHERE status='PENDING_APPROVAL'"
-        ).fetchone()[0]
-        pending_handovers = c.execute(
-            "SELECT COUNT(*) FROM material_handovers WHERE status='PENDING'"
-        ).fetchone()[0]
-        c.execute(
-            "UPDATE web_sessions SET last_seen_at=? WHERE id=?",
-            (int(time.time()), request.cookies.get(SESSION_COOKIE, "")),
-        )
-        c.commit()
-    finally:
-        c.close()
-    return templates.TemplateResponse(
-        request,
-        "home.html",
-        {
-            "user": user,
-            "app_version": APP_VERSION,
-            "users_total": users_total,
-            "users_active": users_active,
-            "pending_transfers": pending_transfers,
-            "pending_handovers": pending_handovers,
-            "csrf_token": user["csrf_token"],
-        },
-    )
 
 
 # ==================== S2：用户管理（契约 §6-S2）====================
@@ -343,12 +429,44 @@ NOTICE_TEXTS = {
 }
 
 
+def _coded_notice(request: Request, mapping: dict[str, tuple[str, str]], unknown_error: str | None = None) -> dict:
+    """?notice=<代码> → 固定文案（{"notice_text", "notice_error"}）。不回显原始参数，避免伪造提示。"""
+    code = request.query_params.get("notice", "")
+    if not code:
+        return {"notice_text": None, "notice_error": None}
+    kind, text = mapping.get(code, ("error", unknown_error) if unknown_error else ("notice", None))
+    return {"notice_text": text if kind == "notice" else None, "notice_error": text if kind == "error" else None}
+
+
+RELEASE_NOTICES: dict[str, tuple[str, str]] = {
+    "uploaded": ("notice", "上传成功，已发布。"),
+    "deleted": ("notice", "已删除。"),
+    "not_found": ("error", "未找到该版本。"),
+    "no_file": ("error", "请选择 APK 文件。"),
+    "bad_version": ("error", "versionCode 必须为正整数。"),
+    "INVALID_VERSION_CODE": ("error", "versionCode 必须为正整数。"),
+    "INVALID_APK": ("error", "文件不是有效的 APK。"),
+    "APK_TOO_LARGE": ("error", "APK 超过 300MB 上限。"),
+    "RELEASE_EXISTS": ("error", "该 versionCode 已存在，请先删除旧版。"),
+    "INVALID_VERSION_NAME": ("error", "versionName 格式无效（仅允许字母数字 . _ -）。"),
+}
+
+SYSTEM_NOTICES: dict[str, tuple[str, str]] = {
+    "GITHUB_ERROR": ("error", "查询更新源失败（GitHub 与 Gitee 均不可访问），请稍后重试"),
+    "INVALID_SHA": ("error", "版本号格式无效（需 40 位 commit sha）"),
+    "UPDATE_IN_PROGRESS": ("error", "已有更新正在执行，请稍候"),
+    "UPDATE_REQUEST_FAILED": ("error", "提交更新请求失败，请查看服务器日志"),
+    "UPDATE_FAILED": ("error", "更新异常，请查看服务器日志"),
+    "FORBIDDEN": ("error", "仅管理员可操作"),
+}
+
+
 def _admin_or_403(request: Request):
     user = _session_user(request)
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return None, HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
+        return None, _error_page(request, 403, "403 禁止访问：管理界面仅对管理员开放")
     return user, None
 
 
@@ -395,9 +513,8 @@ def _render_users(request: Request, user: sqlite3.Row, error: str | None = None)
             "role_labels": ROLE_LABELS,
             "notice_text": NOTICE_TEXTS.get(notice_code),
             "error": error,
-            "reset_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
-            "delete_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
-            "hard_delete_ops": {row["id"]: str(uuid.uuid4()) for row in rows},
+            # 行内操作共用一个弹窗：服务端给一个兜底幂等键，浏览器每次打开弹窗用 crypto.randomUUID() 重新生成
+            "modal_op_id": str(uuid.uuid4()),
         },
     )
 
@@ -460,7 +577,7 @@ async def admin_user_create(request: Request):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     values = {
         "employeeNo": str(form.get("employeeNo", "")).strip(),
         "displayName": str(form.get("displayName", "")).strip(),
@@ -494,7 +611,7 @@ def admin_user_edit_form(request: Request, user_id: str):
     finally:
         c.close()
     if target is None:
-        return HTMLResponse("404 用户不存在", status_code=404)
+        return _error_page(request, 404, "404 用户不存在")
     return _render_user_form(
         request,
         user,
@@ -516,7 +633,7 @@ async def admin_user_edit(request: Request, user_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", ""))
     values = {
         "employeeNo": str(form.get("employeeNo", "")),
@@ -557,7 +674,7 @@ async def admin_user_password_reset(request: Request, user_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", ""))
     try:
         reset_employee_password(
@@ -588,7 +705,7 @@ async def admin_user_delete(request: Request, user_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", ""))
     try:
         delete_employee(
@@ -616,7 +733,7 @@ async def admin_user_hard_delete(request: Request, user_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         hard_delete_employee(
@@ -716,14 +833,14 @@ def _manager_or_403(request: Request):
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in MANAGER_ROLES:
-        return None, HTMLResponse(
-            "403 禁止访问：审批与留痕页面仅对管理员/仓库管理员开放", status_code=403
-        )
+        return None, _error_page(request, 403, "403 禁止访问：审批与留痕页面仅对管理员/仓库管理员开放")
     return user, None
 
 
-def _api_http_error_response(exc: HTTPException):
-    return HTMLResponse(f"{exc.status_code}：{exc.detail}", status_code=exc.status_code)
+def _api_http_error_response(exc: HTTPException, request: Request | None = None):
+    if request is None:
+        return HTMLResponse(html.escape(f"{exc.status_code}：{exc.detail}"), status_code=exc.status_code)
+    return _error_page(request, exc.status_code, str(exc.detail or ""))
 
 
 @router.get("/admin/flows", response_class=HTMLResponse)
@@ -736,7 +853,7 @@ def admin_flows_list(request: Request):
     try:
         data = _list_transfers(status=status, page=page, page_size=LIST_PAGE_SIZE, user=user)
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
         request,
         "flows.html",
@@ -757,7 +874,7 @@ def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: st
     try:
         item = get_transfer(rid, user=user)
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     c = db()
     try:
         handover_rows = c.execute(
@@ -846,7 +963,7 @@ async def admin_flow_approve(request: Request, rid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", ""))
     decision = str(form.get("decision", ""))
     try:
@@ -875,7 +992,7 @@ async def admin_flow_execute(request: Request, rid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", ""))
     try:
         api_execute_transfer(
@@ -947,7 +1064,7 @@ def admin_handover_timeline(request: Request, hid: str):
     try:
         result = handover_timeline(hid, user=user)
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
         request,
         "handovers.html",
@@ -978,9 +1095,7 @@ def _report_or_403(request: Request):
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in REPORT_ROLES:
-        return None, HTMLResponse(
-            "403 禁止访问：统计页面仅对管理员/车间主管开放", status_code=403
-        )
+        return None, _error_page(request, 403, "403 禁止访问：统计页面仅对管理员/车间主管开放")
     return user, None
 
 
@@ -1015,6 +1130,7 @@ def _with_plain_defaults(fn):
     return wrapper
 
 
+@lru_cache(maxsize=64)
 def _api_endpoint(path: str, method: str = "GET"):
     """从 FastAPI 路由表解析既有 API 处理函数并直接调用（统计口径零漂移）。
 
@@ -1046,7 +1162,7 @@ def admin_reports_overview(request: Request):
             user=user, page=page, pageSize=20, deviceId=None
         )
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
         request,
         "reports.html",
@@ -1081,7 +1197,7 @@ def admin_reports_labor(request: Request):
             user=user,
         )
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
         request,
         "reports_labor.html",
@@ -1451,6 +1567,7 @@ def admin_orders(request: Request):
         "detail": detail,
         "status_labels": WORKSPACE_STATUS_LABELS,
         "error": error,
+        "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
     }
     if request.query_params.get("partial") == "materials":
         return templates.TemplateResponse(request, "_order_materials.html", ctx)
@@ -1516,7 +1633,7 @@ def admin_order_barcodes(request: Request, order_no: str):
     finally:
         c.close()
     if not order:
-        return HTMLResponse("订单不存在", status_code=404)
+        return _error_page(request, 404, "订单不存在")
     items = []
     for d in devices:
         payload, error = _barcode_preview("device", d["device_no"], "qr")
@@ -1566,7 +1683,7 @@ def admin_order_barcodes_print(request: Request, order_no: str):
     finally:
         c.close()
     if not order:
-        return HTMLResponse("订单不存在", status_code=404)
+        return _error_page(request, 404, "订单不存在")
     kinds = ["qr", "code128"] if kind == "both" else [kind]
     items = []
     for device_no in device_nos:
@@ -1730,7 +1847,7 @@ async def admin_stocktake_confirm(request: Request, sid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         api_confirm_stocktake(
@@ -1752,7 +1869,7 @@ async def admin_exception_review(request: Request, eid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         api_review_exception(
@@ -1778,7 +1895,7 @@ def admin_exceptions(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
+        return _error_page(request, 403, "403 禁止访问")
     c = db()
     try:
         status_counts = {r[0]: r[1] for r in c.execute(
@@ -1840,7 +1957,7 @@ async def admin_exceptions_review(request: Request, eid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         api_review_exception(
@@ -1856,7 +1973,7 @@ async def admin_exceptions_review(request: Request, eid: str):
             idempotency_key=operation_id,
         )
     except (ApiError, ValidationError) as exc:
-        return HTMLResponse(_api_error_message(exc), status_code=400)
+        return _error_page(request, 400, _api_error_message(exc))
     return _see_other("/admin/exceptions?notice=exception_reviewed")
 
 
@@ -1918,7 +2035,7 @@ async def admin_u9_sync(request: Request, entity: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     from urllib.parse import quote
     from app.u9.config import get_config
     from app.u9.sync import ENTITIES, run_sync
@@ -1991,10 +2108,7 @@ def _workspace_or_403(request: Request):
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in WORKSPACE_ROLES:
-        return None, HTMLResponse(
-            "403 禁止访问：物料状态工作台仅对管理员/仓库管理员/车间主管开放",
-            status_code=403,
-        )
+        return None, _error_page(request, 403, "403 禁止访问：物料状态工作台仅对管理员/仓库管理员/车间主管开放")
     return user, None
 
 
@@ -2037,9 +2151,9 @@ def admin_workspace(request: Request):
             user, q.get("orderNo") or None, q.get("status") or None,
         )
     except ApiError as exc:
-        return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
+        return _error_page(request, exc.status_code, _api_error_message(exc))
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     total = len(visible)
     start = (page - 1) * page_size
     return templates.TemplateResponse(
@@ -2083,7 +2197,7 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
             page=page, pageSize=20, q=q, status=f_status, user=user
         )
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     c = db()
     try:
         assemblers = c.execute(
@@ -2149,7 +2263,7 @@ async def admin_task_assign(request: Request, tid: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     assembler_ids = [str(v) for v in form.getlist("assemblerIds")]
     try:
@@ -2173,7 +2287,7 @@ async def admin_task_unassign(request: Request, tid: str, assembler_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         _api_endpoint("/api/v1/assembly/tasks/{tid}/assignments/{assembler_id}", method="DELETE")(
@@ -2200,9 +2314,7 @@ def _bom_or_403(request: Request):
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in BOM_ROLES:
-        return None, HTMLResponse(
-            "403 禁止访问：BOM 导入仅对管理员/计划员/车间主管开放", status_code=403
-        )
+        return None, _error_page(request, 403, "403 禁止访问：BOM 导入仅对管理员/计划员/车间主管开放")
     return user, None
 
 
@@ -2222,9 +2334,9 @@ def admin_boms(request: Request):
             user=user,
         )
     except ApiError as exc:
-        return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
+        return _error_page(request, exc.status_code, _api_error_message(exc))
     except HTTPException as exc:
-        return _api_http_error_response(exc)
+        return _api_http_error_response(exc, request)
     # 聚合 BOM 批次（智能导入）
     # 走统一 db()，尊重 DATA_DIR 配置（原先硬编码 app/../data 路径，部署目录不同即打不开库）
     _c = db()
@@ -2260,7 +2372,7 @@ def admin_bom_detail(version_id: str, request: Request):
     try:
         ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
         if not ver:
-            return HTMLResponse("版本不存在", status_code=404)
+            return _error_page(request, 404, "版本不存在")
         items = _c.execute(
             "SELECT material_code, material_name, specification, unit, quantity, scrap_rate, line_no FROM bom_items WHERE bom_version_id=? ORDER BY line_no",
             (version_id,)
@@ -2283,7 +2395,7 @@ def admin_bom_edit_form(version_id: str, request: Request):
     try:
         ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
         if not ver:
-            return HTMLResponse("版本不存在", status_code=404)
+            return _error_page(request, 404, "版本不存在")
         items = _c.execute(
             "SELECT * FROM bom_items WHERE bom_version_id=? ORDER BY line_no",
             (version_id,)
@@ -2303,7 +2415,7 @@ async def admin_bom_edit_save(version_id: str, request: Request):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     new_model = str(form.get("model_code", "")).strip()
     if not new_model:
         return _bom_error_page(request, user, "机型码不能为空")
@@ -2323,7 +2435,7 @@ async def admin_bom_edit_save(version_id: str, request: Request):
     try:
         ver = _c.execute("SELECT * FROM bom_versions WHERE id=?", (version_id,)).fetchone()
         if not ver:
-            return HTMLResponse("版本不存在", status_code=404)
+            return _error_page(request, 404, "版本不存在")
         old_model = ver["model_code"]
         # 新版本号
         if new_model == old_model:
@@ -2362,7 +2474,7 @@ async def admin_bom_preview(request: Request):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     upload = form.get("file")
     model_code = str(form.get("modelCode", "")).strip()
     if upload is None or not hasattr(upload, "filename") or not model_code:
@@ -2425,7 +2537,7 @@ async def admin_bom_commit(request: Request):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         api_bom_commit(
@@ -2464,7 +2576,7 @@ async def admin_model_upload(request: Request):
         return _see_other("/admin/login")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     upload = form.get("file")
     try:
@@ -2493,7 +2605,7 @@ async def admin_device_bind_model(request: Request):
         return _see_other("/admin/login")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     device_id = str(form.get("deviceId", "")).strip()
     model_code = str(form.get("model3dCode", "")).strip() or None
     if not device_id:
@@ -2523,7 +2635,7 @@ def admin_model_view(request: Request, code: str = "", version: str = ""):
     except ValueError:
         ver = 0
     if not MODEL_CODE_RE.fullmatch(model_code) or ver < 1:
-        return HTMLResponse("模型不存在", status_code=404)
+        return _error_page(request, 404, "模型不存在")
     c = db()
     row = c.execute(
         "SELECT model_code, model_name, version, status, byte_size FROM assembly_model_versions WHERE model_code=? AND version=?",
@@ -2531,7 +2643,7 @@ def admin_model_view(request: Request, code: str = "", version: str = ""):
     ).fetchone()
     c.close()
     if not row:
-        return HTMLResponse("模型不存在", status_code=404)
+        return _error_page(request, 404, "模型不存在")
     return templates.TemplateResponse(
         request,
         "model_view.html",
@@ -2676,9 +2788,7 @@ def _order_create_or_403(request: Request):
     if user is None:
         return None, _see_other("/admin/login")
     if user["role"] not in ORDER_CREATE_ROLES:
-        return None, HTMLResponse(
-            "403 禁止访问：创建订单仅对管理员/计划员开放", status_code=403
-        )
+        return None, _error_page(request, 403, "403 禁止访问：创建订单仅对管理员/计划员开放")
     return user, None
 
 
@@ -2710,7 +2820,7 @@ async def admin_order_create(request: Request):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     values = {k: str(v) for k, v in form.items() if k != "csrf_token"}
     models = []
     for i in range(1, 6):
@@ -2752,7 +2862,7 @@ async def admin_order_status(request: Request, order_no: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     operation_id = str(form.get("clientOperationId", "")) or str(uuid.uuid4())
     try:
         api_set_order_status(
@@ -2761,17 +2871,8 @@ async def admin_order_status(request: Request, order_no: str):
             user=user,
             x_request_id=str(uuid.uuid4()),
         )
-    except (ApiError, ValidationError) as exc:
-        msg = _api_error_message(exc)
-        return HTMLResponse(
-            f"<p class='error'>{msg}</p><p><a href='/admin/orders'>返回订单列表</a></p>",
-            status_code=200,
-        )
-    except HTTPException as exc:
-        return HTMLResponse(
-            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/orders'>返回订单列表</a></p>",
-            status_code=200,
-        )
+    except (ApiError, ValidationError, HTTPException) as exc:
+        return _action_failed(request, exc, "/admin/orders", "返回订单列表")
     return _see_other("/admin/orders?notice=order_status_changed")
 
 
@@ -2785,7 +2886,7 @@ async def admin_revoke_sessions(request: Request, user_id: str):
         return denied
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     try:
         api_revoke_sessions(
             user_id,
@@ -2793,16 +2894,8 @@ async def admin_revoke_sessions(request: Request, user_id: str):
             user=user,
             x_request_id=str(uuid.uuid4()),
         )
-    except (ApiError, ValidationError) as exc:
-        return HTMLResponse(
-            f"<p class='error'>{_api_error_message(exc)}</p><p><a href='/admin/users'>返回用户列表</a></p>",
-            status_code=200,
-        )
-    except HTTPException as exc:
-        return HTMLResponse(
-            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/users'>返回用户列表</a></p>",
-            status_code=200,
-        )
+    except (ApiError, ValidationError, HTTPException) as exc:
+        return _action_failed(request, exc, "/admin/users", "返回用户列表")
     return _see_other("/admin/users?notice=sessions_revoked")
 
 
@@ -2817,12 +2910,10 @@ async def admin_task_create(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in TASK_CREATE_ROLES:
-        return HTMLResponse(
-            "403 禁止访问：创建任务仅对管理员/车间主管开放", status_code=403
-        )
+        return _error_page(request, 403, "403 禁止访问：创建任务仅对管理员/车间主管开放")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     try:
         api_create_task(
             TaskCreateRequest(
@@ -2834,16 +2925,8 @@ async def admin_task_create(request: Request):
             user=user,
             x_request_id=str(uuid.uuid4()),
         )
-    except (ApiError, ValidationError) as exc:
-        return HTMLResponse(
-            f"<p class='error'>{_api_error_message(exc)}</p><p><a href='/admin/tasks'>返回任务列表</a></p>",
-            status_code=200,
-        )
-    except HTTPException as exc:
-        return HTMLResponse(
-            f"<p class='error'>{exc.status_code}：{exc.detail}</p><p><a href='/admin/tasks'>返回任务列表</a></p>",
-            status_code=200,
-        )
+    except (ApiError, ValidationError, HTTPException) as exc:
+        return _action_failed(request, exc, "/admin/tasks", "返回任务列表")
     return _see_other("/admin/tasks?notice=task_created")
 
 
@@ -2925,10 +3008,10 @@ def admin_barcodes_print(request: Request):
     except ValueError:
         copies = 1
     if not key:
-        return HTMLResponse("缺少编号参数", status_code=400)
+        return _error_page(request, 400, "缺少编号参数")
     payload, error = _barcode_preview(entity, key, kind)
     if error:
-        return HTMLResponse(error, status_code=404)
+        return _error_page(request, 404, error)
     label = _barcodes.ENTITIES[entity][2]
     img = _barcodes.data_uri(payload, kind, "svg", _barcode_label(entity))
     items = [{"payload": payload, "img": img} for _ in range(copies)]
@@ -3016,7 +3099,7 @@ def admin_agent(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问：管理界面仅对管理员开放", status_code=403)
+        return _error_page(request, 403, "403 禁止访问：管理界面仅对管理员开放")
     return templates.TemplateResponse(
         request,
         "agent.html",
@@ -3107,12 +3190,11 @@ async def admin_agent_chat(request: Request, user: sqlite3.Row = Depends(_agent_
         finally:
             c.close()
     try:
-        try:
-            result = await asyncio.to_thread(_run)
-        except Exception as e:
-            return JSONResponse({"error": {"code": "AGENT_ERROR", "message": str(e)[:500]}}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"error": {"code": "AGENT_CONFIG_ERROR", "message": str(e)[:200]}}, status_code=503)
+        result = await asyncio.to_thread(_run)
+    except ValueError as e:  # 会话不存在 / 不属于当前用户等业务校验
+        return _agent_bad(str(e))
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "AGENT_ERROR", 503)
     return JSONResponse(result)
 
 
@@ -3138,14 +3220,25 @@ async def admin_agent_chat_stream(request: Request, user: sqlite3.Row = Depends(
     def push(ev: dict) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, ev)
 
+    trace_id = _request_trace_id(request)
+
     def worker() -> None:
         c = db()
         try:
             cfg = _agent_cfg_effective(c)
             result = agent_service.run_chat(c, cfg, user["id"], session_id, message, on_event=push)
             push({"type": "done", **result})
+        except ValueError as e:  # 业务校验文案（会话不存在等）
+            push({"type": "error", "message": str(e)[:200], "traceId": trace_id})
         except Exception as e:  # noqa: BLE001
-            push({"type": "error", "message": str(e)[:500]})
+            from app.agent.llm import LLMError
+            if isinstance(e, LLMError):
+                _log.warning("agent stream LLM error traceId=%s: %s", trace_id, e)
+                msg = _agent_llm_public_message(e)
+            else:
+                _log.error("agent stream failed traceId=%s", trace_id, exc_info=e)
+                msg = AGENT_GENERIC_MESSAGE
+            push({"type": "error", "message": msg, "traceId": trace_id})
         finally:
             c.close()
             push(None)
@@ -3175,6 +3268,40 @@ def _agent_json_user(request: Request):
 def _agent_bad(msg: str, code: int = 400):
     return JSONResponse({"error": {"code": "BAD_REQUEST" if code == 400 else "NOT_FOUND", "message": msg}},
                         status_code=code)
+
+
+AGENT_GENERIC_MESSAGE = "服务暂时不可用，请稍后重试"
+
+
+def _agent_llm_public_message(exc: Exception) -> str:
+    """LLMError 文案由本项目编写，但可能拼接上游响应片段 / 网络原因：只保留冒号前的固定部分。"""
+    msg = str(exc) or "LLM 调用失败"
+    for sep in ("：", ": "):
+        if sep in msg:
+            msg = msg.split(sep, 1)[0]
+    return msg[:120]
+
+
+def _agent_fail(request: Request, exc: Exception, code: str, status: int = 500, *, upload: bool = False):
+    """智能助手接口统一错误：ApiError 透传其中文文案；其他异常只返回通用文案 + traceId，完整异常写服务端日志。
+
+    upload=True（文件预览接口）：文件校验类 415/422 统一为 400，页面按「请求有误」提示。
+    """
+    trace_id = _request_trace_id(request)
+    if isinstance(exc, ApiError):
+        status_code = 400 if upload and exc.status_code in (415, 422) else exc.status_code
+        return JSONResponse({"error": {
+            "code": exc.code, "message": str(exc.detail or "操作失败"),
+            "traceId": _safe_trace_id(exc.trace_id) or trace_id,
+        }}, status_code=status_code)
+    from app.agent.llm import LLMError
+    if isinstance(exc, LLMError):
+        _log.warning("agent LLM error code=%s traceId=%s path=%s: %s", code, trace_id, request.url.path, exc)
+        return JSONResponse({"error": {"code": code, "message": _agent_llm_public_message(exc),
+                                       "traceId": trace_id}}, status_code=status)
+    _log.error("agent endpoint failed code=%s traceId=%s path=%s", code, trace_id, request.url.path, exc_info=exc)
+    return JSONResponse({"error": {"code": code, "message": AGENT_GENERIC_MESSAGE, "traceId": trace_id}},
+                        status_code=status)
 
 
 @router.get("/admin/agent/sessions")
@@ -3335,11 +3462,8 @@ async def admin_agent_bom_preview(request: Request, file: _UploadFile = _File(..
                                   user: sqlite3.Row = Depends(_agent_bom_upload)):
     try:
         preview = await api_bom_preview(file=file, modelCode=model_code.strip(), user=user, x_request_id=str(__import__("uuid").uuid4()))
-    except Exception as e:
-        from app.main import ApiError as _ApiError
-        if isinstance(e, _ApiError):
-            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
-        return JSONResponse({"error": {"code": "BOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "BOM_ERROR", upload=True)
     return JSONResponse(preview)
 
 @router.post("/admin/agent/import/bom/commit")
@@ -3362,11 +3486,8 @@ async def admin_agent_bom_commit(request: Request, user: sqlite3.Row = Depends(_
             user=user, x_request_id=str(_uuid2.uuid4()),
             idempotency_key=body.get("client_operation_id") or str(_uuid2.uuid4()),
         )
-    except Exception as e:
-        from app.main import ApiError as _ApiError2
-        if isinstance(e, _ApiError2):
-            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
-        return JSONResponse({"error": {"code": "BOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "BOM_ERROR")
     return JSONResponse(result)
 
 
@@ -3500,11 +3621,8 @@ async def admin_agent_aggbom_preview(request: Request, file: _UploadFile = _File
     try:
         from app.main import preview_agg_bom as _preview_aggbom
         preview = await _preview_aggbom(file=upload, user=user, x_request_id=str(__import__("uuid").uuid4()))
-    except Exception as e:
-        from app.main import ApiError as _ApiError
-        if isinstance(e, _ApiError):
-            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
-        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "AGGBOM_ERROR", upload=True)
     return JSONResponse(preview)
 
 @router.post("/admin/agent/import/aggbom/commit")
@@ -3524,11 +3642,8 @@ async def admin_agent_aggbom_commit(request: Request, user: sqlite3.Row = Depend
             body=_AggReq(previewId=preview_id, clientOperationId=op_id),
             user=user, x_request_id=str(_uuid3.uuid4()), idempotency_key=op_id,
         )
-    except Exception as e:
-        from app.main import ApiError as _ApiError3
-        if isinstance(e, _ApiError3):
-            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
-        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "AGGBOM_ERROR")
     return JSONResponse(result)
 
 @router.get("/admin/agent/aggbom/batches")
@@ -3542,11 +3657,8 @@ async def admin_agent_aggbom_aggregate(request: Request, batch_id: str = "", dev
     from app.main import aggregate_agg_bom as _agg
     try:
         return JSONResponse(_agg(batch_id=batch_id, device_codes=device_codes, user=user))
-    except Exception as e:
-        from app.main import ApiError as _ApiError4
-        if isinstance(e, _ApiError4):
-            return JSONResponse({"error": {"code": e.code, "message": e.message}}, status_code=e.status_code)
-        return JSONResponse({"error": {"code": "AGGBOM_ERROR", "message": str(e)[:500]}}, status_code=500)
+    except Exception as e:  # noqa: BLE001
+        return _agent_fail(request, e, "AGGBOM_ERROR")
 
 # 智能助手 LLM 设置（存数据库，覆盖环境变量）
 import time as _time
@@ -3627,7 +3739,7 @@ def admin_releases(request: Request):
         request, "releases.html",
         {"user": user,
          "releases": releases,
-         "notice": request.query_params.get("notice", ""),
+         **_coded_notice(request, RELEASE_NOTICES, "上传失败"),
          "csrf_token": user["csrf_token"]},
     )
 
@@ -3638,10 +3750,10 @@ async def admin_releases_upload(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
+        return _error_page(request, 403, "403 禁止访问")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     upload = form.get("file")
     if upload is None or not getattr(upload, "filename", ""):
         return _see_other("/admin/releases?notice=no_file")
@@ -3663,7 +3775,7 @@ async def admin_releases_upload(request: Request):
     except ApiError as exc:
         return _see_other(f"/admin/releases?notice={exc.code}")
     except HTTPException as exc:
-        return _see_other(f"/admin/releases?notice={getattr(exc, 'detail', 'upload_failed')}")
+        return _see_other("/admin/releases?notice=upload_failed")
     return _see_other("/admin/releases?notice=uploaded")
 
 
@@ -3673,10 +3785,10 @@ async def admin_releases_delete(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
+        return _error_page(request, 403, "403 禁止访问")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     try:
         version_code = int(str(form.get("version_code", "")).strip())
     except (ValueError, AttributeError):
@@ -3711,7 +3823,7 @@ def admin_system(request: Request):
          "deployed_sha_diag": _updates.deployed_sha_diagnose(),
          "update_status": _updates.get_update_status(),
          "check_result": check_result,
-         "notice": request.query_params.get("notice", ""),
+         **_coded_notice(request, SYSTEM_NOTICES, "操作失败，请稍后重试"),
          "csrf_token": user["csrf_token"]},
     )
 
@@ -3722,10 +3834,10 @@ async def admin_system_update_check(request: Request):
     if user is None:
         return _see_other("/admin/login")
     if user["role"] not in WEB_ROLES:
-        return HTMLResponse("403 禁止访问", status_code=403)
+        return _error_page(request, 403, "403 禁止访问")
     form = await request.form()
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
-        return HTMLResponse("CSRF 校验失败", status_code=403)
+        return _error_page(request, 403, "CSRF 校验失败")
     from app import updates as _updates
     try:
         info = _updates.check_github_update()

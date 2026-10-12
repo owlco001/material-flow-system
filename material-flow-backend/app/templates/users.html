@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}用户管理 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>用户管理</h2>
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(notice_text, error) }}
 <form method="get" action="/admin/users" style="margin:12px 0;display:flex;gap:8px;align-items:center">
   <input name="q" value="{{ request.query_params.get('q', '') }}" placeholder="搜索工号/姓名" style="max-width:200px">
   <button type="submit" class="btn btn-sm">搜索</button>
@@ -21,35 +21,80 @@
     <td>{{ "在职" if row.active else "已停用" }}</td>
     <td>{{ "是" if row.must_change_password else "否" }}</td>
     <td>{{ row.manager_name or "—" }}</td>
-    <td>
+    <td class="user-actions">
       <a href="/admin/users/{{ row.id }}/edit">编辑</a>
-      <form method="post" action="/admin/users/{{ row.id }}/password-reset" style="display:inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="clientOperationId" value="{{ reset_ops[row.id] }}">
-        <input name="newPassword" type="password" placeholder="新密码(至少8位)" required minlength="8" style="max-width:150px">
-        <button type="submit" class="btn btn-secondary btn-sm" style="margin:0">重置密码</button>
-      </form>
-      <form method="post" action="/admin/users/{{ row.id }}/revoke-sessions" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」在所有设备上的登录会立即失效，需要重新登录。" data-confirm-title="强制下线？" data-confirm-ok="强制下线">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-warn btn-sm" style="margin:0">强制下线</button>
-      </form>
+      <button type="button" class="btn btn-secondary btn-sm" data-user-action="reset" data-user-id="{{ row.id }}" data-user-name="{{ row.display_name or row.username }}">重置密码</button>
+      <button type="button" class="btn btn-warn btn-sm" data-user-action="revoke" data-user-id="{{ row.id }}" data-user-name="{{ row.display_name or row.username }}">强制下线</button>
       {% if row.active %}
-      <form method="post" action="/admin/users/{{ row.id }}/delete" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」将无法登录，历史操作记录全部保留，之后可以重新启用。" data-confirm-title="停用账号？" data-confirm-ok="停用" data-confirm-danger>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="clientOperationId" value="{{ delete_ops[row.id] }}">
-        <button type="submit" class="btn btn-danger btn-sm">停用</button>
-      </form>
+      <button type="button" class="btn btn-danger btn-sm" data-user-action="delete" data-user-id="{{ row.id }}" data-user-name="{{ row.display_name or row.username }}">停用</button>
       {% else %}
-      <form method="post" action="/admin/users/{{ row.id }}/hard-delete" style="display:inline" data-confirm="「{{ row.display_name or row.username }}」将被永久删除，无法恢复。仅没有任何历史记录的账号可以删除。" data-confirm-title="彻底删除账号？" data-confirm-ok="永久删除" data-confirm-danger>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="clientOperationId" value="{{ hard_delete_ops[row.id] }}">
-        <button type="submit" class="btn btn-danger btn-sm">删除</button>
-      </form>
+      <button type="button" class="btn btn-danger btn-sm" data-user-action="hard-delete" data-user-id="{{ row.id }}" data-user-name="{{ row.display_name or row.username }}">删除</button>
       {% endif %}
     </td>
   </tr>
   {% endfor %}
 </table>
 {{ pager(paging.page, paging.pages, paging.total, "/admin/users", {"q": q}) }}
+
+{#- 行内操作共用一个弹窗（v0.6.3）：按钮只带 data-user-*，弹窗表单的 action / 文案由脚本按操作类型填充。 -#}
+<div class="ui-confirm-mask" id="userActionMask" role="dialog" aria-modal="true" aria-labelledby="userActionTitle">
+  <form class="ui-confirm" id="userActionForm" method="post" action="">
+    <h3 id="userActionTitle">用户操作</h3>
+    <p id="userActionText"></p>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" id="userActionOp" value="{{ modal_op_id }}">
+    <div id="userActionPwdRow" style="display:none;margin:-8px 0 16px">
+      <input name="newPassword" id="userActionPwd" type="password" placeholder="新密码（至少 8 位）" minlength="8" autocomplete="new-password" disabled>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn btn-secondary" id="userActionCancel">取消</button>
+      <button type="submit" class="btn" id="userActionOk">确认</button>
+    </div>
+  </form>
+</div>
+<script>
+(function(){
+  var ACTIONS = {
+    "reset": {path: "password-reset", title: "重置密码", ok: "重置密码", danger: false, pwd: true, op: true,
+              text: "为「{name}」设置新密码。重置后该用户所有会话立即失效，首次登录需修改密码。"},
+    "revoke": {path: "revoke-sessions", title: "强制下线？", ok: "强制下线", danger: false, pwd: false, op: false,
+               text: "「{name}」在所有设备上的登录会立即失效，需要重新登录。"},
+    "delete": {path: "delete", title: "停用账号？", ok: "停用", danger: true, pwd: false, op: true,
+               text: "「{name}」将无法登录，历史操作记录全部保留，之后可以重新启用。"},
+    "hard-delete": {path: "hard-delete", title: "彻底删除账号？", ok: "永久删除", danger: true, pwd: false, op: true,
+                    text: "「{name}」将被永久删除，无法恢复。仅没有任何历史记录的账号可以删除。"}
+  };
+  var mask = document.getElementById("userActionMask");
+  var form = document.getElementById("userActionForm");
+  var pwdRow = document.getElementById("userActionPwdRow");
+  var pwd = document.getElementById("userActionPwd");
+  var op = document.getElementById("userActionOp");
+  var okBtn = document.getElementById("userActionOk");
+  function newOpId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return op.defaultValue;
+  }
+  function close() { mask.classList.remove("show"); }
+  document.addEventListener("click", function(e){
+    var btn = e.target.closest("[data-user-action]");
+    if (!btn) return;
+    var a = ACTIONS[btn.getAttribute("data-user-action")];
+    if (!a) return;
+    form.action = "/admin/users/" + encodeURIComponent(btn.getAttribute("data-user-id")) + "/" + a.path;
+    document.getElementById("userActionTitle").textContent = a.title;
+    document.getElementById("userActionText").textContent = a.text.replace("{name}", btn.getAttribute("data-user-name") || "");
+    okBtn.textContent = a.ok;
+    okBtn.className = a.danger ? "btn btn-danger" : "btn";
+    pwdRow.style.display = a.pwd ? "" : "none";
+    pwd.disabled = !a.pwd; pwd.required = a.pwd; pwd.value = "";
+    op.disabled = !a.op; op.value = newOpId();
+    mask.classList.add("show");
+    if (a.pwd) pwd.focus(); else okBtn.focus();
+  });
+  document.getElementById("userActionCancel").addEventListener("click", close);
+  mask.addEventListener("click", function(e){ if (e.target === mask) close(); });
+  document.addEventListener("keydown", function(e){ if (e.key === "Escape" && mask.classList.contains("show")) close(); });
+})();
+</script>
 </div>
 {% endblock %}

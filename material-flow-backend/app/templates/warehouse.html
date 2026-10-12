@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}物料与库存 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>物料与库存</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
+{{ flash(notice_text, error) }}
 {% if material %}
 {% set m = material.get("material") or {} %}
 {% set inv = material.get("inventory") or {} %}

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}装配模型 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>装配模型管理</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
+{{ flash(notice_text, error) }}
 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
 <div class="card" style="flex:2;min-width:320px">
   <h3>上传 GLB 模型</h3>
@@ -83,11 +84,7 @@
   <tr><td colspan="11">暂无数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}<a href="/admin/models?page={{ page - 1 }}&code={{ code }}&q={{ q }}" class="btn btn-sm">上一页</a>{% endif %}
-  第 {{ page }} / {{ total_pages }} 页（共 {{ total }} 条）
-  {% if page < total_pages %}<a href="/admin/models?page={{ page + 1 }}&code={{ code }}&q={{ q }}" class="btn btn-sm">下一页</a>{% endif %}
-</p>
+{{ pager(page, total_pages, total, "/admin/models", {"code": code, "q": q}) }}
 
 <h3 style="margin-top:16px">机台 3D 模型绑定</h3>
 <p style="color:#666;font-size:13px">给机台绑定 3D 装配模型后，App 机台详情页头图的 3D 入口即打开该模型；未绑定的机台仍按 App 内置映射表兜底。</p>
@@ -167,10 +164,6 @@
   <p class="muted">暂无机台</p>
   {% endfor %}
 </div>
-<p style="margin-top:12px">
-  {% if dpage > 1 %}<a href="/admin/models?code={{ code }}&q={{ q }}&dq={{ dq }}&dpage={{ dpage - 1 }}" class="btn btn-sm">上一页</a>{% endif %}
-  第 {{ dpage }} / {{ dtotal_pages }} 页
-  {% if dpage < dtotal_pages %}<a href="/admin/models?code={{ code }}&q={{ q }}&dq={{ dq }}&dpage={{ dpage + 1 }}" class="btn btn-sm">下一页</a>{% endif %}
-</p>
+{{ pager(dpage, dtotal_pages, dtotal, "/admin/models", {"code": code, "q": q, "dq": dq}, "dpage") }}
 </div>
 {% endblock %}

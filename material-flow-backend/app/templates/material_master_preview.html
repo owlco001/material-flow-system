@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block title %}物料主档导入 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <p><a href="/admin/material-master">← 物料主档</a></p>
 <h2>{{ b.fileName }}</h2>
 <p class="page-desc">工作表「{{ b.sheetName }}」· 表头在第 {{ b.headerRow }} 行 · 识别 {{ b.summary.recognizedColumns }} 列
 {% if b.status == 'PREVIEW' %}· 预览有效至 {{ b.expiresAt[:16].replace('T', ' ') }}（UTC）{% endif %}</p>
-{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{{ flash(notice_text, notice_error) }}
 
 <div class="cards">
   <div class="card"><p class="stat-label">总行数</p><p class="stat-num">{{ b.preview.totalRows }}</p></div>

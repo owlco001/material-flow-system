@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}工时汇总 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>工时汇总</h2>
 <div class="card">
@@ -33,14 +34,6 @@
   <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}
-  <a href="/admin/reports/labor?page={{ page - 1 }}&deviceId={{ filters.deviceId or '' }}&orderNo={{ filters.orderNo or '' }}&assemblerId={{ filters.assemblerId or '' }}">上一页</a>
-  {% endif %}
-  第 {{ page }} / {{ total_pages }} 页
-  {% if page < total_pages %}
-  <a href="/admin/reports/labor?page={{ page + 1 }}&deviceId={{ filters.deviceId or '' }}&orderNo={{ filters.orderNo or '' }}&assemblerId={{ filters.assemblerId or '' }}">下一页</a>
-  {% endif %}
-</p>
+{{ pager(page, total_pages, total_rows, "/admin/reports/labor", {"deviceId": filters.deviceId, "orderNo": filters.orderNo, "assemblerId": filters.assemblerId}) }}
 </div>
 {% endblock %}

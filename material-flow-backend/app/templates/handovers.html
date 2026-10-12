@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% block title %}交接留痕 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>交接留痕</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{{ flash(error=error) }}
 {% if result %}
 <div class="card">
   <h3>交接 {{ result.handoverId }}</h3>
@@ -61,11 +63,7 @@
   </tr>
   {% endfor %}
 </table>
-<p style="margin-top:12px">
-  {% if page > 1 %}<a href="/admin/handovers?page={{ page - 1 }}" class="btn btn-sm">上一页</a>{% endif %}
-  第 {{ page }} / {{ total_pages }} 页
-  {% if page < total_pages %}<a href="/admin/handovers?page={{ page + 1 }}" class="btn btn-sm">下一页</a>{% endif %}
-</p>
+{{ pager(page, total_pages, total, "/admin/handovers") }}
 {% endif %}
 </div>
 {% endblock %}

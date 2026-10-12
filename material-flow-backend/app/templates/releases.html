@@ -1,18 +1,11 @@
 {% extends "base.html" %}
 {% block title %}APP 更新 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
 <div class="compact">
 <h2>APP 更新通道</h2>
 <p class="page-desc">APK 托管在本后端上。APP 以「设置的后端地址」为基地址调用 <code>/api/v1/app/updates/latest</code> 检查更新，后端地址设在哪，更新源就在哪。</p>
-{% if notice == "uploaded" %}<p class="notice">上传成功，已发布。</p>{% endif %}
-{% if notice == "deleted" %}<p class="notice">已删除。</p>{% endif %}
-{% if notice == "not_found" %}<p class="error">未找到该版本。</p>{% endif %}
-{% if notice == "no_file" %}<p class="error">请选择 APK 文件。</p>{% endif %}
-{% if notice == "bad_version" %}<p class="error">versionCode 必须为正整数。</p>{% endif %}
-{% if notice == "INVALID_APK" %}<p class="error">文件不是有效的 APK。</p>{% endif %}
-{% if notice == "APK_TOO_LARGE" %}<p class="error">APK 超过 300MB 上限。</p>{% endif %}
-{% if notice == "RELEASE_EXISTS" %}<p class="error">该 versionCode 已存在，请先删除旧版。</p>{% endif %}
-{% if notice == "INVALID_VERSION_NAME" %}<p class="error">versionName 格式无效（仅允许字母数字 . _ -）。</p>{% endif %}
+{{ flash(notice_text, notice_error) }}
 
 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
 <div class="card" style="flex:1;min-width:320px">

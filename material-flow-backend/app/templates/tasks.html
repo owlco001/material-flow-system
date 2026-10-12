@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}机台任务 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>机台任务</h2>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-{% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
-{% if request and request.query_params.get("notice") == "task_created" %}<p class="notice">机台任务已创建</p>{% endif %}
+{{ flash(notice_text, error) }}
 
 {% if user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
 <details style="margin-bottom:16px">
@@ -109,10 +109,6 @@
 })();
 </script>
 
-<p style="margin-top:12px">
-  {% if page > 1 %}<a href="/admin/tasks?page={{ page - 1 }}&q={{ q }}&status={{ f_status }}" class="btn btn-sm">上一页</a>{% endif %}
-  第 {{ page }} / {{ total_pages }} 页
-  {% if page < total_pages %}<a href="/admin/tasks?page={{ page + 1 }}&q={{ q }}&status={{ f_status }}" class="btn btn-sm">下一页</a>{% endif %}
-</p>
+{{ pager(page, total_pages, total_rows, "/admin/tasks", {"q": q, "status": f_status}) }}
 </div>
 {% endblock %}

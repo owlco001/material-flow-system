@@ -5,6 +5,7 @@ import hmac
 import json
 import csv
 import io
+import logging
 import os
 import random
 import re
@@ -13,6 +14,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,7 @@ if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", APP_VERSIO
     raise RuntimeError("VERSION file has an invalid format")
 
 app = FastAPI(title="智慧工厂 API", version=APP_VERSION)
+_error_log = logging.getLogger("material_flow.errors")
 bearer = HTTPBearer(auto_error=False)
 
 HEALTH_TABLES = frozenset({
@@ -259,9 +262,23 @@ async def validation_error_handler(request: Request, _exc: RequestValidationErro
     )
 
 
+def _admin_html_error(request: Request, status_code: int, message: str, trace_id: str):
+    """浏览器访问 /admin 页面出错时返回样式化 HTML 错误页（JSON 接口不受影响）。"""
+    try:
+        from app.admin_web import _error_page, wants_admin_html
+    except Exception:  # noqa: BLE001
+        return None
+    if not wants_admin_html(request):
+        return None
+    return _error_page(request, status_code, message, trace_id=trace_id)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_error_handler(request: Request, exc: StarletteHTTPException):
     message = _safe_http_message(exc.status_code, exc.detail)
+    page = _admin_html_error(request, exc.status_code, message, _request_trace_id(request))
+    if page is not None:
+        return page
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -283,6 +300,11 @@ async def http_error_handler(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, _exc: Exception):
     """Turn unexpected failures into a stable response without stack/database details."""
+    trace_id = _request_trace_id(request)
+    _error_log.error("unhandled error traceId=%s %s %s", trace_id, request.method, request.url.path, exc_info=_exc)
+    page = _admin_html_error(request, 500, "服务器内部错误，请稍后重试；如持续出现请把追踪编号发给管理员", trace_id)
+    if page is not None:
+        return page
     return JSONResponse(
         status_code=500,
         content={
@@ -290,7 +312,7 @@ async def unhandled_error_handler(request: Request, _exc: Exception):
                 "code": "INTERNAL_SERVER_ERROR",
                 "message": "服务器内部错误",
                 "retryable": True,
-                "traceId": _request_trace_id(request),
+                "traceId": trace_id,
             },
         },
     )
@@ -454,14 +476,116 @@ def _enable_wal(c: sqlite3.Connection) -> None:
             time.sleep(0.05)
 
 
-def db() -> sqlite3.Connection:
-    _ensure_storage_dirs()
-    c = sqlite3.connect(DB_PATH, timeout=30.0)
+# 已确认 WAL 的数据库文件（journal_mode=WAL 持久写在库文件里，进程内只需检查一次；v0.6.3 评审 P2-13）。
+_WAL_READY: set[str] = set()
+# 请求级共享连接（管理台 GET 页面）：同一请求内 _session_user / 业务查询 / 复用的 API 函数共用一个连接。
+_REQUEST_CONN: ContextVar["_RequestConnectionHolder | None"] = ContextVar("mf_request_conn", default=None)
+
+
+def _open_db(*, check_same_thread: bool = True) -> sqlite3.Connection:
+    key = str(DB_PATH)
+    if key not in _WAL_READY:
+        _ensure_storage_dirs()
+    # timeout=30.0 即 sqlite3_busy_timeout(30000)，与原 PRAGMA busy_timeout=30000 等价，不再重复执行。
+    c = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=check_same_thread)
     c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys=ON")
-    c.execute("PRAGMA busy_timeout=30000")
-    _enable_wal(c)
+    c.execute("PRAGMA foreign_keys=ON")  # 连接级设置，每个连接都要开
+    if key not in _WAL_READY:
+        _enable_wal(c)
+        _WAL_READY.add(key)
     return c
+
+
+class _SharedConnection:
+    """请求级共享连接的代理：close() 只回滚未提交的事务（与真正关闭连接的语义一致），不关闭连接。"""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_conn", conn)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(self._conn, name, value)
+
+    def close(self) -> None:
+        if self._conn.in_transaction:
+            self._conn.rollback()
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
+
+class _RequestConnectionHolder:
+    __slots__ = ("conn", "path", "opened")
+
+    def __init__(self) -> None:
+        self.conn: sqlite3.Connection | None = None
+        self.path: str = ""
+        self.opened = 0
+
+    def get(self) -> "_SharedConnection | None":
+        if self.conn is None:
+            # 同一请求可能先在事件循环、后在线程池里用到连接（串行），故关闭同线程检查。
+            self.conn = _open_db(check_same_thread=False)
+            self.path = str(DB_PATH)
+            self.opened += 1
+        elif self.path != str(DB_PATH):
+            return None
+        return _SharedConnection(self.conn)
+
+    def close(self) -> None:
+        if self.conn is not None:
+            try:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+            finally:
+                self.conn.close()
+                self.conn = None
+
+
+def db() -> sqlite3.Connection:
+    holder = _REQUEST_CONN.get()
+    if holder is not None:
+        shared = holder.get()
+        if shared is not None:
+            return shared  # type: ignore[return-value]
+    return _open_db()
+
+
+def _shares_request_conn(scope) -> bool:
+    """只对管理台只读页面启用：GET/HEAD、/admin 下、非智能助手接口、非流式导出。"""
+    if scope.get("method") not in ("GET", "HEAD"):
+        return False
+    path = scope.get("path", "")
+    if not path.startswith("/admin") or path.startswith("/admin/agent/"):
+        return False
+    return not path.endswith("/export")
+
+
+class RequestDbMiddleware:
+    """ASGI 中间件：为符合条件的请求提供一个懒打开的共享 SQLite 连接，请求结束（响应发完）后关闭。"""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not _shares_request_conn(scope):
+            await self.app(scope, receive, send)
+            return
+        holder = _RequestConnectionHolder()
+        token = _REQUEST_CONN.set(holder)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _REQUEST_CONN.reset(token)
+            holder.close()
 
 
 @contextmanager
@@ -571,6 +695,8 @@ def init_db() -> None:
     _ensure_storage_dirs()
     c = db()
     try:
+        _enable_wal(c)
+        _WAL_READY.add(str(DB_PATH))
         _init_db(c)
         ensure_agent_tables(c)
         # 导入操作/错误日志表原先只在首次导入时懒建，新库打开管理台首页会 no such table
@@ -999,6 +1125,16 @@ def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    # 启动时清理过期的管理台会话（v0.6.3）；失败不影响启动
+    try:
+        c = db()
+        try:
+            c.execute("DELETE FROM web_sessions WHERE expires_at < ?", (int(time.time()),))
+            c.commit()
+        finally:
+            c.close()
+    except sqlite3.Error:
+        pass
 
 
 def current_user(
@@ -6954,6 +7090,19 @@ try:
 except ImportError:
     from admin_web import router as _admin_web_router
 app.include_router(_admin_web_router)
+# 管理台静态资源（带内容哈希长缓存）+ 文本响应 gzip（SSE / 二进制透传），v0.6.3
+try:
+    from .web_assets import STATIC_DIR as _STATIC_DIR, CachedStaticFiles as _CachedStaticFiles, SelectiveGZipMiddleware as _SelectiveGZip
+except ImportError:
+    from app.web_assets import STATIC_DIR as _STATIC_DIR, CachedStaticFiles as _CachedStaticFiles, SelectiveGZipMiddleware as _SelectiveGZip
+app.mount("/static", _CachedStaticFiles(directory=str(_STATIC_DIR)), name="static")
+app.add_middleware(_SelectiveGZip, minimum_size=1000)
+app.add_middleware(RequestDbMiddleware)
+try:
+    from .admin_web import SessionCookieRefreshMiddleware as _SessionCookieRefresh
+except ImportError:
+    from admin_web import SessionCookieRefreshMiddleware as _SessionCookieRefresh
+app.add_middleware(_SessionCookieRefresh)
 # Agent 接口（数据分析对话 + 智能导入），同样复用本模块服务函数，末尾注册避免循环导入。
 try:
     from .agent.routes import router as _agent_router

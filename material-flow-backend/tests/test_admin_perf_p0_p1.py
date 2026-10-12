@@ -25,6 +25,15 @@ from fastapi.testclient import TestClient
 from app import main as backend
 
 TEMPLATES = Path(backend.__file__).resolve().parent / "templates"
+STATIC = Path(backend.__file__).resolve().parent / "static" / "admin"
+
+
+def template_with_assets(name: str) -> str:
+    """模板 + 它引用的静态脚本/样式（v0.6.3 起 base.html / agent.html 的 JS/CSS 抽到 /static）。"""
+    text = (TEMPLATES / name).read_text(encoding="utf-8")
+    for rel in re.findall(r"static_url\('admin/([^']+)'\)", text):
+        text += "\n" + (STATIC / rel).read_text(encoding="utf-8")
+    return text
 
 USERS = (
     ("u_admin", "owlco", "ADMIN", "Admin@2026"),
@@ -365,14 +374,13 @@ def test_agent_role_checks():
         assert r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN"
         assert client.get("/admin/agent/sessions").status_code == 403
         assert client.get("/admin/agent/bom/models").status_code == 403
-    # raise_server_exceptions=False：commit 对不存在 preview_id 的旧错误分支会 500（e.message，0.6.3 修复），
-    # 这里只关心守卫放行（非 401/403）。
-    with TestClient(backend.app, raise_server_exceptions=False) as client:
+    with TestClient(backend.app) as client:
         token = login(client, "wh-admin")
         # 仓库管理员可用 BOM / 聚合 BOM 接口（含 GET）
+        # 单机型 BOM 导入仍受 main._bom_authorized（BOM_IMPORT_ROLES）约束：守卫放行后由业务层干净地 403
         r = client.post("/admin/agent/import/bom/commit", json={"preview_id": "p"},
                         headers={"X-CSRF-Token": token})
-        assert r.status_code not in (401, 403), r.text
+        assert r.status_code in (400, 403, 409, 422), r.text
         r = client.post("/admin/agent/import/aggbom/commit", json={"preview_id": "p"},
                         headers={"X-CSRF-Token": token})
         assert r.status_code not in (401, 403), r.text
@@ -400,8 +408,8 @@ def test_agent_role_checks():
 
 
 def test_agent_and_boms_pages_send_csrf_header():
-    agent = (TEMPLATES / "agent.html").read_text(encoding="utf-8")
-    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    agent = template_with_assets("agent.html")
+    base = template_with_assets("base.html")
     assert 'name="csrf-token"' in base and "function csrfHeaders" in base
     # 所有 POST / DELETE fetch 都带 csrfHeaders
     for match in re.finditer(r'fetch\(([^;]*?)method: "(POST|DELETE)"([^;]*?)\)', agent, re.S):
@@ -414,7 +422,7 @@ def test_agent_and_boms_pages_send_csrf_header():
 
 
 def test_agent_template_escapes_interpolations_and_has_no_inline_onclick_ids():
-    agent = (TEMPLATES / "agent.html").read_text(encoding="utf-8")
+    agent = template_with_assets("agent.html")
     assert "onclick=\"showAggBomDevices" not in agent
     assert "onclick=\\\"showAggBomDevices" not in agent
     assert "showAggBomDevices(\\'" not in agent
@@ -428,7 +436,7 @@ def test_agent_template_escapes_interpolations_and_has_no_inline_onclick_ids():
             line = agent[line_start:agent.find("\n", m.end())]
             assert any(marker in line for marker in safe_markers), (expr, line.strip()[:160])
     # escHtml 必须容忍 null / 数字
-    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    base = template_with_assets("base.html")
     assert 'String(t == null ? "" : t)' in base
 
 

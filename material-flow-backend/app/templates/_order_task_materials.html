@@ -63,12 +63,6 @@
     <p class="muted">该机台暂无物料需求</p>
     {% endfor %}
   </div>
-  {% if _pages > 1 %}
-  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-
-    {% if _page > 1 %}<a href="?q={{ _q }}&cat={{ _cat }}&size={{ _size }}&page={{ _page - 1 }}" class="btn" data-partial-link>上一页</a>{% endif %}
-    <span class="muted">{{ _page }}/{{ _pages }}</span>
-    {% if _page < _pages %}<a href="?q={{ _q }}&cat={{ _cat }}&size={{ _size }}&page={{ _page + 1 }}" class="btn" data-partial-link>下一页</a>{% endif %}
-  </div>
-  {% endif %}
+  {% from "_pagination.html" import pager %}
+  {{ pager(_page, _pages, none, "", {"q": _q, "cat": _cat, "size": _size}, "page", partial=true) }}
 </div>

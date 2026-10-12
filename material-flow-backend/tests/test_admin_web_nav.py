@@ -69,4 +69,14 @@ def test_reports_progress_bars_render():
         assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
         r = client.get("/admin/reports")
         assert r.status_code == 200
-        assert "bar-bg" in r.text and "bar-fg" in r.text
+        text = with_linked_assets(client, r.text)
+        assert "bar-bg" in text and "bar-fg" in text
+
+
+def with_linked_assets(client, html: str) -> str:
+    """v0.6.3 起公共 CSS/JS 抽到 /static：把页面引用的同源静态资源内容拼进来再断言。"""
+    for url in re.findall(r'(?:href|src)="(/static/[^"]+)"', html):
+        asset = client.get(url)
+        assert asset.status_code == 200, url
+        html += "\n" + asset.text
+    return html
