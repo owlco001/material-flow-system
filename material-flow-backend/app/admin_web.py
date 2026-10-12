@@ -3034,11 +3034,11 @@ from app.agent.routes import _agent_cfg as _get_agent_cfg
 # ---------- 智能助手接口统一守卫（v0.6.2）----------
 # 会话 + 角色 + X-CSRF-Token（与 /admin/system/update/apply 同一模式）+ JSON Content-Type。
 # 之前只校验会话存在，靠 SameSite=Lax 兜底；text/plain 表单可构造 JSON 体。
-# 对话/会话：管理台业务角色（悬浮球在各页面可用）；BOM/聚合 BOM：与 BOM 导入同角色；
+# 对话/会话：管理台业务角色（悬浮球在各页面可用）；BOM/聚合 BOM：BOM 导入角色 + 仓库管理员（仓库需用聚合 BOM）；
 # 智能导入：管理员/仓库管理员/计划员；LLM 设置与用量：仅管理员。
 AGENT_CHAT_ROLES = ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER")
 AGENT_IMPORT_ROLES = ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER")
-AGENT_BOM_ROLES = ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR")
+AGENT_BOM_ROLES = ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR", "WAREHOUSE_ADMIN")
 AGENT_SETTINGS_ROLES = ("ADMIN",)
 
 

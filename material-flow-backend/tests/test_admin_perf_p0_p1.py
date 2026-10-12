@@ -365,15 +365,26 @@ def test_agent_role_checks():
         assert r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN"
         assert client.get("/admin/agent/sessions").status_code == 403
         assert client.get("/admin/agent/bom/models").status_code == 403
-    with TestClient(backend.app) as client:
+    # raise_server_exceptions=False：commit 对不存在 preview_id 的旧错误分支会 500（e.message，0.6.3 修复），
+    # 这里只关心守卫放行（非 401/403）。
+    with TestClient(backend.app, raise_server_exceptions=False) as client:
         token = login(client, "wh-admin")
+        # 仓库管理员可用 BOM / 聚合 BOM 接口（含 GET）
         r = client.post("/admin/agent/import/bom/commit", json={"preview_id": "p"},
                         headers={"X-CSRF-Token": token})
-        assert r.status_code == 403
+        assert r.status_code not in (401, 403), r.text
         r = client.post("/admin/agent/import/aggbom/commit", json={"preview_id": "p"},
                         headers={"X-CSRF-Token": token})
-        assert r.status_code == 403
-        assert client.get("/admin/agent/aggbom/batches").status_code == 403
+        assert r.status_code not in (401, 403), r.text
+        assert client.get("/admin/agent/aggbom/batches").status_code == 200
+        assert client.get("/admin/agent/bom/models").status_code == 200
+        r = client.get("/admin/agent/bom/aggregate?items=")
+        assert r.status_code not in (401, 403), r.text
+        r = client.get("/admin/agent/aggbom/aggregate?batch_id=nope")
+        assert r.status_code not in (401, 403), r.text
+        # CSRF 仍然生效
+        r = client.post("/admin/agent/import/aggbom/commit", json={"preview_id": "p"})
+        assert r.status_code == 403 and r.json()["error"]["code"] == "CSRF_FAILED"
         # 仓库管理员仍可用智能导入
         r = client.post("/admin/agent/import/commit", json={}, headers={"X-CSRF-Token": token})
         assert r.status_code == 400
