@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}BOM 管理 · 智慧工厂{% endblock %}
+{% block page_title %}BOM 管理{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import simple_pager %}
@@ -16,7 +16,7 @@
       <div><label>机型码</label><input name="modelCode" required style="max-width:200px" placeholder="如 GearboxAssy"></div>
       <div><label>文件</label><input type="file" name="file" required accept=".csv,.xlsx"></div>
     </div>
-    <p class="page-desc" style="margin:4px 0 0">CSV 表头：modelCode,materialCode,materialName,specification,unit,quantity,scrapRate,substituteMaterialCodes</p>
+    <p class="page-desc" style="margin:4px 0 0;word-break:break-all">CSV 表头：modelCode,materialCode,materialName,specification,unit,quantity,scrapRate,substituteMaterialCodes</p>
     <button type="submit" class="btn btn-sm">上传并预览</button>
   </form>
 </div>
@@ -158,6 +158,7 @@ aggLoad();
 </script>
 
 <h3 style="margin-top:16px">聚合 BOM（智能导入，共 {{ agg_batches|length }} 批）</h3>
+<div class="table-wrap">
 <table>
   <tr><th>项目</th><th>文件名</th><th>机台数</th><th>物料数</th><th>行数</th><th>导入时间</th></tr>
   {% for b in agg_batches %}
@@ -167,31 +168,33 @@ aggLoad();
     <td>{{ b.device_count }}</td>
     <td>{{ b.material_count }}</td>
     <td>{{ b.row_count }}</td>
-    <td>{{ b.created_at[:16].replace("T", " ") if b.created_at else "—" }}</td>
+    <td>{{ b.created_at|local_dt }}</td>
   </tr>
   {% else %}
   <tr><td colspan="6">暂无聚合 BOM</td></tr>
   {% endfor %}
 </table>
+</div>
 
 <h3 style="margin-top:16px">版本列表（共 {{ total_rows }}）</h3>
+<div class="table-wrap">
 <table>
-  <tr><th>ID</th><th>机型码</th><th>版本</th><th>状态</th><th>行数</th><th>文件 SHA-256</th><th>创建</th><th>发布</th></tr>
+  <tr><th>机型码</th><th>版本</th><th>状态</th><th>行数</th><th>文件 SHA-256</th><th>创建</th><th>发布</th></tr>
   {% for item in items %}
   <tr>
-    <td>{{ item.id }}</td>
     <td><a href="/admin/models?code={{ item.model_code }}">{{ item.model_code }}</a></td>
-    <td><a href="/admin/boms/versions/{{ item.id }}">v{{ item.version_no }}</a></td>
-    <td>{{ {"DRAFT": "草稿", "PUBLISHED": "已发布", "ARCHIVED": "已归档"}.get(item.status, item.status) }}</td>
+    <td><a href="/admin/boms/versions/{{ item.id }}" title="版本 ID {{ item.id }}"><b>v{{ item.version_no }}</b></a></td>
+    <td>{% set _bs = item.status %}<span class="badge {{ {"PUBLISHED": "b-ok", "DRAFT": "b-warn"}.get(_bs, "b-mute") }}">{{ _bs|label("bom_status") }}</span></td>
     <td>{{ item.row_count }}</td>
     <td>{{ (item.source_file_sha256 or "")[:12] }}…</td>
-    <td>{{ item.created_by }} @ {{ item.created_at }}</td>
-    <td>{{ item.published_by or "—" }}</td>
+    <td>{{ item.created_by|user_name }} · {{ item.created_at|local_dt }}</td>
+    <td>{{ item.published_by|user_name }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="8">暂无数据</td></tr>
+  <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ simple_pager(page, items|length > 0, "/admin/boms", {"modelCode": filters.modelCode, "status": filters.status}) }}
 </div>
 {% endblock %}

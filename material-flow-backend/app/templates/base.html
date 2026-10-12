@@ -4,10 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {% if user %}<meta name="csrf-token" content="{{ user['csrf_token'] }}">{% endif %}
-<title>{% block title %}智慧工厂{% endblock %}</title>
+<title>{% block title %}{% set _pt = self.page_title()|trim %}{{ _pt ~ " · 智慧工厂" if _pt else "智慧工厂" }}{% endblock %}</title>
 <link rel="stylesheet" href="{{ static_url('admin/base.css') }}">
 <script src="{{ static_url('admin/base-head.js') }}"></script>
 </head>
+{% if false %}{% block page_title %}{% endblock %}{% endif %}
 <body class="{% if not user %}no-side{% endif %}">
 {% if user %}
 {% set _r = user.role %}
@@ -35,6 +36,10 @@
 <symbol id="i-sync" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
 <symbol id="i-drawing" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 18l3-6 2 3 3-5"/></symbol>
+<symbol id="i-bom" viewBox="0 0 24 24"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></symbol>
+<symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></symbol>
+<symbol id="i-handover" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></symbol>
 <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></symbol>
 <symbol id="i-factory" viewBox="0 0 24 24"><path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/></symbol>
 </svg>
@@ -43,47 +48,82 @@
     <span class="brand-mark"><svg class="ico" aria-hidden="true"><use href="#i-factory"/></svg></span><span class="side-brand-txt">智慧工厂</span>
     <button class="side-collapse" id="sideCollapse" title="收起侧边栏">‹</button>
   </div>
-  <nav class="side-nav">
-    {% if _r in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR") %}
-    <div class="side-group"><span>工作区</span></div>
-    <a class="side-link {% if _p == '/admin/workspace' %}active{% endif %}" href="/admin/workspace" title="工作台"><i><svg class="ico" aria-hidden="true"><use href="#i-workspace"/></svg></i><span>工作台</span></a>
-    <a class="side-link {% if _p.startswith('/admin/exceptions') %}active{% endif %}" href="/admin/exceptions" title="异常处理"><i><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg></i><span>异常处理</span></a>
+  {# 导航分组（v0.7.0）：工作区 / 生产 / 仓储 / 主数据 / 系统。每个链接的角色可见性与 0.6.x 完全一致。 #}
+  {% macro side_link(href, label, icon, active) -%}
+    <a class="side-link {% if active %}active{% endif %}" href="{{ href }}" title="{{ label }}"><i><svg class="ico" aria-hidden="true"><use href="#{{ icon }}"/></svg></i><span>{{ label }}</span></a>
+  {%- endmacro %}
+  {% set _v = {
+    "workspace": _r in ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR"),
+    "reports": _r in ("ADMIN", "WORKSHOP_SUPERVISOR"),
+    "orders": _r in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"),
+    "boms": _r in ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR"),
+    "wh": _r in ("ADMIN", "WAREHOUSE_ADMIN"),
+    "admin": _r == "ADMIN",
+  } %}
+  {% set _sec_active = {
+    "work": _p == '/admin/workspace' or _p.startswith('/admin/exceptions'),
+    "prod": _p.startswith('/admin/orders') or _p.startswith('/admin/tasks') or _p.startswith('/admin/reports'),
+    "wh": _p.startswith('/admin/flows') or _p.startswith('/admin/handovers') or _p == '/admin/warehouse' or _p.startswith('/admin/barcodes'),
+    "master": _p.startswith('/admin/material-master') or _p.startswith('/admin/boms') or _p.startswith('/admin/models') or _p.startswith('/admin/drawings'),
+    "sys": _p.startswith('/admin/users') or _p.startswith('/admin/audit') or _p.startswith('/admin/u9') or _p.startswith('/admin/releases') or _p.startswith('/admin/system') or _p.startswith('/admin/agent'),
+  } %}
+  <nav class="side-nav" id="sideNav">
+    {% if _v.workspace %}
+    <div class="side-sec open" data-sec="work">
+      <button type="button" class="side-group" aria-expanded="true"><span>工作区</span></button>
+      <div class="side-items">
+      {{ side_link("/admin/workspace", "工作台", "i-workspace", _p == '/admin/workspace') }}
+      {{ side_link("/admin/exceptions", "异常处理", "i-alert", _p.startswith('/admin/exceptions')) }}
+      </div>
+    </div>
     {% endif %}
-    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}
-    <div class="side-group"><span>生产管理</span></div>
-    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
-    <a class="side-link {% if _p == '/admin/reports' %}active{% endif %}" href="/admin/reports" title="概览"><i><svg class="ico" aria-hidden="true"><use href="#i-chart"/></svg></i><span>概览</span></a>
-    <a class="side-link {% if _p.startswith('/admin/reports/labor') %}active{% endif %}" href="/admin/reports/labor" title="工时"><i><svg class="ico" aria-hidden="true"><use href="#i-clock"/></svg></i><span>工时</span></a>
-    <a class="side-link {% if _p.startswith('/admin/tasks') %}active{% endif %}" href="/admin/tasks" title="任务"><i><svg class="ico" aria-hidden="true"><use href="#i-tasks"/></svg></i><span>任务</span></a>
+    {% if _v.orders or _v.reports %}
+    <div class="side-sec {% if _sec_active.prod %}open active-sec{% endif %}" data-sec="prod">
+      <button type="button" class="side-group" aria-expanded="{{ 'true' if _sec_active.prod else 'false' }}"><span>生产</span></button>
+      <div class="side-items">
+      {% if _v.orders %}{{ side_link("/admin/orders", "生产订单", "i-orders", _p.startswith('/admin/orders')) }}{% endif %}
+      {% if _v.reports %}
+      {{ side_link("/admin/tasks", "机台任务", "i-tasks", _p.startswith('/admin/tasks')) }}
+      {{ side_link("/admin/reports/labor", "工时汇总", "i-clock", _p.startswith('/admin/reports/labor')) }}
+      {{ side_link("/admin/reports", "生产报表", "i-chart", _p == '/admin/reports') }}
+      {% endif %}
+      </div>
+    </div>
     {% endif %}
-    {% if _r in ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER") %}
-    <a class="side-link {% if _p.startswith('/admin/orders') and _p != '/admin/orders/new' %}active{% endif %}" href="/admin/orders" title="订单"><i><svg class="ico" aria-hidden="true"><use href="#i-orders"/></svg></i><span>订单</span></a>
+    {% if _v.wh %}
+    <div class="side-sec {% if _sec_active.wh %}open active-sec{% endif %}" data-sec="wh">
+      <button type="button" class="side-group" aria-expanded="{{ 'true' if _sec_active.wh else 'false' }}"><span>仓储</span></button>
+      <div class="side-items">
+      {{ side_link("/admin/warehouse", "仓库库存", "i-warehouse", _p == '/admin/warehouse') }}
+      {{ side_link("/admin/flows", "流转申请", "i-flows", _p.startswith('/admin/flows')) }}
+      {{ side_link("/admin/handovers", "交接记录", "i-handover", _p.startswith('/admin/handovers')) }}
+      {% if _v.admin %}{{ side_link("/admin/barcodes", "条码", "i-barcode", _p.startswith('/admin/barcodes')) }}{% endif %}
+      </div>
+    </div>
     {% endif %}
-    {% if _r in ("ADMIN", "PLANNER") %}
-    <a class="side-link {% if _p == '/admin/orders/new' %}active{% endif %}" href="/admin/orders/new" title="新建订单"><i><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></i><span>新建订单</span></a>
+    {% if _v.boms or _v.wh %}
+    <div class="side-sec {% if _sec_active.master %}open active-sec{% endif %}" data-sec="master">
+      <button type="button" class="side-group" aria-expanded="{{ 'true' if _sec_active.master else 'false' }}"><span>主数据</span></button>
+      <div class="side-items">
+      {% if _v.admin %}{{ side_link("/admin/material-master", "物料主档", "i-database", _p.startswith('/admin/material-master')) }}{% endif %}
+      {% if _v.boms %}{{ side_link("/admin/boms", "BOM", "i-bom", _p.startswith('/admin/boms')) }}{% endif %}
+      {% if _v.wh %}{{ side_link("/admin/models", "模型", "i-box", _p.startswith('/admin/models')) }}{% endif %}
+      {% if _v.admin %}{{ side_link("/admin/drawings", "图纸", "i-drawing", _p.startswith('/admin/drawings')) }}{% endif %}
+      </div>
+    </div>
     {% endif %}
-    {% if _r in ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR") %}
-    <a class="side-link {% if _p.startswith('/admin/boms') %}active{% endif %}" href="/admin/boms" title="BOM"><i><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg></i><span>BOM</span></a>
-    {% endif %}
-    {% endif %}
-    {% if _r in ("ADMIN", "WAREHOUSE_ADMIN") %}
-    <div class="side-group"><span>仓库物流</span></div>
-    <a class="side-link {% if _p.startswith('/admin/flows') %}active{% endif %}" href="/admin/flows" title="流转"><i><svg class="ico" aria-hidden="true"><use href="#i-flows"/></svg></i><span>流转</span></a>
-    <a class="side-link {% if _p.startswith('/admin/handovers') %}active{% endif %}" href="/admin/handovers" title="留痕"><i><svg class="ico" aria-hidden="true"><use href="#i-pen"/></svg></i><span>留痕</span></a>
-    <a class="side-link {% if _p == '/admin/warehouse' %}active{% endif %}" href="/admin/warehouse" title="仓库"><i><svg class="ico" aria-hidden="true"><use href="#i-warehouse"/></svg></i><span>仓库</span></a>
-    <a class="side-link {% if _p.startswith('/admin/models') %}active{% endif %}" href="/admin/models" title="模型"><i><svg class="ico" aria-hidden="true"><use href="#i-box"/></svg></i><span>模型</span></a>
-    {% if _r == "ADMIN" %}<a class="side-link {% if _p.startswith('/admin/material-master') %}active{% endif %}" href="/admin/material-master" title="物料主档"><i><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg></i><span>物料主档</span></a>{% endif %}
-    {% if _r == "ADMIN" %}<a class="side-link {% if _p.startswith('/admin/drawings') %}active{% endif %}" href="/admin/drawings" title="图纸"><i><svg class="ico" aria-hidden="true"><use href="#i-drawing"/></svg></i><span>图纸</span></a>{% endif %}
-    {% endif %}
-    {% if _r == "ADMIN" %}
-    <div class="side-group"><span>系统管理</span></div>
-    <a class="side-link {% if _p.startswith('/admin/agent') %}active{% endif %}" href="/admin/agent" title="智能助手"><i><svg class="ico" aria-hidden="true"><use href="#i-sparkles"/></svg></i><span>智能助手</span></a>
-    <a class="side-link {% if _p.startswith('/admin/users') %}active{% endif %}" href="/admin/users" title="用户"><i><svg class="ico" aria-hidden="true"><use href="#i-users"/></svg></i><span>用户</span></a>
-    <a class="side-link {% if _p.startswith('/admin/audit') %}active{% endif %}" href="/admin/audit" title="审计"><i><svg class="ico" aria-hidden="true"><use href="#i-shield"/></svg></i><span>审计</span></a>
-    <a class="side-link {% if _p.startswith('/admin/barcodes') %}active{% endif %}" href="/admin/barcodes" title="条码"><i><svg class="ico" aria-hidden="true"><use href="#i-barcode"/></svg></i><span>条码</span></a>
-    <a class="side-link {% if _p.startswith('/admin/u9') %}active{% endif %}" href="/admin/u9" title="U9集成"><i><svg class="ico" aria-hidden="true"><use href="#i-sync"/></svg></i><span>U9集成</span></a>
-    <a class="side-link {% if _p.startswith('/admin/releases') %}active{% endif %}" href="/admin/releases" title="APP更新"><i><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg></i><span>APP更新</span></a>
-    <a class="side-link {% if _p.startswith('/admin/system') %}active{% endif %}" href="/admin/system" title="系统更新"><i><svg class="ico" aria-hidden="true"><use href="#i-sync"/></svg></i><span>系统更新</span></a>
+    {% if _v.admin %}
+    <div class="side-sec {% if _sec_active.sys %}open active-sec{% endif %}" data-sec="sys">
+      <button type="button" class="side-group" aria-expanded="{{ 'true' if _sec_active.sys else 'false' }}"><span>系统</span></button>
+      <div class="side-items">
+      {{ side_link("/admin/users", "用户", "i-users", _p.startswith('/admin/users')) }}
+      {{ side_link("/admin/audit", "审计日志", "i-shield", _p.startswith('/admin/audit')) }}
+      {{ side_link("/admin/agent", "智能助手", "i-sparkles", _p.startswith('/admin/agent')) }}
+      {{ side_link("/admin/u9", "U9 集成", "i-plug", _p.startswith('/admin/u9')) }}
+      {{ side_link("/admin/releases", "APP 更新", "i-download", _p.startswith('/admin/releases')) }}
+      {{ side_link("/admin/system", "系统更新", "i-sync", _p.startswith('/admin/system')) }}
+      </div>
+    </div>
     {% endif %}
   </nav>
   <div class="side-foot">
@@ -104,7 +144,7 @@
   {% if user %}
   <header class="topbar">
     <button class="hamburger" id="hamburger" title="菜单" aria-label="菜单"><svg class="ico" aria-hidden="true"><use href="#i-menu"/></svg></button>
-    <div class="crumb">智慧工厂<span class="sep">/</span><b>{{ self.title() }}</b></div>
+    <div class="crumb"><b>{{ self.page_title()|trim or "智慧工厂" }}</b></div>
     <div class="top-right">
       <span class="top-user"><span class="side-avatar">{{ _uname[:1] }}</span><span class="uname">{{ _uname }} · {{ _role_labels.get(_r, _r) }}</span></span>
     </div>
@@ -114,7 +154,8 @@
 </div>
 
 
-<!-- 智能助手悬浮球 -->
+{% if user %}
+<!-- 智能助手悬浮球（仅登录后） -->
 <button id="agent-fab" title="智能助手" onclick="toggleAgentPanel()">智</button>
 <div id="agent-panel">
   <div class="ap-head">
@@ -130,6 +171,7 @@
     <button id="agent-send-btn" type="button">发送</button>
   </div>
 </div>
+{% endif %}
 
 <!-- 统一确认弹窗：替代浏览器原生 confirm()。
      用法：表单/按钮加 data-confirm="说明"（可选 data-confirm-title / data-confirm-ok / data-confirm-danger）；

@@ -531,10 +531,13 @@ def test_exceptions_and_warehouse_paginate_beyond_100():
         assert re.search(r'待处理</p><p class="stat-num"[^>]*>%d<' % pending, p1.text)
         p2 = client.get("/admin/exceptions?page=2")
         assert "ex_000" in p2.text
+        # v0.7.0：仓库页异常区改为「待处理异常」摘要，每页 5 条，全部异常在 /admin/exceptions
         w1 = client.get("/admin/warehouse")
-        assert "ex_000" not in w1.text and f"/ {total} 条" in w1.text
-        w2 = client.get("/admin/warehouse?ex_page=2")
-        assert "ex_000" in w2.text
+        assert "ex_000" not in w1.text and f"/ {pending} 条" in w1.text
+        assert 'href="/admin/exceptions"' in w1.text
+        w_last = client.get(f"/admin/warehouse?ex_page={(pending + 4) // 5}")
+        assert "ex_000" in w_last.text
+        assert total > pending
 
 
 # ---------------------------------------------------------------- P1-6 N+1

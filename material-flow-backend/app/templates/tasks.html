@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}机台任务 · 智慧工厂{% endblock %}
+{% block page_title %}机台任务{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
@@ -40,6 +40,7 @@
 </form>
 
 <p style="color:#6b7280;font-size:13px">共 {{ total_rows }} 条</p>
+<div class="table-wrap">
 <table>
   <tr><th>序号</th><th>订单</th><th>机台</th><th>状态</th><th>进度</th><th>装配工</th><th>操作</th></tr>
   {% for item in items %}
@@ -84,6 +85,7 @@
   <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 
 {# 装配工候选只渲染一次（原先每行一整份，20 行 ≈ 364 KB）；展开「分配」时克隆进该行表单 #}
 <template id="assembler-options">

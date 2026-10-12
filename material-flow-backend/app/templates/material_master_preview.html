@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}物料主档导入 · 智慧工厂{% endblock %}
+{% block page_title %}物料主档导入{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
 <p><a href="/admin/material-master">← 物料主档</a></p>
 <h2>{{ b.fileName }}</h2>
 <p class="page-desc">工作表「{{ b.sheetName }}」· 表头在第 {{ b.headerRow }} 行 · 识别 {{ b.summary.recognizedColumns }} 列
-{% if b.status == 'PREVIEW' %}· 预览有效至 {{ b.expiresAt[:16].replace('T', ' ') }}（UTC）{% endif %}</p>
+{% if b.status == 'PREVIEW' %}· 预览有效至 {{ b.expiresAt|local_dt }}{% endif %}</p>
 {{ flash(notice_text, notice_error) }}
 
 <div class="cards">
@@ -36,7 +36,7 @@
   <h3>导入结果</h3>
   <p>主档新增 {{ b.result.masterInserted }} · 更新 {{ b.result.masterUpdated }} · 未变化 {{ b.result.masterUnchanged }} ·
      物料新建 {{ b.result.materialsCreated }} · 同步名称/规格/单位 {{ b.result.materialsUpdated }}{% if b.result.skippedInvalid %} · 跳过错误 {{ b.result.skippedInvalid }}{% endif %}</p>
-  <p class="muted">{{ b.committedAt[:16].replace('T', ' ') }}（UTC）</p>
+  <p class="muted">{{ b.committedAt|local_dt }}</p>
 </div>
 {% endif %}
 
@@ -44,13 +44,17 @@
 {% if b.summary.itemFormCounts %}
 <div class="card" style="flex:1;min-width:220px">
   <h3>形态属性</h3>
+  <div class="table-wrap">
   <table>{% for k, v in b.summary.itemFormCounts.items() %}<tr><td>{{ k }}</td><td style="text-align:right">{{ v }}</td></tr>{% endfor %}</table>
+  </div>
 </div>
 {% endif %}
 {% if b.summary.fieldChangeCounts %}
 <div class="card" style="flex:1;min-width:220px">
   <h3>变更字段</h3>
+  <div class="table-wrap">
   <table>{% for k, v in b.summary.fieldChangeCounts.items() %}<tr><td>{{ k }}</td><td style="text-align:right">{{ v }}</td></tr>{% endfor %}</table>
+  </div>
 </div>
 {% endif %}
 {% if b.summary.missingOptionalHeaders or b.summary.extraHeaders %}
@@ -65,19 +69,23 @@
 {% if b.errors %}
 <div class="card" style="margin-top:12px;overflow-x:auto">
   <h3>错误（显示前 {{ b.errors|length }} 条）</h3>
+  <div class="table-wrap">
   <table><tr><th>行</th><th>列</th><th>问题</th><th>原值</th></tr>
   {% for e in b.errors %}<tr><td>{{ e.lineNo }}</td><td>{{ e.field }}</td><td>{{ e.message }}</td><td class="muted">{{ e.value or '' }}</td></tr>{% endfor %}
   </table>
+  </div>
 </div>
 {% endif %}
 
 {% if b.changes %}
 <div class="card" style="margin-top:12px;overflow-x:auto">
   <h3>变更样本（前 {{ b.changes|length }} 条）</h3>
+  <div class="table-wrap">
   <table><tr><th>行</th><th>料号</th><th>品名</th><th>变化</th></tr>
   {% for ch in b.changes %}<tr><td>{{ ch.lineNo }}</td><td>{{ ch.code }}</td><td>{{ ch.name }}</td>
     <td>{% for f in ch.fields %}<div><b>{{ f.field }}</b> <span class="muted">{{ f.before if f.before is not none else '空' }}</span> → {{ f.after if f.after is not none else '空' }}</div>{% endfor %}</td></tr>{% endfor %}
   </table>
+  </div>
 </div>
 {% endif %}
 </div>

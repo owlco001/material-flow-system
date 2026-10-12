@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}新建生产订单 · 智慧工厂{% endblock %}
+{% block page_title %}新建生产订单{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -12,7 +12,8 @@
   <label>产品名</label>
   <input name="productName" required style="max-width:320px" value="{{ values.productName }}">
   <label>细分机型（1..20 项，留空行忽略）</label>
-  <table style="max-width:680px">
+  <div class="table-wrap" style="max-width:680px">
+  <table>
     <tr><th>机型码</th><th>机型名</th><th>计划数量</th></tr>
     {% for i in range(1, 6) %}
     <tr>
@@ -22,6 +23,7 @@
     </tr>
     {% endfor %}
   </table>
+  </div>
   <button type="submit">创建订单</button>
 </form>
 </div>

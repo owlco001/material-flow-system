@@ -11,17 +11,17 @@
     {% endif %}
   {% endfor %}
   <form method="get" data-partial-form data-page-param="page" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <input type="text" name="q" value="{{ _q }}" placeholder="搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px">
-    <button type="submit" class="btn">搜索</button>
-    <select name="cat" data-autosubmit style="padding:6px;border:1px solid #ddd;border-radius:6px">
+    <input type="text" name="q" value="{{ _q }}" placeholder="搜索物料编码/名称" style="max-width:220px">
+    <button type="submit" class="btn btn-sm">搜索</button>
+    <select name="cat" data-autosubmit style="width:auto">
       <option value="">全部分类</option>
       {% for c in ["电气", "机械", "其他"] %}
       <option value="{{ c }}" {% if _cat == c %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
     </select>
-    {% if _q or _cat %}<a href="?" class="btn" data-partial-link>清空</a>{% endif %}
+    {% if _q or _cat %}<a href="?" class="btn btn-sm btn-secondary" data-partial-link>清空</a>{% endif %}
     <span class="muted">每页</span>
-    <select name="size" data-autosubmit style="padding:6px;border:1px solid #ddd;border-radius:6px">
+    <select name="size" data-autosubmit style="width:auto">
       {% for n in [10, 20, 50, 100] %}<option value="{{ n }}" {% if _size == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
     </select>
     <span class="muted">条</span>

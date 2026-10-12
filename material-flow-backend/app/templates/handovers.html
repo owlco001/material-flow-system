@@ -1,69 +1,69 @@
 {% extends "base.html" %}
-{% block title %}交接留痕 · 智慧工厂{% endblock %}
+{% block page_title %}交接记录{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
-<h2>交接留痕</h2>
+<h2>交接记录</h2>
+<div class="card">
+  <form method="get" action="/admin/handovers" class="filter-bar">
+    <div class="fi"><label for="ho-q">查找交接</label>
+    <input id="ho-q" name="query" value="{{ query }}" placeholder="流转单号 / 订单号 / 物料编码 / 机台号" style="max-width:300px;min-width:240px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">查询</button>
+    {% if query %}<a href="/admin/handovers" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
+  </form>
+</div>
 {{ flash(error=error) }}
 {% if result %}
-<div class="card">
-  <h3>交接 {{ result.handoverId }}</h3>
-  <form method="get" action="/admin/handovers" style="display:flex;gap:8px;align-items:center;margin:0 0 12px">
-    <input name="query" value="{{ query }}" placeholder="交接单 / 工作物料 / 需求单号" style="max-width:240px">
-    <button type="submit" class="btn btn-sm">查询</button>
-    <a href="/admin/handovers" class="btn btn-sm btn-secondary">清除</a>
-  </form>
-  {% set _ws_labels = {"PENDING": "待处理", "IN_PROGRESS": "进行中", "COMPLETED": "已完成", "CANCELLED": "已取消"} %}
-  {% set _ev_labels = {"HANDOVER_CREATED": "交接创建", "HANDOVER_CONFIRMED": "交接确认", "HANDOVER_REJECTED": "交接驳回", "HANDOVER_CANCELLED": "交接取消"} %}
-  <p>工作物：{{ result.workItemId }} · 状态：{{ ho_status_labels.get(result.status, result.status) }} · 工作台状态：{{ _ws_labels.get(result.workspaceStatus, result.workspaceStatus or "—") }}</p>
+{% set _ws_labels = {"PENDING": "待处理", "IN_PROGRESS": "进行中", "COMPLETED": "已完成", "CANCELLED": "已取消"} %}
+<div class="card" style="margin-top:12px">
+  <h3>交接时间线 <span class="muted" style="font-weight:400" title="交接单 ID">{{ result.handoverId }}</span></h3>
+  <p>状态：{{ ho_status_labels.get(result.status, result.status) }} · 工作台状态：{{ _ws_labels.get(result.workspaceStatus) or result.workspaceStatus|label("workspace_status") }}
+    <span class="muted">· 工作物料 {{ result.workItemId }}</span></p>
+  <div class="table-wrap">
   <table>
-    <tr><th>时间</th><th>事件</th><th>实体</th><th>操作人</th><th>结果</th></tr>
+    <tr><th>时间</th><th>事件</th><th>对象</th><th>操作人</th><th>结果</th></tr>
     {% for ev in result["items"] %}
     {% set _et = ev.get("event_type") or ev.get("eventType") or "" %}
     {% set _rs = ev.get("result") or "" %}
     <tr>
-      <td>{{ (ev.get("server_time") or ev.get("serverTime") or "")[:16].replace("T", " ") or "—" }}</td>
-      <td>{{ _ev_labels.get(_et, _et or "—") }}</td>
-      <td>{{ ev.get("entity_id") or ev.get("entityId") or "—" }}</td>
-      <td>{{ ev.get("actor_user_id") or ev.get("actorUserId") or "—" }}</td>
-      <td>{{ {"SUCCESS": "成功", "FAIL": "失败", "FAILURE": "失败"}.get(_rs, _rs or "—") }}</td>
+      <td>{{ (ev.get("server_time") or ev.get("serverTime"))|local_dt }}</td>
+      <td>{{ _et|label("event") }}</td>
+      <td>{{ (ev.get("entity_type") or ev.get("entityType"))|label("entity") }} <span class="muted">{{ ev.get("entity_id") or ev.get("entityId") or "" }}</span></td>
+      <td>{{ (ev.get("actor_user_id") or ev.get("actorUserId"))|user_name }}</td>
+      <td>{{ _rs|label("result") }}</td>
     </tr>
     {% else %}
     <tr><td colspan="5">暂无留痕事件</td></tr>
     {% endfor %}
   </table>
-</div>
-{% else %}
-<div class="card" style="max-width:560px">
-  <form method="get" action="/admin/handovers">
-    <label>交接单 / 工作物料 / 需求单号</label>
-    <input name="query" value="{{ query }}" placeholder="ho_… / wi_… / 需求单 ID" style="max-width:240px">
-    <button type="submit" class="btn btn-sm">查询</button>
-  </form>
+  </div>
 </div>
 {% endif %}
 
-{% if rows %}
-<h3 style="margin-top:16px">最近交接（共 {{ total }} 条）</h3>
+<h3 style="margin-top:16px">{% if query %}匹配的交接{% else %}最近交接{% endif %}（共 {{ total }} 条）</h3>
+<div class="table-wrap">
 <table>
-  <tr><th>交接单</th><th>工作物料</th><th>状态</th><th>数量</th><th>发出库位</th><th>创建人</th><th>创建时间</th><th>详情</th></tr>
+  <tr><th>流转单号</th><th>物料</th><th>机台</th><th>状态</th><th class="num">数量</th><th>发出库位</th><th>创建人</th><th>创建时间</th><th>详情</th></tr>
   {% for r in rows %}
   {% set _s = r["status"] %}
   {% set _cls = {"PENDING": "st-yellow", "CONFIRMED": "st-green", "REJECTED": "st-red", "CANCELLED": "st-neutral"}.get(_s, "st-neutral") %}
   <tr>
-    <td>{{ r["id"] }}</td>
-    <td>{{ r["work_item_id"] }}</td>
+    <td>{% if r["document_no"] %}<b>{{ r["document_no"] }}</b> <span class="muted">{{ r["transfer_type"]|label("transfer_type") }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if r["material_code"] %}<a href="/admin/warehouse?code={{ r['material_code']|urlencode }}">{{ r["material_code"] }}</a> <span class="muted">{{ r["material_name"] or "" }}</span>{% else %}<span class="muted" title="工作物料">{{ r["work_item_id"] }}</span>{% endif %}</td>
+    <td>{{ r["device_no"] or "—" }}</td>
     <td><span class="st {{ _cls }}">{{ ho_status_labels.get(_s, _s) }}</span></td>
-    <td>{{ r["quantity"] }}</td>
+    <td class="num">{{ r["quantity"] }}</td>
     <td>{{ r["from_location"] or "—" }}</td>
     <td>{{ r["creator_name"] or "—" }}</td>
-    <td>{{ r["created_at"][:16].replace("T", " ") if r["created_at"] else "—" }}</td>
-    <td><a href="/admin/handovers/{{ r['id'] }}">查看</a></td>
+    <td>{{ r["created_at"]|local_dt }}</td>
+    <td><a href="/admin/handovers/{{ r['id'] }}" title="{{ r['id'] }}">查看</a></td>
   </tr>
+  {% else %}
+  <tr><td colspan="9">暂无交接记录</td></tr>
   {% endfor %}
 </table>
-{{ pager(page, total_pages, total, "/admin/handovers") }}
-{% endif %}
+</div>
+{{ pager(page, total_pages, total, "/admin/handovers", {"query": query}) }}
 </div>
 {% endblock %}

@@ -1,74 +1,155 @@
 {% extends "base.html" %}
-{% block title %}物料与库存 · 智慧工厂{% endblock %}
+{% block page_title %}仓库库存{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
-<h2>物料与库存</h2>
+<h2>仓库库存</h2>
 {{ flash(notice_text, error) }}
 {% if material %}
 {% set m = material.get("material") or {} %}
 {% set inv = material.get("inventory") or {} %}
-<div class="card">
-  <h3>{{ m.get("code") }} · {{ m.get("name") }}</h3>
-  <form method="get" action="/admin/warehouse" style="display:flex;gap:8px;align-items:center;margin:0 0 12px">
-    <input name="code" value="{{ code }}" placeholder="输入物料编码查其他物料" style="max-width:220px">
-    <button type="submit" class="btn btn-sm">查询</button>
-  </form>
+<div class="card" style="margin-bottom:12px">
+  <div class="section-head" style="margin-top:0">
+    <h3>{{ m.get("code") }} · {{ m.get("name") }}</h3>
+    <a href="/admin/warehouse{% if inv_q or inv_cat %}?q={{ inv_q|urlencode }}&cat={{ inv_cat|urlencode }}{% endif %}" class="btn btn-sm btn-secondary">返回库存列表</a>
+  </div>
   <p>规格：{{ m.get("specification") or "—" }} · 单位：{{ m.get("unit") or "—" }}
      · 批次：{{ m.get("batchNo") or "—" }} · 效期：{{ m.get("expiryDate") or "—" }}</p>
   <p>总量 {{ inv.get("totalQuantity") }} · 可用 {{ inv.get("availableQuantity") }} · 库存版本 {{ material.get("version") }}</p>
+  <div class="table-wrap">
   <table>
-    <tr><th>库位</th><th>数量</th></tr>
+    <tr><th>库位</th><th class="num">数量</th></tr>
     {% for loc in inv.get("locations") or [] %}
-    <tr><td>{{ loc.get("locationCode") }}</td><td>{{ loc.get("quantity") }}</td></tr>
+    <tr><td>{{ loc.get("locationCode") }}</td><td class="num">{{ loc.get("quantity") }}</td></tr>
     {% else %}
     <tr><td colspan="2">暂无库位库存</td></tr>
     {% endfor %}
   </table>
+  </div>
 </div>
-{% else %}
-<div class="card" style="max-width:520px">
-  <form method="get" action="/admin/warehouse">
-    <label>物料编码（查库位分布）</label>
-    <input name="code" value="{{ code }}" style="max-width:220px" placeholder="如 M-001">
-    <button type="submit" class="btn btn-sm">查询</button>
-  </form>
-</div>
-{% if material_error %}
-<p class="error" style="margin-top:12px">{{ material_error }}</p>
-{% endif %}
+{% elif material_error %}
+<p class="error">{{ material_error }}</p>
 {% endif %}
 
+{# ---- 库存列表：默认展示，缺料/低库存置顶 ---- #}
+<div class="card">
+  <form method="get" action="/admin/warehouse" class="filter-bar">
+    <div class="fi"><label for="inv-q">搜索物料</label>
+    <input id="inv-q" name="q" value="{{ inv_q }}" placeholder="编码 / 名称 / 规格" style="max-width:260px;min-width:200px"></div>
+    <div class="fi"><label for="inv-cat">分类</label>
+    <select id="inv-cat" name="cat">
+      <option value="">全部分类</option>
+      {% for c in categories %}<option value="{{ c }}" {% if inv_cat == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      <option value="__none__" {% if inv_cat == "__none__" %}selected{% endif %}>未分类</option>
+    </select></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">查询</button>
+    {% if inv_q or inv_cat %}<a href="/admin/warehouse" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
+  </form>
+  <div class="mini-stats">
+    <div class="mini-stat"><b>{{ inv_paging.total }}</b><span>{% if inv_q or inv_cat %}匹配物料{% else %}物料总数{% endif %}</span></div>
+    <div class="mini-stat {% if inv_counts.short %}hot{% endif %}"><b>{{ inv_counts.short }}</b><span>缺料（可用 ≤ 0）</span></div>
+    <div class="mini-stat {% if inv_counts.low %}warn{% endif %}"><b>{{ inv_counts.low }}</b><span>低库存（&lt; {{ low_stock_threshold }}）</span></div>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <tr><th>物料编码</th><th>名称</th><th>规格</th><th>分类</th><th class="num">可用</th><th class="num">总量</th><th>单位</th><th>状态</th></tr>
+    {% for r in inventory %}
+    <tr class="{% if r.stock_state == 'short' %}row-short{% elif r.stock_state == 'low' %}row-low{% endif %}">
+      <td><a href="/admin/warehouse?code={{ r.code|urlencode }}{% if inv_q %}&q={{ inv_q|urlencode }}{% endif %}{% if inv_cat %}&cat={{ inv_cat|urlencode }}{% endif %}"><b>{{ r.code }}</b></a></td>
+      <td>{{ r.name }}</td>
+      <td class="muted">{{ r.specification or "—" }}</td>
+      <td>{{ r.category or "—" }}</td>
+      <td class="num"><b>{{ r.available_quantity }}</b></td>
+      <td class="num">{{ r.total_quantity }}</td>
+      <td>{{ r.unit or "—" }}</td>
+      <td>{% if r.stock_state == 'short' %}<span class="badge b-err">缺料</span>{% elif r.stock_state == 'low' %}<span class="badge b-warn">低库存</span>{% else %}<span class="badge b-ok">正常</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8">{% if inv_q or inv_cat %}没有匹配的物料{% else %}暂无物料{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {{ pager(inv_paging.page, inv_paging.pages, inv_paging.total, "/admin/warehouse", {"q": page_params.q, "cat": page_params.cat, "st_page": page_params.st_page, "ex_page": page_params.ex_page}, "inv_page") }}
+</div>
+
+{# ---- 待处理异常：小摘要，全部在异常处理页 ---- #}
+{% set _ex_pending_total = (ex_counts.get("PENDING") or 0) + (ex_counts.get("OPEN") or 0) %}
+<div class="card" style="margin-top:16px">
+  <div class="section-head" style="margin-top:0">
+    <h3>待处理异常</h3>
+    {% if user.role == "ADMIN" %}<a href="/admin/exceptions">查看全部异常 →</a>{% endif %}
+  </div>
+  <div class="mini-stats">
+    <div class="mini-stat {% if _ex_pending_total %}hot{% endif %}"><b>{{ _ex_pending_total }}</b><span>待处理</span></div>
+    <div class="mini-stat"><b>{{ ex_counts.get("APPROVED", 0) }}</b><span>已通过</span></div>
+    <div class="mini-stat"><b>{{ ex_counts.get("REJECTED", 0) }}</b><span>已驳回</span></div>
+  </div>
+  {% if ex_pending %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>类型</th><th>物料</th><th class="num">差异</th><th>描述</th><th>订单</th><th>时间</th><th>审核</th></tr>
+    {% for e in ex_pending %}
+    <tr>
+      <td><span class="badge b-warn" title="{{ e.id }}">{{ e.type|label("exception_type") }}</span></td>
+      <td>{% if e.material_code %}<a href="/admin/warehouse?code={{ e.material_code|urlencode }}">{{ e.material_code }}</a> <span class="muted">{{ e.material_name or "" }}</span>{% else %}—{% endif %}</td>
+      <td class="num">{{ e.difference if e.difference is not none else "—" }}</td>
+      <td class="wrap">{{ e.description or "—" }}</td>
+      <td>{% if e.order_no %}<a href="/admin/orders?order_no={{ e.order_no|urlencode }}">{{ e.order_no }}</a>{% else %}—{% endif %}</td>
+      <td>{{ e.created_at|local_dt }}</td>
+      <td>
+        <form method="post" action="/admin/warehouse/exceptions/{{ e.id }}/review" style="margin:0;display:flex;gap:6px;align-items:center">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="clientOperationId" value="{{ exception_ops[e.id] }}">
+          <select name="decision" style="width:auto">
+            <option value="APPROVE">通过</option>
+            <option value="REJECT">驳回</option>
+          </select>
+          <input name="comment" placeholder="备注" style="max-width:110px">
+          <button type="submit" class="btn btn-sm" style="margin:0">提交</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {{ pager(ex_paging.page, ex_paging.pages, ex_paging.total, "/admin/warehouse", {"q": page_params.q, "cat": page_params.cat, "inv_page": page_params.inv_page, "st_page": page_params.st_page}, "ex_page") }}
+  {% else %}
+  <p class="muted">暂无待处理异常</p>
+  {% endif %}
+</div>
+
 <h3 id="expiry" style="margin-top:16px">效期预警 <span class="muted" style="font-size:13px;font-weight:400">有可用库存，已过期或 {{ expiry_warn_days }} 天内到期</span></h3>
+<div class="table-wrap">
 <table>
-  <tr><th>物料</th><th>批次</th><th>效期</th><th>可用</th><th>状态</th></tr>
+  <tr><th>物料</th><th>批次</th><th>效期</th><th class="num">可用</th><th>状态</th></tr>
   {% for e in expiring %}
-  <tr class="{% if e.days_left < 0 %}row-red{% else %}row-yellow{% endif %}">
+  <tr class="{% if e.days_left < 0 %}row-short{% else %}row-low{% endif %}">
     <td><a href="/admin/warehouse?code={{ e.code|urlencode }}">{{ e.code }}</a> {{ e.name }}</td>
     <td>{{ e.batch_no or "—" }}</td>
     <td>{{ e.expiry_date }}</td>
-    <td>{{ e.available_quantity }} {{ e.unit or "" }}</td>
+    <td class="num">{{ e.available_quantity }} {{ e.unit or "" }}</td>
     <td>{% if e.days_left < 0 %}<span class="st st-red">已过期 {{ -e.days_left }} 天</span>{% elif e.days_left == 0 %}<span class="st st-red">今天到期</span>{% else %}<span class="st st-yellow">{{ e.days_left }} 天后到期</span>{% endif %}</td>
   </tr>
   {% else %}
   <tr><td colspan="5">暂无临期或过期物料</td></tr>
   {% endfor %}
 </table>
+</div>
 
-<h3 style="margin-top:16px">盘点待确认</h3>
+<h3 style="margin-top:16px">盘点记录</h3>
+<div class="table-wrap">
 <table>
-  <tr><th>ID</th><th>物料</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>创建</th><th>确认</th><th>操作</th></tr>
+  <tr><th>物料</th><th class="num">账面</th><th class="num">实盘</th><th class="num">差异</th><th>状态</th><th>创建时间</th><th>确认人</th><th>操作</th></tr>
   {% for s in stocktakes %}
   <tr>
-    <td>{{ s.id }}</td>
-    <td><a href="/admin/warehouse?code={{ s.material_code or s.material_id }}">{{ s.material_code or s.material_id }}</a></td>
-    <td>{{ s.book_quantity }}</td>
-    <td>{{ s.actual_quantity }}</td>
-    <td>{{ s.difference }}</td>
-    <td>{{ stocktake_labels.get(s.status, s.status) }}</td>
-    <td>{{ s.created_at }}</td>
-    <td>{{ s.confirmed_by or "—" }}</td>
+    <td><a href="/admin/warehouse?code={{ (s.material_code or s.material_id)|urlencode }}" title="{{ s.id }}">{{ s.material_code or s.material_id }}</a></td>
+    <td class="num">{{ s.book_quantity }}</td>
+    <td class="num">{{ s.actual_quantity }}</td>
+    <td class="num">{{ s.difference }}</td>
+    <td>{% if s.status == "PENDING_CONFIRM" %}<span class="badge b-warn">{{ stocktake_labels.get(s.status, s.status) }}</span>{% else %}<span class="badge b-ok">{{ stocktake_labels.get(s.status, s.status) }}</span>{% endif %}</td>
+    <td>{{ s.created_at|local_dt }}</td>
+    <td>{{ s.confirmed_by|user_name }}</td>
     <td>
       {% if s.status == "PENDING_CONFIRM" %}
       <form method="post" action="/admin/warehouse/stocktakes/{{ s.id }}/confirm" style="margin:0">
@@ -76,49 +157,14 @@
         <input type="hidden" name="clientOperationId" value="{{ stocktake_ops[s.id] }}">
         <button type="submit" class="btn btn-sm" style="margin:0">确认盘点</button>
       </form>
-      {% endif %}
+      {% else %}<span class="muted">—</span>{% endif %}
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="9">暂无盘点记录</td></tr>
+  <tr><td colspan="8">暂无盘点记录</td></tr>
   {% endfor %}
 </table>
-{{ pager(st_paging.page, st_paging.pages, st_paging.total, "/admin/warehouse", {"code": page_params.code, "ex_page": page_params.ex_page}, "st_page") }}
-
-<h3 style="margin-top:16px">异常记录</h3>
-<table>
-  <tr><th>ID</th><th>类型</th><th>账面</th><th>实盘</th><th>差异</th><th>状态</th><th>描述</th><th>订单</th><th>机台</th><th>时间</th><th>审核</th></tr>
-  {% for e in exceptions %}
-  <tr>
-    <td>{{ e.id }}</td>
-    <td>{{ e.type }}</td>
-    <td>{{ e.book_quantity }}</td>
-    <td>{{ e.actual_quantity }}</td>
-    <td>{{ e.difference }}</td>
-    <td>{{ exception_labels.get(e.status, e.status) }}</td>
-    <td>{{ e.description or "—" }}</td>
-    <td>{% if e.order_no %}<a href="/admin/orders?order_no={{ e.order_no }}">{{ e.order_no }}</a>{% else %}—{% endif %}</td>
-    <td>{{ e.device_id or "—" }}</td>
-    <td>{{ e.created_at }}</td>
-    <td>
-      {% if e.status == "PENDING" %}
-      <form method="post" action="/admin/warehouse/exceptions/{{ e.id }}/review" style="margin:0;min-width:180px">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="clientOperationId" value="{{ exception_ops[e.id] }}">
-        <select name="decision" style="max-width:80px">
-          <option value="APPROVE">通过</option>
-          <option value="REJECT">驳回</option>
-        </select>
-        <input name="comment" placeholder="备注" style="max-width:100px">
-        <button type="submit" class="btn btn-sm" style="margin:0">提交</button>
-      </form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="11">暂无异常记录</td></tr>
-  {% endfor %}
-</table>
-{{ pager(ex_paging.page, ex_paging.pages, ex_paging.total, "/admin/warehouse", {"code": page_params.code, "st_page": page_params.st_page}, "ex_page") }}
+</div>
+{{ pager(st_paging.page, st_paging.pages, st_paging.total, "/admin/warehouse", {"q": page_params.q, "cat": page_params.cat, "inv_page": page_params.inv_page, "ex_page": page_params.ex_page}, "st_page") }}
 </div>
 {% endblock %}

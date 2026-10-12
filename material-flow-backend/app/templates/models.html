@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}装配模型 · 智慧工厂{% endblock %}
+{% block page_title %}装配模型{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
@@ -36,7 +36,7 @@
 <div class="card" style="margin-top:12px">
   <div class="btn-row" style="gap:12px">
     <b>当前发布 · {{ published.modelCode }}</b>
-    <span class="muted" style="font-size:13px">v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}… · {{ published.createdBy }} @ {{ published.createdAt }}</span>
+    <span class="muted" style="font-size:13px">v{{ published.version }} · {{ published.byteSize }} 字节 · SHA-256 {{ published.sha256[:16] }}… · {{ published.createdBy|user_name }} · {{ published.createdAt|local_dt }}</span>
     <a class="btn btn-sm" href="/admin/models/view?code={{ published.modelCode }}&version={{ published.version }}" target="_blank" rel="noopener">查看 3D 模型</a>
     <a class="btn btn-sm btn-secondary" href="/admin/boms?modelCode={{ published.modelCode }}">查看 BOM</a>
   </div>
@@ -46,12 +46,14 @@
   <details style="margin-top:8px">
     <summary style="cursor:pointer;font-size:14px">零件清单（{{ parts|length }}）</summary>
     {% if parts %}
-    <table style="margin-top:8px">
+    <div class="table-wrap" style="margin-top:8px">
+    <table>
       <tr><th style="width:48px">序号</th><th>零件名</th><th>模型节点名</th></tr>
       {% for p in parts %}
       <tr><td>{{ loop.index }}</td><td>{{ p.cn }}</td><td class="muted">{{ p.name }}</td></tr>
       {% endfor %}
     </table>
+    </div>
     {% else %}
     <p class="muted" style="margin:8px 0 0">该模型未拆分独立零件</p>
     {% endif %}
@@ -63,6 +65,7 @@
 {% endif %}
 
 <h3 style="margin-top:16px">版本列表</h3>
+<div class="table-wrap">
 <table>
   <tr><th>ID</th><th>机型码</th><th>名称</th><th>版本</th><th>格式</th><th>字节</th><th>SHA-256</th><th>状态</th><th>创建人</th><th>时间</th><th>操作</th></tr>
   {% for row in rows %}
@@ -75,8 +78,8 @@
     <td>{{ row.byte_size }}</td>
     <td>{{ row.sha256[:12] }}…</td>
     <td>{{ status_labels.get(row.status, row.status) }}</td>
-    <td>{{ row.created_by }}</td>
-    <td>{{ row.created_at }}</td>
+    <td>{{ row.created_by|user_name }}</td>
+    <td>{{ row.created_at|local_dt }}</td>
     <td><a class="btn btn-sm btn-secondary" href="/admin/models/view?code={{ row.model_code }}&version={{ row.version }}" target="_blank" rel="noopener">查看</a>
     <a class="btn btn-sm btn-secondary" href="/admin/boms?modelCode={{ row.model_code }}">BOM</a></td>
   </tr>
@@ -84,6 +87,7 @@
   <tr><td colspan="11">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ pager(page, total_pages, total, "/admin/models", {"code": code, "q": q}) }}
 
 <h3 style="margin-top:16px">机台 3D 模型绑定</h3>

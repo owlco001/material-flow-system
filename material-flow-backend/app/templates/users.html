@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}用户管理 · 智慧工厂{% endblock %}
+{% block page_title %}用户管理{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
@@ -11,6 +11,7 @@
   <button type="submit" class="btn btn-sm">搜索</button>
   <a href="/admin/users/new" class="btn btn-sm">新建用户</a>
 </form>
+<div class="table-wrap">
 <table>
   <tr><th>工号</th><th>显示名</th><th>角色</th><th>状态</th><th>首登改密</th><th>直属领导</th><th>操作</th></tr>
   {% for row in rows %}
@@ -34,6 +35,7 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {{ pager(paging.page, paging.pages, paging.total, "/admin/users", {"q": q}) }}
 
 {#- 行内操作共用一个弹窗（v0.6.3）：按钮只带 data-user-*，弹窗表单的 action / 文案由脚本按操作类型填充。 -#}

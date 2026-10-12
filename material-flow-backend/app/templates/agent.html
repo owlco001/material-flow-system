@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}智能助手 · 智慧工厂{% endblock %}
+{% block page_title %}智能助手{% endblock %}
 {% block content %}
 <div class="page-head">
   <h2>智能助手</h2>
@@ -81,15 +81,15 @@
   </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+<div class="ag-main">
 <!-- 数据分析对话 -->
-<div class="card">
+<div class="card" style="min-width:0">
   <h3>数据分析对话</h3>
-  <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
-    <select id="session-select" style="flex:1;min-width:0" onchange="openSession(this.value)"><option value="">— 历史会话 —</option></select>
-    <button type="button" class="btn btn-sm" onclick="renameSession()" title="重命名">重命名</button>
-    <button type="button" class="btn btn-sm" id="pin-btn" onclick="togglePin()" title="置顶">置顶</button>
-    <button type="button" class="btn btn-sm" onclick="deleteSession()" title="删除">删除</button>
+  <div class="ag-session-bar">
+    <select id="session-select" onchange="openSession(this.value)"><option value="">— 历史会话 —</option></select>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="renameSession()" title="重命名">重命名</button>
+    <button type="button" class="btn btn-sm btn-secondary" id="pin-btn" onclick="togglePin()" title="置顶">置顶</button>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="deleteSession()" title="删除">删除</button>
   </div>
   <style>
   #chat-box{height:calc(100vh - 260px);min-height:420px;max-height:900px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafbfc}
@@ -100,15 +100,15 @@
   <div id="chat-box">
     <p class="muted" style="text-align:center">在下方输入问题，例如：查询库存不足的物料、统计本月流转单数量</p>
   </div>
-  <div style="display:flex;gap:8px">
-    <textarea id="chat-input" rows="1" placeholder="输入问题…（Enter 发送，Shift+Enter 换行）" style="flex:1;resize:none;max-height:160px;line-height:1.5"></textarea>
+  <div class="ag-input-row">
+    <textarea id="chat-input" rows="1" placeholder="输入问题…（Enter 发送，Shift+Enter 换行）" style="resize:none;max-height:160px;line-height:1.5"></textarea>
     <button id="chat-send-btn" type="button" class="btn">发送</button>
-    <button onclick="newChatSession()" class="btn btn-sm" title="新会话">新会话</button>
+    <button onclick="newChatSession()" class="btn btn-sm btn-secondary" title="新会话">新会话</button>
   </div>
 </div>
 
 <!-- 智能导入 -->
-<div class="card">
+<div class="card" style="min-width:0">
   <h3>智能导入</h3>
   <p class="muted">支持物料 / 库存 / 订单，CSV 或 Excel，先预览确认再提交。</p>
   <form id="import-form" enctype="multipart/form-data">

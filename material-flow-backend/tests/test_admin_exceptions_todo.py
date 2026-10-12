@@ -65,6 +65,9 @@ def test_warehouse_shows_expiry_section():
         assert 'id="expiry"' in r.text
         assert "EXP-OLD" in r.text and "已过期" in r.text
         assert "EXP-SOON" in r.text and "天后到期" in r.text
-        assert "EXP-FAR" not in r.text
+        # v0.7.0 起仓库页默认列出全部库存，EXP-FAR 会出现在库存列表里；效期预警区内不应出现
+        expiry = r.text[r.text.index('id="expiry"'):r.text.index("盘点记录")]
+        assert "EXP-OLD" in expiry and "EXP-SOON" in expiry
+        assert "EXP-FAR" not in expiry
         home = client.get("/admin/exceptions")
         assert "临期/过期物料" in home.text and 'href="/admin/warehouse#expiry"' in home.text

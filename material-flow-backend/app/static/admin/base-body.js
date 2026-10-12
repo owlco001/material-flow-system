@@ -18,6 +18,26 @@
     if(overlay) overlay.classList.toggle('show');
   });
   if (overlay) overlay.addEventListener('click', closeSide);
+  // 导航分组折叠（v0.7.0）：当前页所在分组始终展开；其余分组记住用户的展开/收起
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('sf_side_secs') || '{}') || {}; } catch(e) {}
+  document.querySelectorAll('.side-sec').forEach(function(sec){
+    var key = sec.dataset.sec, btn = sec.querySelector('.side-group');
+    var isActive = sec.classList.contains('active-sec') || !!sec.querySelector('.side-link.active');
+    if (isActive) sec.classList.add('open');
+    else if (saved[key] === 1) sec.classList.add('open');
+    else if (saved[key] === 0) sec.classList.remove('open');
+    if (btn) {
+      btn.setAttribute('aria-expanded', sec.classList.contains('open') ? 'true' : 'false');
+      btn.addEventListener('click', function(){
+        sec.classList.toggle('open');
+        var open = sec.classList.contains('open');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        saved[key] = open ? 1 : 0;
+        try { localStorage.setItem('sf_side_secs', JSON.stringify(saved)); } catch(e) {}
+      });
+    }
+  });
 })();
 
 ;
@@ -92,7 +112,7 @@ async function sendAgentMsg() {
     } else if (ev.type === "done") {
       text = ev.reply || text || "(空回复)"; paint(); steps.remove(); body.classList.remove("cursor");
       agentMeta(wrap, ev.sources || [], ev.usage ? ev.usage.prompt_tokens + ev.usage.completion_tokens : null);
-    } else if (ev.type === "error") { steps.textContent = ""; text = "出错：" + ev.message; paint(); }
+    } else if (ev.type === "error") { steps.textContent = ""; text = "出错：" + friendlyAgentError(ev.message); paint(); }
   };
   try {
     const r = await fetch("/admin/agent/chat/stream", { method: "POST", headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -108,7 +128,7 @@ async function sendAgentMsg() {
         if (line) { try { handle(JSON.parse(line.slice(5))); } catch (_e) {} }
       }
     }
-  } catch (e) { steps.textContent = ""; text = "出错：" + e.message; paint(); }
+  } catch (e) { steps.textContent = ""; text = "出错：" + friendlyAgentError(e.message); paint(); }
   finally { agentSending = false; sendBtn.disabled = false; body.classList.remove("cursor"); box.scrollTop = box.scrollHeight; }
 }
 document.addEventListener("DOMContentLoaded", function() {

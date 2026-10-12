@@ -208,10 +208,11 @@ def test_handover_timeline_query_and_404():
         r = client.get("/admin/handovers?query=ho_1")
         assert r.status_code == 200
         assert "ho_1" in r.text and "wi_1" in r.text
-        assert "OUTBOUND_APPROVED" in r.text
+        # v0.7.0：事件码显示为中文
+        assert "出库审批通过" in r.text and "OUTBOUND_APPROVED</td>" not in r.text
         missing = client.get("/admin/handovers?query=ho_missing")
         assert missing.status_code == 200
-        assert "404" in missing.text
+        assert "未找到匹配的交接记录：ho_missing" in missing.text
 
 
 def test_approve_without_csrf_rejected_no_change():

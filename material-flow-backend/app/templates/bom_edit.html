@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}编辑 BOM · {{ ver.model_code }}{% endblock %}
+{% block page_title %}编辑 BOM · {{ ver.model_code }}{% endblock %}
 {% block content %}
 <h2>编辑 BOM</h2>
 <p class="page-desc">基于 v{{ ver.version_no }} 修改，保存后生成新版本</p>
@@ -12,6 +12,7 @@
 </div>
 
 <div class="card" style="overflow-x:auto">
+<div class="table-wrap">
 <table id="bomTable">
   <tr><th></th><th>行号</th><th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>数量</th><th>损耗率</th></tr>
   {% for r in items %}
@@ -27,6 +28,7 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 </div>
 
 <div style="margin-top:12px">

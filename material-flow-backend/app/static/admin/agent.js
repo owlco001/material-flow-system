@@ -158,7 +158,7 @@ async function apiCall(path, method, body) {
   const opts = { method, headers: csrfHeaders({ "Content-Type": "application/json" }) };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  if (!r.ok) { const t = await r.text(); throw new Error(t.slice(0, 200)); }
+  if (!r.ok) { const t = await r.text(); throw new Error(friendlyAgentError(t.slice(0, 500) || r.status)); }
   return r.json();
 }
 
@@ -252,7 +252,7 @@ async function sendChat() {
       appendMeta(wrap, ev.message_id, ev.sources || [], null,
         ev.usage ? ev.usage.prompt_tokens + ev.usage.completion_tokens : null);
       loadSessions();
-    } else if (ev.type === "error") { steps.textContent = ""; body.classList.remove("cursor"); text = "出错：" + ev.message; paint(); }
+    } else if (ev.type === "error") { steps.textContent = ""; body.classList.remove("cursor"); text = "出错：" + friendlyAgentError(ev.message); paint(); }
   };
   try {
     const r = await fetch("/admin/agent/chat/stream", { method: "POST", headers: csrfHeaders({ "Content-Type": "application/json" }),
@@ -271,7 +271,7 @@ async function sendChat() {
       }
     }
   } catch (e) {
-    steps.textContent = ""; text = "出错：" + e.message; paint();
+    steps.textContent = ""; text = "出错：" + friendlyAgentError(e.message); paint();
   } finally { chatBusy = false; body.classList.remove("cursor"); }
 }
 document.addEventListener("DOMContentLoaded", function() {
@@ -404,7 +404,7 @@ async function loadUsage() {
     document.getElementById("usage-by-day").innerHTML = usageTable(["日期", "次数", "tokens"], j.by_day.map(d => [d.date, d.calls, fmt(d.tokens)]));
     document.getElementById("usage-by-user").innerHTML = usageTable(["用户", "次数", "tokens", "今日"], j.by_user.map(u => [u.name, u.calls, fmt(u.tokens), fmt(u.today_tokens)]));
     document.getElementById("usage-limit").value = j.daily_token_limit || 0;
-  } catch (e) { document.getElementById("usage-summary").textContent = "加载失败：" + e.message; }
+  } catch (e) { document.getElementById("usage-summary").innerHTML = '<span class="ag-err">用量加载失败：' + agEsc(friendlyAgentError(e.message)) + '</span>'; }
 }
 async function saveUsageLimit() {
   const v = Math.max(0, parseInt(document.getElementById("usage-limit").value || "0", 10) || 0);

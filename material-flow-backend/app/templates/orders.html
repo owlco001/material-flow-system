@@ -1,10 +1,15 @@
 {% extends "base.html" %}
-{% block title %}生产订单 · 智慧工厂{% endblock %}
+{% block page_title %}生产订单{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
-<h2>生产订单</h2>
+<div class="page-head-row">
+  <h2>生产订单</h2>
+  {% if user.role in ("ADMIN", "PLANNER") %}
+  <div class="btn-row"><a class="btn btn-sm btn-ico" href="/admin/orders/new"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>新建订单</a></div>
+  {% endif %}
+</div>
 {{ flash(error=error) }}
 {{ flash(notice_text) }}
 {% if detail %}
@@ -200,46 +205,48 @@
 </script>
 </div>
 {% else %}
-<div class="card" style="max-width:520px;margin-top:16px">
-  <form method="get" action="/admin/orders">
-    <label>订单号（留空显示全部，填单号看详情）</label>
-    <input name="order_no" value="{{ order_no }}" style="max-width:220px">
-    <button type="submit">查询</button>
+<div class="card">
+  <form method="get" action="/admin/orders" class="filter-bar">
+    <div class="fi"><label>订单号</label>
+    <input name="order_no" value="{{ order_no }}" placeholder="输入订单号查看详情" style="max-width:240px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">查询</button></div>
   </form>
 </div>
 {% endif %}
 
 <h3 style="margin-top:16px">订单列表</h3>
-<table>
-  <tr><th>订单号</th><th>产品</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>详情</th><th>推进</th></tr>
+{% set _obadge = {"RELEASED": "b-info", "IN_PROGRESS": "b-warn", "COMPLETED": "b-ok", "CANCELLED": "b-mute", "DRAFT": "b-mute"} %}
+<div class="table-wrap">
+<table class="orders-table">
+  <tr><th>订单号</th><th>产品</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>推进</th></tr>
   {% for row in rows %}
   <tr>
-    <td>{{ row.order_no }}</td>
+    <td><a href="/admin/orders?order_no={{ row.order_no|urlencode }}"><b>{{ row.order_no }}</b></a></td>
     <td>{{ row.product_name or "—" }}</td>
-    <td>{{ status_labels.get(row.status, row.status) if status_labels else row.status }}</td>
-    <td>{{ row.created_at }}</td>
-    <td>{{ row.updated_at or "—" }}</td>
-    <td><a href="/admin/orders?order_no={{ row.order_no }}">查看</a></td>
+    <td><span class="badge {{ _obadge.get(row.status, 'b-mute') }}">{{ status_labels.get(row.status) if status_labels and status_labels.get(row.status) else row.status|label("order_status") }}</span></td>
+    <td>{{ row.created_at|local_dt }}</td>
+    <td>{{ row.updated_at|local_dt }}</td>
     <td>
       {% if row.status == "RELEASED" %}
-      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0">
+      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0" data-confirm="确认将订单 {{ row.order_no }} 标记为「开始生产」？" data-confirm-title="开始生产" data-confirm-ok="开始生产">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="status" value="IN_PROGRESS">
-        <button type="submit" class="btn btn-sm">开始生产</button>
+        <button type="submit" class="btn btn-sm btn-secondary" style="margin:0">开始生产</button>
       </form>
       {% elif row.status == "IN_PROGRESS" %}
-      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0">
+      <form method="post" action="/admin/orders/{{ row.order_no }}/status" style="margin:0" data-confirm="确认完成订单 {{ row.order_no }}？完成后不可撤回。" data-confirm-title="完成订单" data-confirm-ok="确认完成" data-confirm-danger>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="status" value="COMPLETED">
-        <button type="submit" class="btn btn-sm">完成</button>
+        <button type="submit" class="btn btn-sm btn-secondary" style="margin:0">完成</button>
       </form>
-      {% else %}—{% endif %}
+      {% else %}<span class="muted">—</span>{% endif %}
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="7">暂无数据</td></tr>
+  <tr><td colspan="6">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ pager(paging.page, paging.pages, paging.total, "/admin/orders", {"order_no": order_no}) }}
 </div>
 {% endblock %}

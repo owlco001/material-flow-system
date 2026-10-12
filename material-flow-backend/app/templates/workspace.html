@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}物料状态工作台 · 智慧工厂{% endblock %}
+{% block page_title %}物料状态工作台{% endblock %}
 {% block content %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>物料状态工作台</h2>
-<p style="color:#6b7280">当前角色视图：{{ summary.role }}（{{ summary.authenticatedRole }}）· 生成 {{ summary.generatedAt }}</p>
+<p class="page-desc" style="margin-bottom:12px">当前角色视图：{{ summary.role|label("role") }}{% if summary.authenticatedRole and summary.authenticatedRole != summary.role %}（登录角色：{{ summary.authenticatedRole|label("role") }}）{% endif %} · 生成于 {{ summary.generatedAt or "—" }}</p>
 
 <div class="cards">
   <div class="card"><h3>流转待办</h3>
@@ -15,20 +15,25 @@
     <p>已确认 {{ summary.confirmedCount }} · 被拒 {{ summary.rejectedHandoverCount }} · 取消 {{ summary.cancelledHandoverCount }}</p></div>
 </div>
 
-<div class="card" style="margin-top:16px;max-width:680px">
-  <form method="get" action="/admin/workspace">
-    <label>状态码（如 ARRIVED / IN_STOCK / OUT_OF_STOCK）</label>
-    <input name="status" value="{{ filters.status }}" style="max-width:190px">
-    <label>订单号</label>
-    <input name="orderNo" value="{{ filters.orderNo }}" style="max-width:150px">
-    <button type="submit">筛选</button>
-    <a href="/admin/workspace" style="margin-left:8px">重置</a>
+<div class="card" style="margin-top:16px">
+  <form method="get" action="/admin/workspace" class="filter-bar">
+    <div class="fi"><label for="ws-status">物料状态</label>
+    <select name="status" id="ws-status">
+      <option value="">全部状态</option>
+      {% for _code, _lab in status_options %}
+      <option value="{{ _code }}" {% if filters.status|upper == _code %}selected{% endif %}>{{ _lab }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="fi"><label for="ws-order">订单号</label>
+    <input name="orderNo" id="ws-order" value="{{ filters.orderNo }}" placeholder="如 26B-013" style="max-width:180px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">筛选</button>
+    <a href="/admin/workspace" class="btn btn-sm btn-secondary">重置</a></div>
   </form>
 </div>
 
 <p style="margin-top:16px">共 {{ total_rows }} 行</p>
 <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
-  <input type="text" id="ws-q" placeholder="本页搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px" oninput="wsFilter()">
+  <input type="text" id="ws-q" placeholder="本页搜索物料编码/名称" style="max-width:240px" oninput="wsFilter()">
 </div>
 <script>
 function wsFilter(){
@@ -40,6 +45,7 @@ function wsFilter(){
   }
 }
 </script>
+<div class="table-wrap">
 <table>
   <tr><th>订单</th><th>机台</th><th>物料</th><th>分类</th><th>规格</th><th>需求</th><th>到货</th><th>在库</th><th>已发</th><th>已领</th><th>状态</th><th>责任人</th><th>最近交接</th><th>流转</th></tr>
   {% for item in items %}
@@ -57,15 +63,16 @@ function wsFilter(){
     <td>{{ item.pickedQuantity }}</td>
     {% set _s = item.statusCode %}
     {% set _c = {"OUT_OF_STOCK": "st-red", "REJECTED": "st-red", "CANCELLED": "st-neutral", "ARRIVED": "st-yellow", "PENDING": "st-yellow", "OUTBOUND_PENDING": "st-yellow", "IN_STOCK": "st-green", "PICKED_UP": "st-green", "AT_STATION": "st-green", "OUTBOUND_CONFIRMED": "st-green", "OUTBOUND_APPROVED": "st-blue"}.get(_s, "st-neutral") %}
-    <td><span class="st {{ _c }}">{{ item.label or item.statusCode or "—" }}</span></td>
+    <td><span class="st {{ _c }}">{{ item.label or item.statusCode|label("workspace_status") }}</span></td>
     <td>{{ item.currentOwnerName or item.assignedUserName or "—" }}</td>
-    <td>{{ item.lastHandoverStatus or "—" }}</td>
-    <td>{{ item.transferStatus or "—" }}</td>
+    <td>{{ item.lastHandoverStatus|label("handover_status") }}</td>
+    <td>{{ item.transferStatus|label("transfer_status") }}</td>
   </tr>
   {% else %}
   <tr><td colspan="14">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ pager(page, total_pages, total_rows, "/admin/workspace", {"status": filters.status, "orderNo": filters.orderNo}) }}
 </div>
 {% endblock %}

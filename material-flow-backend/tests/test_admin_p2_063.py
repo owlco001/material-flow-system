@@ -383,7 +383,7 @@ def test_release_and_system_notices_are_mapped():
     with TestClient(backend.app) as client:
         login(client, "owlco")
         r = client.get("/admin/releases?notice=RELEASE_EXISTS")
-        assert "该 versionCode 已存在" in r.text
+        assert "该版本号已存在" in r.text
         r = client.get("/admin/releases", params={"notice": "伪造的提示"})
         assert "伪造的提示" not in r.text
         r = client.get("/admin/system", params={"notice": "伪造的提示"})

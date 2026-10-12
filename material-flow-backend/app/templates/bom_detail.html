@@ -1,12 +1,13 @@
 {% extends "base.html" %}
-{% block title %}BOM 明细 · {{ ver.model_code }}{% endblock %}
+{% block page_title %}BOM 明细 · {{ ver.model_code }}{% endblock %}
 {% block content %}
 <h2>BOM 明细</h2>
-<p class="page-desc">机型：<b>{{ ver.model_code }}</b> · 版本 v{{ ver.version_no }} · {{ ver.status }} · 共 {{ items|length }} 行</p>
+<p class="page-desc">机型：<b>{{ ver.model_code }}</b> · 版本 v{{ ver.version_no }} · {{ ver.status|label("bom_status") }} · 共 {{ items|length }} 行</p>
 <p><a href="/admin/boms" class="btn btn-sm btn-secondary">返回 BOM 管理</a>
 <a href="/admin/boms/versions/{{ ver.id }}/edit" class="btn btn-sm btn-primary">编辑</a></p>
 
 <div class="card" style="overflow-x:auto">
+<div class="table-wrap">
 <table>
   <tr><th>行号</th><th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>数量</th><th>损耗率</th></tr>
   {% for r in items %}
@@ -21,5 +22,6 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 </div>
 {% endblock %}

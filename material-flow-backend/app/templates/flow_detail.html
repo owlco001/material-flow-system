@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}流转详情 · 智慧工厂{% endblock %}
+{% block page_title %}流转详情{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -40,12 +40,14 @@
 <div class="card" style="margin-top:16px">
   <h3>物料明细</h3>
   {% if payload_items %}
-  <table style="margin-top:8px">
+  <div class="table-wrap" style="margin-top:8px">
+  <table>
     <tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>数量</th></tr>
     {% for p in payload_items %}
     <tr><td>{{ p.code }}</td><td>{{ p.name }}</td><td>{{ p.spec or "—" }}</td><td>{{ p.quantity }}{{ p.unit }}</td></tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
   <p style="color:#888">（无物料明细）</p>
   {% endif %}
@@ -82,18 +84,20 @@
 
 <div class="card" style="margin-top:16px">
   <h3>关联交接</h3>
+  <div class="table-wrap">
   <table>
     <tr><th>交接单</th><th>状态</th><th>数量</th><th>接收人</th><th>时间</th><th>留痕</th></tr>
     {% for h in handovers %}
     <tr>
       <td>{{ h.id }}</td><td>{{ h.status_label }}</td><td>{{ h.quantity }}</td>
-      <td>{{ h.receiver_name }}</td><td>{{ h.created_at }}</td>
+      <td>{{ h.receiver_name }}</td><td>{{ h.created_at|local_dt }}</td>
       <td><a href="/admin/handovers/{{ h.id }}">时间线</a></td>
     </tr>
     {% else %}
     <tr><td colspan="6">暂无交接记录</td></tr>
     {% endfor %}
   </table>
+  </div>
 </div>
 <p style="margin-top:16px"><a href="/admin/flows">返回列表</a></p>
 </div>

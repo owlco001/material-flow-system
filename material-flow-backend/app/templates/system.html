@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}系统更新 · 智慧工厂{% endblock %}
+{% block page_title %}系统更新{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -9,6 +9,7 @@
 
 <div class="card">
   <h3>当前版本</h3>
+  <div class="table-wrap">
   <table>
     <tr><th style="width:160px">应用版本</th><td>{{ app_version }}</td></tr>
     <tr><th>部署 Commit</th><td><code>{{ deployed_sha[:12] if deployed_sha != "unknown" else "unknown" }}</code>{% if deployed_sha != "unknown" %} <span class="muted">{{ deployed_sha }}</span>{% else %}<div class="muted" style="font-size:12px">未读到部署记录（首次手动部署、或未经「系统更新」脚本部署时会这样，下次通过系统更新后即会显示）。{% for t in deployed_sha_diag.tried %}<br>{{ t }}{% endfor %}</div>{% endif %}</td></tr>
@@ -23,6 +24,7 @@
       {% if update_status.at %}<span class="muted">（{{ update_status.at }}）</span>{% endif %}
     </td></tr>
   </table>
+  </div>
 </div>
 
 <div class="card" style="margin-top:12px">
@@ -33,12 +35,14 @@
   </form>
   {% if check_result %}
   {% set cr = check_result %}
+  <div class="table-wrap">
   <table>
     <tr><th style="width:160px">最新 Commit</th><td><code>{{ cr.latestSha }}</code></td></tr>
     <tr><th>提交信息</th><td>{{ cr.message }}</td></tr>
-    <tr><th>提交时间</th><td class="muted">{{ cr.date }}</td></tr>
+    <tr><th>提交时间</th><td class="muted">{{ cr.date|local_dt }}</td></tr>
     <tr><th>是否需要更新</th><td>{% if cr.updateAvailable %}<b>是</b>{% else %}<span class="muted">否（已是最新）</span>{% endif %}</td></tr>
   </table>
+  </div>
   {% if cr.updateAvailable %}
   <div style="margin-top:12px">
     <button type="button" class="btn btn-sm btn-danger" id="applyBtn" onclick="confirmApply('{{ cr.fullSha }}')">开始更新到 {{ cr.latestSha }}</button>

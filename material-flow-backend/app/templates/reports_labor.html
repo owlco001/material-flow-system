@@ -1,39 +1,45 @@
 {% extends "base.html" %}
-{% block title %}工时汇总 · 智慧工厂{% endblock %}
+{% block page_title %}工时汇总{% endblock %}
 {% block content %}
 {% from "_pagination.html" import pager %}
+{% macro mins(v) -%}
+{%- if v is none or v == "" or v == 0 -%}<span class="muted">—</span>
+{%- elif v >= 120 -%}<span title="{{ v }} 分钟">{{ (v / 60)|round(1) }} 小时</span>
+{%- else -%}{{ v }} 分钟{%- endif -%}
+{%- endmacro %}
 <div class="compact">
 <h2>工时汇总</h2>
 <div class="card">
-  <h3>筛选</h3>
-  <form method="get" action="/admin/reports/labor" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-    <div><label>机台 ID</label>
-    <input name="deviceId" value="{{ filters.deviceId or '' }}" style="max-width:180px"></div>
-    <div><label>订单号</label>
-    <input name="orderNo" value="{{ filters.orderNo or '' }}" style="max-width:180px"></div>
-    <div><label>人员 ID</label>
-    <input name="assemblerId" value="{{ filters.assemblerId or '' }}" style="max-width:180px"></div>
-    <div><button type="submit" class="btn btn-sm">筛选</button></div>
+  <form method="get" action="/admin/reports/labor" class="filter-bar">
+    <div class="fi"><label for="lb-order">订单号</label>
+    <input id="lb-order" name="orderNo" value="{{ filters.orderNo or '' }}" placeholder="如 26B-013" style="max-width:180px"></div>
+    <div class="fi"><label for="lb-dev">机台编号</label>
+    <input id="lb-dev" name="deviceNo" value="{{ filters.deviceNo or '' }}" placeholder="如 HZ-01" style="max-width:180px"></div>
+    <div class="fi"><label for="lb-who">人员</label>
+    <input id="lb-who" name="assembler" value="{{ filters.assembler or '' }}" placeholder="姓名 / 用户名" style="max-width:180px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">筛选</button>
+    <a href="/admin/reports/labor" class="btn btn-sm btn-secondary">重置</a></div>
   </form>
 </div>
 
-<p style="margin-top:16px">共 {{ total_rows }} 行 · 全页合计 {{ total_minutes }} 分钟</p>
+<p style="margin-top:16px">共 {{ total_rows }} 行 · 全页合计 {{ mins(total_minutes) }}</p>
+<div class="table-wrap">
 <table>
-  <tr><th>任务</th><th>订单号</th><th>机台</th><th>人员</th><th>装配工时</th><th>借调工时</th><th>合计</th></tr>
+  <tr><th>订单号</th><th>机台</th><th>人员</th><th class="num">装配工时</th><th class="num">借调工时</th><th class="num">合计</th></tr>
   {% for item in items %}
   <tr>
-    <td>{{ item.taskId }}</td>
-    <td><a href="/admin/orders?order_no={{ item.orderNo }}">{{ item.orderNo }}</a></td>
-    <td><a href="/admin/tasks?q={{ item.deviceNo }}">{{ item.deviceNo }}</a></td>
-    <td><a href="/admin/users?q={{ item.assemblerName }}">{{ item.assemblerName }}</a>（{{ item.assemblerId }}）</td>
-    <td>{{ item.assemblyLaborMinutes }}</td>
-    <td>{{ item.temporaryTransferLaborMinutes }}</td>
-    <td>{{ item.totalLaborMinutes }}</td>
+    <td><a href="/admin/orders?order_no={{ item.orderNo|urlencode }}">{{ item.orderNo }}</a></td>
+    <td><a href="/admin/tasks?q={{ item.deviceNo|urlencode }}" title="任务 {{ item.taskId }}">{{ item.deviceNo }}</a></td>
+    <td><a href="/admin/reports/labor?assembler={{ item.assemblerName|urlencode }}">{{ item.assemblerName or item.assemblerId }}</a></td>
+    <td class="num">{{ mins(item.assemblyLaborMinutes) }}</td>
+    <td class="num">{{ mins(item.temporaryTransferLaborMinutes) }}</td>
+    <td class="num"><b>{{ mins(item.totalLaborMinutes) }}</b></td>
   </tr>
   {% else %}
-  <tr><td colspan="7">暂无数据</td></tr>
+  <tr><td colspan="6">暂无数据</td></tr>
   {% endfor %}
 </table>
-{{ pager(page, total_pages, total_rows, "/admin/reports/labor", {"deviceId": filters.deviceId, "orderNo": filters.orderNo, "assemblerId": filters.assemblerId}) }}
+</div>
+{{ pager(page, total_pages, total_rows, "/admin/reports/labor", {"deviceId": filters.deviceId, "orderNo": filters.orderNo, "assemblerId": filters.assemblerId, "deviceNo": filters.deviceNo, "assembler": filters.assembler}) }}
 </div>
 {% endblock %}

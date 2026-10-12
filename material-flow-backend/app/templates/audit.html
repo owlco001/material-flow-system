@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}审计日志 · 智慧工厂{% endblock %}
+{% block page_title %}审计日志{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 {% from "_pagination.html" import simple_pager %}
@@ -7,50 +7,55 @@
 <h2>审计日志</h2>
 {{ flash(error=error) }}
 <div class="card">
-  <h3>筛选</h3>
-  <form method="get" action="/admin/audit">
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px">
-      <div><label>起始时间（ISO-8601）</label>
-      <input name="from" value="{{ filters['from'] or '' }}" style="max-width:190px" placeholder="2026-09-01T00:00:00Z"></div>
-      <div><label>截止时间</label>
-      <input name="to" value="{{ filters['to'] or '' }}" style="max-width:190px"></div>
-      <div><label>事件类型</label>
-      <select name="eventType" style="max-width:150px">
-        <option value="">全部</option>
-        {% for _k, _v in event_labels.items() %}
-        <option value="{{ _k }}" {% if filters.eventType == _k %}selected{% endif %}>{{ _v }}</option>
-        {% endfor %}
-      </select></div>
-      <div><label>实体类型</label>
-      <input name="entityType" value="{{ filters.entityType or '' }}" style="max-width:150px"></div>
-      <div><label>操作人 ID</label>
-      <input name="operatorId" value="{{ filters.operatorId or '' }}" style="max-width:150px"></div>
-      <div><label>实体 ID</label>
-      <input name="entityId" value="{{ filters.entityId or '' }}" style="max-width:150px"></div>
-    </div>
-    <div class="btn-row" style="margin-top:10px"><button type="submit" class="btn btn-sm">查询</button>
+  <form method="get" action="/admin/audit" class="filter-bar">
+    <div class="fi"><label for="au-from">起始日期</label>
+    <input type="date" id="au-from" name="from" value="{{ date_from }}"></div>
+    <div class="fi"><label for="au-to">截止日期</label>
+    <input type="date" id="au-to" name="to" value="{{ date_to }}"></div>
+    <div class="fi"><label for="au-ev">事件</label>
+    <select name="eventType" id="au-ev">
+      <option value="">全部事件</option>
+      {% for _k, _v in event_labels.items() %}
+      <option value="{{ _k }}" {% if filters.eventType == _k %}selected{% endif %}>{{ _v }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="fi"><label for="au-et">对象类型</label>
+    <select name="entityType" id="au-et">
+      <option value="">全部对象</option>
+      {% for _k, _v in entity_labels.items() %}
+      <option value="{{ _k }}" {% if filters.entityType == _k %}selected{% endif %}>{{ _v }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="fi"><label for="au-op">操作人</label>
+    <input id="au-op" name="operatorId" value="{{ filters.operatorId or '' }}" placeholder="姓名 / 用户名" style="max-width:150px"></div>
+    <div class="fi"><label for="au-id">对象编号</label>
+    <input id="au-id" name="entityId" value="{{ filters.entityId or '' }}" placeholder="单号 / ID" style="max-width:160px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-sm">查询</button>
     <a href="/admin/audit" class="btn btn-sm btn-secondary">重置</a></div>
   </form>
 </div>
 
-<table style="margin-top:16px">
-  <tr><th>时间</th><th>记录类型</th><th>事件</th><th>实体类型</th><th>实体 ID</th><th>操作人</th><th>角色</th><th>结果</th><th>请求 ID</th></tr>
+<div class="table-wrap" style="margin-top:16px">
+<table>
+  <tr><th>时间</th><th>事件</th><th>对象类型</th><th>对象编号</th><th>操作人</th><th>角色</th><th>结果</th><th>记录类型</th><th>请求 ID</th></tr>
   {% for item in items %}
   <tr>
-    <td>{{ item.server_time[:16].replace("T", " ") if item.server_time else "—" }}</td>
-    <td>{{ "审计事件" if item.record_type == "AUDIT_EVENT" else "审计日志" }}</td>
-    <td>{{ event_labels.get(item.event_type, item.event_type) }}</td>
-    <td>{{ entity_labels.get(item.entity_type, item.entity_type or "—") }}</td>
-    <td>{% if item.entity_type == "HANDOVER" and item.entity_id %}<a href="/admin/handovers/{{ item.entity_id }}">{{ item.entity_id }}</a>{% elif item.entity_type == "TRANSFER_REQUEST" and item.entity_id %}<a href="/admin/flows/{{ item.entity_id }}">{{ item.entity_id }}</a>{% else %}{{ item.entity_id or "—" }}{% endif %}</td>
-    <td>{{ item.actor_user_id or "—" }}</td>
+    <td>{{ item.server_time|local_dt }}</td>
+    <td>{{ event_labels.get(item.event_type) or item.event_type|label("event") }}</td>
+    <td>{{ entity_labels.get(item.entity_type) or item.entity_type|label("entity") }}</td>
+    {% set _eid = item.entity_id %}{% set _ename = entity_names.get(_eid) if _eid else none %}
+    <td>{% if not _eid %}—{% elif item.entity_type in ("HANDOVER", "MATERIAL_HANDOVER") %}<a href="/admin/handovers/{{ _eid }}">{{ _eid }}</a>{% elif item.entity_type in ("TRANSFER_REQUEST", "MATERIAL_FLOW") %}<a href="/admin/flows/{{ _eid }}" title="{{ _eid }}">{{ _ename or _eid }}</a>{% elif item.entity_type == "PRODUCTION_ORDER" %}<a href="/admin/orders?order_no={{ _eid|urlencode }}">{{ _eid }}</a>{% elif item.entity_type == "BOM_VERSION" %}<a href="/admin/boms/versions/{{ _eid }}" title="{{ _eid }}">{{ _ename or _eid }}</a>{% else %}<span title="{{ _eid }}">{{ _ename or _eid }}</span>{% endif %}</td>
+    <td>{% if item.actor_user_id %}<span title="{{ item.actor_user_id }}">{{ names.get(item.actor_user_id, item.actor_user_id) }}</span>{% else %}—{% endif %}</td>
     <td>{{ role_labels.get(item.actor_role, item.actor_role or "—") }}</td>
-    <td>{{ result_labels.get(item.result, item.result or "—") }}</td>
-    <td>{{ item.request_id or "—" }}</td>
+    <td>{% set _rs = item.result %}{% if _rs == "SUCCESS" %}<span class="badge b-ok">成功</span>{% elif _rs %}<span class="badge b-err">{{ result_labels.get(_rs, _rs) }}</span>{% else %}—{% endif %}</td>
+    <td class="muted">{{ "审计事件" if item.record_type == "AUDIT_EVENT" else "审计日志" }}</td>
+    <td class="muted" title="{{ item.request_id or '' }}">{{ (item.request_id or "—")[:8] }}{% if item.request_id and item.request_id|length > 8 %}…{% endif %}</td>
   </tr>
   {% else %}
   <tr><td colspan="9">暂无数据</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ simple_pager(page, items|length > 0, "/admin/audit", {"from": filters['from'], "to": filters['to'], "eventType": filters.eventType, "entityType": filters.entityType, "operatorId": filters.operatorId, "entityId": filters.entityId}) }}
 </div>
 {% endblock %}

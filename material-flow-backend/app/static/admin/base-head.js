@@ -79,3 +79,16 @@ function renderMd(src) {
   }
   return out.join("");
 }
+// 智能助手错误文案友好化（v0.7.0）：后端原始 JSON / 英文配置名 → 中文提示
+function friendlyAgentError(raw) {
+  let msg = String(raw == null ? "" : raw);
+  try { const j = JSON.parse(msg); if (j && j.error) msg = j.error.message || j.error.code || msg; } catch (e) {}
+  if (/API_KEY|API Key|api[_ ]?key/i.test(msg) && /未配置|missing|not set/i.test(msg)) {
+    return "未配置 API Key，请在智能助手页「模型与用量」中填写后保存";
+  }
+  if (/^(401|UNAUTHORIZED)$|未登录/.test(msg)) return "登录已过期，请刷新页面重新登录";
+  if (/^(403|FORBIDDEN)$/.test(msg)) return "没有权限执行此操作";
+  if (/^\d{3}$/.test(msg)) return "服务暂时不可用（HTTP " + msg + "），请稍后重试";
+  if (/^\s*[{<]/.test(msg)) return "服务暂时不可用，请稍后重试";
+  return msg || "服务暂时不可用，请稍后重试";
+}

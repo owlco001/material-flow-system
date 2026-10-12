@@ -104,6 +104,8 @@ _log = logging.getLogger("material_flow.admin")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 from app.web_assets import static_url as _static_url  # noqa: E402
 templates.env.globals["static_url"] = _static_url
+from app import ui_labels as _ui_labels  # noqa: E402
+_ui_labels.register(templates.env)
 
 SESSION_COOKIE = "mf_session"
 ANON_CSRF_COOKIE = "anon_csrf"
@@ -443,12 +445,12 @@ RELEASE_NOTICES: dict[str, tuple[str, str]] = {
     "deleted": ("notice", "已删除。"),
     "not_found": ("error", "未找到该版本。"),
     "no_file": ("error", "请选择 APK 文件。"),
-    "bad_version": ("error", "versionCode 必须为正整数。"),
-    "INVALID_VERSION_CODE": ("error", "versionCode 必须为正整数。"),
+    "bad_version": ("error", "版本号必须为正整数。"),
+    "INVALID_VERSION_CODE": ("error", "版本号必须为正整数。"),
     "INVALID_APK": ("error", "文件不是有效的 APK。"),
     "APK_TOO_LARGE": ("error", "APK 超过 300MB 上限。"),
-    "RELEASE_EXISTS": ("error", "该 versionCode 已存在，请先删除旧版。"),
-    "INVALID_VERSION_NAME": ("error", "versionName 格式无效（仅允许字母数字 . _ -）。"),
+    "RELEASE_EXISTS": ("error", "该版本号已存在，请先删除旧版。"),
+    "INVALID_VERSION_NAME": ("error", "版本名称格式无效（仅允许字母、数字和 . _ -）。"),
 }
 
 SYSTEM_NOTICES: dict[str, tuple[str, str]] = {
@@ -843,15 +845,45 @@ def _api_http_error_response(exc: HTTPException, request: Request | None = None)
     return _error_page(request, exc.status_code, str(exc.detail or ""))
 
 
+def _search_transfers(q: str, status: str | None, page: int, user: sqlite3.Row) -> dict[str, Any]:
+    """流转列表按单据号（订单号等）/ 申请单 ID 搜索（仅管理台；可见范围与列表接口一致）。"""
+    from app.main import TRANSFER_STATES, _transfer_visibility_sql
+    if status is not None:
+        status = status.strip().upper()
+        if status not in TRANSFER_STATES:
+            raise HTTPException(400, "status 不是有效的流转申请状态")
+    scope, args = _transfer_visibility_sql(user, "t")
+    where = " WHERE " + scope + " AND (t.document_no LIKE ? OR t.id = ?)"
+    args = [*args, f"%{q}%", q]
+    if status:
+        where += " AND t.status=?"
+        args.append(status)
+    c = db()
+    try:
+        total = c.execute("SELECT COUNT(*) FROM transfer_requests t" + where, args).fetchone()[0]
+        rows = c.execute(
+            "SELECT t.id, t.type, t.document_no, t.status, t.created_by, t.created_at FROM transfer_requests t"
+            + where + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
+            [*args, LIST_PAGE_SIZE, (page - 1) * LIST_PAGE_SIZE],
+        ).fetchall()
+    finally:
+        c.close()
+    return {"items": [dict(r) for r in rows], "total": total}
+
+
 @router.get("/admin/flows", response_class=HTMLResponse)
 def admin_flows_list(request: Request):
     user, denied = _manager_or_403(request)
     if denied:
         return denied
     status = request.query_params.get("status") or None
+    q = str(request.query_params.get("q", "")).strip()
     page = _page_param(request)
     try:
-        data = _list_transfers(status=status, page=page, page_size=LIST_PAGE_SIZE, user=user)
+        if q:
+            data = _search_transfers(q, status, page, user)
+        else:
+            data = _list_transfers(status=status, page=page, page_size=LIST_PAGE_SIZE, user=user)
     except HTTPException as exc:
         return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
@@ -863,6 +895,7 @@ def admin_flows_list(request: Request):
             "items": data["items"],
             "paging": _paging(page, data["total"], LIST_PAGE_SIZE),
             "status_filter": status or "",
+            "q": q,
             "status_labels": TRANSFER_STATUS_LABELS,
             "type_labels": TRANSFER_TYPE_LABELS,
             "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
@@ -1008,6 +1041,28 @@ async def admin_flow_execute(request: Request, rid: str):
     return _see_other(f"/admin/flows/{rid}?notice=executed")
 
 
+_HANDOVER_LIST_SQL = (
+    "SELECT h.id, h.work_item_id, h.status, h.quantity, h.from_location, h.created_at,"
+    " u.display_name AS creator_name, t.document_no, t.type AS transfer_type,"
+    " m.code AS material_code, m.name AS material_name, d.device_no"
+    " FROM material_handovers h"
+    " LEFT JOIN users u ON u.id = h.created_by"
+    " LEFT JOIN transfer_requests t ON t.id = h.transfer_request_id"
+    " LEFT JOIN material_work_items w ON w.id = h.work_item_id"
+    " LEFT JOIN materials m ON m.id = w.material_id"
+    " LEFT JOIN devices d ON d.id = COALESCE(h.device_id, w.device_id)"
+)
+_HANDOVER_SEARCH_WHERE = (
+    " WHERE h.id = ? OR h.work_item_id = ? OR t.document_no = ? OR m.code = ? OR d.device_no = ?"
+    " OR t.document_no LIKE ? OR m.code LIKE ? OR m.name LIKE ? OR d.device_no LIKE ?"
+)
+
+
+def _handover_search_args(query: str) -> tuple:
+    like = f"%{query}%"
+    return (query, query, query, query, query, like, like, like, like)
+
+
 @router.get("/admin/handovers", response_class=HTMLResponse)
 def admin_handovers_search(request: Request):
     user, denied = _manager_or_403(request)
@@ -1016,24 +1071,38 @@ def admin_handovers_search(request: Request):
     query = str(request.query_params.get("query", "")).strip()
     result = None
     error = None
-    if query:
-        try:
-            result = handover_timeline(query, user=user)
-        except HTTPException as exc:
-            error = f"{exc.status_code}：{exc.detail}"
-    # 最近交接列表
     page = _page_param(request)
     page_size = DEFAULT_PAGE_SIZE
     c = db()
     try:
-        total = c.execute("SELECT COUNT(*) FROM material_handovers").fetchone()[0]
+        if query:
+            # 内部 ID（ho_/wi_/需求单）走原有时间线接口；否则按流转单号/订单号/物料编码/机台号找最近一条交接
+            try:
+                result = handover_timeline(query, user=user)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    error = f"{exc.status_code}：{exc.detail}"
+                else:
+                    hit = c.execute(
+                        _HANDOVER_LIST_SQL + _HANDOVER_SEARCH_WHERE + " ORDER BY h.created_at DESC LIMIT 1",
+                        _handover_search_args(query),
+                    ).fetchone()
+                    if hit is not None:
+                        try:
+                            result = handover_timeline(hit["id"], user=user)
+                        except HTTPException:
+                            result = None
+                    if result is None:
+                        error = f"未找到匹配的交接记录：{query}（可输入交接单号、流转单号/订单号、物料编码或机台号）"
+            where, args = (_HANDOVER_SEARCH_WHERE, _handover_search_args(query))
+        else:
+            where, args = ("", ())
+        total = c.execute(
+            "SELECT COUNT(*) FROM (" + _HANDOVER_LIST_SQL + where + ")", args,
+        ).fetchone()[0]
         rows = c.execute(
-            "SELECT h.id, h.work_item_id, h.status, h.quantity, h.from_location,"
-            " h.created_at, u.display_name AS creator_name"
-            " FROM material_handovers h"
-            " LEFT JOIN users u ON u.id = h.created_by"
-            " ORDER BY h.created_at DESC LIMIT ? OFFSET ?",
-            (page_size, (page - 1) * page_size),
+            _HANDOVER_LIST_SQL + where + " ORDER BY h.created_at DESC LIMIT ? OFFSET ?",
+            (*args, page_size, (page - 1) * page_size),
         ).fetchall()
     finally:
         c.close()
@@ -1182,20 +1251,49 @@ def admin_reports_labor(request: Request):
     if denied:
         return denied
     page = _page_param(request)
+    q = request.query_params
     filters = {
-        "deviceId": request.query_params.get("deviceId") or None,
-        "orderNo": request.query_params.get("orderNo") or None,
-        "assemblerId": request.query_params.get("assemblerId") or None,
+        "deviceId": q.get("deviceId") or None,
+        "orderNo": (q.get("orderNo") or "").strip() or None,
+        "assemblerId": q.get("assemblerId") or None,
+        # v0.7.0：页面按机台编号 / 人员姓名筛选，服务端换算成 ID 再调接口（接口本身不变）
+        "deviceNo": (q.get("deviceNo") or "").strip() or None,
+        "assembler": (q.get("assembler") or "").strip() or None,
     }
+    device_id, assembler_id = filters["deviceId"], filters["assemblerId"]
+    no_match = False
+    if filters["deviceNo"] or filters["assembler"]:
+        c = db()
+        try:
+            if filters["deviceNo"]:
+                row = c.execute(
+                    "SELECT device_id FROM assembly_tasks WHERE device_no=? LIMIT 1", (filters["deviceNo"],)
+                ).fetchone() or c.execute(
+                    "SELECT id AS device_id FROM devices WHERE device_no=? OR id=?",
+                    (filters["deviceNo"], filters["deviceNo"]),
+                ).fetchone()
+                device_id = row["device_id"] if row else None
+                no_match = no_match or row is None
+            if filters["assembler"]:
+                rows = c.execute(
+                    "SELECT id FROM users WHERE id=? OR username=? OR display_name=? LIMIT 2",
+                    (filters["assembler"],) * 3,
+                ).fetchall()
+                assembler_id = rows[0]["id"] if len(rows) == 1 else None
+                no_match = no_match or len(rows) != 1
+        finally:
+            c.close()
     try:
         data = _api_endpoint("/api/v1/workshop/labor-summary")(
             page=page,
             pageSize=20,
-            deviceId=filters["deviceId"],
+            deviceId=device_id,
             orderNo=filters["orderNo"],
-            assemblerId=filters["assemblerId"],
+            assemblerId=assembler_id,
             user=user,
         )
+        if no_match:
+            data = {**data, "items": [], "total": 0, "totalPages": 0, "totalLaborMinutes": 0}
     except HTTPException as exc:
         return _api_http_error_response(exc, request)
     return templates.TemplateResponse(
@@ -1457,6 +1555,32 @@ def admin_models_list(request: Request):
 # ==================== S6：审计日志查询（契约 §6.6）====================
 
 
+def _audit_entity_names(c: sqlite3.Connection, items: list[dict]) -> dict[str, str]:
+    """审计对象 ID → 可读名称（用户姓名 / 流转单据号 / BOM 机型版本），查不到的不放进字典。"""
+    by_type: dict[str, set[str]] = {}
+    for i in items:
+        if i.get("entity_id"):
+            by_type.setdefault(i.get("entity_type") or "", set()).add(str(i["entity_id"]))
+    out: dict[str, str] = {}
+
+    def fetch(sql: str, ids: set[str]):
+        ids = sorted(ids)
+        if not ids:
+            return []
+        return c.execute(sql.format(ph=",".join("?" for _ in ids)), ids).fetchall()
+
+    user_ids = by_type.get("USER", set())
+    out.update({k: v for k, v in _user_display_names(c, user_ids).items() if k != v})
+    for r in fetch("SELECT id, document_no FROM transfer_requests WHERE id IN ({ph})",
+                   by_type.get("TRANSFER_REQUEST", set()) | by_type.get("MATERIAL_FLOW", set())):
+        if r["document_no"]:
+            out[r["id"]] = r["document_no"]
+    for r in fetch("SELECT id, model_code, version_no FROM bom_versions WHERE id IN ({ph})",
+                   by_type.get("BOM_VERSION", set())):
+        out[r["id"]] = f"{r['model_code']} v{r['version_no']}"
+    return out
+
+
 @router.get("/admin/audit", response_class=HTMLResponse)
 def admin_audit_logs(request: Request):
     user, denied = _admin_or_403(request)
@@ -1471,17 +1595,33 @@ def admin_audit_logs(request: Request):
         "operatorId": q.get("operatorId") or None,
         "entityId": q.get("entityId") or None,
     }
+    # v0.7.0：时间筛选为日期输入（北京时间），换算成 UTC ISO 边界；完整 ISO 原样透传（兼容旧链接）
+    api_from = _ui_labels.beijing_day_bounds(filters["from"])
+    api_to = _ui_labels.beijing_day_bounds(filters["to"], end=True)
+    # 操作人可填姓名 / 用户名 / ID：能唯一匹配到用户则换成 ID
+    operator = filters["operatorId"]
+    if operator:
+        c = db()
+        try:
+            hits = c.execute(
+                "SELECT id FROM users WHERE id=? OR username=? OR display_name=? LIMIT 2",
+                (operator, operator, operator),
+            ).fetchall()
+        finally:
+            c.close()
+        if len(hits) == 1:
+            operator = hits[0]["id"]
     data = None
     error = None
     try:
         data = api_audit_logs(
             page=_page_param(request),
             pageSize=50,
-            from_=filters["from"],
-            to_=filters["to"],
+            from_=api_from,
+            to_=api_to,
             eventType=filters["eventType"],
             entityType=filters["entityType"],
-            operatorId=filters["operatorId"],
+            operatorId=operator,
             action=None,
             resourceType=None,
             resourceId=None,
@@ -1490,37 +1630,30 @@ def admin_audit_logs(request: Request):
         )
     except HTTPException as exc:
         error = f"{exc.status_code}：{exc.detail}"
+    items = (data or {}).get("items", [])
+    c = db()
+    try:
+        names = _user_display_names(c, [i.get("actor_user_id") for i in items])
+        entity_names = _audit_entity_names(c, items)
+    finally:
+        c.close()
     return templates.TemplateResponse(
         request,
         "audit.html",
         {
             "user": user,
             "csrf_token": user["csrf_token"],
-            "items": (data or {}).get("items", []),
+            "items": items,
+            "names": names,
+            "entity_names": entity_names,
             "page": _page_param(request),
             "error": error,
             "filters": filters,
-            "event_labels": {
-                "ORDER_STATUS_CHANGED": "订单状态变更",
-                "ORDER_CREATED": "订单创建",
-                "HANDOVER_CREATED": "交接创建",
-                "HANDOVER_CONFIRMED": "交接确认",
-                "HANDOVER_REJECTED": "交接驳回",
-                "HANDOVER_CANCELLED": "交接取消",
-                "OUTBOUND_APPROVED": "出库审批通过",
-                "AGG_BOM_IMPORT": "聚合BOM导入",
-                "AGENT_IMPORT": "智能导入",
-                "ADMIN_PROVISIONED_CLI": "管理员CLI开通",
-            },
-            "entity_labels": {
-                "PRODUCTION_ORDER": "生产订单",
-                "MATERIAL_HANDOVER": "物料交接",
-                "TRANSFER_REQUEST": "流转申请",
-                "AGG_BOM_BATCH": "聚合BOM批次",
-                "AGENT_IMPORT_JOB": "智能导入任务",
-                "USER": "用户",
-            },
-            "result_labels": {"SUCCESS": "成功", "FAIL": "失败", "FAILURE": "失败"},
+            "date_from": filters["from"] if filters["from"] and len(filters["from"]) == 10 else "",
+            "date_to": filters["to"] if filters["to"] and len(filters["to"]) == 10 else "",
+            "event_labels": _ui_labels.LABELS["event"],
+            "entity_labels": _ui_labels.LABELS["entity"],
+            "result_labels": _ui_labels.LABELS["result"],
             "role_labels": ROLE_LABELS,
         },
     )
@@ -1768,27 +1901,94 @@ def _int_param(request: Request, name: str) -> int:
         return 1
 
 
+LOW_STOCK_THRESHOLD = 10  # 可用数量低于此值标为「低库存」（≤0 为「缺料」）；与助手 low_stock 同口径按可用量升序
+INVENTORY_PAGE_SIZE = 20
+WAREHOUSE_EXCEPTION_PREVIEW = 5
+
+
+def _inventory_list(c, q: str, cat: str, page: int) -> tuple[list[dict], dict[str, int], dict[str, int]]:
+    """仓库页默认库存列表：缺料/低库存置顶（按可用数量升序），关键字匹配编码/名称/规格，可按分类筛选。"""
+    where, args = [], []
+    if q:
+        like = f"%{q}%"
+        where.append("(code LIKE ? OR name LIKE ? OR IFNULL(specification,'') LIKE ?)")
+        args += [like, like, like]
+    if cat == "__none__":
+        where.append("(category IS NULL OR TRIM(category) = '')")
+    elif cat:
+        where.append("category = ?")
+        args.append(cat)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    counts = c.execute(
+        "SELECT COUNT(*) AS total,"
+        " SUM(CASE WHEN available_quantity <= 0 THEN 1 ELSE 0 END) AS short,"
+        f" SUM(CASE WHEN available_quantity > 0 AND available_quantity < {LOW_STOCK_THRESHOLD} THEN 1 ELSE 0 END) AS low"
+        " FROM materials" + where_sql, args,
+    ).fetchone()
+    paging = _paging(page, counts["total"] or 0, INVENTORY_PAGE_SIZE)
+    rows = c.execute(
+        "SELECT code, name, specification, unit, category, batch_no, expiry_date,"
+        " total_quantity, available_quantity FROM materials" + where_sql +
+        " ORDER BY available_quantity ASC, code ASC LIMIT ? OFFSET ?",
+        (*args, INVENTORY_PAGE_SIZE, paging["offset"]),
+    ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        avail = d["available_quantity"] or 0
+        d["stock_state"] = "short" if avail <= 0 else ("low" if avail < LOW_STOCK_THRESHOLD else "ok")
+        items.append(d)
+    return items, paging, {"short": counts["short"] or 0, "low": counts["low"] or 0}
+
+
 def _warehouse_lists(request: Request) -> dict[str, Any]:
-    """仓库页的盘点/异常两个列表各自分页（st_page / ex_page）。"""
+    """仓库页：库存列表（inv_page）+ 盘点（st_page）分页；异常只取摘要（全部在 /admin/exceptions）。"""
+    q = str(request.query_params.get("q", "")).strip()
+    cat = str(request.query_params.get("cat", "")).strip()
     c = db()
     try:
+        inventory, inv_paging, inv_counts = _inventory_list(c, q, cat, _int_param(request, "inv_page"))
+        categories = [r[0] for r in c.execute(
+            "SELECT DISTINCT category FROM materials WHERE category IS NOT NULL AND TRIM(category) <> ''"
+            " ORDER BY category"
+        ).fetchall()]
         st_paging = _paging(_int_param(request, "st_page"), stocktakes_count(c), LIST_PAGE_SIZE)
+        stocktakes = stocktakes_page(c, LIST_PAGE_SIZE, st_paging["offset"])
+        ex_counts = {r["status"]: r["n"] for r in c.execute(
+            "SELECT status, COUNT(*) AS n FROM exceptions GROUP BY status"
+        ).fetchall()}
         ex_paging = _paging(
             _int_param(request, "ex_page"),
-            c.execute("SELECT COUNT(*) FROM exceptions").fetchone()[0],
-            LIST_PAGE_SIZE,
+            (ex_counts.get("PENDING") or 0) + (ex_counts.get("OPEN") or 0),
+            WAREHOUSE_EXCEPTION_PREVIEW,
         )
-        stocktakes = stocktakes_page(c, LIST_PAGE_SIZE, st_paging["offset"])
-        exceptions = exceptions_page(c, LIST_PAGE_SIZE, ex_paging["offset"])
+        ex_pending = [dict(r) for r in c.execute(
+            "SELECT e.id, e.type, e.status, e.book_quantity, e.actual_quantity, e.difference,"
+            " e.description, e.order_no, e.created_at, m.code AS material_code, m.name AS material_name"
+            " FROM exceptions e LEFT JOIN materials m ON m.id = e.material_id"
+            " WHERE e.status IN ('PENDING','OPEN') ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
+            (WAREHOUSE_EXCEPTION_PREVIEW, ex_paging["offset"]),
+        ).fetchall()]
     finally:
         c.close()
     return {
+        "inventory": inventory,
+        "inv_paging": inv_paging,
+        "inv_counts": inv_counts,
+        "categories": categories,
+        "inv_q": q,
+        "inv_cat": cat,
+        "low_stock_threshold": LOW_STOCK_THRESHOLD,
         "stocktakes": stocktakes,
-        "exceptions": exceptions,
         "st_paging": st_paging,
+        "ex_counts": ex_counts,
+        "ex_pending": ex_pending,
         "ex_paging": ex_paging,
         "page_params": {
             "code": str(request.query_params.get("code", "")).strip(),
+            "q": q,
+            "cat": cat,
+            "inv_page": inv_paging["page"] if inv_paging["page"] > 1 else "",
             "st_page": st_paging["page"] if st_paging["page"] > 1 else "",
             "ex_page": ex_paging["page"] if ex_paging["page"] > 1 else "",
         },
@@ -1809,7 +2009,7 @@ def admin_warehouse(request: Request):
         except HTTPException as exc:
             material_error = f"{exc.status_code}：{exc.detail}"
     lists = _warehouse_lists(request)
-    stocktakes, exceptions = lists["stocktakes"], lists["exceptions"]
+    stocktakes = lists["stocktakes"]
     c = db()
     try:
         expiring = _expiring_materials(c)
@@ -1827,10 +2027,8 @@ def admin_warehouse(request: Request):
             "material_error": material_error,
             "expiring": expiring,
             "expiry_warn_days": EXPIRY_WARN_DAYS,
-            "stocktakes": stocktakes,
-            "exceptions": exceptions,
             "stocktake_ops": {s["id"]: str(uuid.uuid4()) for s in stocktakes},
-            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
+            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in lists["ex_pending"]},
             "stocktake_labels": STOCKTAKE_STATUS_LABELS,
             "exception_labels": EXCEPTION_STATUS_LABELS,
         },
@@ -2075,7 +2273,7 @@ async def admin_u9_sync(request: Request, entity: str):
 def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
     code = str(request.query_params.get("code", "")).strip()
     lists = _warehouse_lists(request)
-    stocktakes, exceptions = lists["stocktakes"], lists["exceptions"]
+    stocktakes = lists["stocktakes"]
     return templates.TemplateResponse(
         request,
         "warehouse.html",
@@ -2088,10 +2286,10 @@ def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
             "material_error": None,
             "error": error,
             "notice_text": None,
-            "stocktakes": stocktakes,
-            "exceptions": exceptions,
+            "expiring": [],
+            "expiry_warn_days": EXPIRY_WARN_DAYS,
             "stocktake_ops": {s["id"]: str(uuid.uuid4()) for s in stocktakes},
-            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
+            "exception_ops": {e["id"]: str(uuid.uuid4()) for e in lists["ex_pending"]},
             "stocktake_labels": STOCKTAKE_STATUS_LABELS,
             "exception_labels": EXCEPTION_STATUS_LABELS,
         },
@@ -2138,6 +2336,12 @@ def _workspace_snapshot(user: sqlite3.Row, order_no: str | None, status: str | N
     return summary, visible
 
 
+WORKSPACE_FILTER_ORDER = (
+    "OUT_OF_STOCK", "ARRIVED", "IN_STOCK", "OUTBOUND_PENDING", "OUTBOUND_APPROVED", "OUTBOUND_CONFIRMED",
+    "PENDING", "PICKED_UP", "AT_STATION", "REJECTED", "CANCELLED",
+)
+
+
 @router.get("/admin/workspace", response_class=HTMLResponse)
 def admin_workspace(request: Request):
     user, denied = _workspace_or_403(request)
@@ -2168,6 +2372,8 @@ def admin_workspace(request: Request):
             "total_pages": (total + page_size - 1) // page_size if total else 0,
             "total_rows": total,
             "filters": {"status": q.get("status") or "", "orderNo": q.get("orderNo") or ""},
+            # 状态筛选下拉：只列 API 接受的工作台状态码，显示中文
+            "status_options": [(code, WORKSPACE_STATUS_LABELS.get(code, code)) for code in WORKSPACE_FILTER_ORDER],
         },
     )
 

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}图纸 · 智慧工厂{% endblock %}
+{% block page_title %}图纸{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -39,6 +39,7 @@
 
 <div class="card" style="margin-top:12px">
 {% if drawings %}
+<div class="table-wrap">
 <table>
   <tr><th style="width:96px">预览</th><th>图纸</th><th>大小</th><th>绑定</th><th style="width:220px">操作</th></tr>
   {% for d in drawings %}
@@ -46,7 +47,7 @@
     <td>{% if d.status == "READY" %}<a href="/admin/drawings/{{ d.id }}/pages/1" target="_blank" rel="noopener"><img src="/admin/drawings/{{ d.id }}/pages/1/thumb" alt="" loading="lazy" style="width:88px;height:62px;object-fit:contain;background:#fff;border:1px solid #e5e7eb;border-radius:4px"></a>{% endif %}</td>
     <td>
       <b>{{ d.title }}</b>{% if d.revision %} <span class="muted">· {{ d.revision }}</span>{% endif %}<br>
-      <span class="muted">{{ d.drawing_no or "无图号" }} · {{ d.file_kind }} · {{ d.page_count }} 页 · {{ d.created_at[:10] }}</span>
+      <span class="muted">{{ d.drawing_no or "无图号" }} · {{ d.file_kind }} · {{ d.page_count }} 页 · {{ d.created_at|local_date }}</span>
       {% if d.status == "UNSUPPORTED" %}<br><span class="st st-yellow">未转换</span> <span class="muted">{{ d.error }}</span>
       {% elif d.status == "FAILED" %}<br><span class="st st-red">转换失败</span> <span class="muted">{{ d.error }}</span>{% endif %}
       {% if d.status == "READY" and d.page_count > 1 %}
@@ -85,6 +86,7 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
 <p class="muted">{% if q %}没有匹配的图纸{% else %}还没有图纸，先上传一份 PDF{% endif %}</p>
 {% endif %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}异常处理{% endblock %}
+{% block page_title %}异常处理{% endblock %}
 {% block content %}
 {% from "_pagination.html" import pager %}
 <div class="compact">
@@ -39,18 +39,19 @@ a.todo-card.todo-warn .stat-num { color: var(--warn); }
 </div>
 
 <h3 style="margin-top:16px">异常单</h3>
+<div class="table-wrap">
 <table>
   <tr><th>类型</th><th>物料</th><th>账面</th><th>实际</th><th>差异</th><th>状态</th><th>描述</th><th>创建时间</th><th>操作</th></tr>
   {% for e in exceptions %}
   <tr>
-    <td>{{ e.type }}</td>
+    <td>{{ e.type|label("exception_type") }}</td>
     <td>{% if e.material_code %}<a href="/admin/warehouse?code={{ e.material_code }}">{{ e.material_code }}</a>{% else %}—{% endif %} {{ e.material_name or "" }}</td>
     <td>{{ e.book_quantity }}</td>
     <td>{{ e.actual_quantity }}</td>
     <td style="color:{% if e.difference != 0 %}#dc3545{% else %}#28a745{% endif %}">{{ e.difference }}</td>
-    <td><span class="st {% if e.status == 'OPEN' %}st-red{% elif e.status == 'RESOLVED' %}st-green{% else %}st-neutral{% endif %}">{{ exc_status_labels.get(e.status, e.status) }}</span></td>
+    <td><span class="st {% if e.status in ('OPEN', 'PENDING') %}st-yellow{% elif e.status in ('RESOLVED', 'APPROVED') %}st-green{% elif e.status == 'REJECTED' %}st-red{% else %}st-neutral{% endif %}">{{ exc_status_labels.get(e.status) or e.status|label("exception_status") }}</span></td>
     <td>{{ e.description or "—" }}</td>
-    <td>{{ e.created_at[:16].replace("T", " ") if e.created_at else "—" }}</td>
+    <td>{{ e.created_at|local_dt }}</td>
     <td>
       {% if e.status in ("OPEN", "PENDING") %}
       <form method="post" action="/admin/exceptions/{{ e.id }}/review" style="display:inline">
@@ -69,9 +70,11 @@ a.todo-card.todo-warn .stat-num { color: var(--warn); }
   <tr><td colspan="9">暂无异常单</td></tr>
   {% endfor %}
 </table>
+</div>
 {{ pager(paging.page, paging.pages, paging.total, "/admin/exceptions") }}
 
 <h3 style="margin-top:16px">导入错误</h3>
+<div class="table-wrap">
 <table>
   <tr><th>目标</th><th>文件名</th><th>行号</th><th>错误信息</th><th>状态</th><th>时间</th></tr>
   {% for e in import_errors %}
@@ -80,12 +83,13 @@ a.todo-card.todo-warn .stat-num { color: var(--warn); }
     <td>{{ e.file_name or "—" }}</td>
     <td>{{ e.line_no or "—" }}</td>
     <td style="color:#dc3545">{{ e.error_msg }}</td>
-    <td>{{ "待处理" if e.status == "PENDING" else ("已处理" if e.status == "HANDLED" else e.status) }}</td>
-    <td>{{ e.created_at[:16].replace("T", " ") if e.created_at else "—" }}</td>
+    <td>{{ e.status|label("import_status") }}</td>
+    <td>{{ e.created_at|local_dt }}</td>
   </tr>
   {% else %}
   <tr><td colspan="6">暂无导入错误</td></tr>
   {% endfor %}
 </table>
+</div>
 </div>
 {% endblock %}

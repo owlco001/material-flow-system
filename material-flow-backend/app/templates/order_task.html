@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}机台详情 · {{ order_no }} · 智慧工厂{% endblock %}
+{% block page_title %}机台详情 · {{ order_no }}{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -16,7 +16,7 @@
     {% elif detail.status == "PAUSED_FOR_TEMPORARY_TRANSFER" %}<span class="badge b-warn">暂停（临调）</span>
     {% elif detail.status == "MATERIAL_ACCEPTED" %}<span class="badge b-info">已领料</span>
     {% elif detail.status == "WAITING_MATERIAL" %}<span class="badge b-warn">待领料</span>
-    {% else %}<span class="badge b-mute">{{ detail.status }}</span>{% endif %}
+    {% else %}<span class="badge b-mute">{{ detail.status|label("task_status") }}</span>{% endif %}
     {% if detail.workshop %}<span class="badge b-mute">{{ detail.workshop }}</span>{% endif %}
   </p>
   <p>总体进度：第 {{ detail.progressStage or 0 }} / 3 阶段</p>
@@ -28,6 +28,7 @@
 
 <div class="card" style="margin-top:16px">
   <h3>阶段进度</h3>
+  <div class="table-wrap">
   <table>
     <tr><th>阶段</th><th>状态</th><th>开始</th><th>完成</th></tr>
     {% for s in detail.stages %}
@@ -39,13 +40,14 @@
         {% elif s.status == "REWORK_REQUIRED" %}<span class="badge b-err">需返工</span>
         {% else %}<span class="badge b-mute">未开始</span>{% endif %}
       </td>
-      <td>{{ s.startedAt or "—" }}</td>
-      <td>{{ s.completedAt or "—" }}</td>
+      <td>{{ s.startedAt|local_dt }}</td>
+      <td>{{ s.completedAt|local_dt }}</td>
     </tr>
     {% else %}
     <tr><td colspan="4">暂无阶段记录</td></tr>
     {% endfor %}
   </table>
+  </div>
 </div>
 
 <div id="task-mat-panel">
