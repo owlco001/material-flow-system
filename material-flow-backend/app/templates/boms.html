@@ -65,11 +65,11 @@
 </div>
 <script>
 let aggModels = [], aggOrders = [], aggSel = {}, aggLast = null;
-const aggEsc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const aggEsc = escHtml;  // 统一用 base.html 的 escHtml（已兼容 null/数字）
 const aggFmt = n => Number(n).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 async function aggLoad() {
   try {
-    const r = await fetch("/admin/agent/bom/models"); if (!r.ok) throw new Error(r.status);
+    const r = await fetch("/admin/agent/bom/models", { headers: csrfHeaders() }); if (!r.ok) throw new Error(r.status);
     const j = await r.json(); aggModels = j.models || []; aggOrders = j.orders || [];
     const sel = document.getElementById("agg-order");
     aggOrders.forEach(o => { const op = document.createElement("option"); op.value = o.order_no;
@@ -117,7 +117,7 @@ async function aggregateBom() {
   if (!items.length) { box.innerHTML = '<p class="muted">请先选择订单或勾选机型</p>'; return; }
   box.innerHTML = "<p>聚合中…</p>";
   try {
-    const r = await fetch("/admin/agent/bom/aggregate?items=" + encodeURIComponent(items.join(",")));
+    const r = await fetch("/admin/agent/bom/aggregate?items=" + encodeURIComponent(items.join(",")), { headers: csrfHeaders() });
     const j = await r.json();
     if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
     aggLast = j; aggShow();

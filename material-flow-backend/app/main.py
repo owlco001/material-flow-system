@@ -578,12 +578,39 @@ def init_db() -> None:
         _ensure_operation_table(c)
         from app.material_master import ensure_tables as _ensure_material_master_tables
         _ensure_material_master_tables(c)
+        _ensure_performance_indexes(c)
         c.commit()
     except Exception:
         c.rollback()
         raise
     finally:
         c.close()
+
+
+# 管理台常用过滤/排序/关联列的二级索引（v0.6.2 性能修复）。
+# (索引名, 表, 列) —— 只有表与列都存在时才建，CREATE INDEX IF NOT EXISTS 保证
+# 生产库重启时幂等迁移；历史库缺列时静默跳过，不影响启动。
+PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("idx_material_work_items_requirement", "material_work_items", ("requirement_id",)),
+    ("idx_assembly_tasks_device", "assembly_tasks", ("device_id",)),
+    ("idx_assembly_tasks_order_no", "assembly_tasks", ("order_no",)),
+    ("idx_transfer_requests_status_created", "transfer_requests", ("status", "created_at")),
+    ("idx_transfer_requests_type_document", "transfer_requests", ("type", "document_no")),
+    ("idx_order_material_requirements_order", "order_material_requirements", ("order_id",)),
+    ("idx_order_devices_order", "order_devices", ("order_id",)),
+    ("idx_exceptions_created", "exceptions", ("created_at",)),
+    ("idx_audit_logs_occurred", "audit_logs", ("occurred_at",)),
+    ("idx_audit_events_server_time", "audit_events", ("server_time",)),
+)
+
+
+def _ensure_performance_indexes(c: sqlite3.Connection) -> None:
+    """幂等补齐 PERFORMANCE_INDEXES；表或列不存在时跳过。"""
+    for name, table, columns in PERFORMANCE_INDEXES:
+        existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not existing or not set(columns) <= existing:
+            continue
+        c.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({', '.join(columns)})")
 
 
 def _init_db(c: sqlite3.Connection) -> None:
@@ -3409,36 +3436,40 @@ def create_assembly_task(
 
 def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str, Any]:
     """将 assembly_tasks 行转为 App 期望的格式。"""
-    task_id = task["id"]
-    stages = c.execute(
-        "SELECT stage_no, status, version, started_at, completed_at, rework_reason "
-        "FROM assembly_task_stages WHERE task_id=? ORDER BY stage_no",
-        (task_id,),
-    ).fetchall()
-    stage_list = [
-        {
+    return _assembly_tasks_to_dicts(c, [task])[0]
+
+
+def _assembly_tasks_to_dicts(c: sqlite3.Connection, tasks: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    """批量版：阶段/成员/工时/装配工名各一次 IN 查询（原先每个任务 5 条 SQL）。
+
+    排序与逐条查询时一致：成员按 idx_assembly_task_members_task 顺序
+    （assignment_role, rowid），进行中工时取每个任务 rowid 最小的一条。
+    """
+    if not tasks:
+        return []
+    ids = list(dict.fromkeys(t["id"] for t in tasks))
+    ph = ",".join("?" for _ in ids)
+    stages_by: dict[str, list[dict[str, Any]]] = {}
+    for s in c.execute(
+        "SELECT task_id, stage_no, status, version, started_at, completed_at, rework_reason "
+        f"FROM assembly_task_stages WHERE task_id IN ({ph}) ORDER BY task_id, stage_no",
+        ids,
+    ).fetchall():
+        stages_by.setdefault(s["task_id"], []).append({
             "stageNo": s["stage_no"], "status": s["status"], "version": s["version"],
             "startedAt": s["started_at"], "completedAt": s["completed_at"],
             "reworkReason": s["rework_reason"],
-        }
-        for s in stages
-    ]
-    # 保证 1..3 阶段都存在
-    existing = {s["stageNo"] for s in stage_list}
-    for no in (1, 2, 3):
-        if no not in existing:
-            stage_list.append({"stageNo": no, "status": "NOT_STARTED", "version": 1,
-                               "startedAt": None, "completedAt": None, "reworkReason": None})
-    stage_list.sort(key=lambda s: s["stageNo"])
-    members = c.execute(
-        """SELECT m.assembler_id, m.assignment_role, m.assigned_by, m.assigned_at, m.removed_at,
+        })
+    members_by: dict[str, list[dict[str, Any]]] = {}
+    for m in c.execute(
+        f"""SELECT m.task_id, m.assembler_id, m.assignment_role, m.assigned_by, m.assigned_at, m.removed_at,
                   u.display_name AS member_display_name, u.username AS member_username
              FROM assembly_task_members m LEFT JOIN users u ON u.id = m.assembler_id
-            WHERE m.task_id=? AND m.removed_at IS NULL""",
-        (task_id,),
-    ).fetchall()
-    member_list = [
-        {
+            WHERE m.task_id IN ({ph}) AND m.removed_at IS NULL
+            ORDER BY m.task_id, m.assignment_role, m.rowid""",
+        ids,
+    ).fetchall():
+        members_by.setdefault(m["task_id"], []).append({
             "assemblerId": m["assembler_id"],
             "assemblerName": m["member_display_name"] or m["member_username"] or m["assembler_id"],
             "assignmentRole": m["assignment_role"],
@@ -3447,37 +3478,55 @@ def _assembly_task_to_dict(c: sqlite3.Connection, task: sqlite3.Row) -> dict[str
             # 兼容字段：管理台模板与 assembly_routes 的分配接口使用 snake_case（Android 两种都认）
             "assembler_id": m["assembler_id"],
             "assignment_role": m["assignment_role"],
-        }
-        for m in members
-    ]
-    labor = c.execute(
-        "SELECT id, started_at, "
+        })
+    acc_minutes = {r["task_id"]: r["acc_minutes"] for r in c.execute(
+        "SELECT task_id, "
         "COALESCE(SUM(CASE WHEN status='COMPLETED' THEN duration_minutes ELSE 0 END), 0) AS acc_minutes "
-        "FROM labor_records WHERE task_id=?",
-        (task_id,),
-    ).fetchone()
-    active_labor = c.execute(
-        "SELECT id, started_at FROM labor_records WHERE task_id=? AND status='ACTIVE' LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    assembler_name = None
-    if task["assigned_assembler_id"]:
-        u = c.execute("SELECT display_name FROM users WHERE id=?", (task["assigned_assembler_id"],)).fetchone()
-        assembler_name = u["display_name"] if u else None
-    return {
-        "id": task_id, "orderNo": task["order_no"],
-        "deviceId": task["device_id"], "deviceNo": task["device_no"],
-        "materialSummary": None,
-        "status": task["status"], "progressStage": task["progress_stage"],
-        "taskVersion": task["task_version"],
-        "currentLaborRecordId": active_labor["id"] if active_labor else None,
-        "currentLaborStartedAt": active_labor["started_at"] if active_labor else None,
-        "accumulatedLaborMinutes": labor["acc_minutes"] if labor else 0,
-        "assignedAssemblerId": task["assigned_assembler_id"],
-        "assignedAssemblerName": assembler_name,
-        "serverTime": task["updated_at"],
-        "stages": stage_list, "members": member_list,
-    }
+        f"FROM labor_records WHERE task_id IN ({ph}) GROUP BY task_id",
+        ids,
+    ).fetchall()}
+    active_by: dict[str, sqlite3.Row] = {}
+    for r in c.execute(
+        f"SELECT task_id, id, started_at FROM labor_records WHERE task_id IN ({ph}) AND status='ACTIVE'"
+        " ORDER BY task_id, rowid",
+        ids,
+    ).fetchall():
+        active_by.setdefault(r["task_id"], r)
+    assembler_ids = sorted({t["assigned_assembler_id"] for t in tasks if t["assigned_assembler_id"]})
+    assembler_names: dict[str, Any] = {}
+    if assembler_ids:
+        aph = ",".join("?" for _ in assembler_ids)
+        assembler_names = {u["id"]: u["display_name"] for u in c.execute(
+            f"SELECT id, display_name FROM users WHERE id IN ({aph})", assembler_ids,
+        ).fetchall()}
+
+    out = []
+    for task in tasks:
+        task_id = task["id"]
+        stage_list = list(stages_by.get(task_id, []))
+        # 保证 1..3 阶段都存在
+        existing = {s["stageNo"] for s in stage_list}
+        for no in (1, 2, 3):
+            if no not in existing:
+                stage_list.append({"stageNo": no, "status": "NOT_STARTED", "version": 1,
+                                   "startedAt": None, "completedAt": None, "reworkReason": None})
+        stage_list.sort(key=lambda s: s["stageNo"])
+        active_labor = active_by.get(task_id)
+        out.append({
+            "id": task_id, "orderNo": task["order_no"],
+            "deviceId": task["device_id"], "deviceNo": task["device_no"],
+            "materialSummary": None,
+            "status": task["status"], "progressStage": task["progress_stage"],
+            "taskVersion": task["task_version"],
+            "currentLaborRecordId": active_labor["id"] if active_labor else None,
+            "currentLaborStartedAt": active_labor["started_at"] if active_labor else None,
+            "accumulatedLaborMinutes": acc_minutes.get(task_id, 0),
+            "assignedAssemblerId": task["assigned_assembler_id"],
+            "assignedAssemblerName": assembler_names.get(task["assigned_assembler_id"]) if task["assigned_assembler_id"] else None,
+            "serverTime": task["updated_at"],
+            "stages": stage_list, "members": [dict(m) for m in members_by.get(task_id, [])],
+        })
+    return out
 
 
 @app.get("/api/v1/assembly/tasks")
@@ -3526,7 +3575,7 @@ def list_assembly_tasks(
             "ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
             (*args, pageSize, offset),
         ).fetchall()
-        items = [_assembly_task_to_dict(c, r) for r in rows]
+        items = _assembly_tasks_to_dicts(c, rows)
         ts = now()
         return {
             "items": items, "page": page, "pageSize": pageSize,
@@ -3672,47 +3721,76 @@ def workshop_machine_progress(
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     """机台进度分页（车间主管工作台用）。"""
-    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"}:
-        raise ApiError(403, CODE_FORBIDDEN, "无权查看机台进度")
+    _machine_progress_authorized(user)
     c = db()
     try:
-        where = "1=1"
-        args: list[Any] = []
-        if deviceId:
-            where = "t.device_id = ?"
-            args = [deviceId]
+        where, args = _machine_progress_where(deviceId)
         total = c.execute(
             f"SELECT COUNT(DISTINCT t.device_id) AS n FROM assembly_tasks t WHERE {where}", args
         ).fetchone()["n"]
         total_pages = (total + pageSize - 1) // pageSize if total else 0
         offset = (page - 1) * pageSize
-        rows = c.execute(
-            f"SELECT t.device_id AS device_id, t.device_no AS device_no, "
-            "COUNT(*) AS task_count, "
-            "SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count, "
-            "COALESCE((SELECT SUM(CASE WHEN lr.status='COMPLETED' THEN lr.duration_minutes ELSE 0 END) "
-            "FROM labor_records lr WHERE lr.task_id IN "
-            "(SELECT id FROM assembly_tasks t2 WHERE t2.device_id=t.device_id)),0) AS labor_minutes "
-            f"FROM assembly_tasks t WHERE {where} "
-            "GROUP BY t.device_id, t.device_no ORDER BY t.device_no LIMIT ? OFFSET ?",
-            (*args, pageSize, offset),
-        ).fetchall()
-        items = []
-        for m in rows:
-            tc = m["task_count"]
-            cc = m["completed_count"]
-            items.append({
-                "deviceId": m["device_id"], "deviceNo": m["device_no"],
-                "taskCount": tc, "completedTaskCount": cc,
-                "progressPercent": round(cc * 100 / tc) if tc else 0,
-                "laborMinutes": m["labor_minutes"],
-            })
+        items = _machine_progress_items(c, deviceId, pageSize, offset)
         ts = now()
         return {
             "items": items, "page": page, "pageSize": pageSize,
             "total": total, "totalPages": total_pages,
             "serverTime": ts, "generatedAt": ts,
         }
+    finally:
+        c.close()
+
+
+def _machine_progress_authorized(user: sqlite3.Row) -> None:
+    if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"}:
+        raise ApiError(403, CODE_FORBIDDEN, "无权查看机台进度")
+
+
+def _machine_progress_where(device_id: str | None) -> tuple[str, list[Any]]:
+    if device_id:
+        return "t.device_id = ?", [device_id]
+    return "1=1", []
+
+
+def _machine_progress_items(
+    c: sqlite3.Connection, device_id: str | None,
+    limit: int | None = None, offset: int = 0,
+) -> list[dict[str, Any]]:
+    where, args = _machine_progress_where(device_id)
+    paging = ""
+    if limit is not None:
+        paging = " LIMIT ? OFFSET ?"
+        args = [*args, limit, offset]
+    rows = c.execute(
+        f"SELECT t.device_id AS device_id, t.device_no AS device_no, "
+        "COUNT(*) AS task_count, "
+        "SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count, "
+        "COALESCE((SELECT SUM(CASE WHEN lr.status='COMPLETED' THEN lr.duration_minutes ELSE 0 END) "
+        "FROM labor_records lr WHERE lr.task_id IN "
+        "(SELECT id FROM assembly_tasks t2 WHERE t2.device_id=t.device_id)),0) AS labor_minutes "
+        f"FROM assembly_tasks t WHERE {where} "
+        f"GROUP BY t.device_id, t.device_no ORDER BY t.device_no{paging}",
+        args,
+    ).fetchall()
+    items = []
+    for m in rows:
+        tc = m["task_count"]
+        cc = m["completed_count"]
+        items.append({
+            "deviceId": m["device_id"], "deviceNo": m["device_no"],
+            "taskCount": tc, "completedTaskCount": cc,
+            "progressPercent": round(cc * 100 / tc) if tc else 0,
+            "laborMinutes": m["labor_minutes"],
+        })
+    return items
+
+
+def machine_progress_export_items(user: sqlite3.Row, device_id: str | None = None) -> list[dict[str, Any]]:
+    """导出：一次查询取全量机台进度（字段与 /machine-progress 单页一致）。"""
+    _machine_progress_authorized(user)
+    c = db()
+    try:
+        return _machine_progress_items(c, device_id)
     finally:
         c.close()
 
@@ -4270,12 +4348,41 @@ def _workspace_status_domain(status_code: str) -> str:
 def _workspace_requirements(
     c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None,
     view_role: str | None = None,
+    limit: int | None = None, offset: int = 0,
 ) -> list[sqlite3.Row]:
     """读取工作台的正式订单需求行。
 
     material_work_items 只作为责任人投影使用。工作台的数量始终从
     order_material_requirements 与 material_handovers 实时派生，避免再维护
     一套 issued/picked 数量事实。
+
+    ``limit``/``offset`` 在 SQL 层分页（排序键稳定且唯一，结果与全量切片一致）。
+    """
+    query, args = _workspace_requirements_sql(user, order_no, view_role)
+    query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        args = [*args, int(limit), max(0, int(offset))]
+    return c.execute(query, args).fetchall()
+
+
+def _workspace_requirements_count(
+    c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None,
+    view_role: str | None = None,
+) -> int:
+    """与 _workspace_requirements 同一谓词的行数（用于 SQL 分页的 total）。"""
+    query, args = _workspace_requirements_sql(user, order_no, view_role)
+    return c.execute(f"SELECT COUNT(*) FROM ({query})", args).fetchone()[0]
+
+
+def _workspace_requirements_sql(
+    user: sqlite3.Row, order_no: str | None, view_role: str | None = None,
+) -> tuple[str, list[Any]]:
+    """构造工作台需求行查询（不含 ORDER BY）。
+
+    责任人投影：每条需求只取一条 material_work_items（优先 requirement_id 命中，
+    再按 id），原先三个相同的相关子查询合并为一次 LEFT JOIN；配合
+    material_work_items(requirement_id) 索引不再逐行全表扫描。
     """
     effective_role = view_role or user["role"]
     if effective_role not in ROLES:
@@ -4283,28 +4390,9 @@ def _workspace_requirements(
 
     query = """
         SELECT r.id AS requirement_id,
-               COALESCE(
-                   (SELECT w.id
-                      FROM material_work_items w
-                     WHERE w.requirement_id = r.id OR w.id = r.id
-                     ORDER BY (w.requirement_id IS NULL), w.id
-                     LIMIT 1),
-                   r.id
-               ) AS work_item_id,
-               (SELECT w.assigned_user_id
-                  FROM material_work_items w
-                 WHERE w.requirement_id = r.id OR w.id = r.id
-                 ORDER BY (w.requirement_id IS NULL), w.id
-                 LIMIT 1) AS assigned_user_id,
-               (SELECT u.display_name
-                  FROM users u
-                 WHERE u.id = (
-                     SELECT w.assigned_user_id
-                       FROM material_work_items w
-                      WHERE w.requirement_id = r.id OR w.id = r.id
-                      ORDER BY (w.requirement_id IS NULL), w.id
-                      LIMIT 1
-                 )) AS assigned_user_name,
+               COALESCE(wi.id, r.id) AS work_item_id,
+               wi.assigned_user_id AS assigned_user_id,
+               wu.display_name AS assigned_user_name,
                o.order_no AS order_no,
                o.product_name AS product_name,
                o.status AS order_status,
@@ -4328,6 +4416,14 @@ def _workspace_requirements(
           JOIN production_orders o ON o.id = r.order_id
           JOIN materials m ON m.id = r.material_id
           LEFT JOIN order_devices d ON d.id = r.device_id
+          LEFT JOIN material_work_items wi ON wi.id = (
+              SELECT w0.id
+                FROM material_work_items w0
+               WHERE w0.requirement_id = r.id OR w0.id = r.id
+               ORDER BY (w0.requirement_id IS NULL), w0.id
+               LIMIT 1
+          )
+          LEFT JOIN users wu ON wu.id = wi.assigned_user_id
          WHERE 1=1
     """
     args: list[Any] = []
@@ -4469,8 +4565,7 @@ def _workspace_requirements(
                 )
             """
 
-    query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
-    return c.execute(query, args).fetchall()
+    return query, args
 
 
 def _transfer_visibility(c: sqlite3.Connection, transfer: sqlite3.Row,
@@ -4521,20 +4616,38 @@ def _transfer_visibility_sql(user: sqlite3.Row, alias: str = "t") -> tuple[str, 
     return scope, [user["id"]] * 6
 
 
-def _transfer_workspace_status(c: sqlite3.Connection, transfer: sqlite3.Row) -> tuple[str, sqlite3.Row | None]:
-    """投影 transfer 的最新交接状态，口径与工作台/时间线一致。"""
-    handover = c.execute(
-        """SELECT h.*, r.device_id AS requirement_device_id,
+_TRANSFER_HANDOVER_SELECT = """SELECT h.*, r.device_id AS requirement_device_id,
                          w.device_id AS work_device_id
              FROM material_handovers h
              LEFT JOIN material_work_items w ON w.id = h.work_item_id
              LEFT JOIN order_material_requirements r
-               ON r.id = COALESCE(w.requirement_id, h.work_item_id)
+               ON r.id = COALESCE(w.requirement_id, h.work_item_id)"""
+
+
+def _transfer_workspace_status(c: sqlite3.Connection, transfer: sqlite3.Row) -> tuple[str, sqlite3.Row | None]:
+    """投影 transfer 的最新交接状态，口径与工作台/时间线一致。"""
+    handover = c.execute(
+        _TRANSFER_HANDOVER_SELECT + """
             WHERE h.transfer_request_id=?
             ORDER BY h.created_at DESC, h.id DESC
             LIMIT 1""",
         (transfer["id"],),
     ).fetchone()
+    projection_status = None
+    if handover:
+        projection = c.execute(
+            """SELECT status_code
+                 FROM material_work_item_projections
+                WHERE work_item_id=? AND last_handover_id=?""",
+            (handover["work_item_id"], handover["id"]),
+        ).fetchone()
+        projection_status = projection["status_code"] if projection else None
+    return _transfer_status_from(transfer, handover, projection_status)
+
+
+def _transfer_status_from(
+    transfer: sqlite3.Row, handover: sqlite3.Row | None, projection_status: str | None,
+) -> tuple[str, sqlite3.Row | None]:
     if not handover:
         return (
             OUTBOUND_STATUS_TO_WORKSPACE.get(transfer["status"], transfer["status"]),
@@ -4550,35 +4663,82 @@ def _transfer_workspace_status(c: sqlite3.Connection, transfer: sqlite3.Row) -> 
             and handover["device_id"] == target_device
             else "PICKED_UP"
         )
-    projection = c.execute(
-        """SELECT status_code
-             FROM material_work_item_projections
-            WHERE work_item_id=? AND last_handover_id=?""",
-        (handover["work_item_id"], handover["id"]),
-    ).fetchone()
-    if projection and projection["status_code"] in WORKSPACE_STATUS_CODES:
-        workspace_status = projection["status_code"]
+    if projection_status in WORKSPACE_STATUS_CODES:
+        workspace_status = projection_status
     return workspace_status, handover
 
 
+def _transfer_list_prefetch(c: sqlite3.Connection, rows: list[sqlite3.Row]) -> dict[str, Any]:
+    """列表页批量预取：每单最新交接、对应投影、创建/审批人显示名（消除逐行 N+1）。"""
+    ids = [row["id"] for row in rows]
+    prefetch: dict[str, Any] = {"handovers": {}, "projections": {}, "users": {}}
+    if not ids:
+        return prefetch
+    ph = ",".join("?" for _ in ids)
+    for h in c.execute(
+        f"""SELECT * FROM (
+                SELECT x.*, ROW_NUMBER() OVER (
+                           PARTITION BY x.transfer_request_id
+                           ORDER BY x.created_at DESC, x.id DESC) AS _rn
+                  FROM ({_TRANSFER_HANDOVER_SELECT}
+                         WHERE h.transfer_request_id IN ({ph})) x
+            ) WHERE _rn = 1""",
+        ids,
+    ).fetchall():
+        prefetch["handovers"][h["transfer_request_id"]] = h
+    handover_ids = [h["id"] for h in prefetch["handovers"].values()]
+    if handover_ids:
+        hph = ",".join("?" for _ in handover_ids)
+        for p in c.execute(
+            f"""SELECT work_item_id, last_handover_id, status_code
+                  FROM material_work_item_projections
+                 WHERE last_handover_id IN ({hph})""",
+            handover_ids,
+        ).fetchall():
+            prefetch["projections"][(p["work_item_id"], p["last_handover_id"])] = p["status_code"]
+    user_ids = sorted({uid for row in rows for uid in (row["created_by"], row["approved_by"]) if uid})
+    if user_ids:
+        uph = ",".join("?" for _ in user_ids)
+        for u in c.execute(
+            f"SELECT id, display_name, username FROM users WHERE id IN ({uph})", user_ids,
+        ).fetchall():
+            prefetch["users"][u["id"]] = u["display_name"] or u["username"] or u["id"]
+    return prefetch
+
+
 def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
-                     include_payload: bool = False) -> dict[str, Any]:
+                     include_payload: bool = False,
+                     prefetch: dict[str, Any] | None = None) -> dict[str, Any]:
     """构造 transfer 的公开读模型，统一列表、详情与工作台状态字段。"""
-    workspace_status, handover = _transfer_workspace_status(c, row)
+    if prefetch is None:
+        workspace_status, handover = _transfer_workspace_status(c, row)
+    else:
+        handover = prefetch["handovers"].get(row["id"])
+        projection_status = (
+            prefetch["projections"].get((handover["work_item_id"], handover["id"]))
+            if handover else None
+        )
+        workspace_status, handover = _transfer_status_from(row, handover, projection_status)
     status_label, color_token = _workspace_status_meta(workspace_status)
     # 创建人/审批人显示名（display_name > username > id，与时间线 actorName 同规则）
     creator_name = row["created_by"]
     approver_name = row["approved_by"]
-    _user_ids = {uid for uid in (row["created_by"], row["approved_by"]) if uid}
-    if _user_ids:
-        _ph = ",".join("?" for _ in _user_ids)
-        for u in c.execute(f"SELECT id, display_name, username FROM users WHERE id IN ({_ph})",
-                           list(_user_ids)).fetchall():
-            _dn = u["display_name"] or u["username"] or u["id"]
-            if u["id"] == row["created_by"]:
-                creator_name = _dn
-            if u["id"] == row["approved_by"]:
-                approver_name = _dn
+    if prefetch is not None:
+        if row["created_by"] in prefetch["users"]:
+            creator_name = prefetch["users"][row["created_by"]]
+        if row["approved_by"] in prefetch["users"]:
+            approver_name = prefetch["users"][row["approved_by"]]
+    else:
+        _user_ids = {uid for uid in (row["created_by"], row["approved_by"]) if uid}
+        if _user_ids:
+            _ph = ",".join("?" for _ in _user_ids)
+            for u in c.execute(f"SELECT id, display_name, username FROM users WHERE id IN ({_ph})",
+                               list(_user_ids)).fetchall():
+                _dn = u["display_name"] or u["username"] or u["id"]
+                if u["id"] == row["created_by"]:
+                    creator_name = _dn
+                if u["id"] == row["approved_by"]:
+                    approver_name = _dn
     item = {
         "id": row["id"],
         "client_operation_id": row["client_operation_id"],
@@ -4938,8 +5098,9 @@ def _upsert_workspace_projection(
 
 def _workspace_items(c: sqlite3.Connection, user: sqlite3.Row,
                      order_no: str | None = None,
-                     view_role: str | None = None) -> list[dict[str, Any]]:
-    rows = _workspace_requirements(c, user, order_no, view_role)
+                     view_role: str | None = None,
+                     limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    rows = _workspace_requirements(c, user, order_no, view_role, limit, offset)
     work_item_ids = {
         work_item_id
         for row in rows
@@ -5107,6 +5268,18 @@ def workspace_summary(
             c.commit()
     finally:
         c.close()
+    return _workspace_summary_payload(
+        items, (pending_approval_count, pending_outbound_count, pending_handover_count),
+        effective_role=effective_role, preview=preview, user=user, trace_id=trace_id,
+    )
+
+
+def _workspace_summary_payload(
+    items: list[dict[str, Any]], flow_counts: tuple[int, int, int], *,
+    effective_role: str, preview: bool, user: sqlite3.Row, trace_id: str,
+) -> dict[str, Any]:
+    """由已计算好的工作台列表派生汇总（管理台与 API 共用，避免重复计算列表）。"""
+    pending_approval_count, pending_outbound_count, pending_handover_count = flow_counts
     generated_at = now()
     status_counts = _workspace_status_counts(items)
     handover_status_counts = _workspace_handover_status_counts(items)
@@ -5150,9 +5323,18 @@ def workspace_material_items(
         user, viewRole, x_request_id, x_client_operation_id,
     )
     normalized_order_no = orderNo.strip() if orderNo is not None else None
+    start = (page - 1) * pageSize
     c = db()
     try:
-        all_items = _workspace_items(c, user, normalized_order_no, viewRole)
+        if status:
+            # 状态是逐行派生（交接/出库/投影）的结果，只能先算全量再过滤。
+            all_items = _workspace_items(c, user, normalized_order_no, viewRole)
+        else:
+            # 无状态过滤：SQL 层 LIMIT/OFFSET，只为当前页派生工作项。
+            total = _workspace_requirements_count(c, user, normalized_order_no, viewRole)
+            items = _workspace_items(
+                c, user, normalized_order_no, viewRole, limit=pageSize, offset=start,
+            )
         if preview:
             _append_role_preview_audit(
                 c, actor=user, view_role=effective_role, action="QUERY",
@@ -5161,10 +5343,10 @@ def workspace_material_items(
             c.commit()
     finally:
         c.close()
-    visible_items = _workspace_filter_status(all_items, status, trace_id)
-    total = len(visible_items)
-    start = (page - 1) * pageSize
-    items = visible_items[start:start + pageSize]
+    if status:
+        visible_items = _workspace_filter_status(all_items, status, trace_id)
+        total = len(visible_items)
+        items = visible_items[start:start + pageSize]
     return {
         "items": items,
         "role": effective_role,
@@ -5605,7 +5787,8 @@ def _list_transfers(
     offset = (page - 1) * page_size
     rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
                      args + [page_size, offset]).fetchall()
-    items = [_public_transfer(c, row) for row in rows]
+    prefetch = _transfer_list_prefetch(c, rows)
+    items = [_public_transfer(c, row, prefetch=prefetch) for row in rows]
     c.close()
     total_pages = (total + page_size - 1) // page_size
     # 向后兼容：老客户端不传 page/pageSize 时默认 page=1&pageSize=100，
@@ -6402,6 +6585,68 @@ def audit_logs(
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     """管理员全量审计查询；返回 audit_logs 与 audit_events 的脱敏统一视图。"""
+    feed_sql, where_sql, args = _audit_feed_filter(
+        user, from_=from_, to_=to_, eventType=eventType, entityType=entityType,
+        operatorId=operatorId, action=action, resourceType=resourceType,
+        resourceId=resourceId, entityId=entityId,
+    )
+    c = db()
+    try:
+        total = c.execute(
+            f"SELECT COUNT(*) AS count FROM ({feed_sql}) audit_feed WHERE {where_sql}",
+            args,
+        ).fetchone()["count"]
+        rows = c.execute(
+            f"""SELECT audit_feed.*
+                   FROM ({feed_sql}) audit_feed
+                  WHERE {where_sql}
+                  ORDER BY {AUDIT_FEED_ORDER}
+                  LIMIT ? OFFSET ?""",
+            [*args, pageSize, (page - 1) * pageSize],
+        ).fetchall()
+    finally:
+        c.close()
+
+    items = [_audit_feed_item(row) for row in rows]
+    return {
+        "items": items,
+        "page": page,
+        "pageSize": pageSize,
+        "total": total,
+        "totalPages": (total + pageSize - 1) // pageSize if total else 0,
+        "serverTime": now(),
+    }
+
+
+AUDIT_FEED_SQL = """
+        SELECT 'AUDIT_LOG' AS record_type,
+               id, action AS event_type, resource_type AS entity_type,
+               resource_id AS entity_id, operator_id AS actor_user_id,
+               role AS actor_role, request_id,
+               NULL AS client_operation_id, NULL AS before_json,
+               NULL AS after_json, occurred_at AS server_time,
+               NULL AS device_id, NULL AS view_role, NULL AS preview_action, result
+          FROM audit_logs
+        UNION ALL
+        SELECT 'AUDIT_EVENT' AS record_type,
+               id, event_type, entity_type, entity_id, actor_user_id,
+               actor_role, request_id, client_operation_id, before_json,
+               after_json, server_time, device_id, view_role, action AS preview_action, result
+          FROM audit_events
+    """
+AUDIT_FEED_ORDER = """audit_feed.server_time DESC,
+                           audit_feed.record_type DESC,
+                           audit_feed.id DESC"""
+
+
+def _audit_feed_filter(
+    user: sqlite3.Row, *, from_: str | None = None, to_: str | None = None,
+    eventType: str | None = None, entityType: str | None = None,
+    operatorId: str | None = None, action: str | None = None,
+    resourceType: str | None = None, resourceId: str | None = None,
+    entityId: str | None = None,
+) -> tuple[str, str, list[Any]]:
+    """权限校验 + 过滤参数解析；返回 (feed SQL, WHERE 子句, 参数)。"""
     if user["role"] != "ADMIN":
         raise HTTPException(403, "无审计权限")
 
@@ -6430,22 +6675,6 @@ def audit_logs(
     entity_filter = clean(entityType) or clean(resourceType)
     operator_filter = clean(operatorId)
     resource_filter = clean(entityId) or clean(resourceId)
-    feed = """
-        SELECT 'AUDIT_LOG' AS record_type,
-               id, action AS event_type, resource_type AS entity_type,
-               resource_id AS entity_id, operator_id AS actor_user_id,
-               role AS actor_role, request_id,
-               NULL AS client_operation_id, NULL AS before_json,
-               NULL AS after_json, occurred_at AS server_time,
-               NULL AS device_id, NULL AS view_role, NULL AS preview_action, result
-          FROM audit_logs
-        UNION ALL
-        SELECT 'AUDIT_EVENT' AS record_type,
-               id, event_type, entity_type, entity_id, actor_user_id,
-               actor_role, request_id, client_operation_id, before_json,
-               after_json, server_time, device_id, view_role, action AS preview_action, result
-          FROM audit_events
-    """
     where = ["1=1"]
     args: list[Any] = []
     if event_filter:
@@ -6466,52 +6695,43 @@ def audit_logs(
     if end_time:
         where.append("audit_feed.server_time<=?")
         args.append(end_time)
-    where_sql = " AND ".join(where)
+    return AUDIT_FEED_SQL, " AND ".join(where), args
+
+
+def _audit_feed_item(row: sqlite3.Row) -> dict[str, Any]:
+    item = _public_audit_event(row)
+    # 保留旧 audit_logs 客户端使用的字段别名；仍然不暴露 source_ip。
+    item.update({
+        "record_type": row["record_type"],
+        "operator_id": row["actor_user_id"],
+        "role": row["actor_role"],
+        "action": row["event_type"],
+        "resource_type": row["entity_type"],
+        "resource_id": row["entity_id"],
+        "occurred_at": row["server_time"],
+        "view_role": row["view_role"],
+        "preview_action": row["preview_action"],
+    })
+    if row["preview_action"]:
+        item["action"] = row["preview_action"]
+    return item
+
+
+def audit_logs_export_items(user: sqlite3.Row, **filters: Any) -> list[dict[str, Any]]:
+    """导出用：同一过滤口径一次查询取全量（与逐页拼接的顺序、字段完全一致）。"""
+    feed_sql, where_sql, args = _audit_feed_filter(user, **filters)
     c = db()
     try:
-        total = c.execute(
-            f"SELECT COUNT(*) AS count FROM ({feed}) audit_feed WHERE {where_sql}",
-            args,
-        ).fetchone()["count"]
         rows = c.execute(
             f"""SELECT audit_feed.*
-                   FROM ({feed}) audit_feed
+                   FROM ({feed_sql}) audit_feed
                   WHERE {where_sql}
-                  ORDER BY audit_feed.server_time DESC,
-                           audit_feed.record_type DESC,
-                           audit_feed.id DESC
-                  LIMIT ? OFFSET ?""",
-            [*args, pageSize, (page - 1) * pageSize],
+                  ORDER BY {AUDIT_FEED_ORDER}""",
+            args,
         ).fetchall()
     finally:
         c.close()
-
-    items = []
-    for row in rows:
-        item = _public_audit_event(row)
-        # 保留旧 audit_logs 客户端使用的字段别名；仍然不暴露 source_ip。
-        item.update({
-            "record_type": row["record_type"],
-            "operator_id": row["actor_user_id"],
-            "role": row["actor_role"],
-            "action": row["event_type"],
-            "resource_type": row["entity_type"],
-            "resource_id": row["entity_id"],
-            "occurred_at": row["server_time"],
-            "view_role": row["view_role"],
-            "preview_action": row["preview_action"],
-        })
-        if row["preview_action"]:
-            item["action"] = row["preview_action"]
-        items.append(item)
-    return {
-        "items": items,
-        "page": page,
-        "pageSize": pageSize,
-        "total": total,
-        "totalPages": (total + pageSize - 1) // pageSize if total else 0,
-        "serverTime": now(),
-    }
+    return [_audit_feed_item(row) for row in rows]
 
 
 def _write_trace_and_operation(x_request_id: str | None, idempotency_key: str | None, client_operation_id: uuid.UUID | None) -> tuple[str, str]:
@@ -6577,7 +6797,26 @@ def create_stocktake(
 
 @app.get("/api/v1/stocktakes")
 def list_stocktakes(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    c = db(); rows = c.execute("SELECT s.*,m.code material_code FROM stocktakes s JOIN materials m ON m.id=s.material_id ORDER BY s.created_at DESC LIMIT 100").fetchall(); c.close(); return {"items": [dict(r) for r in rows]}
+    c = db()
+    try:
+        return {"items": stocktakes_page(c, 100, 0)}
+    finally:
+        c.close()
+
+
+def stocktakes_page(c: sqlite3.Connection, limit: int, offset: int) -> list[dict[str, Any]]:
+    """盘点列表分页（API 保持首 100 条；管理台按页翻）。"""
+    rows = c.execute(
+        "SELECT s.*,m.code material_code FROM stocktakes s JOIN materials m ON m.id=s.material_id"
+        " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?", (limit, offset),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def stocktakes_count(c: sqlite3.Connection) -> int:
+    return c.execute(
+        "SELECT COUNT(*) FROM stocktakes s JOIN materials m ON m.id=s.material_id"
+    ).fetchone()[0]
 
 
 @app.post("/api/v1/stocktakes/{sid}/confirm")
@@ -6644,7 +6883,20 @@ def create_exception(
 
 @app.get("/api/v1/exceptions")
 def list_exceptions(user: sqlite3.Row = Depends(current_user)) -> dict[str, Any]:
-    c = db(); rows = c.execute("SELECT * FROM exceptions ORDER BY created_at DESC LIMIT 100").fetchall(); c.close(); return {"items": [dict(r) for r in rows]}
+    c = db()
+    try:
+        return {"items": exceptions_page(c, 100, 0)}
+    finally:
+        c.close()
+
+
+def exceptions_page(c: sqlite3.Connection, limit: int, offset: int) -> list[dict[str, Any]]:
+    """异常列表分页（API 保持首 100 条；管理台按页翻）。"""
+    rows = c.execute(
+        "SELECT * FROM exceptions ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/v1/exceptions/{eid}/review")

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}生产订单 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>生产订单</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -245,5 +246,6 @@
   <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
+{{ pager(paging.page, paging.pages, paging.total, "/admin/orders", {"order_no": order_no}) }}
 </div>
 {% endblock %}

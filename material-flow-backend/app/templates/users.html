@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}用户管理 · 智慧工厂{% endblock %}
 {% block content %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>用户管理</h2>
 {% if notice_text %}<p class="notice">{{ notice_text }}</p>{% endif %}
@@ -49,5 +50,6 @@
   </tr>
   {% endfor %}
 </table>
+{{ pager(paging.page, paging.pages, paging.total, "/admin/users", {"q": q}) }}
 </div>
 {% endblock %}

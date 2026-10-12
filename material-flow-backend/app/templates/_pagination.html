@@ -1,0 +1,28 @@
+{#- 共享分页控件（样式沿用物料主档页）。
+    用法：{% from "_pagination.html" import pager %}
+          {{ pager(page, pages, total, "/admin/flows", {"status": status_filter}) }}
+    params 里值为空的键不会出现在链接中；param 为页码参数名（同页多个列表时区分）。 -#}
+{% macro page_href(base, params, param, p) -%}
+{%- set qs = [] -%}
+{%- for k, v in params.items() if v not in (none, "") -%}{%- set _ = qs.append(k ~ "=" ~ (v|string|urlencode)) -%}{%- endfor -%}
+{%- set _ = qs.append(param ~ "=" ~ p) -%}
+{{ base }}?{{ qs|join("&") }}
+{%- endmacro %}
+
+{% macro pager(page, pages, total, base, params={}, param="page") -%}
+{% if pages > 1 %}
+<div class="pager" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+  {% if page > 1 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page - 1) }}">上一页</a>{% endif %}
+  {% if page > 3 %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, 1) }}">1</a><span class="muted">…</span>{% endif %}
+  {% for p in range(1, pages + 1) if p >= page - 2 and p <= page + 2 %}
+    {% if p == page %}<span class="btn btn-sm btn-primary" style="pointer-events:none">{{ p }}</span>
+    {% else %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, p) }}">{{ p }}</a>{% endif %}
+  {% endfor %}
+  {% if page < pages - 2 %}<span class="muted">…</span><a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, pages) }}">{{ pages }}</a>{% endif %}
+  {% if page < pages %}<a class="btn btn-sm btn-secondary" href="{{ page_href(base, params, param, page + 1) }}">下一页</a>{% endif %}
+  <span class="muted" style="margin-left:8px">共 {{ pages }} 页 / {{ total }} 条</span>
+</div>
+{% elif total %}
+<div class="pager muted" style="margin-top:10px">共 {{ total }} 条</div>
+{% endif %}
+{%- endmacro %}

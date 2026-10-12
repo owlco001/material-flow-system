@@ -338,11 +338,8 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         rows=labor_snapshot(c,tid,assemblerId if user['role']!='ASSEMBLER' else user['id']); items=[labor_item(r,x) for x in rows]
         c.close(); return {'items':items,'task':{'taskId':r['id'],'orderNo':r['order_no'],'deviceId':r['device_id'],'deviceNo':r['device_no']}}
 
-    @app.get('/api/v1/workshop/labor-summary')
-    def workshop_labor_summary(page:int=Query(1,ge=1), pageSize:int=Query(20), deviceId:str|None=None, orderNo:str|None=None, assemblerId:str|None=None, user=Depends(current_user)):
-        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
-        if pageSize != 20: raise HTTPException(422,'pageSize 固定为 20')
-        c=db(); clauses=[]; args=[]
+    def labor_summary_grouped(deviceId=None, orderNo=None, assemblerId=None):
+        clauses=[]; args=[]
         if deviceId: clauses.append('t.device_id=?'); args.append(deviceId)
         if orderNo: clauses.append('t.order_no=?'); args.append(orderNo)
         if assemblerId: clauses.append('l.worker_user_id=?'); args.append(assemblerId)
@@ -353,9 +350,31 @@ def register(app, db, now, current_user, audit_event, api_error=None):
           SUM(CASE WHEN l.type='ASSEMBLY' THEN {labor_minutes_expr()} ELSE 0 END) assembly_minutes,
           SUM(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN {labor_minutes_expr()} ELSE 0 END) transfer_minutes {base}
           GROUP BY t.id,t.order_no,t.device_id,t.device_no,l.worker_user_id,u.display_name ORDER BY t.id,l.worker_user_id"""
-        query_args=[now(),now()]+args
+        return grouped, [now(),now()]+args
+
+    def labor_rows_to_items(rows):
+        return [labor_item({'id':x['task_id'],'order_no':x['order_no'],'device_id':x['device_id'],'device_no':x['device_no']},x) for x in rows]
+
+    @app.get('/api/v1/workshop/labor-summary')
+    def workshop_labor_summary(page:int=Query(1,ge=1), pageSize:int=Query(20), deviceId:str|None=None, orderNo:str|None=None, assemblerId:str|None=None, user=Depends(current_user)):
+        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
+        if pageSize != 20: raise HTTPException(422,'pageSize 固定为 20')
+        c=db()
+        grouped, query_args = labor_summary_grouped(deviceId, orderNo, assemblerId)
         rows=c.execute(grouped+' LIMIT ? OFFSET ?',query_args+[20,(page-1)*20]).fetchall()
         total=c.execute('SELECT COUNT(*) n FROM ('+grouped+')',query_args).fetchone()['n']
-        items=[labor_item({'id':x['task_id'],'order_no':x['order_no'],'device_id':x['device_id'],'device_no':x['device_no']},x) for x in rows]
+        items=labor_rows_to_items(rows)
         total_minutes=sum(x['totalLaborMinutes'] for x in items)
         c.close(); return {'items':items,'page':page,'pageSize':20,'total':total,'totalLaborMinutes':total_minutes,'totalPages':(total+19)//20}
+
+    def labor_summary_export(user, deviceId=None, orderNo=None, assemblerId=None):
+        """导出：一次查询取全量，字段/顺序与逐页拼接一致。"""
+        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
+        c=db()
+        try:
+            grouped, query_args = labor_summary_grouped(deviceId, orderNo, assemblerId)
+            return labor_rows_to_items(c.execute(grouped, query_args).fetchall())
+        finally: c.close()
+
+    # 管理台 CSV 导出复用（统计函数注册在闭包内，无法按模块名导入）
+    app.state.workshop_labor_summary_export = labor_summary_export

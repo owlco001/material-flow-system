@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}异常处理{% endblock %}
 {% block content %}
+{% from "_pagination.html" import pager %}
 <div class="compact">
 <h2>异常处理</h2>
 
@@ -68,6 +69,7 @@ a.todo-card.todo-warn .stat-num { color: var(--warn); }
   <tr><td colspan="9">暂无异常单</td></tr>
   {% endfor %}
 </table>
+{{ pager(paging.page, paging.pages, paging.total, "/admin/exceptions") }}
 
 <h3 style="margin-top:16px">导入错误</h3>
 <table>

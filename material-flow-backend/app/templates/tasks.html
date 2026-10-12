@@ -73,12 +73,8 @@
           <form method="post" action="/admin/tasks/{{ item.id }}/assignments">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="clientOperationId" value="{{ assign_ops[item.id] }}">
-            {% for a in assemblers %}
-            <label style="display:inline-block;margin-right:10px;font-size:13px">
-              <input type="checkbox" name="assemblerIds" value="{{ a.id }}">{{ a.display_name }}
-            </label>
-            {% endfor %}
-            <br><button type="submit" class="btn btn-sm" style="margin-top:6px">保存（首个为组长）</button>
+            <div class="assembler-picker" data-assembler-picker></div>
+            <button type="submit" class="btn btn-sm" style="margin-top:6px">保存（首个为组长）</button>
           </form>
         </div>
       </details>
@@ -88,6 +84,30 @@
   <tr><td colspan="7">暂无数据</td></tr>
   {% endfor %}
 </table>
+
+{# 装配工候选只渲染一次（原先每行一整份，20 行 ≈ 364 KB）；展开「分配」时克隆进该行表单 #}
+<template id="assembler-options">
+  {% for a in assemblers %}
+  <label style="display:inline-block;margin-right:10px;font-size:13px">
+    <input type="checkbox" name="assemblerIds" value="{{ a.id }}">{{ a.display_name }}
+  </label>
+  {% endfor %}
+  <br>
+</template>
+<script>
+(function () {
+  function fill(details) {
+    const box = details.querySelector("[data-assembler-picker]");
+    const tpl = document.getElementById("assembler-options");
+    if (box && tpl && !box.childElementCount) box.appendChild(tpl.content.cloneNode(true));
+  }
+  // toggle 不冒泡，用捕获阶段监听；已展开的（如浏览器恢复状态）也补一次
+  document.addEventListener("toggle", function (e) {
+    if (e.target.tagName === "DETAILS" && e.target.open) fill(e.target);
+  }, true);
+  document.querySelectorAll("details[open]").forEach(fill);
+})();
+</script>
 
 <p style="margin-top:12px">
   {% if page > 1 %}<a href="/admin/tasks?page={{ page - 1 }}&q={{ q }}&status={{ f_status }}" class="btn btn-sm">上一页</a>{% endif %}

@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse, FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response, RedirectResponse, JSONResponse, FileResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -57,6 +57,9 @@ from app.main import (
     _list_transfers,
     list_exceptions as api_list_exceptions,
     list_stocktakes as api_list_stocktakes,
+    stocktakes_page,
+    stocktakes_count,
+    exceptions_page,
     list_bom_versions as api_bom_versions,
     now,
     order_detail as api_order_detail,
@@ -79,6 +82,13 @@ from app.main import (
     app as backend_app,
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
+    _workspace_context,
+    _workspace_filter_status,
+    _workspace_items,
+    _workspace_summary_flow_counts,
+    _workspace_summary_payload,
+    audit_logs_export_items,
+    machine_progress_export_items,
     UPLOAD_DIR,
     MODEL_CODE_RE,
     WORKSPACE_STATUS_LABELS,
@@ -362,11 +372,14 @@ def _render_users(request: Request, user: sqlite3.Row, error: str | None = None)
             " LEFT JOIN users m ON m.id=em.manager_id"
         )
         args: list = []
+        where = ""
         if q:
-            sql += " WHERE u.username LIKE ? OR u.display_name LIKE ?"
+            where = " WHERE u.username LIKE ? OR u.display_name LIKE ?"
             args = [f"%{q}%", f"%{q}%"]
-        sql += " ORDER BY u.created_at"
-        rows = c.execute(sql, args).fetchall()
+        total = c.execute(f"SELECT COUNT(*) FROM users u{where}", args).fetchone()[0]
+        paging = _paging(_page_param(request), total, USERS_PAGE_SIZE)
+        sql += where + " ORDER BY u.created_at, u.id LIMIT ? OFFSET ?"
+        rows = c.execute(sql, [*args, USERS_PAGE_SIZE, paging["offset"]]).fetchall()
     finally:
         c.close()
     notice_code = request.query_params.get("notice", "")
@@ -377,6 +390,8 @@ def _render_users(request: Request, user: sqlite3.Row, error: str | None = None)
             "user": user,
             "csrf_token": user["csrf_token"],
             "rows": rows,
+            "paging": paging,
+            "q": q,
             "role_labels": ROLE_LABELS,
             "notice_text": NOTICE_TEXTS.get(notice_code),
             "error": error,
@@ -673,6 +688,29 @@ def _user_display_name(c: sqlite3.Connection, user_id: Any) -> str:
     return row["display_name"] if row and row["display_name"] else str(user_id)
 
 
+def _user_display_names(c: sqlite3.Connection, user_ids) -> dict[str, str]:
+    """批量版 _user_display_name：一次 IN 查询，口径相同（无 display_name 时回退 id）。"""
+    ids = sorted({str(u) for u in user_ids if u})
+    names = {uid: uid for uid in ids}
+    if ids:
+        ph = ",".join("?" for _ in ids)
+        for row in c.execute(f"SELECT id, display_name FROM users WHERE id IN ({ph})", ids).fetchall():
+            if row["display_name"]:
+                names[row["id"]] = row["display_name"]
+    return names
+
+
+def _paging(page: int, total: int, page_size: int) -> dict[str, int]:
+    """分页元数据（模板 _pagination.html 的 pager 宏使用）。"""
+    pages = (total + page_size - 1) // page_size if total else 0
+    return {"page": page, "pages": pages, "total": total, "page_size": page_size,
+            "offset": (page - 1) * page_size}
+
+
+LIST_PAGE_SIZE = 100  # 原硬截断 100 条的列表：首页内容与旧版一致，其余可翻页
+USERS_PAGE_SIZE = 50
+
+
 def _manager_or_403(request: Request):
     user = _session_user(request)
     if user is None:
@@ -694,8 +732,9 @@ def admin_flows_list(request: Request):
     if denied:
         return denied
     status = request.query_params.get("status") or None
+    page = _page_param(request)
     try:
-        data = _list_transfers(status=status, page=1, page_size=100, user=user)
+        data = _list_transfers(status=status, page=page, page_size=LIST_PAGE_SIZE, user=user)
     except HTTPException as exc:
         return _api_http_error_response(exc)
     return templates.TemplateResponse(
@@ -705,6 +744,7 @@ def admin_flows_list(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "items": data["items"],
+            "paging": _paging(page, data["total"], LIST_PAGE_SIZE),
             "status_filter": status or "",
             "status_labels": TRANSFER_STATUS_LABELS,
             "type_labels": TRANSFER_TYPE_LABELS,
@@ -725,14 +765,29 @@ def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: st
             " FROM material_handovers WHERE transfer_request_id=? ORDER BY created_at",
             (rid,),
         ).fetchall()
-        created_by_name = _user_display_name(c, item.get("created_by"))
-        approved_by_name = _user_display_name(c, item.get("approved_by"))
+        names = _user_display_names(
+            c, [item.get("created_by"), item.get("approved_by"),
+                *(h["receiver_user_id"] for h in handover_rows)],
+        )
+
+        def display(uid: Any) -> str:
+            return names.get(str(uid), str(uid)) if uid else "—"
+
+        created_by_name = display(item.get("created_by"))
+        approved_by_name = display(item.get("approved_by"))
+        payload_list = (item.get("payload") or {}).get("items", []) or []
+        mat_ids = sorted({str(p.get("materialId")) for p in payload_list if p.get("materialId")})
+        materials: dict[Any, sqlite3.Row] = {}
+        if mat_ids:
+            ph = ",".join("?" for _ in mat_ids)
+            materials = {r["id"]: r for r in c.execute(
+                f"SELECT id, code, name, specification, unit FROM materials WHERE id IN ({ph})",
+                mat_ids,
+            ).fetchall()}
         payload_items: list[dict[str, Any]] = []
-        for p in (item.get("payload") or {}).get("items", []) or []:
+        for p in payload_list:
             mat_id = p.get("materialId")
-            mrow = c.execute(
-                "SELECT code, name, specification, unit FROM materials WHERE id=?", (mat_id,)
-            ).fetchone() if mat_id else None
+            mrow = materials.get(str(mat_id)) if mat_id else None
             payload_items.append({
                 "code": p.get("materialCode") or (mrow["code"] if mrow else None) or "—",
                 "name": (mrow["name"] if mrow else None) or "—",
@@ -745,7 +800,7 @@ def _render_flow_detail(request: Request, user: sqlite3.Row, rid: str, error: st
             "status": h["status"],
             "status_label": HANDOVER_STATUS_LABELS.get(h["status"], h["status"]),
             "quantity": h["quantity"],
-            "receiver_name": _user_display_name(c, h["receiver_user_id"]),
+            "receiver_name": display(h["receiver_user_id"]),
             "created_at": _local_time(h["created_at"]),
         } for h in handover_rows]
     finally:
@@ -1364,11 +1419,15 @@ def admin_orders(request: Request):
     if denied:
         return denied
     order_no = str(request.query_params.get("order_no", "")).strip()
+    page = _page_param(request)
     c = db()
     try:
+        total = c.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]
+        paging = _paging(page, total, LIST_PAGE_SIZE)
         rows = c.execute(
             "SELECT id, order_no, product_name, status, created_at, updated_at"
-            " FROM production_orders ORDER BY created_at DESC LIMIT 100"
+            " FROM production_orders ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (LIST_PAGE_SIZE, paging["offset"]),
         ).fetchall()
     finally:
         c.close()
@@ -1387,6 +1446,7 @@ def admin_orders(request: Request):
         "user": user,
         "csrf_token": user["csrf_token"],
         "rows": rows,
+        "paging": paging,
         "order_no": order_no,
         "detail": detail,
         "status_labels": WORKSPACE_STATUS_LABELS,
@@ -1584,6 +1644,40 @@ def _expiring_materials(c, warn_days: int = EXPIRY_WARN_DAYS) -> list[dict]:
     return result
 
 
+def _int_param(request: Request, name: str) -> int:
+    try:
+        return max(1, int(request.query_params.get(name, "1") or 1))
+    except ValueError:
+        return 1
+
+
+def _warehouse_lists(request: Request) -> dict[str, Any]:
+    """仓库页的盘点/异常两个列表各自分页（st_page / ex_page）。"""
+    c = db()
+    try:
+        st_paging = _paging(_int_param(request, "st_page"), stocktakes_count(c), LIST_PAGE_SIZE)
+        ex_paging = _paging(
+            _int_param(request, "ex_page"),
+            c.execute("SELECT COUNT(*) FROM exceptions").fetchone()[0],
+            LIST_PAGE_SIZE,
+        )
+        stocktakes = stocktakes_page(c, LIST_PAGE_SIZE, st_paging["offset"])
+        exceptions = exceptions_page(c, LIST_PAGE_SIZE, ex_paging["offset"])
+    finally:
+        c.close()
+    return {
+        "stocktakes": stocktakes,
+        "exceptions": exceptions,
+        "st_paging": st_paging,
+        "ex_paging": ex_paging,
+        "page_params": {
+            "code": str(request.query_params.get("code", "")).strip(),
+            "st_page": st_paging["page"] if st_paging["page"] > 1 else "",
+            "ex_page": ex_paging["page"] if ex_paging["page"] > 1 else "",
+        },
+    }
+
+
 @router.get("/admin/warehouse", response_class=HTMLResponse)
 def admin_warehouse(request: Request):
     user, denied = _manager_or_403(request)
@@ -1597,8 +1691,8 @@ def admin_warehouse(request: Request):
             material = api_inventory(code=code, user=user)
         except HTTPException as exc:
             material_error = f"{exc.status_code}：{exc.detail}"
-    stocktakes = api_list_stocktakes(user=user)["items"]
-    exceptions = api_list_exceptions(user=user)["items"]
+    lists = _warehouse_lists(request)
+    stocktakes, exceptions = lists["stocktakes"], lists["exceptions"]
     c = db()
     try:
         expiring = _expiring_materials(c)
@@ -1608,6 +1702,7 @@ def admin_warehouse(request: Request):
         request,
         "warehouse.html",
         {
+            **lists,
             "user": user,
             "csrf_token": user["csrf_token"],
             "code": code,
@@ -1686,15 +1781,18 @@ def admin_exceptions(request: Request):
         return HTMLResponse("403 禁止访问", status_code=403)
     c = db()
     try:
-        exceptions = [dict(r) for r in c.execute(
-            "SELECT * FROM exceptions ORDER BY created_at DESC LIMIT 100"
-        ).fetchall()]
+        status_counts = {r[0]: r[1] for r in c.execute(
+            "SELECT status, COUNT(*) FROM exceptions GROUP BY status"
+        ).fetchall()}
+        paging = _paging(_page_param(request), sum(status_counts.values()), LIST_PAGE_SIZE)
+        exceptions = exceptions_page(c, LIST_PAGE_SIZE, paging["offset"])
         import_errors = [dict(r) for r in c.execute(
             "SELECT * FROM agent_import_error_logs ORDER BY created_at DESC LIMIT 100"
         ).fetchall()]
-        open_count = sum(1 for e in exceptions if e["status"] in ("OPEN", "PENDING"))
-        in_progress_count = sum(1 for e in exceptions if e["status"] == "IN_PROGRESS")
-        resolved_count = sum(1 for e in exceptions if e["status"] in ("RESOLVED", "CLOSED", "APPROVED"))
+        # 统计卡片按全部异常计数（原先只统计了截断后的前 100 条）
+        open_count = sum(status_counts.get(k, 0) for k in ("OPEN", "PENDING"))
+        in_progress_count = status_counts.get("IN_PROGRESS", 0)
+        resolved_count = sum(status_counts.get(k, 0) for k in ("RESOLVED", "CLOSED", "APPROVED"))
         # 首页待办：/admin/ 直接落在本页，把跨模块需要人处理的数量集中展示
         todo_counts = {
             "pending_transfers": c.execute(
@@ -1720,6 +1818,7 @@ def admin_exceptions(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "exceptions": exceptions,
+            "paging": paging,
             "import_errors": import_errors,
             "exception_ops": {e["id"]: str(uuid.uuid4()) for e in exceptions},
             "open_count": open_count,
@@ -1858,12 +1957,13 @@ async def admin_u9_sync(request: Request, entity: str):
 
 def _render_warehouse(request: Request, user: sqlite3.Row, error: str):
     code = str(request.query_params.get("code", "")).strip()
-    stocktakes = api_list_stocktakes(user=user)["items"]
-    exceptions = api_list_exceptions(user=user)["items"]
+    lists = _warehouse_lists(request)
+    stocktakes, exceptions = lists["stocktakes"], lists["exceptions"]
     return templates.TemplateResponse(
         request,
         "warehouse.html",
         {
+            **lists,
             "user": user,
             "csrf_token": user["csrf_token"],
             "code": code,
@@ -1898,6 +1998,32 @@ def _workspace_or_403(request: Request):
     return user, None
 
 
+def _workspace_snapshot(user: sqlite3.Row, order_no: str | None, status: str | None):
+    """管理台工作台：一次计算全量工作项，汇总与列表/导出都从同一结果派生。
+
+    语义与分别调用 api_workspace_summary + api_workspace_items 完全一致：
+    汇总按全量（不受 orderNo/status 过滤），列表先按 orderNo 再按 status 过滤。
+    """
+    trace_id = str(uuid.uuid4())
+    effective_role, preview, trace_id, _ = _workspace_context(user, None, trace_id, None)
+    c = db()
+    try:
+        all_items = _workspace_items(c, user)
+        flow_counts = _workspace_summary_flow_counts(c, user, None)
+    finally:
+        c.close()
+    summary = _workspace_summary_payload(
+        all_items, flow_counts, effective_role=effective_role, preview=preview,
+        user=user, trace_id=trace_id,
+    )
+    visible = all_items
+    if order_no is not None:
+        normalized = order_no.strip()
+        visible = [item for item in visible if item["orderNo"] == normalized]
+    visible = _workspace_filter_status(visible, status, trace_id)
+    return summary, visible
+
+
 @router.get("/admin/workspace", response_class=HTMLResponse)
 def admin_workspace(request: Request):
     user, denied = _workspace_or_403(request)
@@ -1905,27 +2031,17 @@ def admin_workspace(request: Request):
         return denied
     q = request.query_params
     page = _page_param(request)
+    page_size = 20
     try:
-        summary = api_workspace_summary(
-            viewRole=None,
-            user=user,
-            x_request_id=str(uuid.uuid4()),
-            x_client_operation_id=None,
-        )
-        items = api_workspace_items(
-            viewRole=None,
-            status=q.get("status") or None,
-            orderNo=q.get("orderNo") or None,
-            page=page,
-            pageSize=20,
-            user=user,
-            x_request_id=str(uuid.uuid4()),
-            x_client_operation_id=None,
+        summary, visible = _workspace_snapshot(
+            user, q.get("orderNo") or None, q.get("status") or None,
         )
     except ApiError as exc:
         return HTMLResponse(_api_error_message(exc), status_code=exc.status_code)
     except HTTPException as exc:
         return _api_http_error_response(exc)
+    total = len(visible)
+    start = (page - 1) * page_size
     return templates.TemplateResponse(
         request,
         "workspace.html",
@@ -1933,10 +2049,10 @@ def admin_workspace(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "summary": {**summary, "generatedAt": _local_time(summary.get("generatedAt"))},
-            "items": items["items"],
-            "page": items["page"],
-            "total_pages": items["totalPages"],
-            "total_rows": items["total"],
+            "items": visible[start:start + page_size],
+            "page": page,
+            "total_pages": (total + page_size - 1) // page_size if total else 0,
+            "total_rows": total,
             "filters": {"status": q.get("status") or "", "orderNo": q.get("orderNo") or ""},
         },
     )
@@ -2466,31 +2582,36 @@ def admin_model_content(request: Request, code: str = "", version: str = ""):
 # ==================== S15：CSV 数据导出（契约 §6.14）====================
 
 
-def _csv_response(filename: str, rows: list[dict]) -> Response:
-    out = io.StringIO()
-    if rows:
-        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+def _csv_chunks(rows, chunk_rows: int = 500):
+    """逐块生成 CSV 字节：UTF-8 BOM + DictWriter（列取首行键），格式与旧 _csv_response 逐字节一致。"""
+    buf = io.StringIO()
+    buf.write("\ufeff")  # Excel 友好的 UTF-8 BOM
+    it = iter(rows)
+    first = next(it, None)
+    if first is not None:
+        writer = csv.DictWriter(buf, fieldnames=list(first.keys()))
         writer.writeheader()
-        writer.writerows(rows)
-    body = "\ufeff" + out.getvalue()  # Excel 友好的 UTF-8 BOM
-    return Response(
-        content=body,
+        writer.writerow(first)
+        n = 1
+        for row in it:
+            writer.writerow(row)
+            n += 1
+            if n % chunk_rows == 0:
+                yield buf.getvalue().encode("utf-8")
+                buf.seek(0)
+                buf.truncate(0)
+    tail = buf.getvalue()
+    if tail:
+        yield tail.encode("utf-8")
+
+
+def _csv_response(filename: str, rows) -> StreamingResponse:
+    """单次计算的结果流式写出 CSV（不再按 API 单页 OFFSET 反复查询）。"""
+    return StreamingResponse(
+        _csv_chunks(rows),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
     )
-
-
-def _collect_all(fn, page_size: int = 100, **kwargs) -> list[dict]:
-    """按 API 单页上限分页收集全部行（导出不留尾页；page_size 须在各 API 合法范围内）。"""
-    rows: list[dict] = []
-    page = 1
-    while True:
-        data = fn(page=page, pageSize=page_size, **kwargs)
-        batch = data.get("items") or []
-        rows.extend(batch)
-        if len(batch) < page_size:
-            return rows
-        page += 1
 
 
 @router.get("/admin/audit/export")
@@ -2499,18 +2620,14 @@ def admin_audit_export(request: Request):
     if denied:
         return denied
     q = request.query_params
-    rows = _collect_all(
-        api_audit_logs,
+    rows = audit_logs_export_items(
+        user,
         from_=q.get("from") or None,
         to_=q.get("to") or None,
         eventType=q.get("eventType") or None,
         entityType=q.get("entityType") or None,
         operatorId=q.get("operatorId") or None,
-        action=None,
-        resourceType=None,
-        resourceId=None,
         entityId=q.get("entityId") or None,
-        user=user,
     )
     return _csv_response("audit-logs", rows)
 
@@ -2521,15 +2638,7 @@ def admin_workspace_export(request: Request):
     if denied:
         return denied
     q = request.query_params
-    rows = _collect_all(
-        api_workspace_items,
-        viewRole=None,
-        status=q.get("status") or None,
-        orderNo=q.get("orderNo") or None,
-        user=user,
-        x_request_id=str(uuid.uuid4()),
-        x_client_operation_id=None,
-    )
+    _, rows = _workspace_snapshot(user, q.get("orderNo") or None, q.get("status") or None)
     return _csv_response("material-workspace", rows)
 
 
@@ -2539,13 +2648,11 @@ def admin_labor_export(request: Request):
     if denied:
         return denied
     q = request.query_params
-    rows = _collect_all(
-        _api_endpoint("/api/v1/workshop/labor-summary"),
-        page_size=DEFAULT_PAGE_SIZE,
+    rows = backend_app.state.workshop_labor_summary_export(
+        user,
         deviceId=q.get("deviceId") or None,
         orderNo=q.get("orderNo") or None,
         assemblerId=q.get("assemblerId") or None,
-        user=user,
     )
     return _csv_response("labor-summary", rows)
 
@@ -2555,7 +2662,7 @@ def admin_machines_export(request: Request):
     user, denied = _report_or_403(request)
     if denied:
         return denied
-    rows = _collect_all(_api_endpoint("/api/v1/workshop/machine-progress"), page_size=DEFAULT_PAGE_SIZE, user=user, deviceId=None)
+    rows = machine_progress_export_items(user, None)
     return _csv_response("machine-progress", rows)
 
 
@@ -2924,11 +3031,65 @@ from app.agent import service as agent_service
 from app.agent.config import AgentConfig
 from app.agent.routes import _agent_cfg as _get_agent_cfg
 
+# ---------- 智能助手接口统一守卫（v0.6.2）----------
+# 会话 + 角色 + X-CSRF-Token（与 /admin/system/update/apply 同一模式）+ JSON Content-Type。
+# 之前只校验会话存在，靠 SameSite=Lax 兜底；text/plain 表单可构造 JSON 体。
+# 对话/会话：管理台业务角色（悬浮球在各页面可用）；BOM/聚合 BOM：与 BOM 导入同角色；
+# 智能导入：管理员/仓库管理员/计划员；LLM 设置与用量：仅管理员。
+AGENT_CHAT_ROLES = ("ADMIN", "WAREHOUSE_ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER")
+AGENT_IMPORT_ROLES = ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER")
+AGENT_BOM_ROLES = ("ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR")
+AGENT_SETTINGS_ROLES = ("ADMIN",)
+
+
+class _AgentGuardDenied(Exception):
+    def __init__(self, status_code: int, code: str, message: str):
+        super().__init__(message)
+        self.status_code, self.code, self.message = status_code, code, message
+
+
+async def _agent_guard_denied_handler(request: Request, exc: _AgentGuardDenied):
+    return JSONResponse({"error": {"code": exc.code, "message": exc.message}}, status_code=exc.status_code)
+
+
+backend_app.add_exception_handler(_AgentGuardDenied, _agent_guard_denied_handler)
+
+
+def _agent_guard(roles: tuple[str, ...], *, csrf: bool = False, json_body: bool = False,
+                 forbidden_message: str = "无权使用该功能"):
+    """FastAPI 依赖：返回会话用户，否则以 {"error": {...}} JSON 拒绝。"""
+
+    def dependency(request: Request) -> sqlite3.Row:
+        user = _session_user(request)
+        if user is None:
+            raise _AgentGuardDenied(401, "UNAUTHORIZED", "未登录")
+        if user["role"] not in roles:
+            raise _AgentGuardDenied(403, "FORBIDDEN", forbidden_message)
+        if csrf and not _csrf_ok(request.headers.get("X-CSRF-Token", ""), user["csrf_token"]):
+            raise _AgentGuardDenied(403, "CSRF_FAILED", "CSRF 校验失败，请刷新页面")
+        if json_body:
+            media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                raise _AgentGuardDenied(415, "UNSUPPORTED_MEDIA_TYPE", "请求体必须是 application/json")
+        return user
+
+    return dependency
+
+
+_agent_chat_read = _agent_guard(AGENT_CHAT_ROLES)
+_agent_chat_write = _agent_guard(AGENT_CHAT_ROLES, csrf=True, json_body=True)
+_agent_chat_delete = _agent_guard(AGENT_CHAT_ROLES, csrf=True)
+_agent_import_upload = _agent_guard(AGENT_IMPORT_ROLES, csrf=True, forbidden_message="无权执行智能导入")
+_agent_import_write = _agent_guard(AGENT_IMPORT_ROLES, csrf=True, json_body=True, forbidden_message="无权执行智能导入")
+_agent_bom_read = _agent_guard(AGENT_BOM_ROLES, forbidden_message="无权执行 BOM 导入")
+_agent_bom_upload = _agent_guard(AGENT_BOM_ROLES, csrf=True, forbidden_message="无权执行 BOM 导入")
+_agent_bom_write = _agent_guard(AGENT_BOM_ROLES, csrf=True, json_body=True, forbidden_message="无权执行 BOM 导入")
+_agent_settings_read = _agent_guard(AGENT_SETTINGS_ROLES, forbidden_message="仅管理员可查看")
+_agent_settings_write = _agent_guard(AGENT_SETTINGS_ROLES, csrf=True, json_body=True, forbidden_message="仅管理员可修改")
+
+
 @router.post("/admin/agent/chat")
-async def admin_agent_chat(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_chat(request: Request, user: sqlite3.Row = Depends(_agent_chat_write)):
     try:
         body = await request.json()
     except Exception:
@@ -2956,11 +3117,8 @@ async def admin_agent_chat(request: Request):
 
 
 @router.post("/admin/agent/chat/stream")
-async def admin_agent_chat_stream(request: Request):
+async def admin_agent_chat_stream(request: Request, user: sqlite3.Row = Depends(_agent_chat_write)):
     """流式对话（SSE）：逐字输出 + 工具步骤事件。事件见 agent.service.run_chat 的 on_event。"""
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
     try:
         body = await request.json()
     except Exception:
@@ -3020,9 +3178,7 @@ def _agent_bad(msg: str, code: int = 400):
 
 
 @router.get("/admin/agent/sessions")
-def admin_agent_sessions(request: Request):
-    user, err = _agent_json_user(request)
-    if err: return err
+def admin_agent_sessions(request: Request, user: sqlite3.Row = Depends(_agent_chat_read)):
     c = db()
     try:
         from app.agent.db import ensure_agent_tables
@@ -3033,9 +3189,8 @@ def admin_agent_sessions(request: Request):
 
 
 @router.get("/admin/agent/sessions/{session_id}/messages")
-def admin_agent_session_messages(request: Request, session_id: str):
-    user, err = _agent_json_user(request)
-    if err: return err
+def admin_agent_session_messages(request: Request, session_id: str,
+                                 user: sqlite3.Row = Depends(_agent_chat_read)):
     c = db()
     try:
         msgs = agent_service.get_messages(c, user["id"], session_id, limit=200)
@@ -3051,10 +3206,9 @@ def admin_agent_session_messages(request: Request, session_id: str):
 
 
 @router.post("/admin/agent/sessions/{session_id}")
-async def admin_agent_session_update(request: Request, session_id: str):
+async def admin_agent_session_update(request: Request, session_id: str,
+                                     user: sqlite3.Row = Depends(_agent_chat_write)):
     """body: {"title": "..."} 重命名；{"pinned": true/false} 置顶。"""
-    user, err = _agent_json_user(request)
-    if err: return err
     try:
         body = await request.json()
     except Exception:
@@ -3073,9 +3227,8 @@ async def admin_agent_session_update(request: Request, session_id: str):
 
 
 @router.delete("/admin/agent/sessions/{session_id}")
-def admin_agent_session_delete(request: Request, session_id: str):
-    user, err = _agent_json_user(request)
-    if err: return err
+def admin_agent_session_delete(request: Request, session_id: str,
+                               user: sqlite3.Row = Depends(_agent_chat_delete)):
     c = db()
     try:
         agent_service.delete_session(c, user["id"], session_id)
@@ -3087,9 +3240,7 @@ def admin_agent_session_delete(request: Request, session_id: str):
 
 
 @router.post("/admin/agent/feedback")
-async def admin_agent_feedback(request: Request):
-    user, err = _agent_json_user(request)
-    if err: return err
+async def admin_agent_feedback(request: Request, user: sqlite3.Row = Depends(_agent_chat_write)):
     try:
         body = await request.json()
         rating = int(body.get("rating"))
@@ -3126,12 +3277,8 @@ from app.agent import importer as _agent_importer
 from app.agent.config import AgentConfig as _AgentConfig
 
 @router.post("/admin/agent/import/preview")
-async def admin_agent_import_preview(request: Request, file: _UploadFile = _File(...), target: str = _Form(...)):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
-    if user["role"] not in ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER"):
-        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "无权执行智能导入"}}, status_code=403)
+async def admin_agent_import_preview(request: Request, file: _UploadFile = _File(...), target: str = _Form(...),
+                                     user: sqlite3.Row = Depends(_agent_import_upload)):
     if target not in _agent_importer.TARGETS:
         return JSONResponse({"error": {"code": "AGENT_BAD_TARGET", "message": "不支持的导入目标: " + target}}, status_code=400)
     raw = await file.read(10 * 1024 * 1024 + 1)
@@ -3162,12 +3309,7 @@ async def admin_agent_import_preview(request: Request, file: _UploadFile = _File
     })
 
 @router.post("/admin/agent/import/commit")
-async def admin_agent_import_commit(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
-    if user["role"] not in ("ADMIN", "WAREHOUSE_ADMIN", "PLANNER"):
-        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "无权执行智能导入"}}, status_code=403)
+async def admin_agent_import_commit(request: Request, user: sqlite3.Row = Depends(_agent_import_write)):
     try:
         body = await request.json()
     except Exception:
@@ -3189,10 +3331,8 @@ async def admin_agent_import_commit(request: Request):
 
 # BOM 导入 Session 包装（智能助手页用）
 @router.post("/admin/agent/import/bom/preview")
-async def admin_agent_bom_preview(request: Request, file: _UploadFile = _File(...), model_code: str = _Form(...)):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_bom_preview(request: Request, file: _UploadFile = _File(...), model_code: str = _Form(...),
+                                  user: sqlite3.Row = Depends(_agent_bom_upload)):
     try:
         preview = await api_bom_preview(file=file, modelCode=model_code.strip(), user=user, x_request_id=str(__import__("uuid").uuid4()))
     except Exception as e:
@@ -3203,10 +3343,7 @@ async def admin_agent_bom_preview(request: Request, file: _UploadFile = _File(..
     return JSONResponse(preview)
 
 @router.post("/admin/agent/import/bom/commit")
-async def admin_agent_bom_commit(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_bom_commit(request: Request, user: sqlite3.Row = Depends(_agent_bom_write)):
     try:
         body = await request.json()
     except Exception:
@@ -3235,10 +3372,7 @@ async def admin_agent_bom_commit(request: Request):
 
 # 多机型 BOM 聚合
 @router.get("/admin/agent/bom/models")
-async def admin_agent_bom_models(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_bom_models(request: Request, user: sqlite3.Row = Depends(_agent_bom_read)):
     c = db()
     try:
         rows = c.execute("""
@@ -3308,10 +3442,8 @@ def _parse_bom_agg_items(items: str, model_codes: str) -> list[tuple[str, float]
 
 
 @router.get("/admin/agent/bom/aggregate")
-async def admin_agent_bom_aggregate(request: Request, model_codes: str = "", items: str = ""):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_bom_aggregate(request: Request, model_codes: str = "", items: str = "",
+                                    user: sqlite3.Row = Depends(_agent_bom_read)):
     try:
         pairs = _parse_bom_agg_items(items, model_codes)
     except ValueError as e:
@@ -3361,10 +3493,8 @@ async def admin_agent_bom_aggregate(request: Request, model_codes: str = "", ite
 
 # 聚合 BOM 导入 Session 包装（智能助手页用）
 @router.post("/admin/agent/import/aggbom/preview")
-async def admin_agent_aggbom_preview(request: Request, file: _UploadFile = _File(...)):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_aggbom_preview(request: Request, file: _UploadFile = _File(...),
+                                     user: sqlite3.Row = Depends(_agent_bom_upload)):
     form_data = await request.form()
     upload = _UploadFile(file=file.file, filename=file.filename)
     try:
@@ -3378,10 +3508,7 @@ async def admin_agent_aggbom_preview(request: Request, file: _UploadFile = _File
     return JSONResponse(preview)
 
 @router.post("/admin/agent/import/aggbom/commit")
-async def admin_agent_aggbom_commit(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_aggbom_commit(request: Request, user: sqlite3.Row = Depends(_agent_bom_write)):
     try:
         body = await request.json()
     except Exception:
@@ -3405,18 +3532,13 @@ async def admin_agent_aggbom_commit(request: Request):
     return JSONResponse(result)
 
 @router.get("/admin/agent/aggbom/batches")
-async def admin_agent_aggbom_batches(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_aggbom_batches(request: Request, user: sqlite3.Row = Depends(_agent_bom_read)):
     from app.main import list_agg_bom_batches as _list_batches
     return JSONResponse(_list_batches(user=user))
 
 @router.get("/admin/agent/aggbom/aggregate")
-async def admin_agent_aggbom_aggregate(request: Request, batch_id: str = "", device_codes: str = ""):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+async def admin_agent_aggbom_aggregate(request: Request, batch_id: str = "", device_codes: str = "",
+                                       user: sqlite3.Row = Depends(_agent_bom_read)):
     from app.main import aggregate_agg_bom as _agg
     try:
         return JSONResponse(_agg(batch_id=batch_id, device_codes=device_codes, user=user))
@@ -3447,10 +3569,7 @@ def _agent_cfg_effective(c, trace_id="admin"):
     return cfg
 
 @router.get("/admin/agent/settings")
-def admin_agent_settings_get(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
+def admin_agent_settings_get(request: Request, user: sqlite3.Row = Depends(_agent_settings_read)):
     c = db()
     try:
         s = _agent_settings_get(c)
@@ -3467,12 +3586,7 @@ def admin_agent_settings_get(request: Request):
     return JSONResponse({"settings": masked})
 
 @router.post("/admin/agent/settings")
-async def admin_agent_settings_set(request: Request):
-    user = _session_user(request)
-    if user is None:
-        return JSONResponse({"error": {"code": "UNAUTHORIZED", "message": "未登录"}}, status_code=401)
-    if user["role"] not in ("ADMIN",):
-        return JSONResponse({"error": {"code": "FORBIDDEN", "message": "仅管理员可修改"}}, status_code=403)
+async def admin_agent_settings_set(request: Request, user: sqlite3.Row = Depends(_agent_settings_write)):
     try:
         body = await request.json()
     except Exception:

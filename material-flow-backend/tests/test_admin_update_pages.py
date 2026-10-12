@@ -9,6 +9,12 @@ from app import main as backend
 from tests.test_admin_web_nav import seed, web_login
 
 
+def agent_csrf(client) -> str:
+    """管理台页面 <meta name="csrf-token">：智能助手 JSON/上传接口必须带 X-CSRF-Token。"""
+    page = client.get("/admin/agent").text
+    return re.search(r'<meta name="csrf-token" content="([^"]+)"', page).group(1)
+
+
 def test_release_and_system_pages_render_for_admin(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_RELEASES_DIR", str(tmp_path / "rel"))
     monkeypatch.setenv("DEPLOYED_SHA_FILE", str(tmp_path / "DEPLOYED_SHA"))
@@ -97,6 +103,7 @@ def test_agent_stream_endpoint(monkeypatch):
     seed()
     with TestClient(backend.app) as client:
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        client.headers["X-CSRF-Token"] = agent_csrf(client)
         r = client.post("/admin/agent/chat/stream", json={"message": "hi"})
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
         import json as _j
@@ -114,6 +121,7 @@ def test_agent_session_feedback_usage_endpoints(monkeypatch):
     import json as _j
     with TestClient(backend.app) as client:
         assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        client.headers["X-CSRF-Token"] = agent_csrf(client)
         r = client.post("/admin/agent/chat/stream", json={"message": "会话管理测试"})
         done = [_j.loads(l[5:]) for l in r.text.splitlines() if l.startswith("data:")][-1]
         sid, mid = done["session_id"], done["message_id"]

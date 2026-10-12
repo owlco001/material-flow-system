@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{% if user %}<meta name="csrf-token" content="{{ user['csrf_token'] }}">{% endif %}
 <title>{% block title %}智慧工厂{% endblock %}</title>
 <style>
 :root {
@@ -367,7 +368,10 @@ tr.row-blue{background:rgba(14,95,216,.06)}
 </style>
 <script>
 // 轻量 Markdown 渲染；先转义再套标签，杜绝注入
-function escHtml(t) { return t.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function escHtml(t) { return String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+// 管理台 JSON / 上传接口统一带 CSRF 头（服务端 _agent_guard 校验 X-CSRF-Token）
+function csrfToken() { const m = document.querySelector('meta[name="csrf-token"]'); return m ? m.content : ""; }
+function csrfHeaders(extra) { return Object.assign({ "X-CSRF-Token": csrfToken() }, extra || {}); }
 function inlineMd(t) {
   return escHtml(t)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -707,7 +711,7 @@ async function sendAgentMsg() {
     } else if (ev.type === "error") { steps.textContent = ""; text = "出错：" + ev.message; paint(); }
   };
   try {
-    const r = await fetch("/admin/agent/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("/admin/agent/chat/stream", { method: "POST", headers: csrfHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ session_id: agentSessionId, message: msg }) });
     if (!r.ok || !r.body) { const t = await r.text(); let m = "HTTP " + r.status; try { m = JSON.parse(t).error.message || m; } catch (_e) {} throw new Error(m); }
     const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
