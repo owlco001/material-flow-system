@@ -1,9 +1,24 @@
 {% extends "base.html" %}
 {% block page_title %}U9 集成{% endblock %}
 {% block content %}
+<style>
+.u9-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.u9-grid .card{margin:0;display:flex;flex-direction:column}
+.u9-grid form{display:flex;flex-direction:column;gap:8px;margin-top:auto}
+.u9-grid label{font-size:13px;color:var(--muted);margin:0}
+.u9-grid input[type=text],.u9-grid textarea{width:100%;padding:6px 8px}
+.u9-grid textarea{min-height:56px;resize:vertical}
+.u9-check{display:flex;align-items:center;gap:6px;font-size:13px}
+.u9-check input{width:auto}
+.u9-kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:14px;margin:0}
+.u9-kv dt{color:var(--muted)}
+.u9-kv dd{margin:0;word-break:break-all}
+.u9-hint{border-left:4px solid #f0ad4e}
+.u9-err{color:#b02a37;font-size:13px}
+</style>
 <div class="compact">
 <h2>U9 集成</h2>
-<p style="color:var(--muted)">与用友 U9 ERP 的数据同步。Phase 1 为只读同步（U9 → 本地），替代人工导 Excel。</p>
+<p class="page-desc">与用友 U9 Cloud（U9C）的只读同步（U9 → 本地）：料品档案、BOM、库存现存量、生产订单。所有同步默认先「预览」，确认差异后再「执行同步」。</p>
 
 {% if message %}
 <div class="card" style="border-left:4px solid {% if message_ok %}#28a745{% else %}#dc3545{% endif %};margin-bottom:16px">
@@ -14,46 +29,105 @@
 <h3>配置状态</h3>
 <div class="cards">
   <div class="card"><p class="stat-label">总开关</p><p class="stat-num" style="color:{% if config.enabled %}#28a745{% else %}#6c757d{% endif %}">{{ "已启用" if config.enabled else "未启用" }}</p></div>
-  <div class="card"><p class="stat-label">模式</p><p class="stat-num">{{ "经典 U9（局域网）" if config.mode == "classic" else "U9cloud" }}</p></div>
+  <div class="card"><p class="stat-label">模式</p><p class="stat-num">{{ "U9 Cloud（REST）" if config.mode == "u9c" else ("经典 U9（SOAP，占位）" if config.mode == "classic" else config.mode) }}</p></div>
   <div class="card"><p class="stat-label">连接信息</p><p class="stat-num" style="color:{% if config.configured %}#28a745{% else %}#dc3545{% endif %}">{{ "已配齐" if config.configured else "未配齐" }}</p></div>
 </div>
-{% if not config.enabled or not config.configured %}
+
 <div class="card" style="margin-top:12px">
-  <h3>待办</h3>
+  {% if config.mode == "u9c" %}
+  <dl class="u9-kv">
+    <dt>服务地址</dt><dd>{{ config.base_url or "（未配置）" }}</dd>
+    <dt>企业编码</dt><dd>{{ config.ent_code or "（未配置）" }}</dd>
+    <dt>组织编码</dt><dd>{{ config.org_code or "（未配置）" }}</dd>
+    <dt>用户编码</dt><dd>{{ config.user_code or "（未配置）" }}</dd>
+    <dt>应用 clientid</dt><dd>{{ config.client_id or "（未配置）" }}</dd>
+    <dt>应用密钥</dt><dd>{{ "已设置（不显示）" if config.client_secret_set else "未设置" }}</dd>
+    <dt>默认存储地点</dt><dd>{{ config.default_wh or "（未设置，库存按组织全量）" }}</dd>
+    <dt>超时 / 证书校验</dt><dd>{{ config.timeout_seconds }} 秒 / {{ "校验" if config.verify_ssl else "不校验" }}</dd>
+    <dt>BOM 展开</dt><dd>{{ ("多层，最深 " ~ config.bom_max_depth ~ " 层") if config.bom_recursive else "仅单层" }}</dd>
+    <dt>库存数量口径</dt><dd>{{ "可用量" if config.inventory_qty_field == "available" else "现存量" }}</dd>
+  </dl>
+  {% endif %}
+  <form method="post" action="/admin/u9/health" style="margin-top:10px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-sm" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>测试连接</button>
+  </form>
+</div>
+
+{% if not ready %}
+<div class="card u9-hint" style="margin-top:12px">
+  <h3>启用前待办</h3>
   <ul style="margin:0;padding-left:20px">
-    {% if not config.enabled %}<li>服务端设置 <code>U9_ENABLED=1</code> 并重启服务</li>{% endif %}
-    {% if not config.configured %}
-      {% if config.mode == "classic" %}
-      <li>配置 <code>U9_WSDL_URL</code>、<code>U9_USERNAME</code>、<code>U9_PASSWORD</code>（向用友实施商索取 WSDL 地址与接口账号）</li>
-      {% else %}
-      <li>配置 <code>U9_BASE_URL</code>、<code>U9_APP_KEY</code>、<code>U9_APP_SECRET</code></li>
-      {% endif %}
-    {% endif %}
-    <li>U9 接口字段映射待实施商《接口开发文档》确认后填充，当前为占位状态</li>
+    {% if not config.enabled %}<li>在服务端环境文件中设置 <code>U9_ENABLED=1</code> 并重启服务</li>{% endif %}
+    {% if config.missing %}<li>补齐连接配置：{% for m in config.missing %}<code>{{ m }}</code>{% if not loop.last %}、{% endif %}{% endfor %}</li>{% endif %}
+    {% if config.mode == "u9c" %}<li>clientid / clientsecret 在 U9C「系统管理 → 第三方应用授权」中登记应用获得，并把本服务器出口 IP 加入白名单</li>{% endif %}
   </ul>
+  <p class="muted" style="margin:8px 0 0">未启用时下方同步按钮不可用，不会访问 U9，也不会写任何数据。</p>
 </div>
 {% endif %}
 
 <h3 style="margin-top:16px">同步</h3>
-<div class="cards">
+<div class="u9-grid">
   {% for e in entities %}
   <div class="card">
     <h3>{{ e.label }}</h3>
-    <p style="color:var(--muted);font-size:14px">{{ e.desc }}</p>
-    <p style="font-size:13px;color:var(--muted)">目标表：<code>{{ e.table }}</code></p>
-    <form method="post" action="/admin/u9/sync/{{ e.id }}" style="display:inline">
+    <p class="muted" style="font-size:14px">{{ e.desc }}</p>
+    <p class="muted" style="font-size:13px">目标表：<code>{{ e.table }}</code></p>
+    <form method="post" action="/admin/u9/sync/{{ e.id }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="clientOperationId" value="{{ e.id }}-{{ now_ts }}">
-      {% if e.id == "boms" %}
-      <input type="text" name="product_codes" placeholder="产品/设备编码，逗号分隔" style="width:100%;margin-bottom:8px;padding:6px 8px" required>
+      {% if e.id == "items" %}
+        <label>额外料号（可选，逗号或换行分隔）</label>
+        <textarea name="codes" placeholder="如 1001001,1001002"></textarea>
+        <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地全部物料编码</label>
+      {% elif e.id == "boms" %}
+        <label>母件 / 设备编码（必填，逗号分隔）</label>
+        <input type="text" name="product_codes" placeholder="如 SB-0001" required>
+      {% elif e.id == "inventory" %}
+        <label>存储地点编码（可选，默认 {{ config.default_wh or "全部" }}）</label>
+        <input type="text" name="wh" placeholder="{{ config.default_wh or '留空=组织全部存储地点' }}">
+        <label>料号（可选，逗号分隔；留空=全部料品）</label>
+        <textarea name="codes" placeholder="留空则查询全部料品"></textarea>
+        <input type="hidden" name="update_totals" value="1">
+      {% elif e.id == "orders" %}
+        <label>生产订单号（可选，逗号或换行分隔）</label>
+        <textarea name="doc_nos" placeholder="如 MO2026100001"></textarea>
+        <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地已有订单号</label>
       {% endif %}
-      <button type="submit" name="dry_run" value="1" class="btn btn-sm">预览同步</button>
-      <button type="submit" name="dry_run" value="0" class="btn btn-danger btn-sm"
-              data-confirm="将从 U9 拉取数据并直接写入业务表（物料、库存等）。建议先点「预览同步」确认差异。" data-confirm-title="执行 U9 同步？" data-confirm-ok="执行同步" data-confirm-danger>执行同步</button>
+      <div class="btn-row">
+        <button type="submit" name="dry_run" value="1" class="btn btn-sm" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>预览同步</button>
+        <button type="submit" name="dry_run" value="0" class="btn btn-danger btn-sm" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}
+                data-confirm="将从 U9 拉取数据并直接写入业务表（{{ e.table }}）。建议先点「预览同步」确认差异。" data-confirm-title="执行 U9 同步？" data-confirm-ok="执行同步" data-confirm-danger>执行同步</button>
+      </div>
     </form>
   </div>
   {% endfor %}
 </div>
+
+{% if run_log %}
+{% set d = run_log.detail or {} %}
+<h3 style="margin-top:16px" id="run-detail">本次{{ "预览" if run_log.dry_run else "同步" }}结果 · {{ entity_labels.get(run_log.entity, run_log.entity) }}</h3>
+<div class="card">
+  <p style="margin:0 0 8px">状态：{{ status_labels.get(run_log.status, run_log.status) }}；U9 返回 {{ d.total or 0 }} 条；新增 {{ d.inserted or 0 }}，更新 {{ d.updated or 0 }}，不变 {{ d.unchanged or 0 }}，跳过 {{ d.skipped or 0 }}
+  {% if run_log.dry_run %}<span class="badge b-info">预览，未写入</span>{% endif %}</p>
+  {% if d.not_found_count %}<p class="muted" style="margin:0 0 6px">U9 未找到 {{ d.not_found_count }} 个：{{ (d.not_found or [])[:30]|join("、") }}{% if d.not_found_count > 30 %} …{% endif %}</p>{% endif %}
+  {% if d.unknown_count %}<p class="muted" style="margin:0 0 6px">本地无此物料（已跳过）{{ d.unknown_count }} 个：{{ (d.unknown_materials or [])[:30]|join("、") }}{% if d.unknown_count > 30 %} …{% endif %}</p>{% endif %}
+  {% if d.results %}<p class="muted" style="margin:0 0 6px">{% for r in d.results %}{{ r.product_code }}：{% if r.found %}{{ r.lines }} 行，最深 {{ r.max_level }} 层{% if r.truncated %}（已截断）{% endif %}{% if r.unchanged %}，内容未变{% endif %}{% else %}U9 无 BOM{% endif %}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% endif %}
+  {% for er in (d.errors or [])[:10] %}<p class="u9-err" style="margin:0">{{ er.key }}：{{ er.error }}</p>{% endfor %}
+  {% if run_log.error %}<p class="u9-err">{{ run_log.error }}</p>{% endif %}
+  {% if d.sample %}
+  <div class="table-wrap" style="margin-top:8px">
+  <table>
+    <tr>{% for k in d.sample[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr>
+    {% for row in d.sample %}
+    <tr>{% for k in d.sample[0].keys() %}<td>{{ row.get(k, "") }}</td>{% endfor %}</tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted" style="margin:6px 0 0;font-size:13px">仅显示前 {{ d.sample|length }} 行样例。</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <h3 style="margin-top:16px">最近同步记录</h3>
 <div class="table-wrap">
@@ -61,7 +135,7 @@
   <tr><th>时间</th><th>实体</th><th>模式</th><th>状态</th><th>总数</th><th>新增</th><th>更新</th><th>跳过</th><th>说明</th></tr>
   {% for l in logs %}
   <tr>
-    <td>{{ l.started_at|local_dt }}</td>
+    <td><a href="/admin/u9?run={{ l.id|urlencode }}#run-detail">{{ l.started_at|local_dt }}</a></td>
     <td>{{ entity_labels.get(l.entity, l.entity) }}</td>
     <td>{{ "预览" if l.dry_run else "执行" }}</td>
     <td><span class="st {% if l.status == 'OK' %}st-green{% elif l.status == 'PENDING_DOC' %}st-neutral{% else %}st-red{% endif %}">{{ status_labels.get(l.status, l.status) }}</span></td>

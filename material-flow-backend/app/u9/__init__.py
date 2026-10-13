@@ -3,8 +3,8 @@
 设计目标：智慧工厂（本地 SQLite + FastAPI）与用友 U9 之间的数据同步，
 替代目前"U9 导出 Excel → 人工导入"的手工链路。
 
-当前状态：骨架（skeleton）。网络层与字段映射已预留接口，
-待实施商提供《U9 接口开发文档》、WSDL/接口凭证后填充。
+当前状态：U9 Cloud（U9C）REST 只读同步已实现（client.U9CClient，字段按 U9C swagger 导出），
+详见 docs/U9C_INTEGRATION.md；经典 U9（SOAP）仍为占位。
 
 分期：
   Phase 1（只读同步，U9 → 本地）：料品档案、物料清单 BOM、库存现存量、生产订单

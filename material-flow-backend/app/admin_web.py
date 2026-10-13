@@ -2176,34 +2176,54 @@ async def admin_exceptions_review(request: Request, eid: str):
 
 
 # ---------------------------------------------------------------- U9 集成页面
+U9_ENTITY_LABELS = {"items": "料品档案", "boms": "BOM", "inventory": "库存", "orders": "生产订单"}
+U9_STATUS_LABELS = {"OK": "成功", "PENDING_DOC": "待实施商文档", "FAILED": "失败", "RUNNING": "运行中"}
+
+
 @router.get("/admin/u9", response_class=HTMLResponse)
 def admin_u9(request: Request):
     user, denied = _admin_or_403(request)
     if denied:
         return denied
+    import json as _json
     from app.u9.config import get_config
     from app.u9.sync import ENTITIES
     cfg = get_config()
+    run_log = None
     c = db()
     try:
         logs = []
         if c.execute("SELECT name FROM sqlite_master WHERE name='u9_sync_logs'").fetchone():
             logs = [dict(r) for r in c.execute(
-                "SELECT * FROM u9_sync_logs ORDER BY started_at DESC LIMIT 30").fetchall()]
+                "SELECT id, run_id, entity, started_at, status, dry_run, total, inserted, updated,"
+                " skipped, error FROM u9_sync_logs ORDER BY started_at DESC LIMIT 30").fetchall()]
+            run = str(request.query_params.get("run", "")).strip()
+            if run:
+                r = c.execute("SELECT * FROM u9_sync_logs WHERE id=?", (run,)).fetchone()
+                if r:
+                    run_log = dict(r)
+                    try:
+                        run_log["detail"] = _json.loads(run_log.pop("detail_json") or "{}")
+                    except ValueError:
+                        run_log["detail"] = {}
+        local_material_count = c.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+        local_order_count = c.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]
     finally:
         c.close()
     entities = [
         {"id": "items", "label": "料品档案",
-         "desc": "U9 料品主数据 → 本地物料档案（编码/名称/规格/单位，不含数量）",
+         "desc": f"按料号查 U9 料品（ItemMaster/Query）→ 本地物料档案（品名/规格/单位，不改数量）。"
+                 f"默认包含本地全部 {local_material_count} 个物料编码。",
          "table": "materials"},
         {"id": "boms", "label": "物料清单 BOM",
-         "desc": "按产品/设备编码拉取多层 BOM，替代人工导 Excel",
+         "desc": "按母件/设备编码查 U9 BOM（BOM/Query）并逐层展开，生成一个聚合 BOM 批次（内容未变不重复建）。",
          "table": "agg_bom_batches / agg_bom_items"},
         {"id": "inventory", "label": "库存现存量",
-         "desc": "U9 库存现存量 → 本地库存（按料品+库位）",
-         "table": "inventory"},
+         "desc": "查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
+                 "并回写物料总量/可用量。",
+         "table": "inventory / locations / materials"},
         {"id": "orders", "label": "生产订单",
-         "desc": "U9 生产订单 → 本地生产订单",
+         "desc": f"按单号查 U9 生产订单（MODoc/Query）→ 本地生产订单。默认包含本地已有 {local_order_count} 个单号。",
          "table": "production_orders"},
     ]
     return templates.TemplateResponse(
@@ -2213,17 +2233,40 @@ def admin_u9(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "config": cfg.safe_dict(),
+            "ready": cfg.ready,
             "entities": [e for e in entities if e["id"] in ENTITIES],
             "logs": logs,
-            "entity_labels": {"items": "料品档案", "boms": "BOM",
-                              "inventory": "库存", "orders": "生产订单"},
-            "status_labels": {"OK": "成功", "PENDING_DOC": "待实施商文档",
-                              "FAILED": "失败", "RUNNING": "运行中"},
+            "run_log": run_log,
+            "entity_labels": U9_ENTITY_LABELS,
+            "status_labels": U9_STATUS_LABELS,
             "message": request.query_params.get("msg", ""),
             "message_ok": request.query_params.get("ok", "") == "1",
             "now_ts": int(time.time()),
         },
     )
+
+
+@router.post("/admin/u9/health")
+async def admin_u9_health(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    from urllib.parse import quote
+    from app.u9.client import U9Error, get_client
+    from app.u9.config import get_config
+    cfg = get_config()
+    if not cfg.ready:
+        return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，无法测试连接") + "&ok=0")
+    try:
+        r = get_client(cfg).health_check()
+    except U9Error as e:
+        return _see_other("/admin/u9?msg=" + quote(f"连接失败：{e}") + "&ok=0")
+    except Exception as e:  # noqa: BLE001
+        return _see_other("/admin/u9?msg=" + quote(f"连接异常：{e}") + "&ok=0")
+    return _see_other("/admin/u9?msg=" + quote(f"连接成功：U9C 授权登录正常，耗时 {r['latency_ms']} ms") + "&ok=1")
 
 
 @router.post("/admin/u9/sync/{entity}")
@@ -2235,39 +2278,41 @@ async def admin_u9_sync(request: Request, entity: str):
     if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
         return _error_page(request, 403, "CSRF 校验失败")
     from urllib.parse import quote
+    from fastapi import HTTPException as _HTTPException
     from app.u9.config import get_config
-    from app.u9.sync import ENTITIES, run_sync
+    from app.u9.routes import build_sync_kwargs
+    from app.u9.sync import ENTITIES, log_id, run_sync
     cfg = get_config()
     if entity not in ENTITIES:
         return _see_other("/admin/u9?msg=" + quote("未知同步实体") + "&ok=0")
-    if not cfg.enabled or not cfg.configured:
+    if not cfg.ready:
         return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，同步未执行") + "&ok=0")
     dry_run = str(form.get("dry_run", "1")) != "0"
-    kwargs: dict = {}
-    if entity == "boms":
-        codes = [p.strip() for p in str(form.get("product_codes", "")).split(",") if p.strip()]
-        if not codes:
-            return _see_other("/admin/u9?msg=" + quote("同步 BOM 需填写产品/设备编码") + "&ok=0")
-        kwargs["product_codes"] = codes
+    try:
+        kwargs = build_sync_kwargs(
+            entity, codes=str(form.get("codes", "")), product_codes=str(form.get("product_codes", "")),
+            doc_nos=str(form.get("doc_nos", "")), wh=str(form.get("wh", "")),
+            include_local=str(form.get("include_local", "")) in ("1", "on", "true"),
+            update_totals=str(form.get("update_totals", "1")) in ("1", "on", "true"),
+            user_id=user["id"])
+    except _HTTPException as e:
+        return _see_other("/admin/u9?msg=" + quote(str(getattr(e, "detail", "") or "参数错误")) + "&ok=0")
     c = db()
     try:
         result = run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)
     except Exception as e:  # noqa: BLE001 - 转中文提示，不吞真因
         c.close()
-        return _see_other("/admin/u9?msg=" + quote(f"同步异常：{e}") + "&ok=0")
+        return _see_other("/admin/u9?msg=" + quote(f"同步失败：{e}") + "&ok=0")
     c.close()
+    run = quote(result.get("log_id") or log_id(result["run_id"], entity))
     if result["status"] == "PENDING_DOC":
-        msg = "U9 接口尚未实现（待实施商提供 WSDL/字段文档），已记录占位日志"
-        ok = "0"
-    else:
-        s = result["stats"]
-        mode = "预览" if dry_run else "执行"
-        total = s.get("total", s.get("total_lines", 0))
-        inserted = s.get("inserted", s.get("inserted_lines", 0))
-        msg = (f"{mode}完成：总数 {total}，新增 {inserted}，"
-               f"更新 {s.get('updated', 0)}，跳过 {s.get('skipped', 0)}")
-        ok = "1"
-    return _see_other(f"/admin/u9?msg={quote(msg)}&ok={ok}")
+        return _see_other(f"/admin/u9?msg={quote('经典 U9 接口尚未实现，已记录占位日志')}&ok=0&run={run}")
+    s = result["stats"]
+    mode = "预览" if dry_run else "执行"
+    msg = (f"{U9_ENTITY_LABELS.get(entity, entity)}{mode}完成：U9 返回 {s.get('total', 0)} 条，"
+           f"新增 {s.get('inserted', 0)}，更新 {s.get('updated', 0)}，"
+           f"不变 {s.get('unchanged', 0)}，跳过 {s.get('skipped', 0)}")
+    return _see_other(f"/admin/u9?msg={quote(msg)}&ok=1&run={run}#run-detail")
 
 
 def _render_warehouse(request: Request, user: sqlite3.Row, error: str):

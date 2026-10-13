@@ -1,0 +1,542 @@
+"""U9C REST 对接（0.8.0）：授权/token 复用与刷新、ResCode 错误、四类查询映射、同步预览/写入、路由与管理页。
+
+HTTP 一律由 FakeU9 假服务注入（client 的 transport 参数 / monkeypatch _urllib_transport），不访问网络。
+"""
+from __future__ import annotations
+
+import json
+import re
+import urllib.parse
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main as backend
+from app.u9 import client as u9client
+from app.u9 import config as u9config
+from app.u9 import mappers
+from app.u9.client import U9AuthError, U9CClient, U9Error
+from app.u9.config import U9Config
+from app.u9.sync import run_sync
+
+ADMIN = ("u_admin", "owlco", "系统管理员", "ADMIN", "Admin@2026")
+PLANNER = ("u_plan", "planner1", "计划员甲", "PLANNER", "Plan@2026x")
+SECRET = "test-secret-not-real"
+
+
+def ref(code, name=""):
+    return {"m_iD": 1, "m_code": code, "m_name": name, "sysState": 0}
+
+
+def item(code, name, spec="", uom="个", form=9):
+    return {"m_iD": hash(code) % 10000, "m_code": code, "m_name": name, "m_sPECS": spec,
+            "m_inventoryUOM": ref("U" + uom, uom), "m_itemFormAttribute": form,
+            "m_mainItemCategory": ref("C01", "原材料")}
+
+
+def comp(code, name, qty, seq, parent_qty=1, uom="个", **kw):
+    return {"m_sequence": seq, "m_itemMaster": ref(code, name), "m_usageQty": qty,
+            "m_parentQty": parent_qty, "m_issueUOM": ref("U" + uom, uom), **kw}
+
+
+class FakeU9:
+    """假 U9C：记录请求，按路径返回数据。"""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.tokens_issued = 0
+        self.valid_tokens: set[str] = set()
+        self.auth_rescode = 0
+        self.items = {
+            "M001": item("M001", "螺栓", "M8x20", "个", 9),
+            "M002": item("M002", "支架组件", "ZJ-1", "套", 10),
+            "M003": item("M003", "钢板", "Q235 2mm", "张", 9),
+            "SB01": item("SB01", "一号设备", "SB-1", "台", 10),
+        }
+        self.boms = {
+            "SB01": [{"m_itemMaster": ref("SB01", "一号设备"), "m_bOMVersionCode": "A1", "m_alternateType": 0,
+                      "m_bOMType": 0, "m_productUOM": ref("T", "台"),
+                      "m_bOMComponents": [comp("M002", "支架组件", 2, 20), comp("M001", "螺栓", 8, 10),
+                                          comp("MX", "已删除件", 1, 30, m_isDelete=True)]},
+                     {"m_itemMaster": ref("SB01", "一号设备"), "m_bOMVersionCode": "A0", "m_alternateType": 0,
+                      "m_bOMType": 0, "m_bOMComponents": [comp("OLD", "旧版件", 1, 10)]}],
+            "M002": [{"m_itemMaster": ref("M002", "支架组件"), "m_bOMVersionCode": "1",
+                      "m_bOMComponents": [comp("M003", "钢板", 3, 10, parent_qty=2),
+                                          comp("SB01", "环路", 1, 20)]}],
+        }
+        self.inventory = [
+            {"m_itemCode": "M001", "m_itemName": "螺栓", "m_whCode": "W01", "m_whName": "原料库",
+             "m_binCode": "A1", "m_binName": "A1架", "m_storeQty": 100, "m_canUseQty": 80, "m_lotCode": "L1"},
+            {"m_itemCode": "M001", "m_itemName": "螺栓", "m_whCode": "W01", "m_whName": "原料库",
+             "m_binCode": "A1", "m_binName": "A1架", "m_storeQty": 20.5, "m_canUseQty": 20, "m_lotCode": "L2"},
+            {"m_itemCode": "M003", "m_itemName": "钢板", "m_whCode": "W01", "m_whName": "原料库",
+             "m_binCode": "", "m_storeQty": 5, "m_canUseQty": 5},
+            {"m_itemCode": "ZZZ", "m_itemName": "本地没有", "m_whCode": "W01", "m_storeQty": 1, "m_canUseQty": 1},
+        ]
+        self.orders = {
+            "MO001": {"m_docNo": "MO001", "m_itemMaster": ref("SB01", "一号设备"), "m_productQty": 2,
+                      "m_productUOM": ref("T", "台"), "m_startDate": "2026-10-01 00:00:00",
+                      "m_completeDate": "2026-10-20 00:00:00"},
+            "MO002": {"m_docNo": "MO002", "m_itemMaster": ref("SB02", "二号设备"), "m_productQty": 1,
+                      "m_docState": 3},
+        }
+        self.fail_next_post_with: int | None = None
+
+    def __call__(self, method, url, headers, body, timeout, verify):
+        u = urllib.parse.urlsplit(url)
+        q = dict(urllib.parse.parse_qsl(u.query))
+        payload = json.loads(body) if body else None
+        self.calls.append({"method": method, "path": u.path, "query": q, "headers": dict(headers),
+                           "payload": payload})
+        if u.path.endswith("/webapi/OAuth2/AuthLogin"):
+            if self.auth_rescode:
+                return 200, json.dumps({"ResCode": self.auth_rescode, "ResMsg": "x", "Data": None}).encode()
+            assert q["clientsecret"] == SECRET and q["clientid"] == "wuliao"
+            self.tokens_issued += 1
+            tok = f"tok{self.tokens_issued}"
+            self.valid_tokens.add(tok)
+            return 200, json.dumps({"ResCode": 0, "Success": True, "Data": tok}).encode()
+        if headers.get("token") not in self.valid_tokens:
+            return 200, json.dumps({"ResCode": 405, "ResMsg": "授权码已过期"}).encode()
+        if self.fail_next_post_with is not None:
+            code, self.fail_next_post_with = self.fail_next_post_with, None
+            return 200, json.dumps({"ResCode": code, "Success": False, "ResMsg": "料号不存在"}).encode(
+                "utf-8")
+        data: list = []
+        if u.path.endswith("/webapi/ItemMaster/Query"):
+            data = [self.items[p["ItemMaster"]["Code"]] for p in payload if p["ItemMaster"]["Code"] in self.items]
+        elif u.path.endswith("/webapi/BOM/Query"):
+            for p in payload:
+                data.extend(self.boms.get(p["ItemMaster"]["Code"], []))
+        elif u.path.endswith("/webapi/Invtrans/QueryQohAndAvailable"):
+            assert isinstance(payload, dict)
+            data = [r for r in self.inventory
+                    if (not payload.get("ItemCode") or r["m_itemCode"] == payload["ItemCode"])
+                    and (not payload.get("Wh") or r["m_whCode"] == payload["Wh"])]
+        elif u.path.endswith("/webapi/MODoc/Query"):
+            data = [self.orders[p["DocNo"]] for p in payload if p["DocNo"] in self.orders]
+        return 200, json.dumps({"ResCode": 0, "Success": True, "ResMsg": "", "Data": data},
+                               ensure_ascii=False).encode("utf-8")
+
+
+def make_cfg(**kw) -> U9Config:
+    cfg = U9Config()
+    base = dict(enabled=True, mode="u9c", base_url="http://u9.test/u9c", client_id="wuliao",
+                client_secret=SECRET, ent_code="03", org_code="01", user_code="1064", batch_size=2)
+    base.update(kw)
+    for k, v in base.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+@pytest.fixture(autouse=True)
+def _clean_tokens():
+    u9client.clear_token_cache()
+    yield
+    u9client.clear_token_cache()
+
+
+@pytest.fixture
+def fake():
+    return FakeU9()
+
+
+# ------------------------------------------------------------------ 配置
+def test_config_defaults_disabled_and_u9c(monkeypatch):
+    for k in list(__import__("os").environ):
+        if k.startswith("U9_"):
+            monkeypatch.delenv(k, raising=False)
+    cfg = U9Config()
+    assert cfg.enabled is False and cfg.mode == "u9c" and not cfg.configured and not cfg.ready
+    assert "U9_BASE_URL" in cfg.missing_fields() and "U9_CLIENT_SECRET" in cfg.missing_fields()
+    monkeypatch.setenv("U9_MODE", "cloud")
+    assert U9Config().mode == "u9c"
+
+
+def test_safe_dict_never_exposes_secret():
+    cfg = make_cfg(client_secret="SuperSecretValue123")
+    d = cfg.safe_dict()
+    assert "SuperSecretValue123" not in json.dumps(d)
+    assert d["client_secret_set"] is True and d["client_id"].startswith("wuli") and "*" in d["client_id"]
+    assert d["ready"] is True and d["missing"] == []
+
+
+# ------------------------------------------------------------------ 授权
+def test_auth_login_params_and_token_reuse(fake):
+    c = U9CClient(make_cfg(), fake)
+    c.fetch_items(["M001"])
+    c.fetch_items(["M003"])
+    logins = [x for x in fake.calls if x["path"].endswith("AuthLogin")]
+    assert len(logins) == 1 and fake.tokens_issued == 1
+    q = logins[0]["query"]
+    assert q == {"clientid": "wuliao", "clientsecret": SECRET, "userCode": "1064", "entcode": "03", "orgcode": "01"}
+    assert logins[0]["path"] == "/u9c/webapi/OAuth2/AuthLogin"
+    posts = [x for x in fake.calls if x["method"] == "POST"]
+    assert all(p["headers"]["token"] == "tok1" for p in posts)
+    assert all(p["headers"]["Content-Type"] == "application/json" for p in posts)
+
+
+def test_token_refresh_once_on_expired(fake):
+    c = U9CClient(make_cfg(), fake)
+    c.fetch_items(["M001"])
+    fake.valid_tokens.clear()  # 服务端让 token 失效
+    rows = c.fetch_items(["M001"])
+    assert rows and rows[0]["m_code"] == "M001" and fake.tokens_issued == 2
+
+
+def test_token_ttl_expiry_triggers_relogin(fake, monkeypatch):
+    c = U9CClient(make_cfg(token_ttl_seconds=30), fake)
+    c.fetch_items(["M001"])
+    real = u9client.time.time
+    monkeypatch.setattr(u9client.time, "time", lambda: real() + 31)
+    c.fetch_items(["M001"])
+    assert fake.tokens_issued == 2
+
+
+@pytest.mark.parametrize("code,hint", [(401, "未授权"), (406, "用户名不存在"), (408, "组织编码不存在"),
+                                       (601, "IP 未授权"), (405, "已过期")])
+def test_auth_error_codes_chinese(fake, code, hint):
+    fake.auth_rescode = code
+    with pytest.raises(U9AuthError) as ei:
+        U9CClient(make_cfg(), fake).health_check()
+    assert hint in str(ei.value) and SECRET not in str(ei.value)
+
+
+def test_health_check_ok(fake):
+    r = U9CClient(make_cfg(), fake).health_check()
+    assert r["ok"] is True and isinstance(r["latency_ms"], int) and "tok" not in json.dumps(r)
+
+
+def test_rescode_error_raises_with_resmsg(fake):
+    c = U9CClient(make_cfg(), fake)
+    fake.fail_next_post_with = 500
+    with pytest.raises(U9Error) as ei:
+        c.fetch_inventory(["M001"])
+    assert "ResCode=500" in str(ei.value) and "料号不存在" in str(ei.value)
+    # 批量查询里单条业务错误不中断，记入 errors
+    fake.fail_next_post_with = 500
+    errors: list = []
+    assert c.fetch_production_orders(["MO001"], errors=errors) == []
+    assert errors[0]["key"] == "MO001" and "料号不存在" in errors[0]["error"]
+
+
+def test_batch_business_error_falls_back_to_single(fake):
+    c = U9CClient(make_cfg(batch_size=2), fake)
+    fake.fail_next_post_with = 500  # 整批失败 → 逐条重试
+    errors: list = []
+    rows = c.fetch_items(["M001", "M003"], errors=errors)
+    assert {r["m_code"] for r in rows} == {"M001", "M003"} and errors == []
+
+
+def test_network_timeout_and_http_errors(fake):
+    def boom(*a, **k):
+        raise TimeoutError("timed out")
+    with pytest.raises(U9Error) as ei:
+        U9CClient(make_cfg(), boom).health_check()
+    assert "超时" in str(ei.value) and SECRET not in str(ei.value)
+
+    def refused(*a, **k):
+        raise u9client.urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+    with pytest.raises(U9Error) as ei:
+        U9CClient(make_cfg(), refused).health_check()
+    assert "无法连接" in str(ei.value) and SECRET not in str(ei.value)
+
+    with pytest.raises(U9Error) as ei:
+        U9CClient(make_cfg(), lambda *a, **k: (502, b"<html>Bad Gateway</html>")).health_check()
+    assert "HTTP 502" in str(ei.value)
+
+
+def test_content_type_configurable(fake):
+    U9CClient(make_cfg(content_type="application/x-www-form-urlencoded"), fake).fetch_items(["M001"])
+    post = [x for x in fake.calls if x["method"] == "POST"][0]
+    assert post["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+
+
+# ------------------------------------------------------------------ 查询 + 映射
+def test_fetch_items_batched_and_mapped(fake):
+    c = U9CClient(make_cfg(batch_size=2), fake)
+    rows = c.fetch_items(["M001", "M002", "M003", "M001", ""])
+    posts = [x for x in fake.calls if x["method"] == "POST"]
+    assert len(posts) == 2 and posts[0]["payload"][0] == {"ItemMaster": {"Code": "M001"}, "OtherID": "M001"}
+    m = mappers.map_item(rows[0])
+    assert m == {"code": "M001", "name": "螺栓", "specification": "M8x20", "unit": "个", "item_form": "采购件",
+                 "category": "原材料", "status": "", "u9_id": rows[0]["m_iD"]}
+    assert mappers.map_item({"m_code": "X"})["unit"] == "个"
+    with pytest.raises(ValueError):
+        mappers.map_item({"m_name": "无编码"})
+
+
+def test_fetch_bom_multilevel_with_cycle_guard(fake):
+    c = U9CClient(make_cfg(), fake)
+    bom = c.fetch_bom("SB01")
+    assert bom["found"] and bom["bom_version"] == "A1" and bom["product_name"] == "一号设备"
+    flat = [(ln["level"], ln["parent_code"], ln["material_code"], ln["qty"]) for ln in bom["lines"]]
+    assert flat == [(2, "SB01", "M001", 8.0), (2, "SB01", "M002", 2.0),
+                    (3, "M002", "M003", 1.5), (3, "M002", "SB01", 1.0)]
+    m003 = bom["lines"][2]
+    assert m003["spec"] == "Q235 2mm" and m003["unit"] == "个" and m003["material_form"] == "采购件"
+    assert any("环路" in e["error"] for e in bom["errors"])
+    first = [x for x in fake.calls if x["path"].endswith("/BOM/Query")][0]
+    assert first["payload"] == [{"Org": {"Code": "01"}, "ItemMaster": {"Code": "SB01"}, "OtherID": "SB01"}]
+    # 采购件 M001 不再查 BOM
+    bom_codes = [p["ItemMaster"]["Code"] for x in fake.calls if x["path"].endswith("/BOM/Query") for p in x["payload"]]
+    assert "M001" not in bom_codes and "M002" in bom_codes
+
+
+def test_fetch_bom_depth_limit_and_single_level(fake):
+    c = U9CClient(make_cfg(), fake)
+    one = c.fetch_bom("SB01", recursive=False)
+    assert [ln["level"] for ln in one["lines"]] == [2, 2]
+    d1 = c.fetch_bom("SB01", max_depth=1)
+    assert [ln["level"] for ln in d1["lines"]] == [2, 2] and d1["truncated"] is True
+    assert c.fetch_bom("NOPE")["found"] is False
+
+
+def test_fetch_inventory_object_body_and_map(fake):
+    c = U9CClient(make_cfg(default_wh="W01"), fake)
+    rows = c.fetch_inventory()
+    post = [x for x in fake.calls if x["method"] == "POST"][0]
+    assert post["payload"] == {"Org": "01", "Wh": "W01"}
+    assert len(rows) == 4
+    rows = c.fetch_inventory(["M003"], wh="")
+    assert [x for x in fake.calls if x["method"] == "POST"][-1]["payload"] == {"Org": "01", "ItemCode": "M003"}
+    m = mappers.map_inventory_row(fake.inventory[0])
+    assert m["location_code"] == "W01-A1" and m["location_name"] == "原料库 / A1架" and m["qty"] == 100
+    assert mappers.map_inventory_row(fake.inventory[0], "available")["qty"] == 80
+    assert mappers.map_inventory_row(fake.inventory[2])["location_code"] == "W01"
+
+
+def test_fetch_orders_and_status_mapping(fake):
+    rows = U9CClient(make_cfg(), fake).fetch_production_orders(["MO001", "MO002", "MO404"])
+    a, b = (mappers.map_production_order(r) for r in rows)
+    assert a["order_no"] == "MO001" and a["product_code"] == "SB01" and a["qty"] == 2 and a["status"] is None
+    assert a["start_date"] == "2026-10-01"
+    assert b["status"] == "COMPLETED" and b["u9_state"] == "完工"
+    assert mappers.map_production_order({"m_docNo": "X", "m_docState": 2})["status"] == "IN_PROGRESS"
+    assert mappers.map_production_order({"m_docNo": "X", "m_docState": 0})["status"] == "DRAFT"
+
+
+# ------------------------------------------------------------------ 同步（需要后端库）
+def _seed_users():
+    c = backend.db()
+    for uid, uname, name, role, pwd in (ADMIN, PLANNER):
+        c.execute("INSERT OR REPLACE INTO users(id,username,display_name,role,password_hash,"
+                  "must_change_password,active,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                  (uid, uname, name, role, backend.hash_password(pwd), 0, 1, backend.now()))
+    c.commit()
+    c.close()
+
+
+@pytest.fixture
+def db(isolated_backend_database):
+    _seed_users()
+    c = backend.db()
+    c.execute("PRAGMA foreign_keys=OFF")
+    for tbl in ("inventory", "materials", "production_orders"):
+        c.execute(f"DELETE FROM {tbl}")
+    c.commit()
+    c.execute("PRAGMA foreign_keys=ON")
+    c.execute("INSERT INTO materials(id, code, name, specification, unit) VALUES('mat1','M001','旧螺栓','','个')")
+    c.execute("INSERT INTO materials(id, code, name, specification, unit) VALUES('mat3','M003','钢板','Q235 2mm','张')")
+    c.execute("INSERT INTO production_orders(id, order_no, product_name, status, created_at) "
+              "VALUES('po1','MO002','旧名','IN_PROGRESS','2026-10-01T00:00:00')")
+    c.commit()
+    yield c
+    c.close()
+
+
+def _patch_transport(monkeypatch, fake):
+    monkeypatch.setattr(u9client, "_urllib_transport", fake)
+    orig = u9client.U9Client.__init__
+
+    def init(self, cfg, transport=None):
+        orig(self, cfg, transport or fake)
+    monkeypatch.setattr(u9client.U9Client, "__init__", init)
+
+
+def test_sync_items_dry_run_then_real(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    r = run_sync("items", db, cfg, dry_run=True, codes=["M002"])
+    s = r["stats"]
+    assert r["status"] == "OK" and s["requested"] == 3 and s["inserted"] == 1 and s["updated"] == 1
+    assert s["unchanged"] == 1
+    assert db.execute("SELECT name FROM materials WHERE code='M001'").fetchone()[0] == "旧螺栓"
+    assert not db.execute("SELECT 1 FROM materials WHERE code='M002'").fetchone()
+    assert any(x["动作"] == "更新" and x["原品名"] == "旧螺栓" for x in s["sample"])
+    r = run_sync("items", db, cfg, dry_run=False, codes=["M002"])
+    assert db.execute("SELECT name, specification FROM materials WHERE code='M001'").fetchone()[:] == ("螺栓", "M8x20")
+    assert db.execute("SELECT name, unit, total_quantity FROM materials WHERE code='M002'").fetchone()[:] == ("支架组件", "套", 0)
+    again = run_sync("items", db, cfg, dry_run=False, codes=["M002"])["stats"]
+    assert again["inserted"] == 0 and again["updated"] == 0 and again["unchanged"] == 3
+    log = db.execute("SELECT status, dry_run, detail_json FROM u9_sync_logs WHERE id=?", (r["log_id"],)).fetchone()
+    assert log[0] == "OK" and log[1] == 0 and "sample" in json.loads(log[2])
+
+
+def test_sync_boms_dry_run_and_idempotent_real(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    n0 = db.execute("SELECT COUNT(*) FROM agg_bom_batches").fetchone()[0]
+    r = run_sync("boms", db, cfg, dry_run=True, product_codes=["SB01", "NOPE"], user_id="u_admin")
+    s = r["stats"]
+    assert s["total_lines"] == 5 and s["skipped"] == 1 and s["sample"][0]["层级"] == 1
+    assert db.execute("SELECT COUNT(*) FROM agg_bom_batches").fetchone()[0] == n0
+    r = run_sync("boms", db, cfg, dry_run=False, product_codes=["SB01"], user_id="u_admin")
+    assert r["stats"]["inserted_batches"] == 1
+    bid = r["stats"]["results"][0]["batch_id"]
+    rows = db.execute("SELECT level_no, parent_code, material_code, quantity, material_form, device_code"
+                      " FROM agg_bom_items WHERE batch_id=? ORDER BY line_no", (bid,)).fetchall()
+    assert [tuple(x) for x in rows][:3] == [(1, "", "SB01", 1.0, "制造件", "SB01"),
+                                           (2, "SB01", "M001", 8.0, "采购件", "SB01"),
+                                           (2, "SB01", "M002", 2.0, "制造件", "SB01")]
+    b = db.execute("SELECT project_name, file_name, created_by FROM agg_bom_batches WHERE id=?", (bid,)).fetchone()
+    assert b[:] == ("U9:一号设备", "U9C BOM SB01 vA1", "u_admin")
+    again = run_sync("boms", db, cfg, dry_run=False, product_codes=["SB01"])["stats"]
+    assert again["inserted_batches"] == 0 and again["unchanged"] == 1
+
+
+def test_sync_inventory_dry_run_then_real(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg(default_wh="W01")
+    s = run_sync("inventory", db, cfg, dry_run=True)["stats"]
+    assert s["total"] == 4 and s["inserted"] == 2 and s["unknown_materials"] == ["ZZZ"]
+    assert s["fractional_rounded"] == 1
+    assert db.execute("SELECT COUNT(*) FROM inventory").fetchone()[0] == 0
+    run_sync("inventory", db, cfg, dry_run=False)
+    inv = dict(db.execute("SELECT l.code, i.quantity FROM inventory i JOIN locations l ON l.id=i.location_id"
+                          " JOIN materials m ON m.id=i.material_id WHERE m.code='M001'").fetchall())
+    assert inv == {"W01-A1": 120}
+    tot = db.execute("SELECT total_quantity, available_quantity FROM materials WHERE code='M001'").fetchone()
+    assert tot[:] == (120, 100)
+    again = run_sync("inventory", db, cfg, dry_run=False)["stats"]
+    assert again["inserted"] == 0 and again["updated"] == 0 and again["unchanged"] == 2
+
+
+def test_sync_orders_dry_run_then_real(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    s = run_sync("orders", db, cfg, dry_run=True, doc_nos=["MO001", "MO404"])["stats"]
+    assert s["requested"] == 3 and s["inserted"] == 1 and s["updated"] == 1 and s["not_found"] == ["MO404"]
+    assert not db.execute("SELECT 1 FROM production_orders WHERE order_no='MO001'").fetchone()
+    run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])
+    assert db.execute("SELECT product_name, status FROM production_orders WHERE order_no='MO001'").fetchone()[:] \
+        == ("一号设备", "IN_PROGRESS")
+    assert db.execute("SELECT product_name, status FROM production_orders WHERE order_no='MO002'").fetchone()[:] \
+        == ("二号设备", "COMPLETED")
+    # 状态只前进：U9 回到「开立」不会把已完成拉回
+    fake.orders["MO002"]["m_docState"] = 0
+    run_sync("orders", db, cfg, dry_run=False)
+    assert db.execute("SELECT status FROM production_orders WHERE order_no='MO002'").fetchone()[0] == "COMPLETED"
+
+
+def test_sync_failure_logged(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    fake.auth_rescode = 601
+    with pytest.raises(U9AuthError):
+        run_sync("items", db, make_cfg(), dry_run=True)
+    row = db.execute("SELECT status, error FROM u9_sync_logs ORDER BY started_at DESC LIMIT 1").fetchone()
+    assert row[0] == "FAILED" and "IP" in row[1] and SECRET not in row[1]
+
+
+def test_classic_mode_still_pending_doc(db):
+    cfg = make_cfg(mode="classic", wsdl_url="http://x?wsdl", username="u", password="p")
+    r = run_sync("items", db, cfg, dry_run=True)
+    assert r["status"] == "PENDING_DOC"
+
+
+# ------------------------------------------------------------------ 路由 / 管理页
+def _api_token(client, username, password):
+    r = client.post("/api/v1/auth/login", json={"username": username, "password": password,
+                                                "deviceId": "pytest-u9"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    return body.get("accessToken") or body.get("token") or body["data"]["accessToken"]
+
+
+def _csrf(html):
+    return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+
+def _web_login(client, username, password):
+    page = client.get("/admin/login")
+    r = client.post("/admin/login", data={"username": username, "password": password,
+                                          "csrf_token": _csrf(page.text)}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_routes_503_when_disabled(db, monkeypatch):
+    monkeypatch.setattr(u9config, "_config", make_cfg(enabled=False))
+    with TestClient(backend.app) as client:
+        tok = _api_token(client, ADMIN[1], ADMIN[4])
+        h = {"Authorization": f"Bearer {tok}"}
+        r = client.post("/api/v1/u9/sync/items", headers=h)
+        assert r.status_code == 503 and "未启用" in r.text
+        assert client.post("/api/v1/u9/health", headers=h).status_code == 503
+        st = client.get("/api/v1/u9/status", headers=h)
+        assert st.status_code == 200 and SECRET not in st.text and st.json()["config"]["enabled"] is False
+    monkeypatch.setattr(u9config, "_config", make_cfg(client_secret=""))
+    with TestClient(backend.app) as client:
+        tok = _api_token(client, ADMIN[1], ADMIN[4])
+        r = client.post("/api/v1/u9/sync/items", headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 503 and "U9_CLIENT_SECRET" in r.text
+
+
+def test_routes_admin_only_and_sync_ok(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    monkeypatch.setattr(u9config, "_config", make_cfg(default_wh="W01"))
+    with TestClient(backend.app) as client:
+        ptok = _api_token(client, PLANNER[1], PLANNER[4])
+        assert client.post("/api/v1/u9/sync/items",
+                           headers={"Authorization": f"Bearer {ptok}"}).status_code == 403
+        h = {"Authorization": f"Bearer {_api_token(client, ADMIN[1], ADMIN[4])}"}
+        assert client.post("/api/v1/u9/health", headers=h).json()["ok"] is True
+        r = client.post("/api/v1/u9/sync/items?codes=M002", headers=h)
+        assert r.status_code == 200 and r.json()["dry_run"] is True and r.json()["stats"]["inserted"] == 1
+        assert client.post("/api/v1/u9/sync/boms", headers=h).status_code == 400
+        r = client.post("/api/v1/u9/sync/boms?product_codes=SB01", headers=h)
+        assert r.status_code == 200 and r.json()["stats"]["total_lines"] == 5
+        r = client.post("/api/v1/u9/sync/orders?doc_nos=MO001&include_local=false", headers=h)
+        assert r.json()["stats"]["requested"] == 1
+        det = client.get(f"/api/v1/u9/logs/{r.json()['log_id']}", headers=h)
+        assert det.status_code == 200 and det.json()["detail"]["sample"][0]["单号"] == "MO001"
+        fake.auth_rescode = 408
+        u9client.clear_token_cache()
+        r = client.post("/api/v1/u9/sync/inventory", headers=h)
+        assert r.status_code == 502 and "组织编码不存在" in r.text
+
+
+def test_admin_page_disabled_buttons_and_hint(db, monkeypatch):
+    monkeypatch.setattr(u9config, "_config", make_cfg(enabled=False, client_secret=""))
+    with TestClient(backend.app) as client:
+        _web_login(client, ADMIN[1], ADMIN[4])
+        html = client.get("/admin/u9").text
+        assert "测试连接" in html and "启用前待办" in html and "U9_CLIENT_SECRET" in html
+        assert re.search(r'<button[^>]*>测试连接</button>', html) and \
+            "disabled" in re.search(r'<button[^>]*>测试连接', html).group(0)
+        assert all("disabled" in b for b in re.findall(r'<button[^>]*name="dry_run"[^>]*>', html))
+        assert SECRET not in html
+        r = client.post("/admin/u9/health", data={"csrf_token": _csrf(html)}, follow_redirects=False)
+        assert r.status_code == 303 and "msg=" in r.headers["location"]
+
+
+def test_admin_page_preview_flow(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    monkeypatch.setattr(u9config, "_config", make_cfg())
+    with TestClient(backend.app) as client:
+        _web_login(client, ADMIN[1], ADMIN[4])
+        html = client.get("/admin/u9").text
+        assert SECRET not in html and "已设置（不显示）" in html
+        assert not re.search(r'<button[^>]*disabled[^>]*>测试连接', html)
+        csrf = _csrf(html)
+        r = client.post("/admin/u9/health", data={"csrf_token": csrf}, follow_redirects=False)
+        assert "ok=1" in r.headers["location"]
+        r = client.post("/admin/u9/sync/items", data={"csrf_token": csrf, "dry_run": "1", "codes": "M002",
+                                                      "include_local": "1"}, follow_redirects=False)
+        assert r.status_code == 303 and "run=" in r.headers["location"]
+        page = client.get(r.headers["location"]).text
+        assert "本次预览结果" in page and "支架组件" in page and "预览，未写入" in page
+        r = client.post("/admin/u9/sync/boms", data={"csrf_token": csrf, "dry_run": "1"}, follow_redirects=False)
+        assert "ok=0" in r.headers["location"]
+        c2 = backend.db()
+        assert not c2.execute("SELECT 1 FROM materials WHERE code='M002'").fetchone()
+        c2.close()
