@@ -97,6 +97,10 @@ class U9Config:
                                                              or "store").lower())
     # 库存按料号逐个查询时的并发数（库存接口请求体是单个对象，不能一次查多个料号）
     concurrency: int = field(default_factory=lambda: _int("U9_CONCURRENCY", 4, 1, 16))
+    # 单次同步总时限（秒）与单次提交编码上限，防止一次预览/同步长时间占用服务
+    sync_max_seconds: int = field(default_factory=lambda: _int("U9_SYNC_MAX_SECONDS", 300, 10, 3600))
+    sync_max_keys: int = field(default_factory=lambda: _int("U9_SYNC_MAX_KEYS", 5000, 1, 200000))
+    bom_max_products: int = field(default_factory=lambda: _int("U9_BOM_MAX_PRODUCTS", 20, 1, 500))
     # ---- 经典 U9（占位） ----
     wsdl_url: str = field(default_factory=lambda: _env("U9_WSDL_URL"))
     username: str = field(default_factory=lambda: _env("U9_USERNAME"))
@@ -145,6 +149,9 @@ class U9Config:
                 "content_type": self.content_type,
                 "token_ttl_seconds": self.token_ttl_seconds,
                 "batch_size": self.batch_size,
+                "sync_max_seconds": self.sync_max_seconds,
+                "sync_max_keys": self.sync_max_keys,
+                "bom_max_products": self.bom_max_products,
                 "bom_recursive": self.bom_recursive,
                 "bom_max_depth": self.bom_max_depth,
                 "inventory_qty_field": self.inventory_qty_field,

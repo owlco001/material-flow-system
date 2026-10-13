@@ -25,12 +25,12 @@ try:
     from app.main import ApiError, CODE_FORBIDDEN, current_user, db
     from app.u9.client import U9Error, get_client
     from app.u9.config import get_config
-    from app.u9.sync import ENTITIES, run_sync
+    from app.u9.sync import ENTITIES, U9SyncBusy, run_sync
 except ImportError:  # 直接以 app 目录为 cwd 运行时的兜底
     from main import ApiError, CODE_FORBIDDEN, current_user, db
     from u9.client import U9Error, get_client
     from u9.config import get_config
-    from u9.sync import ENTITIES, run_sync
+    from u9.sync import ENTITIES, U9SyncBusy, run_sync
 
 router = APIRouter()
 
@@ -126,6 +126,8 @@ def u9_sync(entity: str,
         return run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)
     except ApiError:
         raise
+    except U9SyncBusy as e:
+        raise ApiError(409, "U9_SYNC_BUSY", str(e))
     except U9Error as e:
         raise ApiError(502, "U9_UPSTREAM_ERROR", f"U9 同步失败：{e}")
     except Exception as e:  # noqa: BLE001 - 转中文业务报错，不吞真因

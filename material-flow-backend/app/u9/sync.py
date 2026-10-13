@@ -18,14 +18,34 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 
 from . import mappers
-from .client import U9NotImplemented, get_client
+from .client import U9Error, U9NotImplemented, get_client
 from .config import U9Config
 
 ENTITIES = ("items", "boms", "inventory", "orders")
+
+# 同一进程内同一时间只跑一个同步：U9 同步是长耗时阻塞调用，重复点击只会排队拖垮服务
+_SYNC_LOCK = threading.Lock()
+_RUNNING: dict = {}
+
+
+class U9SyncBusy(U9Error):
+    """已有同步在运行。"""
+
+
+def running_sync() -> dict | None:
+    """当前正在运行的同步（entity/started_at），没有则 None。"""
+    return dict(_RUNNING) if _RUNNING else None
+
+
+def _check_keys(cfg: U9Config, keys: list, label: str) -> None:
+    limit = getattr(cfg, "sync_max_keys", 0) or 0
+    if limit and len(keys) > limit:
+        raise U9Error(f"{label}数量 {len(keys)} 超过单次上限 {limit}（U9_SYNC_MAX_KEYS），请分批指定后重试")
 SAMPLE_SIZE = 20
 
 CREATE_U9_SYNC_LOGS = """
@@ -92,6 +112,7 @@ def _sync_items(conn, cfg, dry_run, *, codes=None, include_local=True, client=No
     extra = _codes(codes)
     local = [r[0] for r in conn.execute("SELECT code FROM materials ORDER BY code")] if include_local else []
     wanted = _codes(local + extra)
+    _check_keys(cfg, wanted, "料号")
     errors: list[dict] = []
     raw = client.fetch_items(wanted, errors=errors) if wanted else []
     mapped, skipped = {}, 0
@@ -139,6 +160,9 @@ def _sync_items(conn, cfg, dry_run, *, codes=None, include_local=True, client=No
 def _sync_boms(conn, cfg, dry_run, *, product_codes=None, user_id="u9-sync", client=None, **_):
     client = client or get_client(cfg)
     codes = _codes(product_codes)
+    limit = getattr(cfg, "bom_max_products", 0) or 0
+    if limit and len(codes) > limit:
+        raise U9Error(f"一次最多展开 {limit} 个设备 BOM（U9_BOM_MAX_PRODUCTS），当前 {len(codes)} 个，请分批")
     results, sample = [], []
     total_lines = inserted_batches = inserted_lines = unchanged = skipped = 0
     errors: list[dict] = []
@@ -303,6 +327,7 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
     local = [r[0] for r in conn.execute("SELECT order_no FROM production_orders ORDER BY order_no")] \
         if include_local else []
     wanted = _codes(_codes(doc_nos) + local)
+    _check_keys(cfg, wanted, "生产订单号")
     errors: list[dict] = []
     raw = client.fetch_production_orders(wanted, errors=errors) if wanted else []
     inserted = updated = unchanged = skipped = 0
@@ -369,8 +394,29 @@ def run_sync(entity: str, conn: sqlite3.Connection, cfg: U9Config,
     """执行一次同步。返回 {run_id, log_id, entity, dry_run, status, stats} 并写日志表。"""
     if entity not in _SYNC_FNS:
         raise ValueError(f"未知同步实体: {entity}，可选 {ENTITIES}")
+    if not _SYNC_LOCK.acquire(blocking=False):
+        cur = _RUNNING or {}
+        raise U9SyncBusy(f"已有 U9 同步在运行（{cur.get('label', cur.get('entity', '?'))}，"
+                         f"开始于 {cur.get('started_at', '?')}），请等它结束后再试")
+    try:
+        _RUNNING.update(entity=entity, started_at=_now(), dry_run=dry_run)
+        return _run_sync_locked(entity, conn, cfg, dry_run, **kwargs)
+    finally:
+        _RUNNING.clear()
+        _SYNC_LOCK.release()
+
+
+def _run_sync_locked(entity: str, conn: sqlite3.Connection, cfg: U9Config,
+                     dry_run: bool, **kwargs) -> dict:
     run_id = uuid.uuid4().hex[:12]
     started = _now()
+    if kwargs.get("client") is None:
+        client = get_client(cfg)
+        secs = getattr(cfg, "sync_max_seconds", 0) or 0
+        if secs:
+            client.deadline = time.monotonic() + secs
+            client.deadline_seconds = secs
+        kwargs["client"] = client
     try:
         stats = _SYNC_FNS[entity](conn, cfg, dry_run, **kwargs)
     except U9NotImplemented as e:

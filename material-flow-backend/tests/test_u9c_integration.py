@@ -576,3 +576,105 @@ def test_admin_page_preview_flow(db, fake, monkeypatch):
         c2 = backend.db()
         assert not c2.execute("SELECT 1 FROM materials WHERE code='M002'").fetchone()
         c2.close()
+
+
+# ------------------------------------------------------------------ 0.8.2：同步不阻塞服务
+def test_sync_single_flight_rejects_concurrent(db, fake, monkeypatch):
+    from app.u9 import sync as u9sync
+    _patch_transport(monkeypatch, fake)
+    assert u9sync._SYNC_LOCK.acquire(blocking=False)
+    try:
+        u9sync._RUNNING.update(entity="orders", started_at="2026-10-13T19:31:00")
+        with pytest.raises(u9sync.U9SyncBusy, match="已有 U9 同步在运行"):
+            run_sync("items", db, make_cfg(), dry_run=True)
+    finally:
+        u9sync._RUNNING.clear()
+        u9sync._SYNC_LOCK.release()
+    assert run_sync("items", db, make_cfg(), dry_run=True)["status"] == "OK"
+    assert u9sync.running_sync() is None and not u9sync._SYNC_LOCK.locked()
+
+
+def test_sync_lock_released_after_failure(db, fake, monkeypatch):
+    from app.u9 import sync as u9sync
+    _patch_transport(monkeypatch, fake)
+    fake.auth_rescode = 408
+    with pytest.raises(U9Error):
+        run_sync("items", db, make_cfg(), dry_run=True)
+    assert not u9sync._SYNC_LOCK.locked()
+
+
+def test_sync_deadline_aborts(db, fake, monkeypatch):
+    from app.u9 import sync as u9sync
+    _patch_transport(monkeypatch, fake)
+    clock = iter([0.0] + [1000.0] * 1000)
+    monkeypatch.setattr(u9sync.time, "monotonic", lambda: next(clock))
+    with pytest.raises(u9client.U9DeadlineExceeded, match="超过时限"):
+        run_sync("items", db, make_cfg(sync_max_seconds=10), dry_run=True, codes=["M002"])
+    row = db.execute("SELECT status, error FROM u9_sync_logs ORDER BY started_at DESC LIMIT 1").fetchone()
+    assert row[0] == "FAILED" and "超过时限" in row[1]
+
+
+def test_sync_key_and_bom_limits(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    with pytest.raises(U9Error, match="U9_SYNC_MAX_KEYS"):
+        run_sync("orders", db, make_cfg(sync_max_keys=2), dry_run=True, doc_nos=["A", "B", "C"])
+    with pytest.raises(U9Error, match="U9_BOM_MAX_PRODUCTS"):
+        run_sync("boms", db, make_cfg(bom_max_products=1), dry_run=True, product_codes=["SB01", "SB02"])
+
+
+def test_admin_sync_busy_message_and_api_409(db, fake, monkeypatch):
+    from app.u9 import sync as u9sync
+    _patch_transport(monkeypatch, fake)
+    monkeypatch.setattr(u9config, "_config", make_cfg())
+    with TestClient(backend.app) as client:
+        _web_login(client, ADMIN[1], ADMIN[4])
+        csrf = _csrf(client.get("/admin/u9").text)
+        h = {"Authorization": f"Bearer {_api_token(client, ADMIN[1], ADMIN[4])}"}
+        assert u9sync._SYNC_LOCK.acquire(blocking=False)
+        try:
+            r = client.post("/admin/u9/sync/orders", data={"csrf_token": csrf, "dry_run": "1"},
+                            follow_redirects=False)
+            loc = urllib.parse.unquote(r.headers["location"])
+            assert r.status_code == 303 and "ok=0" in loc and "已有 U9 同步在运行" in loc
+            assert client.post("/api/v1/u9/sync/items", headers=h).status_code == 409
+            # 同步占用期间其他请求照常响应
+            assert client.get("/healthz").status_code == 200
+        finally:
+            u9sync._SYNC_LOCK.release()
+
+
+def test_admin_sync_does_not_block_event_loop(db, fake, monkeypatch):
+    """同步在线程池执行：一个慢同步进行中，/healthz 仍能立即返回。"""
+    import threading
+    import time as _t
+    from app.u9 import sync as u9sync
+    _patch_transport(monkeypatch, fake)
+    monkeypatch.setattr(u9config, "_config", make_cfg())
+    gate = threading.Event()
+    orig = u9sync._SYNC_FNS["orders"]
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return orig(*a, **k)
+    monkeypatch.setitem(u9sync._SYNC_FNS, "orders", slow)
+    import httpx
+    import asyncio
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=backend.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+            page = await ac.get("/admin/login")
+            await ac.post("/admin/login", data={"username": ADMIN[1], "password": ADMIN[4],
+                                                "csrf_token": _csrf(page.text)})
+            csrf = _csrf((await ac.get("/admin/u9")).text)
+            task = asyncio.create_task(ac.post("/admin/u9/sync/orders",
+                                               data={"csrf_token": csrf, "dry_run": "1"}))
+            await asyncio.sleep(0.2)
+            t0 = _t.monotonic()
+            hz = await ac.get("/healthz")
+            dt = _t.monotonic() - t0
+            gate.set()
+            r = await task
+            return hz.status_code, dt, r.status_code
+    code, dt, sync_code = asyncio.run(scenario())
+    assert code == 200 and dt < 2 and sync_code == 303

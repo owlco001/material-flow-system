@@ -69,6 +69,10 @@ class U9NotImplemented(U9Error):
     """接口占位：经典 U9 待实施商提供 WSDL/字段文档后实现。"""
 
 
+class U9DeadlineExceeded(U9Error):
+    """单次同步超过 U9_SYNC_MAX_SECONDS，主动中止（避免长时间占用服务）。"""
+
+
 def _urllib_transport(method: str, url: str, headers: dict, body: bytes | None,
                       timeout: float, verify_ssl: bool) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -226,6 +230,11 @@ class U9CClient(U9Client):
         if with_token:
             headers["token"] = with_token
         t0 = time.monotonic()
+        deadline = getattr(self, "deadline", None)
+        if deadline is not None and t0 > deadline:
+            raise U9DeadlineExceeded(
+                f"U9 同步超过时限（U9_SYNC_MAX_SECONDS={getattr(self, 'deadline_seconds', '?')} 秒），已中止；"
+                "请缩小范围（指定料号/单号/设备编码）后重试")
         try:
             status, data = self.transport(method, url, headers, body,
                                           float(self.cfg.timeout_seconds), self.cfg.verify_ssl)

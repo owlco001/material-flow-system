@@ -2260,8 +2260,10 @@ async def admin_u9_health(request: Request):
     cfg = get_config()
     if not cfg.ready:
         return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，无法测试连接") + "&ok=0")
+    from starlette.concurrency import run_in_threadpool
     try:
-        r = get_client(cfg).health_check()
+        # 阻塞式 HTTP 调用放到线程池，避免卡住事件循环
+        r = await run_in_threadpool(lambda: get_client(cfg).health_check())
     except U9Error as e:
         return _see_other("/admin/u9?msg=" + quote(f"连接失败：{e}") + "&ok=0")
     except Exception as e:  # noqa: BLE001
@@ -2297,13 +2299,23 @@ async def admin_u9_sync(request: Request, entity: str):
             user_id=user["id"], scope=str(form.get("scope", "local")))
     except _HTTPException as e:
         return _see_other("/admin/u9?msg=" + quote(str(getattr(e, "detail", "") or "参数错误")) + "&ok=0")
-    c = db()
+    from starlette.concurrency import run_in_threadpool
+    from app.u9.sync import U9SyncBusy
+
+    def _work():
+        # 连接在工作线程内创建与关闭（sqlite 连接不跨线程）；U9 调用为阻塞式，必须离开事件循环
+        c = db()
+        try:
+            return run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)
+        finally:
+            c.close()
+
     try:
-        result = run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)
+        result = await run_in_threadpool(_work)
+    except U9SyncBusy as e:
+        return _see_other("/admin/u9?msg=" + quote(str(e)) + "&ok=0")
     except Exception as e:  # noqa: BLE001 - 转中文提示，不吞真因
-        c.close()
         return _see_other("/admin/u9?msg=" + quote(f"同步失败：{e}") + "&ok=0")
-    c.close()
     run = quote(result.get("log_id") or log_id(result["run_id"], entity))
     if result["status"] == "PENDING_DOC":
         return _see_other(f"/admin/u9?msg={quote('经典 U9 接口尚未实现，已记录占位日志')}&ok=0&run={run}")
