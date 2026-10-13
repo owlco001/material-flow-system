@@ -211,7 +211,7 @@ def test_rescode_error_raises_with_resmsg(fake):
     c = U9CClient(make_cfg(), fake)
     fake.fail_next_post_with = 500
     with pytest.raises(U9Error) as ei:
-        c.fetch_inventory(["M001"])
+        c.fetch_inventory()
     assert "ResCode=500" in str(ei.value) and "料号不存在" in str(ei.value)
     # 批量查询里单条业务错误不中断，记入 errors
     fake.fail_next_post_with = 500
@@ -398,18 +398,54 @@ def test_sync_boms_dry_run_and_idempotent_real(db, fake, monkeypatch):
 def test_sync_inventory_dry_run_then_real(db, fake, monkeypatch):
     _patch_transport(monkeypatch, fake)
     cfg = make_cfg(default_wh="W01")
-    s = run_sync("inventory", db, cfg, dry_run=True)["stats"]
+    s = run_sync("inventory", db, cfg, dry_run=True, scope="all")["stats"]
     assert s["total"] == 4 and s["inserted"] == 2 and s["unknown_materials"] == ["ZZZ"]
     assert s["fractional_rounded"] == 1
     assert db.execute("SELECT COUNT(*) FROM inventory").fetchone()[0] == 0
-    run_sync("inventory", db, cfg, dry_run=False)
+    run_sync("inventory", db, cfg, dry_run=False, scope="all")
     inv = dict(db.execute("SELECT l.code, i.quantity FROM inventory i JOIN locations l ON l.id=i.location_id"
                           " JOIN materials m ON m.id=i.material_id WHERE m.code='M001'").fetchall())
     assert inv == {"W01-A1": 120}
     tot = db.execute("SELECT total_quantity, available_quantity FROM materials WHERE code='M001'").fetchone()
     assert tot[:] == (120, 100)
-    again = run_sync("inventory", db, cfg, dry_run=False)["stats"]
+    again = run_sync("inventory", db, cfg, dry_run=False, scope="all")["stats"]
     assert again["inserted"] == 0 and again["updated"] == 0 and again["unchanged"] == 2
+
+
+def test_sync_inventory_defaults_to_local_codes_per_item(db, fake, monkeypatch):
+    """0.8.1：默认按本地料号逐个查询（现场整体查询会报 SQL CLR 错误）。"""
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg(default_wh="W01", concurrency=3)
+    s = run_sync("inventory", db, cfg, dry_run=True)["stats"]
+    assert s["scope"] == "local" and s["requested"] == 2 and s["total"] == 3 and s["unknown_count"] == 0
+    bodies = [x["payload"] for x in fake.calls if x["method"] == "POST"]
+    assert sorted(b["ItemCode"] for b in bodies) == ["M001", "M003"]
+    assert all(b["Org"] == "01" and b["Wh"] == "W01" for b in bodies)
+    assert fake.tokens_issued == 1
+
+
+def test_clr_error_gets_chinese_hint(fake):
+    c = U9CClient(make_cfg(), fake)
+    orig = fake.__call__
+
+    def clr(method, url, headers, body, timeout, verify):
+        if url.endswith("/QueryQohAndAvailable"):
+            orig(method, url, headers, body, timeout, verify)
+            msg = ("在尝试加载程序集 ID 65536 时 Microsoft .NET Framework 出错。有关此错误的详细信息: "
+                   "System.IO.FileLoadException: 未能加载文件或程序集“ufida.u9.sql.clrlib”")
+            return 200, json.dumps({"ResCode": 500, "ResMsg": msg}).encode()
+        return orig(method, url, headers, body, timeout, verify)
+    c.transport = clr
+    with pytest.raises(U9Error) as ei:
+        c.fetch_inventory()
+    assert "SQL CLR" in str(ei.value) and "FileLoadException" not in str(ei.value)
+    errors: list = []
+    assert c.fetch_inventory(["M001"], errors=errors) == [] and "SQL CLR" in errors[0]["error"]
+
+
+def test_default_token_ttl_is_under_five_minutes(monkeypatch):
+    monkeypatch.delenv("U9_TOKEN_TTL_SECONDS", raising=False)
+    assert U9Config().token_ttl_seconds < 300
 
 
 def test_sync_orders_dry_run_then_real(db, fake, monkeypatch):

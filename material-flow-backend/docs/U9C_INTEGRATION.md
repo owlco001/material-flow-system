@@ -1,4 +1,4 @@
-# U9 Cloud（U9C）REST 对接说明（0.8.0）
+# U9 Cloud（U9C）REST 对接说明（0.8.0 / 0.8.1）
 
 智慧工厂后端通过 U9C 开放的 `/webapi` REST 接口**只读**同步四类数据（U9 → 本地）：
 料品档案、BOM、库存现存量/可用量、生产订单。回写（完工汇报、领料）属于 Phase 2，未实现。
@@ -26,7 +26,8 @@
 | `U9_VERIFY_SSL` | | `1` | https 时是否校验证书 |
 | `U9_CONTENT_TYPE` | | `application/json` | swagger 写的是 x-www-form-urlencoded，但请求体实际是 JSON；如现场网关只认前者可改 |
 | `U9_AUTH_PATH` | | `/webapi/OAuth2/AuthLogin` | 授权接口路径 |
-| `U9_TOKEN_TTL_SECONDS` | | `3000` | token 进程内缓存时长（50 分钟）；业务接口遇到 401/405 自动重登一次 |
+| `U9_TOKEN_TTL_SECONDS` | | `240` | token 进程内缓存时长（4 分钟；现场实测 AuthLogin 返回「token有效时间为5分钟」）；业务接口遇到 401/405 还会自动重登一次 |
+| `U9_CONCURRENCY` | | `4` | 库存按料号逐个查询时的并发数 |
 | `U9_BATCH_SIZE` | | `50` | 按料号/单号批量查询时每批条数 |
 | `U9_BOM_RECURSIVE` | | `1` | BOM 是否逐层展开子件的下层 BOM |
 | `U9_BOM_MAX_DEPTH` | | `8` | 最大展开层数（母件下第几层），超出标记「已截断」 |
@@ -60,7 +61,7 @@
 |---|---|---|---|
 | 料品 items | `POST /webapi/ItemMaster/Query` | 数组 `[{ItemMaster:{Code}, OtherID}]`，每批 50 | 本地 `materials` 全部编码 + 页面/参数 `codes` |
 | BOM boms | `POST /webapi/BOM/Query` | 数组 `[{Org:{Code}, ItemMaster:{Code}, OtherID}]` | 参数 `product_codes`（必填），逐层批量展开 |
-| 库存 inventory | `POST /webapi/Invtrans/QueryQohAndAvailable` | **对象** `{Org, Wh?, ItemCode?}` | 组织 + `wh`/`U9_DEFAULT_WH` 全部料品；给 `codes` 则逐个料号查 |
+| 库存 inventory | `POST /webapi/Invtrans/QueryQohAndAvailable` | **对象** `{Org, Wh?, ItemCode}` | 本地 `materials` 全部料号逐个查（并发 `U9_CONCURRENCY`）；给 `codes` 只查这些；`scope=all` 才按组织/存储地点整体查 |
 | 生产订单 orders | `POST /webapi/MODoc/Query` | 数组 `[{DocNo}]`，每批 50 | 本地 `production_orders` 全部单号 + 参数 `doc_nos` |
 
 批量查询整批返回业务错误时自动逐条重试，单条失败记入结果的 `errors`，不影响其它条。
@@ -70,7 +71,7 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 - `GET  /api/v1/u9/status`、`POST /api/v1/u9/health`
 - `POST /api/v1/u9/sync/items?codes=&include_local=true`
 - `POST /api/v1/u9/sync/boms?product_codes=A,B`
-- `POST /api/v1/u9/sync/inventory?wh=&codes=&update_totals=true`
+- `POST /api/v1/u9/sync/inventory?wh=&codes=&update_totals=true&scope=local|all`
 - `POST /api/v1/u9/sync/orders?doc_nos=&include_local=true`
 - `GET  /api/v1/u9/logs`、`GET /api/v1/u9/logs/{log_id}`（含预览样例）
 
@@ -135,6 +136,11 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 5. **料品形态枚举**：`m_itemFormAttribute` 数值→中文按 U9 `ItemFormAttribute` 公开资料（9 采购件、10 制造件、4 委外加工件 …）。只有「采购件 / 委外加工件 / 制造件」会参与本地 BOM 需求生成。
 6. **库存数量**：本地 `inventory.quantity` 为整数，U9 小数数量四舍五入（预览统计 `fractional_rounded` 条数）。
 7. 网络层只用 Python 标准库（`urllib`），不新增依赖。
+8. **现场实测（2026-10-13，0.8.0 部署后从生产服务器只读探测）**：授权登录成功（ResCode 0，约 55–75 ms，token 有效期 5 分钟）。
+   库存接口「按组织整体查询」（只给 Org 或 Org+Wh）在 U9 服务器端报错：
+   `未能加载文件或程序集 ufida.u9.sql.clrlib`（SQL Server CLR 程序集信任问题，需 U9 实施/运维处理）；
+   给 ItemCode 的按料号查询正常。因此 0.8.1 起库存同步默认按本地料号逐个查询。
+   各查询接口均为**精确匹配**（料号 `%`、空编码不返回数据；BOM 必须给母件料号）。
 
 ## 6. 排错
 
@@ -146,3 +152,4 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 | 授权失败 601 | 把服务器出口 IP 加入 U9C 第三方应用 IP 白名单 |
 | 406 / 408 | `U9_USER_CODE` / `U9_ORG_CODE` 不存在 |
 | ResCode≠0 + ResMsg | U9 业务校验错误，原文显示在提示与同步记录里 |
+| 库存报「ufida.u9.sql.clrlib 程序集加载失败」 | U9 数据库服务器的 SQL CLR 配置问题，联系 U9 实施/运维；期间使用默认的按料号查询 |

@@ -2219,8 +2219,8 @@ def admin_u9(request: Request):
          "desc": "按母件/设备编码查 U9 BOM（BOM/Query）并逐层展开，生成一个聚合 BOM 批次（内容未变不重复建）。",
          "table": "agg_bom_batches / agg_bom_items"},
         {"id": "inventory", "label": "库存现存量",
-         "desc": "查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
-                 "并回写物料总量/可用量。",
+         "desc": f"查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
+                 f"并回写物料总量/可用量。默认按本地 {local_material_count} 个料号逐个查询。",
          "table": "inventory / locations / materials"},
         {"id": "orders", "label": "生产订单",
          "desc": f"按单号查 U9 生产订单（MODoc/Query）→ 本地生产订单。默认包含本地已有 {local_order_count} 个单号。",
@@ -2294,7 +2294,7 @@ async def admin_u9_sync(request: Request, entity: str):
             doc_nos=str(form.get("doc_nos", "")), wh=str(form.get("wh", "")),
             include_local=str(form.get("include_local", "")) in ("1", "on", "true"),
             update_totals=str(form.get("update_totals", "1")) in ("1", "on", "true"),
-            user_id=user["id"])
+            user_id=user["id"], scope=str(form.get("scope", "local")))
     except _HTTPException as e:
         return _see_other("/admin/u9?msg=" + quote(str(getattr(e, "detail", "") or "参数错误")) + "&ok=0")
     c = db()

@@ -86,8 +86,10 @@
       {% elif e.id == "inventory" %}
         <label>存储地点编码（可选，默认 {{ config.default_wh or "全部" }}）</label>
         <input type="text" name="wh" placeholder="{{ config.default_wh or '留空=组织全部存储地点' }}">
-        <label>料号（可选，逗号分隔；留空=全部料品）</label>
-        <textarea name="codes" placeholder="留空则查询全部料品"></textarea>
+        <label>料号（可选，逗号分隔；留空=本地全部料号逐个查询）</label>
+        <textarea name="codes" placeholder="留空则按本地全部物料编码查询"></textarea>
+        <label class="u9-check"><input type="checkbox" name="scope" value="all">改为按组织整体查询（不按料号）</label>
+        <p class="muted" style="margin:0;font-size:12px">注：现场 U9 的整体查询目前在 U9 服务器端报 SQL CLR 程序集错误（ufida.u9.sql.clrlib），需 U9 运维处理；按料号查询正常。</p>
         <input type="hidden" name="update_totals" value="1">
       {% elif e.id == "orders" %}
         <label>生产订单号（可选，逗号或换行分隔）</label>

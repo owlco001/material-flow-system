@@ -7,6 +7,7 @@
                                    items:     codes（可选，逗号分隔）+ include_local（默认 true=本地全部物料编码）
                                    boms:      product_codes（必填）
                                    inventory: codes（可选）/ wh（可选，默认 U9_DEFAULT_WH）/ update_totals
+                                              / scope=local（默认，本地全部料号逐个查）|all（组织整体查）
                                    orders:    doc_nos（可选）+ include_local（默认 true=本地已有订单号）
   GET  /api/v1/u9/logs             同步日志（分页）
   GET  /api/v1/u9/logs/{log_id}    单次同步详情（含预览样例）
@@ -52,7 +53,7 @@ def _require_ready() -> dict:
 
 def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", doc_nos: str = "",
                       wh: str = "", include_local: bool = True, update_totals: bool = True,
-                      user_id: str = "") -> dict:
+                      user_id: str = "", scope: str = "local") -> dict:
     """把接口/表单参数整理成 run_sync 的 kwargs；BOM 缺编码时抛 ApiError(400)。"""
     split = lambda v: [p.strip() for p in (v or "").replace("\n", ",").replace("，", ",").split(",") if p.strip()]
     if entity == "items":
@@ -63,7 +64,8 @@ def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", 
             raise ApiError(400, "U9_BOM_NEEDS_CODES", "同步 BOM 需指定 product_codes（产品/设备编码）")
         return {"product_codes": pc, "user_id": user_id}
     if entity == "inventory":
-        return {"codes": split(codes), "wh": wh.strip(), "update_totals": update_totals}
+        return {"codes": split(codes), "wh": wh.strip(), "update_totals": update_totals,
+                "scope": "all" if (scope or "").strip().lower() == "all" else "local"}
     if entity == "orders":
         return {"doc_nos": split(doc_nos), "include_local": include_local}
     return {}
@@ -110,6 +112,7 @@ def u9_sync(entity: str,
             wh: str = Query(default="", description="inventory：存储地点编码"),
             include_local: bool = Query(default=True, description="items/orders：是否包含本地已有编码/单号"),
             update_totals: bool = Query(default=True, description="inventory：是否回写物料总量/可用量"),
+            scope: str = Query(default="local", description="inventory：local=按本地全部料号逐个查（默认）；all=按组织整体查"),
             user: sqlite3.Row = Depends(current_user)):
     _admin(user)
     cfg = _require_ready()
@@ -117,7 +120,7 @@ def u9_sync(entity: str,
         raise ApiError(400, "U9_UNKNOWN_ENTITY", f"未知同步实体: {entity}")
     kwargs = build_sync_kwargs(entity, codes=codes, product_codes=product_codes, doc_nos=doc_nos,
                                wh=wh, include_local=include_local, update_totals=update_totals,
-                               user_id=user["id"])
+                               user_id=user["id"], scope=scope)
     c = db()
     try:
         return run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)

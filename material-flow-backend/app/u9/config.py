@@ -84,7 +84,8 @@ class U9Config:
     # 《接口授权》文档待用户重发：先按 U9C 标准路径，必要时可改
     auth_path: str = field(default_factory=lambda: _env("U9_AUTH_PATH", "/webapi/OAuth2/AuthLogin")
                            or "/webapi/OAuth2/AuthLogin")
-    token_ttl_seconds: int = field(default_factory=lambda: _int("U9_TOKEN_TTL_SECONDS", 3000, 30, 86400))
+    # 现场实测 AuthLogin 返回「token有效时间为5分钟」：默认缓存 4 分钟，失效时还会自动重登一次
+    token_ttl_seconds: int = field(default_factory=lambda: _int("U9_TOKEN_TTL_SECONDS", 240, 30, 86400))
     batch_size: int = field(default_factory=lambda: _int("U9_BATCH_SIZE", 50, 1, 500))
     # BOM 多层展开
     bom_recursive: bool = field(default_factory=lambda: _flag("U9_BOM_RECURSIVE", True))
@@ -94,6 +95,8 @@ class U9Config:
     # 库存：本地数量取 U9 哪个数（store=现存量 m_storeQty / available=可用量 m_canUseQty）
     inventory_qty_field: str = field(default_factory=lambda: (_env("U9_INVENTORY_QTY_FIELD", "store")
                                                              or "store").lower())
+    # 库存按料号逐个查询时的并发数（库存接口请求体是单个对象，不能一次查多个料号）
+    concurrency: int = field(default_factory=lambda: _int("U9_CONCURRENCY", 4, 1, 16))
     # ---- 经典 U9（占位） ----
     wsdl_url: str = field(default_factory=lambda: _env("U9_WSDL_URL"))
     username: str = field(default_factory=lambda: _env("U9_USERNAME"))
@@ -145,6 +148,7 @@ class U9Config:
                 "bom_recursive": self.bom_recursive,
                 "bom_max_depth": self.bom_max_depth,
                 "inventory_qty_field": self.inventory_qty_field,
+                "concurrency": self.concurrency,
             })
         else:
             d.update({"wsdl_url": self.wsdl_url, "username": self.username, "org": self.org,

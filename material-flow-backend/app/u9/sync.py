@@ -3,7 +3,8 @@
 入口 run_sync(entity, conn, cfg, dry_run=True, **kwargs)：
   items      料品档案：默认取本地 materials 全部编码 + codes 参数，按编码批量查 U9
   boms       BOM：product_codes 参数（母件/设备编码），多层展开后写一个 agg_bom 批次
-  inventory  库存：codes 参数（料号）或按组织 + 存储地点（wh / U9_DEFAULT_WH）全量
+  inventory  库存：默认按本地 materials 全部料号逐个查（scope=local）；codes 参数指定料号；
+             scope=all 才按组织 + 存储地点整体查询（现场 U9 整体查询会报 SQL CLR 错误）
   orders     生产订单：doc_nos 参数 + 本地已有 production_orders.order_no
 
 行为：
@@ -202,10 +203,21 @@ def _sync_boms(conn, cfg, dry_run, *, product_codes=None, user_id="u9-sync", cli
 
 
 # ---------------------------------------------------------------- 库存
-def _sync_inventory(conn, cfg, dry_run, *, codes=None, wh=None, update_totals=True, client=None, **_):
+def _sync_inventory(conn, cfg, dry_run, *, codes=None, wh=None, update_totals=True, scope="local",
+                    client=None, **_):
     client = client or get_client(cfg)
     item_codes = _codes(codes)
-    raw = client.fetch_inventory(item_codes or None, wh=(wh or None))
+    errors: list[dict] = []
+    if not item_codes and scope != "all":
+        item_codes = [r[0] for r in conn.execute("SELECT code FROM materials ORDER BY code")]
+        if not item_codes:
+            return {"total": 0, "rows": 0, "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0,
+                    "requested": 0, "scope": scope, "sample": [], "errors": [],
+                    "message": "本地没有物料编码可查询：请先同步/导入料品，或指定料号"}
+    if item_codes:
+        raw = client.fetch_inventory(item_codes, wh=(wh or None), errors=errors)
+    else:
+        raw = client.fetch_inventory(None, wh=(wh or None))
     agg: dict[tuple[str, str], dict] = {}
     skipped = 0
     for r in raw:
@@ -281,7 +293,8 @@ def _sync_inventory(conn, cfg, dry_run, *, codes=None, wh=None, update_totals=Tr
             "unknown_count": len(unknown), "fractional_rounded": fractional,
             "materials_totals_changed": totals_changed, "update_totals": bool(update_totals),
             "qty_field": cfg.inventory_qty_field, "wh": wh or cfg.default_wh or "",
-            "sample": sample}
+            "requested": len(item_codes), "scope": "codes" if codes else scope,
+            "errors": errors[:50], "sample": sample}
 
 
 # ---------------------------------------------------------------- 生产订单

@@ -48,6 +48,8 @@ AUTH_ERRORS = {
 }
 # 业务接口返回这些 ResCode 视为 token 失效，重登后重试一次
 TOKEN_INVALID_CODES = {401, 405}
+CLR_HINT = ("（U9 服务器端 SQL CLR 程序集 ufida.u9.sql.clrlib 加载失败，属于 U9 数据库服务器问题，"
+            "需 U9 实施/运维处理 SQL Server 的 CLR 信任配置；在此之前请按料号查询库存）")
 
 
 class U9Error(Exception):
@@ -128,7 +130,8 @@ class U9Client:
     def fetch_bom(self, product_code: str) -> dict:
         raise U9NotImplemented("fetch_bom 未实现")
 
-    def fetch_inventory(self, item_codes: list[str] | None = None, wh: str | None = None) -> list[dict]:
+    def fetch_inventory(self, item_codes: list[str] | None = None, wh: str | None = None,
+                        errors: list[dict] | None = None) -> list[dict]:
         raise U9NotImplemented("fetch_inventory 未实现")
 
     def fetch_production_orders(self, doc_nos: list[str]) -> list[dict]:
@@ -298,7 +301,10 @@ class U9CClient(U9Client):
                 self._invalidate()
                 continue
             msg = self._res_msg(body)
-            raise U9Error(f"U9 接口 {path} 返回错误（ResCode={code}）：{msg or '无错误信息'}",
+            hint = CLR_HINT if "clrlib" in msg.lower() or "程序集信任" in msg else ""
+            if hint:
+                msg = msg.split("有关此错误的详细信息")[0].strip()
+            raise U9Error(f"U9 接口 {path} 返回错误（ResCode={code}）：{msg or '无错误信息'}{hint}",
                           res_code=code, http_status=status)
         raise U9Error(f"U9 接口 {path} 授权重试后仍失败")  # pragma: no cover
 
@@ -462,9 +468,11 @@ class U9CClient(U9Client):
                 continue
             info[m["code"]] = m
 
-    def fetch_inventory(self, item_codes: list[str] | None = None,
-                        wh: str | None = None) -> list[dict]:
-        """库存现存量/可用量。接口请求体是单个对象：不给料号=查该组织（+存储地点）全部料品。"""
+    def fetch_inventory(self, item_codes: list[str] | None = None, wh: str | None = None,
+                        errors: list[dict] | None = None) -> list[dict]:
+        """库存现存量/可用量。接口请求体是单个对象：
+        给料号 → 逐个料号查询（并发 U9_CONCURRENCY）；不给料号 → 按组织（+存储地点）整体查询。
+        注意：现场 U9 的整体查询会在服务器端报 SQL CLR 错误，sync 层默认按本地料号逐个查。"""
         wh = (wh if wh is not None else self.cfg.default_wh) or ""
         base = {"Org": self.cfg.org_code}
         if wh:
@@ -472,9 +480,35 @@ class U9CClient(U9Client):
         codes = _dedupe(item_codes or [])
         if not codes:
             return self._post(PATH_INVENTORY, base)
+        self._token()  # 先登录一次，避免并发线程同时登录
+
+        def one(code: str):
+            try:
+                return code, self._post(PATH_INVENTORY, {**base, "ItemCode": code}), None
+            except U9AuthError:
+                raise
+            except U9Error as e:
+                if e.res_code is None:
+                    raise
+                return code, [], e
+
         out: list = []
-        for c in codes:
-            out.extend(self._post(PATH_INVENTORY, {**base, "ItemCode": c}))
+        workers = max(1, min(self.cfg.concurrency, len(codes)))
+        if workers == 1:
+            results = map(one, codes)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                results = list(pool.map(one, codes))
+            finally:
+                pool.shutdown(wait=True)
+        for code, rows, err in results:
+            if err is not None:
+                if errors is not None:
+                    errors.append({"key": code, "error": str(err)})
+                continue
+            out.extend(rows)
         return out
 
     def fetch_production_orders(self, doc_nos: list[str],
