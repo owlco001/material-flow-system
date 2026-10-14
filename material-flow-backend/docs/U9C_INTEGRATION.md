@@ -183,3 +183,9 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 - 可用量 ≈ 存储类型 4（可用）的 `StoreQty − ResvOccupyStQty`（近似，未扣待发等）。
 
 料号/存储地点/组织编码先过白名单再拼入固定 SELECT。实测全组织约 9600 行 0.3 秒。U9 方修好 CLR 后可设 `U9_INVENTORY_VIA_SQL=0` 回到标准接口。
+
+## 物料分类树（0.12.0）
+
+新增同步实体 `categories`（管理台 U9 页「物料分类」）：经 `QueryInfoBySql` 读本组织 `CBO_Category`（中文名取 `CBO_Category_Trl` zh-CN）写入 `material_categories`，父节点按“最长真前缀编码”推导（3 → 304 → 30404 → 30404001）；同时读 `CBO_ItemMaster.MainItemCategory`，按料号回填本地物料的 `category`（分类名）与 `category_code`。只改分类字段，不新增物料、不动数量。料品同步（items）也会写入分类名与编码。
+
+仓库页分类筛选：下拉显示前两级（带物料数，含全部下级），选中后显示面包屑与下级分类统计，按编码前缀筛选。实测 1715 个分类、37427 个料号映射 0.36 秒。

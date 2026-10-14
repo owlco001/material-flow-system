@@ -128,6 +128,15 @@ class FakeU9:
         elif u.path.endswith("/webapi/QueryCommon/QueryInfoBySql"):
             sql = payload["SqlString"]
             self.sqls.append(sql)
+            if "from CBO_Category c" in sql:
+                data = [{"Code": c, "Name": n} for c, n in [("3", "原材物料类"), ("304", "电气元器件类"),
+                        ("30404", "电线"), ("30404001", "通用电线"), ("303", "机械标准零部件类")]]
+                return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
+                                       ensure_ascii=False).encode("utf-8")
+            if "from CBO_ItemMaster i" in sql:
+                data = [{"ItemCode": "M001", "CatCode": "30404001"}, {"ItemCode": "M003", "CatCode": "303"},
+                        {"ItemCode": "ZZZ", "CatCode": "303"}]
+                return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data}).encode("utf-8")
             if "InvTrans_WhQoh" in sql:
                 codes = re.findall(r"'([^']+)'", sql.split("ItemInfo_ItemCode in (", 1)[1]) \
                     if "ItemInfo_ItemCode in (" in sql else None
@@ -287,7 +296,7 @@ def test_fetch_items_batched_and_mapped(fake):
     assert len(posts) == 2 and posts[0]["payload"][0] == {"ItemMaster": {"Code": "M001"}, "OtherID": "M001"}
     m = mappers.map_item(rows[0])
     assert m == {"code": "M001", "name": "螺栓", "specification": "M8x20", "unit": "个", "item_form": "采购件",
-                 "category": "原材料", "status": "", "u9_id": rows[0]["m_iD"]}
+                 "category": "原材料", "category_code": "C01", "status": "", "u9_id": rows[0]["m_iD"]}
     assert mappers.map_item({"m_code": "X"})["unit"] == "个"
     with pytest.raises(ValueError):
         mappers.map_item({"m_name": "无编码"})
@@ -386,8 +395,8 @@ def test_sync_items_dry_run_then_real(db, fake, monkeypatch):
     cfg = make_cfg()
     r = run_sync("items", db, cfg, dry_run=True, codes=["M002"])
     s = r["stats"]
-    assert r["status"] == "OK" and s["requested"] == 3 and s["inserted"] == 1 and s["updated"] == 1
-    assert s["unchanged"] == 1
+    assert r["status"] == "OK" and s["requested"] == 3 and s["inserted"] == 1 and s["updated"] == 2
+    assert s["unchanged"] == 0  # 0.12.0 起分类也参与比较，M003 补分类算更新
     assert db.execute("SELECT name FROM materials WHERE code='M001'").fetchone()[0] == "旧螺栓"
     assert not db.execute("SELECT 1 FROM materials WHERE code='M002'").fetchone()
     assert any(x["动作"] == "更新" and x["原品名"] == "旧螺栓" for x in s["sample"])
@@ -800,3 +809,39 @@ def test_sync_inventory_via_sql(db, fake, monkeypatch):
     _patch_transport(monkeypatch, fake)
     s = run_sync("inventory", db, make_cfg(inventory_via_sql=True), dry_run=True)["stats"]
     assert s["total"] >= 2 and not s.get("errors")
+
+
+def test_build_category_tree():
+    t = {x["code"]: x for x in mappers.build_category_tree(
+        [{"code": "3", "name": "原材"}, {"code": "30404001", "name": "通用电线"},
+         {"code": "304", "name": "电气"}, {"code": "9", "name": None}])}
+    assert t["3"]["parent_code"] is None and t["3"]["level"] == 1
+    assert t["304"]["parent_code"] == "3" and t["304"]["level"] == 2
+    assert t["30404001"]["parent_code"] == "304" and t["30404001"]["level"] == 3
+    assert t["9"]["name"] == "9"
+
+
+def test_sync_categories_and_warehouse_tree(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    dry = run_sync("categories", db, cfg, dry_run=True)["stats"]
+    assert dry["categories"] == 5 and dry["materials_updated"] == 2
+    assert db.execute("SELECT COUNT(*) FROM material_categories").fetchone()[0] == 0
+    run_sync("categories", db, cfg, dry_run=False)
+    db.commit()
+    assert db.execute("SELECT category, category_code FROM materials WHERE code='M001'").fetchone()[:] == \
+        ("通用电线", "30404001")
+    assert db.execute("SELECT parent_code FROM material_categories WHERE code='30404001'").fetchone()[0] == "30404"
+    again = run_sync("categories", db, cfg, dry_run=True)["stats"]
+    assert again["inserted"] == 0 and again["materials_updated"] == 0
+    from app.admin_web import _category_tree_view, _inventory_list
+    v = _category_tree_view(db, "c:304")
+    assert [p["code"] for p in v["tree_path"]] == ["3", "304"]
+    assert [(o["code"], o["count"]) for o in v["tree_options"]] == [("3", 2), ("303", 1), ("304", 1)]
+    assert v["tree_children"][0]["code"] == "30404"
+    items, paging, _ = _inventory_list(db, "", "c:304", 1)
+    assert [i["code"] for i in items] == ["M001"]
+    items, _, _ = _inventory_list(db, "", "c:3", 1)
+    assert {i["code"] for i in items} == {"M001", "M003"}
+    items, _, _ = _inventory_list(db, "", "c:3%", 1)
+    assert {i["code"] for i in items} == {"M001", "M003"}

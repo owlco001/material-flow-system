@@ -574,6 +574,28 @@ class U9CClient(U9Client):
                             "m_canUseQty": r.get("canuseqty")})
         return out
 
+    def fetch_categories(self) -> tuple[list[dict], dict[str, str]]:
+        """物料主分类全集 + 本组织料号→主分类编码（QueryInfoBySql，固定 SELECT）。"""
+        org = self.cfg.org_code
+        if not _SAFE_KEY.match(org or ""):
+            raise U9Error(f"组织编码不合规，无法查询分类：{org!r}")
+        cats = self._post(PATH_SQL, {"SqlString":
+            "select c.Code as Code, max(t.Name) as Name from CBO_Category c"
+            " left join CBO_Category_Trl t on t.ID=c.ID and t.SysMLFlag='zh-CN'"
+            f" join Base_Organization o on o.ID=c.Org where o.Code='{org}' group by c.Code"})
+        items = self._post(PATH_SQL, {"SqlString":
+            "select i.Code as ItemCode, c.Code as CatCode from CBO_ItemMaster i"
+            " join CBO_Category c on c.ID=i.MainItemCategory"
+            f" join Base_Organization o on o.ID=i.Org where o.Code='{org}'"})
+        low = lambda r: {str(k).lower(): v for k, v in r.items()} if isinstance(r, dict) else {}
+        cat_rows = [{"code": low(r).get("code"), "name": low(r).get("name")} for r in cats]
+        item_map = {}
+        for r in items:
+            d = low(r)
+            if d.get("itemcode") and d.get("catcode"):
+                item_map[str(d["itemcode"]).strip()] = str(d["catcode"]).strip()
+        return cat_rows, item_map
+
     def fetch_production_orders(self, doc_nos: list[str],
                                 errors: list[dict] | None = None) -> list[dict]:
         doc_nos = _dedupe(doc_nos)

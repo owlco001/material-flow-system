@@ -27,7 +27,7 @@ def seed():
     c.execute("INSERT INTO assembly_task_stages VALUES(?,?,?,?,?,?,?,?)", ("task-t1", 1, "COMPLETED", 1, None, now, None, now))
     c.execute("INSERT INTO assembly_task_stages VALUES(?,?,?,?,?,?,?,?)", ("task-t1", 2, "IN_PROGRESS", 1, now, None, None, now))
     c.execute("INSERT INTO order_devices VALUES(?,?,?,?,?,?)", ("od-t1", "ord-task", "机台", "OT-1-M1", 1, now))
-    c.execute("INSERT INTO materials VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("mat-t1", "MTR-T1", "螺栓T", None, "件", None, None, 100, 100, 1, None))
+    c.execute("INSERT INTO materials(id, code, name, specification, unit, batch_no, expiry_date, total_quantity, available_quantity, version, category) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("mat-t1", "MTR-T1", "螺栓T", None, "件", None, None, 100, 100, 1, None))
     c.execute("INSERT INTO order_material_requirements VALUES(?,?,?,?,?,?,?,?,?,?)", ("req-t1", "ord-task", "od-t1", "mat-t1", 50, 50, 50, "IN_STOCK", now, now))
     c.commit(); c.close()
 

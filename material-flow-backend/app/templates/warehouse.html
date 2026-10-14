@@ -40,12 +40,20 @@
     <div class="fi"><label for="inv-cat">分类</label>
     <select id="inv-cat" name="cat">
       <option value="">全部分类</option>
+      {% for o in tree_options %}<option value="{{ o.value }}" {% if inv_cat == o.value %}selected{% endif %}>{{ "　" * (o.level - 1) }}{{ o.code }} {{ o.name }}（{{ o.count }}）</option>{% endfor %}
+      {% if tree_path and tree_path[-1].level > 2 %}<option value="{{ tree_path[-1].value }}" selected>{{ tree_path[-1].code }} {{ tree_path[-1].name }}</option>{% endif %}
       {% for c in categories %}<option value="{{ c }}" {% if inv_cat == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
       <option value="__none__" {% if inv_cat == "__none__" %}selected{% endif %}>未分类</option>
     </select></div>
     <div class="btn-row"><button type="submit" class="btn btn-sm">查询</button>
     {% if inv_q or inv_cat %}<a href="/admin/warehouse" class="btn btn-sm btn-secondary">清除</a>{% endif %}</div>
   </form>
+  {% if tree_path or tree_children %}
+  <div class="cat-tree">
+    {% if tree_path %}<div class="cat-path"><a href="/admin/warehouse{% if inv_q %}?q={{ inv_q|urlencode }}{% endif %}">全部</a>{% for p in tree_path %} › {% if loop.last %}<b>{{ p.code }} {{ p.name }}</b>{% else %}<a href="/admin/warehouse?cat={{ p.value|urlencode }}{% if inv_q %}&q={{ inv_q|urlencode }}{% endif %}">{{ p.name }}</a>{% endif %}{% endfor %}</div>{% endif %}
+    {% if tree_children %}<div class="cat-chips">{% for ch in tree_children %}<a class="cat-chip" href="/admin/warehouse?cat={{ ch.value|urlencode }}{% if inv_q %}&q={{ inv_q|urlencode }}{% endif %}">{{ ch.name }}<span>{{ ch.count }}</span></a>{% endfor %}</div>{% endif %}
+  </div>
+  {% endif %}
   <div class="mini-stats">
     <div class="mini-stat"><b>{{ inv_paging.total }}</b><span>{% if inv_q or inv_cat %}匹配物料{% else %}物料总数{% endif %}</span></div>
     <div class="mini-stat {% if inv_counts.short %}hot{% endif %}"><b>{{ inv_counts.short }}</b><span>缺料（可用 ≤ 0）</span></div>

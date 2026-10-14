@@ -545,3 +545,11 @@ td form { margin: 0; }
   .mini-stat { flex: 1 1 0; min-width: 0; padding: 6px 10px; }
   .mini-stat span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
+/* 物料分类树（仓库页） */
+.cat-tree { margin: 4px 0 10px; }
+.cat-path { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.cat-path a { color: var(--brand-deep); }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cat-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: #f8fafc; font-size: 13px; color: inherit; text-decoration: none; }
+.cat-chip:hover { border-color: var(--brand-deep); }
+.cat-chip span { font-size: 12px; color: var(--muted); }

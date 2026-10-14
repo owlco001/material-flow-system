@@ -89,7 +89,8 @@
         <label>料号（可选，逗号分隔；留空=本地全部料号逐个查询）</label>
         <textarea name="codes" placeholder="留空则按本地全部物料编码查询"></textarea>
         <label class="u9-check"><input type="checkbox" name="scope" value="all">改为按组织整体查询（不按料号）</label>
-        <p class="muted" style="margin:0;font-size:12px">注：现场 U9 的整体查询目前在 U9 服务器端报 SQL CLR 程序集错误（ufida.u9.sql.clrlib），需 U9 运维处理；按料号查询正常。</p>
+        {% if config.inventory_via_sql %}<p class="muted" style="margin:0;font-size:12px">可用量为近似值：可用状态现存量减预留占用。</p>
+        {% else %}<p class="muted" style="margin:0;font-size:12px">注：现场 U9 的整体查询目前在 U9 服务器端报 SQL CLR 程序集错误（ufida.u9.sql.clrlib），需 U9 运维处理；按料号查询正常。</p>{% endif %}
         <input type="hidden" name="update_totals" value="1">
       {% elif e.id == "orders" %}
         <label>生产订单号（可选，逗号或换行分隔）</label>
@@ -112,6 +113,7 @@
 <div class="card">
   <p style="margin:0 0 8px">状态：{{ status_labels.get(run_log.status, run_log.status) }}；U9 返回 {{ d.total or 0 }} 条；新增 {{ d.inserted or 0 }}，更新 {{ d.updated or 0 }}，不变 {{ d.unchanged or 0 }}，跳过 {{ d.skipped or 0 }}
   {% if run_log.dry_run %}<span class="badge b-info">预览，未写入</span>{% endif %}</p>
+  {% if d.top_categories %}<p class="muted" style="margin:0 0 6px">分类 {{ d.categories }} 个，回填物料 {{ d.materials_updated }} 个；大类：{{ d.top_categories|join("、") }}</p>{% endif %}
   {% if d.not_found_count %}<p class="muted" style="margin:0 0 6px">U9 未找到 {{ d.not_found_count }} 个：{{ (d.not_found or [])[:30]|join("、") }}{% if d.not_found_count > 30 %} …{% endif %}</p>{% endif %}
   {% if d.unknown_count %}<p class="muted" style="margin:0 0 6px">本地无此物料（已跳过）{{ d.unknown_count }} 个：{{ (d.unknown_materials or [])[:30]|join("、") }}{% if d.unknown_count > 30 %} …{% endif %}</p>{% endif %}
   {% if d.results %}<p class="muted" style="margin:0 0 6px">{% for r in d.results %}{{ r.product_code }}：{% if r.found %}{{ r.lines }} 行，最深 {{ r.max_level }} 层{% if r.truncated %}（已截断）{% endif %}{% if r.unchanged %}，内容未变{% endif %}{% else %}U9 无 BOM{% endif %}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% endif %}

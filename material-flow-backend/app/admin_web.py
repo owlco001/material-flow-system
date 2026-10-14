@@ -1915,6 +1915,10 @@ def _inventory_list(c, q: str, cat: str, page: int) -> tuple[list[dict], dict[st
         args += [like, like, like]
     if cat == "__none__":
         where.append("(category IS NULL OR TRIM(category) = '')")
+    elif cat.startswith("c:"):
+        # 分类树节点：按分类编码前缀匹配（含全部下级）
+        where.append("category_code LIKE ? ESCAPE '\\'")
+        args.append(cat[2:].replace("%", "").replace("_", "\\_") + "%")
     elif cat:
         where.append("category = ?")
         args.append(cat)
@@ -1941,6 +1945,45 @@ def _inventory_list(c, q: str, cat: str, page: int) -> tuple[list[dict], dict[st
     return items, paging, {"short": counts["short"] or 0, "low": counts["low"] or 0}
 
 
+def _category_tree_view(c, cat: str) -> dict[str, Any]:
+    """分类树：下拉显示前两级（带物料数），选中节点时给出面包屑与下级分类统计。
+    物料数 = 该分类及全部下级分类下的本地物料数。"""
+    try:
+        nodes = {r["code"]: dict(r) for r in c.execute(
+            "SELECT code, name, parent_code, level FROM material_categories")}
+    except sqlite3.OperationalError:
+        nodes = {}
+    if not nodes:
+        return {"tree_options": [], "tree_children": [], "tree_path": []}
+    counts: dict[str, int] = {}
+    for r in c.execute("SELECT category_code, COUNT(*) AS n FROM materials"
+                       " WHERE category_code IS NOT NULL GROUP BY category_code"):
+        code = r["category_code"]
+        seen = set()
+        while code and code not in seen:
+            seen.add(code)
+            counts[code] = counts.get(code, 0) + r["n"]
+            code = (nodes.get(code) or {}).get("parent_code")
+    def label(n):
+        return {"value": "c:" + n["code"], "code": n["code"], "name": n["name"],
+                "level": n["level"], "count": counts.get(n["code"], 0)}
+    opts = sorted((label(n) for n in nodes.values() if n["level"] <= 2 and counts.get(n["code"])),
+                  key=lambda o: o["code"])
+    sel = cat[2:] if cat.startswith("c:") else ""
+    path, children = [], []
+    if sel in nodes:
+        code = sel
+        while code in nodes:
+            path.insert(0, label(nodes[code]))
+            code = nodes[code]["parent_code"]
+        children = sorted((label(n) for n in nodes.values()
+                           if n["parent_code"] == sel and counts.get(n["code"])),
+                          key=lambda o: -o["count"])
+    elif not sel:
+        children = [o for o in opts if o["level"] == 1]
+    return {"tree_options": opts, "tree_children": children[:40], "tree_path": path}
+
+
 def _warehouse_lists(request: Request) -> dict[str, Any]:
     """仓库页：库存列表（inv_page）+ 盘点（st_page）分页；异常只取摘要（全部在 /admin/exceptions）。"""
     q = str(request.query_params.get("q", "")).strip()
@@ -1948,7 +1991,8 @@ def _warehouse_lists(request: Request) -> dict[str, Any]:
     c = db()
     try:
         inventory, inv_paging, inv_counts = _inventory_list(c, q, cat, _int_param(request, "inv_page"))
-        categories = [r[0] for r in c.execute(
+        tree = _category_tree_view(c, cat)
+        categories = [] if tree["tree_options"] else [r[0] for r in c.execute(
             "SELECT DISTINCT category FROM materials WHERE category IS NOT NULL AND TRIM(category) <> ''"
             " ORDER BY category"
         ).fetchall()]
@@ -1976,6 +2020,7 @@ def _warehouse_lists(request: Request) -> dict[str, Any]:
         "inv_paging": inv_paging,
         "inv_counts": inv_counts,
         "categories": categories,
+        **tree,
         "inv_q": q,
         "inv_cat": cat,
         "low_stock_threshold": LOW_STOCK_THRESHOLD,
@@ -2176,7 +2221,7 @@ async def admin_exceptions_review(request: Request, eid: str):
 
 
 # ---------------------------------------------------------------- U9 集成页面
-U9_ENTITY_LABELS = {"items": "料品档案", "boms": "BOM", "inventory": "库存", "orders": "生产订单"}
+U9_ENTITY_LABELS = {"items": "料品档案", "categories": "物料分类", "boms": "BOM", "inventory": "库存", "orders": "生产订单"}
 U9_STATUS_LABELS = {"OK": "成功", "PENDING_DOC": "待实施商文档", "FAILED": "失败", "RUNNING": "运行中"}
 
 
@@ -2215,12 +2260,19 @@ def admin_u9(request: Request):
          "desc": f"按料号查 U9 料品（ItemMaster/Query）→ 本地物料档案（品名/规格/单位，不改数量）。"
                  f"默认包含本地全部 {local_material_count} 个物料编码。",
          "table": "materials"},
+        {"id": "categories", "label": "物料分类",
+         "desc": f"读 U9 物料主分类全集（按编码分层：大类→中类→小类）→ 本地分类树，并按料号回填本地 "
+                 f"{local_material_count} 个物料的分类。只改分类，不新增物料、不动数量。",
+         "table": "material_categories / materials"},
         {"id": "boms", "label": "物料清单 BOM",
          "desc": "按母件/设备编码查 U9 BOM（BOM/Query）并逐层展开，生成一个聚合 BOM 批次（内容未变不重复建）。",
          "table": "agg_bom_batches / agg_bom_items"},
         {"id": "inventory", "label": "库存现存量",
-         "desc": f"查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
-                 f"并回写物料总量/可用量。默认按本地 {local_material_count} 个料号逐个查询。",
+         "desc": (f"直读 U9 库存表（InvTrans_WhQoh）→ 本地库存（按料号+存储地点-库位），"
+                  f"并回写物料总量/可用量。默认按本地 {local_material_count} 个料号查询。"
+                  if getattr(cfg, "inventory_via_sql", False) else
+                  f"查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
+                  f"并回写物料总量/可用量。默认按本地 {local_material_count} 个料号逐个查询。"),
          "table": "inventory / locations / materials"},
         {"id": "orders", "label": "生产订单",
          "desc": f"按单号查 U9 生产订单（MODoc/Query）→ 本地生产订单。默认包含本地已有 {local_order_count} 个单号。",

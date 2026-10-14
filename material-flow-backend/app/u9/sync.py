@@ -28,7 +28,7 @@ from . import mappers
 from .client import U9Error, U9NotImplemented, get_client
 from .config import U9Config
 
-ENTITIES = ("items", "boms", "inventory", "orders")
+ENTITIES = ("items", "categories", "boms", "inventory", "orders")
 
 # 同一进程内同一时间只跑一个同步：U9 同步是长耗时阻塞调用，重复点击只会排队拖垮服务
 _SYNC_LOCK = threading.Lock()
@@ -131,10 +131,12 @@ def _sync_items(conn, cfg, dry_run, *, codes=None, include_local=True, client=No
     inserted = updated = unchanged = 0
     sample = []
     for m in mapped.values():
-        cur = conn.execute("SELECT name, specification, unit FROM materials WHERE code=?",
-                           (m["code"],)).fetchone()
+        cur = conn.execute("SELECT name, specification, unit, category, category_code FROM materials"
+                           " WHERE code=?", (m["code"],)).fetchone()
+        new_cat = (m["category"] or (cur[3] if cur else "") or "", m.get("category_code") or (cur[4] if cur else "") or "")
         action = "新增" if not cur else (
-            "不变" if (cur[0] or "", cur[1] or "", cur[2] or "") == (m["name"], m["specification"], m["unit"])
+            "不变" if ((cur[0] or "", cur[1] or "", cur[2] or "") == (m["name"], m["specification"], m["unit"])
+                     and (cur[3] or "", cur[4] or "") == new_cat)
             else "更新")
         if len(sample) < SAMPLE_SIZE:
             sample.append({"动作": action, "料号": m["code"], "品名": m["name"], "规格": m["specification"],
@@ -146,18 +148,73 @@ def _sync_items(conn, cfg, dry_run, *, codes=None, include_local=True, client=No
         if action == "更新":
             updated += 1
             if not dry_run:
-                conn.execute("UPDATE materials SET name=?, specification=?, unit=?, version=version+1"
-                             " WHERE code=?", (m["name"], m["specification"], m["unit"], m["code"]))
+                conn.execute("UPDATE materials SET name=?, specification=?, unit=?, category=?, category_code=?,"
+                             " version=version+1 WHERE code=?",
+                             (m["name"], m["specification"], m["unit"], new_cat[0] or None, new_cat[1] or None,
+                              m["code"]))
         else:
             inserted += 1
             if not dry_run:
-                conn.execute("INSERT INTO materials(id, code, name, specification, unit,"
-                             " total_quantity, available_quantity, version) VALUES(?,?,?,?,?,0,0,1)",
-                             (f"u9-{m['code']}", m["code"], m["name"], m["specification"], m["unit"]))
+                conn.execute("INSERT INTO materials(id, code, name, specification, unit, category, category_code,"
+                             " total_quantity, available_quantity, version) VALUES(?,?,?,?,?,?,?,0,0,1)",
+                             (f"u9-{m['code']}", m["code"], m["name"], m["specification"], m["unit"],
+                              new_cat[0] or None, new_cat[1] or None))
     return {"requested": len(wanted), "total": len(raw), "mapped": len(mapped),
             "inserted": inserted, "updated": updated, "unchanged": unchanged, "skipped": skipped,
             "not_found": not_found[:200], "not_found_count": len(not_found),
             "errors": errors[:50], "sample": sample}
+
+
+# ---------------------------------------------------------------- 物料分类
+def _sync_categories(conn, cfg, dry_run, *, client=None, **_):
+    """U9 主分类全集 → material_categories；本地已有物料按料号回填 category / category_code。
+    只改分类字段，不新增物料、不动数量。"""
+    client = client or get_client(cfg)
+    cat_rows, item_map = client.fetch_categories()
+    tree = mappers.build_category_tree(cat_rows)
+    names = {t["code"]: t["name"] for t in tree}
+    now = _now()
+    existing = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT code, name, parent_code FROM material_categories")}
+    ins = upd = same = 0
+    for t in tree:
+        cur = existing.get(t["code"])
+        if cur == (t["name"], t["parent_code"]):
+            same += 1
+            continue
+        if cur is None:
+            ins += 1
+        else:
+            upd += 1
+        if not dry_run:
+            conn.execute("INSERT INTO material_categories(code, name, parent_code, level, updated_at)"
+                         " VALUES(?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name,"
+                         " parent_code=excluded.parent_code, level=excluded.level, updated_at=excluded.updated_at",
+                         (t["code"], t["name"], t["parent_code"], t["level"], now))
+    mat_upd = mat_same = 0
+    not_found = []
+    sample = []
+    for code, cat, cat_code in conn.execute(
+            "SELECT code, category, category_code FROM materials ORDER BY code").fetchall():
+        cc = item_map.get(code)
+        if not cc:
+            not_found.append(code)
+            continue
+        name = names.get(cc, cat or "")
+        if (cat or "", cat_code or "") == (name, cc):
+            mat_same += 1
+            continue
+        mat_upd += 1
+        if len(sample) < SAMPLE_SIZE:
+            sample.append({"料号": code, "分类编码": cc, "分类": name, "原分类": cat or ""})
+        if not dry_run:
+            conn.execute("UPDATE materials SET category=?, category_code=? WHERE code=?", (name, cc, code))
+    top = [t for t in tree if t["level"] == 1]
+    return {"requested": len(tree), "total": len(tree), "mapped": len(tree),
+            "inserted": ins, "updated": upd + mat_upd, "unchanged": same + mat_same, "skipped": 0,
+            "categories": len(tree), "top_categories": [f"{t['code']} {t['name']}" for t in top],
+            "materials_updated": mat_upd, "not_found": not_found[:200], "not_found_count": len(not_found),
+            "errors": [], "sample": sample}
 
 
 # ---------------------------------------------------------------- BOM
@@ -451,6 +508,7 @@ def _upsert_mo_requirements(conn, order_id: str, picklist: list[dict], now: str)
 
 _SYNC_FNS = {
     "items": _sync_items,
+    "categories": _sync_categories,
     "boms": _sync_boms,
     "inventory": _sync_inventory,
     "orders": _sync_orders,

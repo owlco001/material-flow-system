@@ -912,7 +912,7 @@ def seed_demo_order(c: sqlite3.Connection) -> None:
 
     for mat_id, code, name, spec, unit in DEMO_MATERIALS:
         c.execute(
-            "INSERT OR IGNORE INTO materials VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO materials(id, code, name, specification, unit, batch_no, expiry_date, total_quantity, available_quantity, version, category) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (mat_id, code, name, spec, unit, None, None, 0, 0, 1, ""),
         )
 
@@ -994,6 +994,13 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     material_cols = {r["name"] for r in c.execute("PRAGMA table_info(materials)").fetchall()}
     if "category" not in material_cols:
         c.execute("ALTER TABLE materials ADD COLUMN category TEXT")
+    # U9 物料分类树：materials.category_code 存分类编码（编码按位数分层：1/3/5/8/9 位），
+    # material_categories 存全量分类（U9 CBO_Category），parent_code 按最长前缀推导。
+    if "category_code" not in material_cols:
+        c.execute("ALTER TABLE materials ADD COLUMN category_code TEXT")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_materials_category_code ON materials(category_code)")
+    c.execute("CREATE TABLE IF NOT EXISTS material_categories(code TEXT PRIMARY KEY, name TEXT NOT NULL,"
+              " parent_code TEXT, level INTEGER NOT NULL DEFAULT 1, updated_at TEXT)")
 
     exception_cols = {r["name"] for r in c.execute("PRAGMA table_info(exceptions)").fetchall()}
     if "order_no" not in exception_cols:

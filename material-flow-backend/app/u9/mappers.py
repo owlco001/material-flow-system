@@ -94,6 +94,7 @@ def map_item(raw: dict[str, Any]) -> dict[str, Any]:
         "unit": unit or "个",
         "item_form": item_form_label(g(raw, "m_itemFormAttribute", None)),
         "category": s(first(raw, "m_mainItemCategory.m_name", "m_mainItemCategory.m_code")),
+        "category_code": s(first(raw, "m_mainItemCategory.m_code")),
         "status": s(first(raw, "m_status.m_name", "m_status.m_code")),
         "u9_id": g(raw, "m_iD", None),
     }
@@ -284,3 +285,20 @@ def map_mo_picklist(raw: dict[str, Any]) -> list[dict[str, Any]]:
         q = row["qty"]
         row["required_quantity"] = int(q) if q == int(q) else int(q) + 1
     return list(agg.values())
+
+
+# ---------------------------------------------------------------- 物料分类树
+def build_category_tree(rows: list[dict]) -> list[dict]:
+    """[{code,name}] → [{code,name,parent_code,level}]。
+    U9 分类编码按前缀分层（3 → 302 → 30203 → 30203001），父节点取“是本编码真前缀的最长编码”。"""
+    cats = {}
+    for r in rows:
+        code = s(r.get("code"))
+        if code:
+            cats[code] = s(r.get("name")) or code
+    out = []
+    for code in sorted(cats, key=lambda c: (len(c), c)):
+        parent = next((code[:i] for i in range(len(code) - 1, 0, -1) if code[:i] in cats), None)
+        level = 1 if parent is None else next(o["level"] for o in out if o["code"] == parent) + 1
+        out.append({"code": code, "name": cats[code], "parent_code": parent, "level": level})
+    return out
