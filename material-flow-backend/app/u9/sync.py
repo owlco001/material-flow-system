@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import hashlib
 import json
 import sqlite3
@@ -70,7 +72,9 @@ CREATE INDEX IF NOT EXISTS idx_u9_sync_logs_entity ON u9_sync_logs(entity, start
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    # 与主程序一致存 UTC ISO（带 +00:00）；管理台 local_dt 再转北京时间显示。
+    # 0.8.2 及以前存的是无时区的本地时间，被当作 UTC 再 +8，显示晚 8 小时。
+    return datetime.now(timezone.utc).isoformat()
 
 
 def log_id(run_id: str, entity: str) -> str:
@@ -331,6 +335,7 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
     errors: list[dict] = []
     raw = client.fetch_production_orders(wanted, errors=errors) if wanted else []
     inserted = updated = unchanged = skipped = 0
+    req_inserted = req_updated = mat_created = 0
     sample, seen = [], set()
     now = _now()
     for r in raw:
@@ -342,11 +347,12 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
         if m["order_no"] in seen:
             continue
         seen.add(m["order_no"])
-        cur = conn.execute("SELECT product_name, status FROM production_orders WHERE order_no=?",
+        cur = conn.execute("SELECT product_name, status, id FROM production_orders WHERE order_no=?",
                            (m["order_no"],)).fetchone()
         new_status = None
         if cur is None:
-            new_status = m["status"] or "IN_PROGRESS"
+            # MODoc/Query 不返回单据状态时按「已下达」入库，不臆断为生产中/已完成
+            new_status = m["status"] or "RELEASED"
             action = "新增"
         else:
             if m["status"] and mappers.STATUS_RANK.get(m["status"], 0) > mappers.STATUS_RANK.get(cur[1], 0):
@@ -358,11 +364,12 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
                            "产品": m["product_name"], "数量": m["qty"], "单位": m["uom"],
                            "开工日": m["start_date"], "完工日": m["complete_date"],
                            "U9状态": m["u9_state"] or "（接口未返回）",
+                           "备料行": len(m["picklist"]),
                            "本地状态": new_status or (cur[1] if cur else "")})
+        order_id = cur[2] if cur is not None else f"u9mo-{m['order_no']}"
         if action == "不变":
             unchanged += 1
-            continue
-        if action == "新增":
+        elif action == "新增":
             inserted += 1
             if not dry_run:
                 conn.execute("INSERT INTO production_orders(id, order_no, product_name, status,"
@@ -374,11 +381,59 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
                 conn.execute("UPDATE production_orders SET product_name=?, status=?, updated_at=?"
                              " WHERE order_no=?",
                              (m["product_name"] or cur[0], new_status or cur[1], now, m["order_no"]))
+        if not dry_run and m["picklist"]:
+            a, b, c = _upsert_mo_requirements(conn, order_id, m["picklist"], now)
+            req_inserted += a
+            req_updated += b
+            mat_created += c
     not_found = [d for d in wanted if d not in seen]
     return {"requested": len(wanted), "total": len(raw), "inserted": inserted, "updated": updated,
             "unchanged": unchanged, "skipped": skipped, "not_found": not_found[:200],
+            "requirements_inserted": req_inserted, "requirements_updated": req_updated,
+            "materials_created": mat_created,
             "not_found_count": len(not_found), "errors": errors[:50], "sample": sample}
 
+
+
+def _upsert_mo_requirements(conn, order_id: str, picklist: list[dict], now: str) -> tuple[int, int, int]:
+    """把 U9 备料表写成订单级物料需求（device_id 为空）。
+
+    - 本地没有的料号先建物料档案；
+    - 已有订单级需求：需求量按 U9 更新（不低于已到货量，避免违反约束）；
+    - 不删除本地多出来的需求（可能是人工维护的）。
+    """
+    ins = upd = mats = 0
+    # 已有按机台拆分的需求（人工导入 BOM 生成）时不再叠加订单级需求，避免重复
+    if conn.execute("SELECT 1 FROM order_material_requirements WHERE order_id=? AND device_id IS NOT NULL"
+                    " LIMIT 1", (order_id,)).fetchone():
+        return 0, 0, 0
+    for p in picklist:
+        row = conn.execute("SELECT id FROM materials WHERE code=?", (p["material_code"],)).fetchone()
+        if row:
+            mat_id = row[0]
+        else:
+            mat_id = f"u9mat-{uuid.uuid4().hex[:12]}"
+            conn.execute("INSERT INTO materials(id, code, name, specification, unit) VALUES(?,?,?,?,?)",
+                         (mat_id, p["material_code"], p["material_name"], "", p["unit"]))
+            mats += 1
+        cur = conn.execute("SELECT id, required_quantity, arrived_quantity FROM order_material_requirements"
+                           " WHERE order_id=? AND device_id IS NULL AND material_id=?",
+                           (order_id, mat_id)).fetchone()
+        req = max(1, int(p["required_quantity"]))
+        if cur is None:
+            conn.execute("INSERT INTO order_material_requirements(id, order_id, device_id, material_id,"
+                         " required_quantity, arrived_quantity, in_stock_quantity, status_code,"
+                         " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (f"u9req-{uuid.uuid4().hex[:12]}", order_id, None, mat_id, req, 0, 0,
+                          "OUT_OF_STOCK", now, now))
+            ins += 1
+        else:
+            req = max(req, int(cur[2] or 0))
+            if req != cur[1]:
+                conn.execute("UPDATE order_material_requirements SET required_quantity=?, updated_at=?"
+                             " WHERE id=?", (req, now, cur[0]))
+                upd += 1
+    return ins, upd, mats
 
 _SYNC_FNS = {
     "items": _sync_items,

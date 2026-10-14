@@ -127,11 +127,21 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 | （预览）数量/单位/开工/完工 | `m_productQty`、`m_productUOM.m_name`、`m_startDate`、`m_completeDate` |
 | status | 见下方假设 |
 
+**生产订单备料表 m_mOPickListDTOs → order_material_requirements（0.9.0 起，真实同步才写）**
+
+| 本地 | U9C 字段 |
+|---|---|
+| 物料（按料号汇总，订单级，device_id 为空） | `m_itemMaster.m_code` / `m_itemMaster.m_name`；本地无此料号时自动建档，单位取 `m_issueUOM.m_name` |
+| required_quantity | `m_actualReqQty`（缺省 `m_bOMReqQty`），同料号相加，小数向上取整 |
+| 跳过 | `m_isDisable=True` 或需求量 ≤ 0 的行 |
+
+再次同步按 U9 更新需求量（不低于已到货量），不删除本地多出的需求。订单已有按机台拆分的需求（人工导入 BOM 生成）时不写入，避免重复。U9 已发料量 `m_issuedQty` 不写入本地到货/在库。
+
 ## 5. 假设与待现场确认
 
 1. **《接口授权》**：按 U9C 标准 `OAuth2/AuthLogin`（GET，查询串传参）实现，用户重发的授权文档已确认该格式；路径可用 `U9_AUTH_PATH` 调整。
 2. **请求体格式**：swagger 标注 `application/x-www-form-urlencoded`，但示例是 JSON，默认按 `application/json` 发送，可用 `U9_CONTENT_TYPE` 改。
-3. **生产订单状态**：提供的 MODTOData 字段表**没有单据状态字段**。若现场版本返回 `m_docState` / `m_status` / `DocState`，按 U9 MODocState 常见取值映射：0 开立→`DRAFT`、1 已核准→`RELEASED`、2 开工→`IN_PROGRESS`、3 完工→`COMPLETED`、4 关闭→`COMPLETED`。没有状态字段时：新订单记为 `IN_PROGRESS`，已有订单不改状态。状态**只前进不后退**（本地已完成/已取消的不会被拉回）。
+3. **生产订单状态**：提供的 MODTOData 字段表**没有单据状态字段**。若现场版本返回 `m_docState` / `m_status` / `DocState`，按 U9 MODocState 常见取值映射：0 开立→`DRAFT`、1 已核准→`RELEASED`、2 开工→`IN_PROGRESS`、3 完工→`COMPLETED`、4 关闭→`COMPLETED`。2026-10-14 用真实完工单实测：`MODoc/Query` 返回的 51 个顶层字段里**确实没有状态/完工数量**。没有状态字段时：新订单记为 `RELEASED`（已下达，0.9.0 前为 `IN_PROGRESS`），已有订单不改状态，需在管理台手动推进；要自动同步状态需 U9 实施方在接口里补 `m_docState`。状态**只前进不后退**（本地已完成/已取消的不会被拉回）。
 4. **BOM 版本选择**：同一母件返回多个 BOM 时，优先 `m_alternateType=0`（主制造）、`m_bOMType=0`，再取版本号最大、生效日期最新者。
 5. **料品形态枚举**：`m_itemFormAttribute` 数值→中文按 U9 `ItemFormAttribute` 公开资料（9 采购件、10 制造件、4 委外加工件 …）。只有「采购件 / 委外加工件 / 制造件」会参与本地 BOM 需求生成。
 6. **库存数量**：本地 `inventory.quantity` 为整数，U9 小数数量四舍五入（预览统计 `fractional_rounded` 条数）。
@@ -161,3 +171,7 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 - 单次同步总时限 `U9_SYNC_MAX_SECONDS`（默认 300 秒），超时主动中止并记 FAILED 日志。
 - 单次编码上限 `U9_SYNC_MAX_KEYS`（默认 5000，料品/生产订单）；BOM 一次最多 `U9_BOM_MAX_PRODUCTS`（默认 20）个设备。
 - 管理台请求经 nginx 转发，超过 nginx 读超时会显示 504，但同步仍在后台完成，结果可在同步日志中查看。
+
+## 时间存储
+
+0.9.0 起 U9 同步写入的时间（订单创建/更新、同步日志、BOM 批次）一律存 UTC ISO（带 `+00:00`），与主程序一致。此前存的是无时区的北京时间，显示时被再加 8 小时；启动迁移 `_migrate_u9_naive_times` 会把历史 U9 行改正（可重复执行）。

@@ -15,7 +15,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1027,6 +1027,7 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE production_orders ADD COLUMN updated_at TEXT")
         c.execute("UPDATE production_orders SET updated_at = created_at WHERE updated_at IS NULL")
 
+    _migrate_u9_naive_times(c)
     _migrate_legacy_order_requirements(c)
     model_cols = {r["name"] for r in c.execute("PRAGMA table_info(production_order_models)").fetchall()}
     if "planned_quantity" not in model_cols:
@@ -1041,6 +1042,34 @@ def _migrate_schema(c: sqlite3.Connection) -> None:
     if device_cols and "model_3d_code" not in device_cols:
         c.execute("ALTER TABLE devices ADD COLUMN model_3d_code TEXT")
 
+
+
+def _migrate_u9_naive_times(c: sqlite3.Connection) -> None:
+    """0.8.2 及以前 U9 同步写的是无时区的服务器本地时间（北京时间），被显示层当作 UTC 再 +8。
+    把这些值改成 UTC ISO；已带时区的值不动，因此可重复执行。"""
+    def fix(v):
+        if not v or "+" in v or v.endswith("Z") or len(v) != 19:
+            return v
+        try:
+            dt = datetime.fromisoformat(v)
+        except ValueError:
+            return v
+        return (dt - timedelta(hours=8)).replace(tzinfo=timezone.utc).isoformat()
+
+    for table, where, cols in (
+        ("production_orders", "id LIKE 'u9mo-%'", ("created_at", "updated_at")),
+        ("u9_sync_logs", "1=1", ("started_at", "finished_at")),
+        ("agg_bom_batches", "id LIKE 'u9bom-%'", ("created_at",)),
+    ):
+        try:
+            rows = c.execute(f"SELECT rowid, {', '.join(cols)} FROM {table} WHERE {where}").fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for r in rows:
+            vals = [fix(r[i + 1]) for i in range(len(cols))]
+            if vals != [r[i + 1] for i in range(len(cols))]:
+                c.execute(f"UPDATE {table} SET {', '.join(f'{k}=?' for k in cols)} WHERE rowid=?",
+                          (*vals, r[0]))
 
 def _migrate_legacy_order_requirements(c: sqlite3.Connection) -> None:
     columns = {

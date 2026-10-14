@@ -15,6 +15,8 @@ U9C 响应 DTO 的字段一律是 m_ 前缀的小驼峰（m_code / m_name / m_in
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import time
 from typing import Any
 
@@ -52,7 +54,9 @@ def num(v: Any, default: float = 0.0) -> float:
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    # 与主程序一致存 UTC ISO（带 +00:00）；管理台 local_dt 再转北京时间显示。
+    # 0.8.2 及以前存的是无时区的本地时间，被当作 UTC 再 +8，显示晚 8 小时。
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------- 料品形态属性
@@ -202,8 +206,9 @@ def map_inventory_row(raw: dict[str, Any], qty_field: str = "store") -> dict[str
 
 
 # ---------------------------------------------------------------- 生产订单 /webapi/MODoc/Query
-# 用户提供的 MODTOData 没有单据状态字段。若现场版本返回了 m_docState / m_status / DocState，
-# 按 U9 MODocState 常见取值映射（假设，见文档）；没有则不改本地状态。
+# 用户提供的 MODTOData 没有单据状态字段（2026-10-14 用真实完工单 MO-2608130010 实测确认：
+# 返回 51 个顶层字段，无 DocState/完工数量）。若现场版本返回了 m_docState / m_status / DocState，
+# 按 U9 MODocState 常见取值映射（假设，见文档）；没有则新单按 RELEASED（已下达）入库、已有单不改本地状态。
 U9_MO_STATUS_MAP = {
     0: "DRAFT",        # 开立
     1: "RELEASED",     # 已核准
@@ -245,4 +250,35 @@ def map_production_order(raw: dict[str, Any]) -> dict[str, Any]:
         "department": s(first(raw, "m_department.m_name")),
         "u9_state": state_label,
         "status": status,
+        "picklist": map_mo_picklist(raw),
     }
+
+
+def map_mo_picklist(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """生产订单备料表 m_mOPickListDTOs → 按料号汇总的物料需求。
+
+    需求量取 m_actualReqQty（实际需求，缺省回落 m_bOMReqQty）；本地需求量是整数列，小数向上取整。
+    m_isDisable=True 的行跳过。m_issuedQty（U9 已发料）只作展示，不写本地到货/在库。
+    """
+    agg: dict[str, dict[str, Any]] = {}
+    for line in g(raw, "m_mOPickListDTOs", None) or []:
+        if not isinstance(line, dict) or g(line, "m_isDisable", False) is True:
+            continue
+        code = s(first(line, "m_itemMaster.m_code"))
+        if not code:
+            continue
+        qty = num(first(line, "m_actualReqQty", default=None), num(g(line, "m_bOMReqQty", 0)))
+        if qty <= 0:
+            continue
+        row = agg.setdefault(code, {
+            "material_code": code,
+            "material_name": s(first(line, "m_itemMaster.m_name")) or code,
+            "unit": s(first(line, "m_issueUOM.m_name", "m_issueBaseUOM.m_name")) or "件",
+            "qty": 0.0, "issued_qty": 0.0,
+        })
+        row["qty"] += qty
+        row["issued_qty"] += num(g(line, "m_issuedQty", 0))
+    for row in agg.values():
+        q = row["qty"]
+        row["required_quantity"] = int(q) if q == int(q) else int(q) + 1
+    return list(agg.values())

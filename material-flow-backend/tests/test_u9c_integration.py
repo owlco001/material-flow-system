@@ -76,7 +76,15 @@ class FakeU9:
         self.orders = {
             "MO001": {"m_docNo": "MO001", "m_itemMaster": ref("SB01", "一号设备"), "m_productQty": 2,
                       "m_productUOM": ref("T", "台"), "m_startDate": "2026-10-01 00:00:00",
-                      "m_completeDate": "2026-10-20 00:00:00"},
+                      "m_completeDate": "2026-10-20 00:00:00",
+                      "m_mOPickListDTOs": [
+                          {"m_itemMaster": ref("M001", "螺栓"), "m_actualReqQty": 14.0, "m_issuedQty": 14.0,
+                           "m_issueUOM": ref("F040", "个")},
+                          {"m_itemMaster": ref("M001", "螺栓"), "m_actualReqQty": 2.0},
+                          {"m_itemMaster": ref("NEW9", "新料"), "m_actualReqQty": 0.5,
+                           "m_issueUOM": ref("KG", "千克")},
+                          {"m_itemMaster": ref("OFF1", "停用"), "m_actualReqQty": 3, "m_isDisable": True},
+                      ]},
             "MO002": {"m_docNo": "MO002", "m_itemMaster": ref("SB02", "二号设备"), "m_productQty": 1,
                       "m_docState": 3},
         }
@@ -456,7 +464,9 @@ def test_sync_orders_dry_run_then_real(db, fake, monkeypatch):
     assert not db.execute("SELECT 1 FROM production_orders WHERE order_no='MO001'").fetchone()
     run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])
     assert db.execute("SELECT product_name, status FROM production_orders WHERE order_no='MO001'").fetchone()[:] \
-        == ("一号设备", "IN_PROGRESS")
+        == ("一号设备", "RELEASED")
+    created = db.execute("SELECT created_at FROM production_orders WHERE order_no='MO001'").fetchone()[0]
+    assert created.endswith("+00:00")  # 存 UTC，显示层再转北京时间
     assert db.execute("SELECT product_name, status FROM production_orders WHERE order_no='MO002'").fetchone()[:] \
         == ("二号设备", "COMPLETED")
     # 状态只前进：U9 回到「开立」不会把已完成拉回
@@ -678,3 +688,46 @@ def test_admin_sync_does_not_block_event_loop(db, fake, monkeypatch):
             return hz.status_code, dt, r.status_code
     code, dt, sync_code = asyncio.run(scenario())
     assert code == 200 and dt < 2 and sync_code == 303
+
+
+def test_migrate_u9_naive_times(db):
+    db.execute("INSERT INTO production_orders(id, order_no, product_name, status, created_at, updated_at) "
+               "VALUES('u9mo-MOX','MOX','x','IN_PROGRESS','2026-10-14T16:10:05','2026-10-14T16:10:05')")
+    db.execute("UPDATE production_orders SET created_at='2026-10-14T16:10:05' WHERE id='po1'")
+    db.commit()
+    backend._migrate_u9_naive_times(db)
+    backend._migrate_u9_naive_times(db)  # 可重复执行
+    assert db.execute("SELECT created_at, updated_at FROM production_orders WHERE id='u9mo-MOX'").fetchone()[:] \
+        == ("2026-10-14T08:10:05+00:00", "2026-10-14T08:10:05+00:00")
+    # 非 U9 来源的订单不动
+    assert db.execute("SELECT created_at FROM production_orders WHERE id='po1'").fetchone()[0] == "2026-10-14T16:10:05"
+
+
+def test_sync_orders_writes_picklist_requirements(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    s = run_sync("orders", db, cfg, dry_run=True, doc_nos=["MO001"])["stats"]
+    assert s["requirements_inserted"] == 0 and s["sample"][0]["备料行"] == 2
+    assert not db.execute("SELECT 1 FROM order_material_requirements WHERE order_id='u9mo-MO001'").fetchone()
+    s = run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])["stats"]
+    assert s["requirements_inserted"] == 2 and s["materials_created"] == 1
+    rows = dict(db.execute("SELECT m.code, r.required_quantity FROM order_material_requirements r"
+                           " JOIN materials m ON m.id=r.material_id WHERE r.order_id='u9mo-MO001'"
+                           " AND r.device_id IS NULL").fetchall())
+    assert rows == {"M001": 16, "NEW9": 1}
+    assert db.execute("SELECT unit FROM materials WHERE code='NEW9'").fetchone()[0] == "千克"
+    # 再同步：不重复；U9 需求量变化则更新
+    fake.orders["MO001"]["m_mOPickListDTOs"][1]["m_actualReqQty"] = 6.0
+    s = run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])["stats"]
+    assert s["requirements_inserted"] == 0 and s["requirements_updated"] == 1
+    assert db.execute("SELECT COUNT(*) FROM order_material_requirements WHERE order_id='u9mo-MO001'").fetchone()[0] == 2
+
+
+def test_picklist_requirements_visible_in_order_detail(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    run_sync("orders", db, make_cfg(), dry_run=False, doc_nos=["MO001"])
+    db.commit()
+    admin = db.execute("SELECT * FROM users WHERE id=?", (ADMIN[0],)).fetchone()
+    d = backend.order_detail(order_no="MO001", page=1, pageSize=500, user=admin)
+    text = json.dumps(d, ensure_ascii=False)
+    assert "M001" in text and "NEW9" in text
