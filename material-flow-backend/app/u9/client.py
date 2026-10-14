@@ -42,6 +42,13 @@ PATH_MO = "/webapi/MODoc/Query"
 PATH_SQL = "/webapi/QueryCommon/QueryInfoBySql"
 # 拼进 SQL 的单号/组织编码只允许这些字符，杜绝注入
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_\-.]{1,60}$")
+# 料号/单号拼进固定 SELECT 的字符串字面量：现场料号含 +（如 30201001-00001+A）和中文，
+# 只拒绝能打破字面量或注释的字符（引号、反斜杠、分号、控制字符、-- 与 /*），不加 N 前缀（U9 接口会把 SQL 转小写，n'' 非法）。
+_CODE_KEY = re.compile(r"^[^'\"\\;\x00-\x1f\x7f]{1,80}$")
+
+
+def _code_ok(code: str) -> bool:
+    return bool(code) and bool(_CODE_KEY.match(code)) and "--" not in code and "/*" not in code
 
 AUTH_ERRORS = {
     401: "未授权：clientid / clientsecret 不正确，或该应用未在 U9C「第三方应用授权」中启用",
@@ -541,7 +548,7 @@ class U9CClient(U9Client):
             raise U9Error(f"存储地点编码不合规：{wh!r}")
         codes = []
         for c in _dedupe(item_codes):
-            if _SAFE_KEY.match(c):
+            if _code_ok(c):
                 codes.append(c)
             elif errors is not None:
                 errors.append({"key": c, "error": "料号含非法字符，跳过库存查询"})
@@ -613,7 +620,7 @@ class U9CClient(U9Client):
             raise U9Error(f"组织编码不合规，无法查询订单状态：{org!r}")
         keys = []
         for d in _dedupe(doc_nos):
-            if _SAFE_KEY.match(d):
+            if _code_ok(d):
                 keys.append(d)
             elif errors is not None:
                 errors.append({"key": d, "error": "单号含非法字符，跳过状态查询"})

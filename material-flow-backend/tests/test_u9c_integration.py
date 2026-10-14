@@ -845,3 +845,16 @@ def test_sync_categories_and_warehouse_tree(db, fake, monkeypatch):
     assert {i["code"] for i in items} == {"M001", "M003"}
     items, _, _ = _inventory_list(db, "", "c:3%", 1)
     assert {i["code"] for i in items} == {"M001", "M003"}
+
+
+def test_sql_code_whitelist_allows_plus_and_cjk(fake):
+    from app.u9.client import _code_ok
+    assert _code_ok("30201001-00001+A") and _code_ok("AL-型材-002") and _code_ok("MO-2608130010")
+    for bad in ("a'b", 'a"b', "a;b", "a--b", "a/*b", "a\\b", "a\nb", ""):
+        assert not _code_ok(bad)
+    c = U9CClient(make_cfg(inventory_via_sql=True), fake)
+    errs = []
+    c.fetch_inventory(["30201001-00001+A", "AL-型材-002", "x'--"], wh="", errors=errs)
+    sql = fake.sqls[-1]
+    assert "'30201001-00001+A'" in sql and "'AL-型材-002'" in sql and "x'" not in sql
+    assert len(errs) == 1
