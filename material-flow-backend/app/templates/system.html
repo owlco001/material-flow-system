@@ -95,6 +95,23 @@ async function pollStatus(sha) {
 {% if update_status.state in ("queued", "downloading", "applying") %}pollStatus(null);{% endif %}
 </script>
 
+<div class="card" style="margin-top:12px" id="demo">
+  <h3>清除演示 / 测试数据</h3>
+  {% if demo_plan.total %}
+  <p class="muted" style="font-size:13px">将删除演示订单、测试夹具及其关联记录，共 {{ demo_plan.total }} 行；正式数据与审计日志不动。删除前请确认已有备份（每次系统更新会自动备份数据库）。</p>
+  {% if demo_plan.material_sample %}<p style="font-size:13px;margin:4px 0">物料：{{ demo_plan.material_sample|join("、") }}</p>{% endif %}
+  {% if demo_plan.order_nos %}<p style="font-size:13px;margin:4px 0">订单：{{ demo_plan.order_nos|join("、") }}</p>{% endif %}
+  <p class="muted" style="font-size:12px;margin:4px 0">按表：{% for t, n in demo_plan.counts|dictsort %}{{ t }} {{ n }}{% if not loop.last %}，{% endif %}{% endfor %}</p>
+  <form method="post" action="/admin/system/purge-demo" class="filter-bar" style="margin-top:8px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="fi"><label for="demo-confirm">输入「清除」确认</label><input id="demo-confirm" name="confirm" autocomplete="off" style="max-width:140px"></div>
+    <div class="btn-row"><button type="submit" class="btn btn-danger btn-sm" data-confirm="将永久删除 {{ demo_plan.total }} 行演示 / 测试数据，无法撤销。" data-confirm-title="清除演示数据？" data-confirm-ok="清除" data-confirm-danger>清除演示数据</button></div>
+  </form>
+  {% else %}
+  <p class="muted" style="font-size:13px">没有演示 / 测试数据。{% if demo_plan.purged %}已清除过，启动时不再补种演示订单。{% endif %}</p>
+  {% endif %}
+</div>
+
 <div class="card" style="margin-top:12px">
   <h3>说明</h3>
   <ul class="muted" style="font-size:13px;line-height:1.8">

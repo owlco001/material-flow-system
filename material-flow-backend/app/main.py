@@ -860,7 +860,11 @@ def _init_db(c: sqlite3.Connection) -> None:
         c.execute("INSERT INTO locations VALUES(?,?,?)", ("loc_001", "A-01-03", "一号库位"))
         c.execute("INSERT INTO inventory VALUES(?,?,?,?)", ("inv_001", "mat_001", "loc_001", 986))
 
-    seed_demo_order(c)
+    from app import demo_purge as _demo_purge
+    _demo_purge.ensure_flags_table(c)
+    # 管理员在「系统」页清除过演示数据后，不再补种 26B-013
+    if not _demo_purge.demo_purged(c):
+        seed_demo_order(c)
     c.commit()
 
 

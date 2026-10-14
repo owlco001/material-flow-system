@@ -460,6 +460,9 @@ SYSTEM_NOTICES: dict[str, tuple[str, str]] = {
     "UPDATE_REQUEST_FAILED": ("error", "提交更新请求失败，请查看服务器日志"),
     "UPDATE_FAILED": ("error", "更新异常，请查看服务器日志"),
     "FORBIDDEN": ("error", "仅管理员可操作"),
+    "DEMO_PURGED": ("notice", "演示 / 测试数据已清除，启动时不再补种演示订单。"),
+    "DEMO_CONFIRM": ("error", "请在确认框输入「清除」后再执行"),
+    "DEMO_PURGE_FAILED": ("error", "清除失败，数据未改动，请查看服务器日志"),
 }
 
 
@@ -4125,6 +4128,14 @@ def admin_system(request: Request):
     from app import updates as _updates
     from app.main import APP_VERSION
     import json as _json2
+    from app import demo_purge as _demo_purge
+    c = db()
+    try:
+        demo_plan = _demo_purge.plan(c)
+        demo_plan.pop("rows", None)
+        demo_plan["purged"] = _demo_purge.demo_purged(c)
+    finally:
+        c.close()
     check_raw = request.query_params.get("check", "")
     try:
         check_result = _json2.loads(check_raw) if check_raw else None
@@ -4138,9 +4149,47 @@ def admin_system(request: Request):
          "deployed_sha_diag": _updates.deployed_sha_diagnose(),
          "update_status": _updates.get_update_status(),
          "check_result": check_result,
+         "demo_plan": demo_plan,
          **_coded_notice(request, SYSTEM_NOTICES, "操作失败，请稍后重试"),
          "csrf_token": user["csrf_token"]},
     )
+
+
+@router.post("/admin/system/purge-demo")
+async def admin_system_purge_demo(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    if str(form.get("confirm", "")).strip() != "清除":
+        return _see_other("/admin/system?notice=DEMO_CONFIRM#demo")
+    from app import demo_purge as _demo_purge
+    from app.main import now as _now
+    from starlette.concurrency import run_in_threadpool
+
+    def _work():
+        # 连接在工作线程内创建与关闭；整库扫描与删除是阻塞操作，不放在事件循环里
+        c = db()
+        try:
+            result = _demo_purge.purge(c, _now())
+            try:
+                audit(c, user["id"], user["role"], "PURGE_DEMO_DATA", "system", "demo", "SUCCESS")
+                c.commit()
+            except Exception:  # noqa: BLE001 - 审计失败不影响已完成的清除
+                _log.exception("demo purge audit failed")
+            return result
+        finally:
+            c.close()
+
+    try:
+        result = await run_in_threadpool(_work)
+        _log.info("demo data purged by %s: %s", user["id"], result.get("counts"))
+    except Exception:  # noqa: BLE001
+        _log.exception("demo purge failed")
+        return _see_other("/admin/system?notice=DEMO_PURGE_FAILED#demo")
+    return _see_other("/admin/system?notice=DEMO_PURGED#demo")
 
 
 @router.post("/admin/system/update/check")
