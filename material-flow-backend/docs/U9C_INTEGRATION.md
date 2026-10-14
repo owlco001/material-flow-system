@@ -175,3 +175,11 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 ## 时间存储
 
 0.9.0 起 U9 同步写入的时间（订单创建/更新、同步日志、BOM 批次）一律存 UTC ISO（带 `+00:00`），与主程序一致。此前存的是无时区的北京时间，显示时被再加 8 小时；启动迁移 `_migrate_u9_naive_times` 会把历史 U9 行改正（可重复执行）。
+
+## 库存走 SQL 直读（0.11.0）
+
+现场 `Invtrans/QueryQohAndAvailable` 因 U9 数据库 SQL CLR 信任问题（HRESULT 0x80FC80F1）报错。默认 `U9_INVENTORY_VIA_SQL=1`：改用 `QueryInfoBySql` 直读 `InvTrans_WhQoh`（关联 `CBO_Wh`/`CBO_Wh_Trl`/`Base_Organization`，按组织编码过滤、`StoreQty<>0`），按 料号+存储地点+库位+批号 汇总：
+- 现存量 = 各存储类型 `StoreQty` 之和；
+- 可用量 ≈ 存储类型 4（可用）的 `StoreQty − ResvOccupyStQty`（近似，未扣待发等）。
+
+料号/存储地点/组织编码先过白名单再拼入固定 SELECT。实测全组织约 9600 行 0.3 秒。U9 方修好 CLR 后可设 `U9_INVENTORY_VIA_SQL=0` 回到标准接口。

@@ -93,6 +93,8 @@ class U9Config:
     bom_max_lines: int = field(default_factory=lambda: _int("U9_BOM_MAX_LINES", 20000, 10, 200000))
     bom_enrich: bool = field(default_factory=lambda: _flag("U9_BOM_ENRICH", True))
     # MODoc/Query 不含单据状态；用 U9 自带 QueryCommon/QueryInfoBySql 读 MO_MO.DocState（只发固定 SELECT）
+    # 库存走 QueryInfoBySql 直读 InvTrans_WhQoh，绕开 Invtrans 接口的 SQL CLR 报错（现场 0x80FC80F1）
+    inventory_via_sql: bool = field(default_factory=lambda: _flag("U9_INVENTORY_VIA_SQL", True))
     mo_state_sql: bool = field(default_factory=lambda: _flag("U9_MO_STATE_SQL", True))
     # 库存：本地数量取 U9 哪个数（store=现存量 m_storeQty / available=可用量 m_canUseQty）
     inventory_qty_field: str = field(default_factory=lambda: (_env("U9_INVENTORY_QTY_FIELD", "store")
@@ -157,6 +159,7 @@ class U9Config:
                 "bom_recursive": self.bom_recursive,
                 "bom_max_depth": self.bom_max_depth,
                 "inventory_qty_field": self.inventory_qty_field,
+                "inventory_via_sql": self.inventory_via_sql,
                 "concurrency": self.concurrency,
             })
         else:

@@ -485,8 +485,11 @@ class U9CClient(U9Client):
                         errors: list[dict] | None = None) -> list[dict]:
         """库存现存量/可用量。接口请求体是单个对象：
         给料号 → 逐个料号查询（并发 U9_CONCURRENCY）；不给料号 → 按组织（+存储地点）整体查询。
-        注意：现场 U9 的整体查询会在服务器端报 SQL CLR 错误，sync 层默认按本地料号逐个查。"""
+        注意：现场 U9 的整体查询会在服务器端报 SQL CLR 错误，sync 层默认按本地料号逐个查。
+        U9_INVENTORY_VIA_SQL=1（默认）时改用 QueryInfoBySql 直读库存表，见 _fetch_inventory_sql。"""
         wh = (wh if wh is not None else self.cfg.default_wh) or ""
+        if getattr(self.cfg, "inventory_via_sql", False):
+            return self._fetch_inventory_sql(item_codes or [], wh, errors)
         base = {"Org": self.cfg.org_code}
         if wh:
             base["Wh"] = wh
@@ -522,6 +525,53 @@ class U9CClient(U9Client):
                     errors.append({"key": code, "error": str(err)})
                 continue
             out.extend(rows)
+        return out
+
+    def _fetch_inventory_sql(self, item_codes: list[str], wh: str,
+                             errors: list[dict] | None = None) -> list[dict]:
+        """InvTrans_WhQoh 按 料号+存储地点+库位+批号 汇总，返回与 Invtrans 接口同形的 m_* 行。
+
+        现存量 = 各存储类型 StoreQty 之和；可用量 ≈ 存储类型 4（可用）的 StoreQty − 预留占用 ResvOccupyStQty
+        （U9 正式可用量还会扣待发等，这里是近似）。只发固定 SELECT，编码先过白名单。
+        """
+        org = self.cfg.org_code
+        if not _SAFE_KEY.match(org or ""):
+            raise U9Error(f"组织编码不合规，无法查询库存：{org!r}")
+        if wh and not _SAFE_KEY.match(wh):
+            raise U9Error(f"存储地点编码不合规：{wh!r}")
+        codes = []
+        for c in _dedupe(item_codes):
+            if _SAFE_KEY.match(c):
+                codes.append(c)
+            elif errors is not None:
+                errors.append({"key": c, "error": "料号含非法字符，跳过库存查询"})
+        if item_codes and not codes:
+            return []
+        base = ("select q.ItemInfo_ItemCode as ItemCode, max(q.ItemInfo_ItemName) as ItemName,"
+                " w.Code as WhCode, max(wt.Name) as WhName, q.BinInfo_Code as BinCode,"
+                " max(q.BinInfo_Name) as BinName, q.LotInfo_LotCode as LotCode,"
+                " sum(q.StoreQty) as StoreQty,"
+                " sum(case when q.StorageType=4 then q.StoreQty-q.ResvOccupyStQty else 0 end) as CanUseQty"
+                " from InvTrans_WhQoh q join CBO_Wh w on w.ID=q.Wh"
+                " left join CBO_Wh_Trl wt on wt.ID=w.ID and wt.SysMLFlag='zh-CN'"
+                " join Base_Organization o on o.ID=q.LogisticOrg"
+                f" where o.Code='{org}' and q.StoreQty<>0")
+        if wh:
+            base += f" and w.Code='{wh}'"
+        group = " group by q.ItemInfo_ItemCode, w.Code, q.BinInfo_Code, q.LotInfo_LotCode"
+        sqls = ([base + " and q.ItemInfo_ItemCode in (" + ",".join(f"'{c}'" for c in chunk) + ")" + group
+                 for chunk in _chunks(codes, 500)] if codes else [base + group])
+        out: list[dict] = []
+        for sql in sqls:
+            for row in self._post(PATH_SQL, {"SqlString": sql}):
+                if not isinstance(row, dict):
+                    continue
+                r = {str(k).lower(): v for k, v in row.items()}
+                out.append({"m_itemCode": r.get("itemcode"), "m_itemName": r.get("itemname"),
+                            "m_whCode": r.get("whcode"), "m_whName": r.get("whname"),
+                            "m_binCode": r.get("bincode") or "", "m_binName": r.get("binname") or "",
+                            "m_lotCode": r.get("lotcode") or "", "m_storeQty": r.get("storeqty"),
+                            "m_canUseQty": r.get("canuseqty")})
         return out
 
     def fetch_production_orders(self, doc_nos: list[str],

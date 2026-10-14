@@ -128,6 +128,16 @@ class FakeU9:
         elif u.path.endswith("/webapi/QueryCommon/QueryInfoBySql"):
             sql = payload["SqlString"]
             self.sqls.append(sql)
+            if "InvTrans_WhQoh" in sql:
+                codes = re.findall(r"'([^']+)'", sql.split("ItemInfo_ItemCode in (", 1)[1]) \
+                    if "ItemInfo_ItemCode in (" in sql else None
+                data = [{"ItemCode": r["m_itemCode"], "ItemName": r["m_itemName"], "WhCode": r["m_whCode"],
+                         "WhName": r.get("m_whName"), "BinCode": r.get("m_binCode", ""),
+                         "BinName": r.get("m_binName", ""), "LotCode": r.get("m_lotCode", ""),
+                         "StoreQty": r["m_storeQty"], "CanUseQty": r["m_canUseQty"]}
+                        for r in self.inventory if codes is None or r["m_itemCode"] in codes]
+                return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
+                                       ensure_ascii=False).encode("utf-8")
             nos = re.findall(r"'([^']+)'", sql.split(" in (", 1)[1])
             data = [{"docno": n, "docstate": st, "productqty": 1.0, "totalcompleteqty": 1.0 if st == 3 else 0.0}
                     for n, st in self.mo_states.items() if n in nos]
@@ -138,7 +148,8 @@ class FakeU9:
 def make_cfg(**kw) -> U9Config:
     cfg = U9Config()
     base = dict(enabled=True, mode="u9c", base_url="http://u9.test/u9c", client_id="wuliao",
-                client_secret=SECRET, ent_code="03", org_code="01", user_code="1064", batch_size=2)
+                client_secret=SECRET, ent_code="03", org_code="01", user_code="1064", batch_size=2,
+                inventory_via_sql=False)
     base.update(kw)
     for k, v in base.items():
         setattr(cfg, k, v)
@@ -768,3 +779,24 @@ def test_mo_state_sql_failure_does_not_break_sync(db, fake, monkeypatch):
     monkeypatch.setattr(u9client.U9CClient, "fetch_mo_states", boom)
     s = run_sync("orders", db, make_cfg(), dry_run=False, doc_nos=["MO001"])["stats"]
     assert s["inserted"] == 1 and any("订单状态" in e["key"] for e in s["errors"])
+
+
+def test_inventory_via_sql_bypasses_invtrans(fake):
+    c = U9CClient(make_cfg(inventory_via_sql=True), fake)
+    rows = c.fetch_inventory(["M001", "M003", "bad'code"], wh="", errors=(errs := []))
+    assert {r["m_itemCode"] for r in rows} == {"M001", "M003"}
+    assert not any(x["path"].endswith("/webapi/Invtrans/QueryQohAndAvailable") for x in fake.calls)
+    sql = fake.sqls[-1]
+    assert "o.Code='01'" in sql and "bad" not in sql and errs and "非法字符" in errs[0]["error"]
+    m = mappers.map_inventory_row(rows[0])
+    assert m["location_code"] == "W01-A1" and m["qty"] == 100
+    c.fetch_inventory(["M001"], wh="W01")
+    assert "w.Code='W01'" in fake.sqls[-1]
+    with pytest.raises(u9client.U9Error):
+        c.fetch_inventory(["M001"], wh="W01' or 1=1--")
+
+
+def test_sync_inventory_via_sql(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    s = run_sync("inventory", db, make_cfg(inventory_via_sql=True), dry_run=True)["stats"]
+    assert s["total"] >= 2 and not s.get("errors")
