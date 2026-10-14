@@ -141,7 +141,7 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 
 1. **《接口授权》**：按 U9C 标准 `OAuth2/AuthLogin`（GET，查询串传参）实现，用户重发的授权文档已确认该格式；路径可用 `U9_AUTH_PATH` 调整。
 2. **请求体格式**：swagger 标注 `application/x-www-form-urlencoded`，但示例是 JSON，默认按 `application/json` 发送，可用 `U9_CONTENT_TYPE` 改。
-3. **生产订单状态**：提供的 MODTOData 字段表**没有单据状态字段**。若现场版本返回 `m_docState` / `m_status` / `DocState`，按 U9 MODocState 常见取值映射：0 开立→`DRAFT`、1 已核准→`RELEASED`、2 开工→`IN_PROGRESS`、3 完工→`COMPLETED`、4 关闭→`COMPLETED`。2026-10-14 用真实完工单实测：`MODoc/Query` 返回的 51 个顶层字段里**确实没有状态/完工数量**。没有状态字段时：新订单记为 `RELEASED`（已下达，0.9.0 前为 `IN_PROGRESS`），已有订单不改状态，需在管理台手动推进；要自动同步状态需 U9 实施方在接口里补 `m_docState`。状态**只前进不后退**（本地已完成/已取消的不会被拉回）。
+3. **生产订单状态**：提供的 MODTOData 字段表**没有单据状态字段**。若现场版本返回 `m_docState` / `m_status` / `DocState`，按 U9 MODocState 常见取值映射：0 开立→`DRAFT`、1 已核准→`RELEASED`、2 开工→`IN_PROGRESS`、3 完工→`COMPLETED`、4 关闭→`COMPLETED`。2026-10-14 用真实完工单实测：`MODoc/Query` 返回的 51 个顶层字段里**确实没有状态/完工数量**。没有状态字段时：新订单记为 `RELEASED`（已下达，0.9.0 前为 `IN_PROGRESS`），已有订单不改状态，需在管理台手动推进；**0.10.0 起**：同步时另调 U9 自带 `POST /webapi/QueryCommon/QueryInfoBySql` 读 `MO_MO.DocState / TotalCompleteQty`（按 `Base_Organization.Code=U9_ORG_CODE` 过滤；单号与组织编码先过白名单 `[A-Za-z0-9_.-]`，只发固定 SELECT），实库核对 2=开工、3=完工。查询失败只记错误、不影响订单头与备料同步；`U9_MO_STATE_SQL=0` 可关闭。注意：该接口允许本接口账号执行任意 SQL，建议 U9 实施方限制其权限。状态**只前进不后退**（本地已完成/已取消的不会被拉回）。
 4. **BOM 版本选择**：同一母件返回多个 BOM 时，优先 `m_alternateType=0`（主制造）、`m_bOMType=0`，再取版本号最大、生效日期最新者。
 5. **料品形态枚举**：`m_itemFormAttribute` 数值→中文按 U9 `ItemFormAttribute` 公开资料（9 采购件、10 制造件、4 委外加工件 …）。只有「采购件 / 委外加工件 / 制造件」会参与本地 BOM 需求生成。
 6. **库存数量**：本地 `inventory.quantity` 为整数，U9 小数数量四舍五入（预览统计 `fractional_rounded` 条数）。

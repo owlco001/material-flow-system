@@ -92,6 +92,8 @@ class U9Config:
     bom_max_depth: int = field(default_factory=lambda: _int("U9_BOM_MAX_DEPTH", 8, 1, 30))
     bom_max_lines: int = field(default_factory=lambda: _int("U9_BOM_MAX_LINES", 20000, 10, 200000))
     bom_enrich: bool = field(default_factory=lambda: _flag("U9_BOM_ENRICH", True))
+    # MODoc/Query 不含单据状态；用 U9 自带 QueryCommon/QueryInfoBySql 读 MO_MO.DocState（只发固定 SELECT）
+    mo_state_sql: bool = field(default_factory=lambda: _flag("U9_MO_STATE_SQL", True))
     # 库存：本地数量取 U9 哪个数（store=现存量 m_storeQty / available=可用量 m_canUseQty）
     inventory_qty_field: str = field(default_factory=lambda: (_env("U9_INVENTORY_QTY_FIELD", "store")
                                                              or "store").lower())

@@ -217,6 +217,8 @@ U9_MO_STATUS_MAP = {
     4: "COMPLETED",    # 关闭（本地无「关闭」，视为已完成）
 }
 U9_MO_STATUS_LABELS = {0: "开立", 1: "已核准", 2: "开工", 3: "完工", 4: "关闭"}
+# 2026-10-14 实库核对：MO_MO.DocState=3 的 5526 单中 5398 单完工数量≥生产数量，=2 的 1712 单基本未完工，
+# 即 2=开工、3=完工 与上表一致。
 # 状态只「往前走」：本地已完成/已取消的单不会被 U9 拉回较早状态
 STATUS_RANK = {"DRAFT": 0, "RELEASED": 1, "IN_PROGRESS": 2, "PAUSED": 2,
                "COMPLETED": 3, "CANCELLED": 3}

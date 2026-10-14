@@ -89,6 +89,8 @@ class FakeU9:
                       "m_docState": 3},
         }
         self.fail_next_post_with: int | None = None
+        self.mo_states: dict[str, int] = {}
+        self.sqls: list[str] = []
 
     def __call__(self, method, url, headers, body, timeout, verify):
         u = urllib.parse.urlsplit(url)
@@ -123,6 +125,12 @@ class FakeU9:
                     and (not payload.get("Wh") or r["m_whCode"] == payload["Wh"])]
         elif u.path.endswith("/webapi/MODoc/Query"):
             data = [self.orders[p["DocNo"]] for p in payload if p["DocNo"] in self.orders]
+        elif u.path.endswith("/webapi/QueryCommon/QueryInfoBySql"):
+            sql = payload["SqlString"]
+            self.sqls.append(sql)
+            nos = re.findall(r"'([^']+)'", sql.split(" in (", 1)[1])
+            data = [{"docno": n, "docstate": st, "productqty": 1.0, "totalcompleteqty": 1.0 if st == 3 else 0.0}
+                    for n, st in self.mo_states.items() if n in nos]
         return 200, json.dumps({"ResCode": 0, "Success": True, "ResMsg": "", "Data": data},
                                ensure_ascii=False).encode("utf-8")
 
@@ -731,3 +739,32 @@ def test_picklist_requirements_visible_in_order_detail(db, fake, monkeypatch):
     d = backend.order_detail(order_no="MO001", page=1, pageSize=500, user=admin)
     text = json.dumps(d, ensure_ascii=False)
     assert "M001" in text and "NEW9" in text
+
+
+def test_sync_orders_reads_doc_state_via_sql(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    fake.mo_states = {"MO001": 2}
+    run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])
+    assert db.execute("SELECT status FROM production_orders WHERE order_no='MO001'").fetchone()[0] == "IN_PROGRESS"
+    assert "o.Code='01'" in fake.sqls[-1] and "'MO001'" in fake.sqls[-1]
+    fake.mo_states = {"MO001": 3}
+    s = run_sync("orders", db, cfg, dry_run=False, doc_nos=["MO001"])["stats"]
+    assert db.execute("SELECT status FROM production_orders WHERE order_no='MO001'").fetchone()[0] == "COMPLETED"
+    assert any(x["U9状态"] == "完工" for x in s["sample"])
+
+
+def test_mo_state_sql_rejects_unsafe_doc_no(fake):
+    errors: list = []
+    out = U9CClient(make_cfg(), fake).fetch_mo_states(["MO001", "X'; drop table MO_MO;--"], errors=errors)
+    assert out == {} and len(fake.sqls) == 1 and "drop" not in fake.sqls[0]
+    assert errors and "非法字符" in errors[0]["error"]
+
+
+def test_mo_state_sql_failure_does_not_break_sync(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    def boom(self, *a, **k):
+        raise u9client.U9Error("no sql", res_code=500)
+    monkeypatch.setattr(u9client.U9CClient, "fetch_mo_states", boom)
+    s = run_sync("orders", db, make_cfg(), dry_run=False, doc_nos=["MO001"])["stats"]
+    assert s["inserted"] == 1 and any("订单状态" in e["key"] for e in s["errors"])

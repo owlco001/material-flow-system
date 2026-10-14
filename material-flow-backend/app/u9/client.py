@@ -16,6 +16,7 @@ U9C 约定：
 from __future__ import annotations
 
 import json
+import re
 import logging
 import socket
 import ssl
@@ -38,6 +39,9 @@ PATH_ITEMS = "/webapi/ItemMaster/Query"
 PATH_BOM = "/webapi/BOM/Query"
 PATH_INVENTORY = "/webapi/Invtrans/QueryQohAndAvailable"
 PATH_MO = "/webapi/MODoc/Query"
+PATH_SQL = "/webapi/QueryCommon/QueryInfoBySql"
+# 拼进 SQL 的单号/组织编码只允许这些字符，杜绝注入
+_SAFE_KEY = re.compile(r"^[A-Za-z0-9_\-.]{1,60}$")
 
 AUTH_ERRORS = {
     401: "未授权：clientid / clientsecret 不正确，或该应用未在 U9C「第三方应用授权」中启用",
@@ -526,6 +530,36 @@ class U9CClient(U9Client):
         if not doc_nos:
             return []
         return self._post_batched(PATH_MO, doc_nos, lambda d: {"DocNo": d}, errors)
+
+    def fetch_mo_states(self, doc_nos: list[str], errors: list[dict] | None = None) -> dict[str, dict]:
+        """读 MO_MO 的单据状态与完工数量：{单号: {doc_state, product_qty, complete_qty}}。
+
+        只发固定的只读 SELECT，单号/组织编码先过白名单；不合规的单号跳过并记入 errors。
+        """
+        org = self.cfg.org_code
+        if not _SAFE_KEY.match(org or ""):
+            raise U9Error(f"组织编码不合规，无法查询订单状态：{org!r}")
+        keys = []
+        for d in _dedupe(doc_nos):
+            if _SAFE_KEY.match(d):
+                keys.append(d)
+            elif errors is not None:
+                errors.append({"key": d, "error": "单号含非法字符，跳过状态查询"})
+        out: dict[str, dict] = {}
+        for chunk in _chunks(keys, 200):
+            in_list = ",".join(f"'{k}'" for k in chunk)
+            sql = ("select m.DocNo, m.DocState, m.ProductQty, m.TotalCompleteQty from MO_MO m"
+                   " join Base_Organization o on o.ID=m.Org"
+                   f" where o.Code='{org}' and m.DocNo in ({in_list})")
+            for row in self._post(PATH_SQL, {"SqlString": sql}):
+                if not isinstance(row, dict):
+                    continue
+                r = {str(k).lower(): v for k, v in row.items()}
+                no = str(r.get("docno") or "").strip()
+                if no:
+                    out[no] = {"doc_state": r.get("docstate"), "product_qty": r.get("productqty"),
+                               "complete_qty": r.get("totalcompleteqty")}
+        return out
 
 
 # 兼容旧名

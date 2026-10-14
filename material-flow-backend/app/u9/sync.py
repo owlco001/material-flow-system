@@ -334,6 +334,19 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
     _check_keys(cfg, wanted, "生产订单号")
     errors: list[dict] = []
     raw = client.fetch_production_orders(wanted, errors=errors) if wanted else []
+    states: dict[str, dict] = {}
+    if raw and getattr(cfg, "mo_state_sql", False) and hasattr(client, "fetch_mo_states"):
+        nos = [str(r.get("m_docNo") or "").strip() for r in raw if isinstance(r, dict)]
+        try:
+            states = client.fetch_mo_states([n for n in nos if n], errors=errors)
+        except U9Error as e:  # 状态查不到不影响订单头/备料同步
+            errors.append({"key": "（订单状态）", "error": str(e)})
+    for r in raw:
+        if isinstance(r, dict):
+            st = states.get(str(r.get("m_docNo") or "").strip())
+            if st and st.get("doc_state") is not None and r.get("m_docState") in (None, ""):
+                r["m_docState"] = st["doc_state"]
+                r["_complete_qty"] = st.get("complete_qty")
     inserted = updated = unchanged = skipped = 0
     req_inserted = req_updated = mat_created = 0
     sample, seen = [], set()
@@ -363,7 +376,8 @@ def _sync_orders(conn, cfg, dry_run, *, doc_nos=None, include_local=True, client
             sample.append({"动作": action, "单号": m["order_no"], "产品料号": m["product_code"],
                            "产品": m["product_name"], "数量": m["qty"], "单位": m["uom"],
                            "开工日": m["start_date"], "完工日": m["complete_date"],
-                           "U9状态": m["u9_state"] or "（接口未返回）",
+                           "U9状态": m["u9_state"] or "（未查到）",
+                           "完工数量": r.get("_complete_qty", ""),
                            "备料行": len(m["picklist"]),
                            "本地状态": new_status or (cur[1] if cur else "")})
         order_id = cur[2] if cur is not None else f"u9mo-{m['order_no']}"
