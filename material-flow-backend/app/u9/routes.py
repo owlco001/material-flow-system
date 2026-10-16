@@ -141,13 +141,15 @@ def u9_sync(entity: str,
 def u9_orders_lookup(year: int = Query(..., description="年份，如 2026"),
                      limit: int = Query(default=2000, ge=1, le=5000,
                                         description="从 U9 取最近 N 个单号再按年份过滤"),
+                     doc_prefix: str = Query(default="",
+                                             description="单号前缀过滤，如 JSBY-26B"),
                      user: sqlite3.Row = Depends(current_user)):
     """按年份查生产订单号（只读）：返回该年订单的 doc_nos 与产品料号，
     可直接喂给 POST /api/v1/u9/sync/orders?doc_nos=… 与 sync/boms。"""
     _admin(user)
     cfg = _require_ready()
     try:
-        return lookup_orders_by_year(cfg, year, limit)
+        return lookup_orders_by_year(cfg, year, limit, doc_prefix=doc_prefix)
     except U9Error as e:
         raise ApiError(502, "U9_UPSTREAM_ERROR", f"U9 查询失败：{e}")
     except Exception as e:  # noqa: BLE001 - 转中文业务报错，不吞真因

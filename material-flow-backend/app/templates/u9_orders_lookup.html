@@ -22,7 +22,20 @@
     <div class="row">
       <label>年份<input type="text" name="year" value="{{ year }}" inputmode="numeric"></label>
       <label>取最近 N 个单号<input type="text" name="limit" value="{{ limit }}" inputmode="numeric"></label>
+      <label>单号前缀（可选）<input type="text" name="doc_prefix" value="{{ doc_prefix }}" placeholder="如 JSBY-26B" style="width:180px"></label>
       <button type="submit" class="btn" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>查找</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="border-left:4px solid #dc3545">
+  <h3>清理误导入的订单</h3>
+  <p class="page-desc">按 U9 单号前缀删除之前误导入的订单（如 MO- 开头的 BOM 单）。只删系统导入的（id 为 u9mo- 开头），手工建的不动，其物料需求会连带删除。</p>
+  <form method="post" action="/admin/u9/orders/cleanup" onsubmit="return confirm('确定删除该前缀的全部 U9 导入订单吗？此操作不可恢复。')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row">
+      <label>单号前缀<input type="text" name="doc_prefix" value="MO-" style="width:180px"></label>
+      <button type="submit" class="btn btn-danger btn-sm">删除该前缀的导入订单</button>
     </div>
   </form>
 </div>

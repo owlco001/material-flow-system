@@ -2564,6 +2564,7 @@ def admin_u9_orders_lookup(request: Request):
     cfg = get_config()
     year = (request.query_params.get("year", "2026") or "2026").strip()
     limit = (request.query_params.get("limit", "2000") or "2000").strip()
+    doc_prefix = (request.query_params.get("doc_prefix", "") or "").strip()
     result, error = None, ""
     if request.query_params.get("do") == "1":
         if not cfg.ready:
@@ -2571,7 +2572,8 @@ def admin_u9_orders_lookup(request: Request):
         else:
             try:
                 result = lookup_orders_by_year(
-                    cfg, int(year), max(1, min(5000, int(limit))))
+                    cfg, int(year), max(1, min(5000, int(limit))),
+                    doc_prefix=doc_prefix)
             except U9Error as e:
                 error = f"U9 查询失败：{e}"
             except (TypeError, ValueError):
@@ -2588,11 +2590,39 @@ def admin_u9_orders_lookup(request: Request):
             "ready": cfg.ready,
             "year": year,
             "limit": limit,
+            "doc_prefix": doc_prefix,
             "result": result,
             "error": error,
             "now_ts": int(time.time()),
         },
     )
+
+
+@router.post("/admin/u9/orders/cleanup")
+async def admin_u9_orders_cleanup(request: Request):
+    """清理误导入的 U9 订单（按单号前缀，如 MO-）：只删 id 为 u9mo-<prefix> 开头的订单，
+    其物料需求经外键级联删除；手工订单不受影响。"""
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    from urllib.parse import quote
+    from app.u9.sync import delete_u9_orders_by_doc_prefix
+    prefix = str(form.get("doc_prefix", "")).strip()
+    c = db()
+    try:
+        try:
+            r = delete_u9_orders_by_doc_prefix(c, prefix)
+        except ValueError as e:
+            return _see_other("/admin/u9?msg=" + quote(str(e)) + "&ok=0")
+        c.commit()
+        msg = (f"已清理 U9 导入订单：前缀 {prefix}，删除订单 {r['deleted_orders']} 个，"
+               f"连带物料需求 {r['deleted_requirements']} 条")
+        return _see_other("/admin/u9?msg=" + quote(msg) + "&ok=1")
+    finally:
+        c.close()
 
 
 @router.post("/admin/u9/health")
