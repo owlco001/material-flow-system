@@ -2551,6 +2551,50 @@ def admin_u9(request: Request):
     )
 
 
+@router.get("/admin/u9/orders/lookup", response_class=HTMLResponse)
+def admin_u9_orders_lookup(request: Request):
+    """按年份查找 U9 生产订单号（管理台页面版）：与 /api/v1/u9/orders/lookup 同一后端，
+    查出的单号可直接一键预览/执行订单同步，产品料号可一键同步 BOM。"""
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    from app.u9.config import get_config
+    from app.u9.sync import lookup_orders_by_year
+    from app.u9.client import U9Error
+    cfg = get_config()
+    year = (request.query_params.get("year", "2026") or "2026").strip()
+    limit = (request.query_params.get("limit", "2000") or "2000").strip()
+    result, error = None, ""
+    if request.query_params.get("do") == "1":
+        if not cfg.ready:
+            error = "U9 未启用或连接信息不完整，无法查找"
+        else:
+            try:
+                result = lookup_orders_by_year(
+                    cfg, int(year), max(1, min(5000, int(limit))))
+            except U9Error as e:
+                error = f"U9 查询失败：{e}"
+            except (TypeError, ValueError):
+                error = "年份或数量参数无效"
+            except Exception as e:  # noqa: BLE001 - 转中文提示，不吞真因
+                error = f"查询异常：{e}"
+    return templates.TemplateResponse(
+        request,
+        "u9_orders_lookup.html",
+        {
+            "user": user,
+            "csrf_token": user["csrf_token"],
+            "config": cfg.safe_dict(),
+            "ready": cfg.ready,
+            "year": year,
+            "limit": limit,
+            "result": result,
+            "error": error,
+            "now_ts": int(time.time()),
+        },
+    )
+
+
 @router.post("/admin/u9/health")
 async def admin_u9_health(request: Request):
     user, denied = _admin_or_403(request)

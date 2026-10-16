@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block page_title %}按年份查找 U9 生产订单{% endblock %}
+{% block content %}
+<style>
+.u9-lookup textarea{width:100%;min-height:120px;resize:vertical;padding:6px 8px;font-size:13px}
+.u9-lookup .row{display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:12px}
+.u9-lookup .row label{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.u9-lookup .row input{padding:6px 8px;width:140px}
+.u9-lookup table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.u9-lookup th,.u9-lookup td{border:1px solid var(--border,#ddd);padding:4px 8px;text-align:left}
+.u9-lookup .btn-row{display:flex;gap:8px;margin-top:8px}
+.u9-lookup .err{color:#b02a37;font-size:13px}
+</style>
+<div class="compact u9-lookup">
+<h2>按年份查找 U9 生产订单</h2>
+<p class="page-desc">从 U9 取最近 N 个生产订单号，逐单按开工年/完工年筛选。只读，不写库。查出后可直接一键同步订单与 BOM。</p>
+<p><a href="/admin/u9">← 返回 U9 集成</a></p>
+
+<div class="card">
+  <form method="get" action="/admin/u9/orders/lookup">
+    <input type="hidden" name="do" value="1">
+    <div class="row">
+      <label>年份<input type="text" name="year" value="{{ year }}" inputmode="numeric"></label>
+      <label>取最近 N 个单号<input type="text" name="limit" value="{{ limit }}" inputmode="numeric"></label>
+      <button type="submit" class="btn" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>查找</button>
+    </div>
+  </form>
+</div>
+
+{% if error %}
+<div class="card"><p class="err" style="margin:0">{{ error }}</p></div>
+{% endif %}
+
+{% if result %}
+<div class="card">
+  <h3>{{ result.year }} 年订单：命中 {{ result.matched }} 个（共扫描 {{ result.scanned }} 个）</h3>
+  {% if result.doc_nos %}
+  <label style="font-size:13px;color:var(--muted)">订单号（{{ result.doc_nos|length }} 个）</label>
+  <textarea readonly>{{ result.doc_nos|join(",") }}</textarea>
+  <form method="post" action="/admin/u9/sync/orders">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="orders-{{ now_ts }}">
+    <input type="hidden" name="doc_nos" value="{{ result.doc_nos|join(',') }}">
+    <input type="hidden" name="include_local" value="0">
+    <div class="btn-row">
+      <button type="submit" name="dry_run" value="1" class="btn btn-sm">预览订单同步</button>
+      <button type="submit" name="dry_run" value="0" class="btn btn-danger btn-sm"
+              data-confirm="将把 {{ result.doc_nos|length }} 个订单从 U9 拉取并写入本地生产订单表。建议先预览确认差异。"
+              data-confirm-title="执行订单同步？" data-confirm-ok="执行同步" data-confirm-danger>执行订单同步</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">该年没有命中订单。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>产品料号（{{ result.product_codes|length }} 个）</h3>
+  {% if result.product_codes %}
+  <textarea readonly>{{ result.product_codes|join(",") }}</textarea>
+  <form method="post" action="/admin/u9/sync/boms">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clientOperationId" value="boms-{{ now_ts }}">
+    <input type="hidden" name="product_codes" value="{{ result.product_codes|join(',') }}">
+    <div class="btn-row">
+      <button type="submit" name="dry_run" value="1" class="btn btn-sm">预览 BOM 同步</button>
+      <button type="submit" name="dry_run" value="0" class="btn btn-danger btn-sm"
+              data-confirm="将按 {{ result.product_codes|length }} 个产品料号从 U9 拉取 BOM 并生成聚合批次。建议先预览确认差异。"
+              data-confirm-title="执行 BOM 同步？" data-confirm-ok="执行同步" data-confirm-danger>执行 BOM 同步</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">没有产品料号。</p>
+  {% endif %}
+</div>
+
+{% if result.sample %}
+<div class="card">
+  <h3>样例（前 {{ result.sample|length }} 个）</h3>
+  <table>
+    <tr><th>单号</th><th>产品料号</th><th>产品</th><th>数量</th><th>开工日</th><th>完工日</th><th>U9状态</th></tr>
+    {% for s in result.sample %}
+    <tr><td>{{ s["单号"] }}</td><td>{{ s["产品料号"] }}</td><td>{{ s["产品"] }}</td><td>{{ s["数量"] }}</td><td>{{ s["开工日"] }}</td><td>{{ s["完工日"] }}</td><td>{{ s["U9状态"] }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% if result.errors %}
+<div class="card">
+  <h3>查询中的错误（{{ result.errors|length }} 条）</h3>
+  <ul style="font-size:13px">
+  {% for e in result.errors %}
+    <li>{{ e }}</li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}
