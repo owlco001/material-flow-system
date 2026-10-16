@@ -458,6 +458,13 @@ RELEASE_NOTICES: dict[str, tuple[str, str]] = {
     "APK_TOO_LARGE": ("error", "APK 超过 300MB 上限。"),
     "RELEASE_EXISTS": ("error", "该版本号已存在，请先删除旧版。"),
     "INVALID_VERSION_NAME": ("error", "版本名称格式无效（仅允许字母、数字和 . _ -）。"),
+    "sync_started": ("notice", "已开始从远端同步，下载完成后自动发布。页面会自动刷新进度。"),
+    "sync_already": ("notice", "该版本已同步过，本地已是该版本。"),
+    "APP_SYNC_BUSY": ("error", "已有同步任务在进行，请稍候。"),
+    "APP_SYNC_NOT_FOUND": ("error", "远端没有找到可同步的安装包（附件需命名为 app-版本号-版本名.apk）。"),
+    "APP_SYNC_SOURCE_ERROR": ("error", "查询远端版本失败（GitHub 与 Gitee 均不可访问），请稍后重试。"),
+    "INVALID_SOURCE": ("error", "同步来源无效。"),
+    "INVALID_TAG": ("error", "Release 标签格式无效。"),
 }
 
 SYSTEM_NOTICES: dict[str, tuple[str, str]] = {
@@ -4295,11 +4302,21 @@ def admin_releases(request: Request):
     if denied:
         return denied
     from app import updates as _updates
+    from app import app_sync as _app_sync
     releases = _updates.list_releases()
+    return _render_releases(request, user, releases, _app_sync.get_status(), None)
+
+
+def _render_releases(request: Request, user: Any, releases: list, sync_status: dict, remote: dict | None,
+                     remote_error: str | None = None, remote_source: str = "auto"):
     return templates.TemplateResponse(
         request, "releases.html",
         {"user": user,
          "releases": releases,
+         "sync_status": sync_status,
+         "remote": remote,
+         "remote_error": remote_error,
+         "remote_source": remote_source,
          **_coded_notice(request, RELEASE_NOTICES, "上传失败"),
          "csrf_token": user["csrf_token"]},
     )
@@ -4338,6 +4355,55 @@ async def admin_releases_upload(request: Request):
     except HTTPException as exc:
         return _see_other("/admin/releases?notice=upload_failed")
     return _see_other("/admin/releases?notice=uploaded")
+
+
+@router.post("/admin/releases/sync/check")
+async def admin_releases_sync_check(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    source = str(form.get("source", "auto") or "auto").strip().lower()
+    from app import updates as _updates
+    from app import app_sync as _app_sync
+    from starlette.concurrency import run_in_threadpool
+    remote, err = None, None
+    try:
+        # 网络请求（最多两个来源各 15 秒）放线程池，不阻塞事件循环
+        remote = await run_in_threadpool(_app_sync.list_remote, source)
+    except ApiError as exc:
+        err = str(exc.detail)
+    return _render_releases(request, user, _updates.list_releases(), _app_sync.get_status(),
+                            remote, err, source)
+
+
+@router.post("/admin/releases/sync")
+async def admin_releases_sync(request: Request):
+    user, denied = _admin_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    source = str(form.get("source", "auto") or "auto").strip().lower()
+    tag = str(form.get("tag", "") or "").strip()
+    from app import app_sync as _app_sync
+    from starlette.concurrency import run_in_threadpool
+    try:
+        r = await run_in_threadpool(_app_sync.start_sync, source, tag, user["username"])
+    except ApiError as exc:
+        return _see_other(f"/admin/releases?notice={exc.code}")
+    c = db()
+    try:
+        audit(c, user["id"], user["role"], "APP_RELEASE_SYNC", "app_release",
+              f'{r.get("source", source)}:{r.get("tag", tag)}:{r.get("versionCode", "")}',
+              "SUCCESS", _request_trace_id(request) or "web-admin")
+        c.commit()
+    finally:
+        c.close()
+    return _see_other("/admin/releases?notice=" + ("sync_already" if r["state"] == "already" else "sync_started"))
 
 
 @router.post("/admin/releases/delete")

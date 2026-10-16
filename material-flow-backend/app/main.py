@@ -7206,3 +7206,8 @@ try:
 except ImportError:
     from updates import router as _updates_router
 app.include_router(_updates_router)
+try:
+    from .app_sync import router as _app_sync_router
+except ImportError:
+    from app_sync import router as _app_sync_router
+app.include_router(_app_sync_router)

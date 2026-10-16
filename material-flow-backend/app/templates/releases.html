@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block page_title %}APP 更新{% endblock %}
+{% block head_extra %}{% if sync_status and sync_status.state in ("queued", "downloading", "verifying") %}<meta http-equiv="refresh" content="5;url=/admin/releases">{% endif %}{% endblock %}
 {% block content %}
 {% from "_notice.html" import flash %}
 <div class="compact">
@@ -20,6 +21,63 @@
     </div>
     <button type="submit" class="btn btn-sm">上传并发布</button>
   </form>
+<div class="card" style="flex:1;min-width:320px">
+  <h3>从 GitHub / Gitee 同步</h3>
+  <p class="muted" style="margin-top:0">拉取仓库 Release 里的 <code>app-版本号-版本名.apk</code>，下载到本后端并发布。自动模式优先 Gitee，GitHub 直连失败时走下载加速。</p>
+  {% set st = sync_status or {} %}
+  {% if st.state in ("queued", "downloading", "verifying") %}
+    <p><span class="badge b-warn">同步中</span> v{{ st.versionName }}（{{ st.versionCode }}）· {{ st.source }}
+    {% if st.state == "verifying" %}· 校验中{% elif st.total %}· {{ ((st.bytes or 0) / 1048576) | round(1) }} / {{ (st.total / 1048576) | round(1) }} MB（{{ ((st.bytes or 0) * 100 / st.total) | round(0) | int }}%）{% elif st.bytes %}· 已下载 {{ (st.bytes / 1048576) | round(1) }} MB{% endif %}
+    {% if st.via %}<span class="muted">· 经 {{ st.via }}</span>{% endif %}</p>
+  {% elif st.state == "done" %}
+    <p><span class="badge b-ok">已同步</span> v{{ st.versionName }}（{{ st.versionCode }}）· {{ st.source }} · {{ st.at|local_dt }}</p>
+  {% elif st.state == "failed" %}
+    <p><span class="badge b-err">同步失败</span> v{{ st.versionName }}（{{ st.versionCode }}）：{{ st.error }}</p>
+  {% endif %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+    <form method="post" action="/admin/releases/sync/check" style="display:flex;gap:8px;align-items:flex-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div><label>来源</label>
+        <select name="source" style="max-width:140px">
+          {% for v, t in [("auto", "自动"), ("gitee", "Gitee"), ("github", "GitHub")] %}
+          <option value="{{ v }}"{% if remote_source == v %} selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select></div>
+      <button type="submit" class="btn btn-sm btn-secondary">检查远端版本</button>
+    </form>
+    <form method="post" action="/admin/releases/sync">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="source" value="{{ remote_source or 'auto' }}">
+      <button type="submit" class="btn btn-sm"{% if st.state in ("queued", "downloading", "verifying") %} disabled{% endif %}>同步最新版本</button>
+    </form>
+  </div>
+  {% if remote_error %}<p class="mb-err" style="color:var(--danger,#c0392b)">{{ remote_error }}</p>{% endif %}
+  {% if remote %}
+  <div class="table-wrap" style="margin-top:8px">
+  <table>
+    <tr><th>标签</th><th>版本号</th><th>来源</th><th>大小</th><th>发布时间</th><th>操作</th></tr>
+    {% for r in remote.releases %}
+    <tr>
+      <td>{{ r.tag }}</td>
+      <td><b>{{ r.versionCode }}</b> <span class="muted">{{ r.versionName }}</span></td>
+      <td class="muted">{{ "GitHub" if r.source == "github" else "Gitee" }}</td>
+      <td class="muted">{% if r.size %}{{ (r.size / 1048576) | round(1) }} MB{% else %}—{% endif %}</td>
+      <td class="muted">{{ r.publishedAt|local_dt if r.publishedAt else "—" }}</td>
+      <td>{% if r.synced %}<span class="badge b-ok">已同步</span>{% else %}
+        <form method="post" action="/admin/releases/sync" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="source" value="{{ r.source }}">
+          <input type="hidden" name="tag" value="{{ r.tag }}">
+          <button type="submit" class="btn btn-sm"{% if st.state in ("queued", "downloading", "verifying") %} disabled{% endif %}>同步</button>
+        </form>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">远端没有符合命名的安装包。</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% if remote.errors %}<p class="muted">部分来源不可用：{{ remote.errors | join("；") }}</p>{% endif %}
+  {% endif %}
 </div>
 </div>
 

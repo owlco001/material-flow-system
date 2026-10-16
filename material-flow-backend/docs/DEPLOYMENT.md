@@ -278,3 +278,14 @@ rate. Run it before and after changing the prompt or switching models.
 
 For servers in mainland China put `UPDATE_SOURCE=gitee` in the env file. The Gitee
 mirror is pushed from GitHub `main` after each merge.
+
+## APP 安装包从 GitHub / Gitee 同步
+
+管理台「APP 更新」页新增「从 GitHub / Gitee 同步」：
+
+- 「检查远端版本」列出仓库 Release 中命名为 `app-{versionCode}-{versionName}.apk` 的安装包（推 `v*` 标签时 build-apk.yml 产出），标出本地是否已同步。
+- 「同步最新版本」或单行「同步」：后台线程下载 → 有 `.sha256` 附件则校验 → 发布到本后端 APP 更新通道（`/api/v1/app/updates/latest`）。页面每 5 秒自动刷新进度。同一时间只允许一个同步任务（`app-releases/.sync.lock`）。
+- 来源：自动（Gitee 有同版本时优先，否则 GitHub）、仅 Gitee、仅 GitHub。GitHub 直连失败时自动改走 `APP_SYNC_GITHUB_PROXY`（默认 `https://gh-proxy.com/`，置空关闭）。
+- 环境变量：`APP_SYNC_GITHUB_PROXY`、`APP_SYNC_MAX_SECONDS`（默认 1800）、`UPDATE_GITHUB_REPO`、`UPDATE_GITEE_REPO`。
+- API（仅 ADMIN）：`GET /api/v1/admin/app/releases/remote?source=auto`、`POST /api/v1/admin/app/releases/sync {"source","tag"}`、`GET /api/v1/admin/app/releases/sync/status`。
+- 想让 Gitee 也有 Release：在 GitHub 仓库 Secrets 添加 `GITEE_TOKEN`（Gitee 私人令牌），build-apk.yml 会把标签和 APK 一并发布到 Gitee；未配置则跳过。

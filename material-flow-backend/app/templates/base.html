@@ -7,6 +7,7 @@
 <title>{% block title %}{% set _pt = self.page_title()|trim %}{{ _pt ~ " · 智慧工厂" if _pt else "智慧工厂" }}{% endblock %}</title>
 <link rel="stylesheet" href="{{ static_url('admin/base.css') }}">
 <script src="{{ static_url('admin/base-head.js') }}"></script>
+{% block head_extra %}{% endblock %}
 </head>
 {% if false %}{% block page_title %}{% endblock %}{% endif %}
 <body class="{% if not user %}no-side{% endif %}">

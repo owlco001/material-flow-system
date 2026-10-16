@@ -15,6 +15,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,4 +61,32 @@ jobs:
           sha256sum "$out" | tee "$out.sha256"
           notes="${RELEASE_NOTES:-$(git log -1 --pretty=%s)}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "$notes" --verify-tag
-          gh release upload "$TAG" "$out" --clobber
+          gh release upload "$TAG" "$out" "$out.sha256" --clobber
+          echo "APK_OUT=$PWD/$out" >> "$GITHUB_ENV"
+
+      # 可选：同时发布到 Gitee Release（国内服务器从 Gitee 同步更快）。
+      # 需在仓库 Secrets 配置 GITEE_TOKEN（Gitee 私人令牌，勾选 projects 权限）；未配置则跳过。
+      - name: 同步 Release 到 Gitee
+        if: startsWith(github.ref, 'refs/tags/v') && env.GITEE_TOKEN != ''
+        continue-on-error: true
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPO: owlco001/material-flow-system
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          api="https://gitee.com/api/v5/repos/$GITEE_REPO"
+          git fetch --unshallow --quiet || true
+          # Gitee 镜像只同步 main，先把标签推过去，Release 才能挂到它上面
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git" "refs/tags/$TAG:refs/tags/$TAG" || true
+          id=$(curl -fsS "$api/releases/tags/$TAG?access_token=$GITEE_TOKEN" | python3 -c 'import sys,json;d=json.load(sys.stdin) or {};print(d.get("id") or "")' || true)
+          if [ -z "$id" ]; then
+            id=$(curl -fsS -X POST "$api/releases" \
+              --data-urlencode "access_token=$GITEE_TOKEN" --data-urlencode "tag_name=$TAG" \
+              --data-urlencode "name=$TAG" --data-urlencode "body=$(git log -1 --pretty=%s)" \
+              --data-urlencode "target_commitish=$GITHUB_SHA" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          fi
+          for f in "$APK_OUT" "$APK_OUT.sha256"; do
+            curl -fsS -X POST "$api/releases/$id/attach_files" -F "access_token=$GITEE_TOKEN" -F "file=@$f" >/dev/null
+          done
+          echo "已发布到 Gitee Release $TAG（id=$id）"
