@@ -150,6 +150,7 @@ class FakeU9:
             if "join CBO_Project p on p.ID=m.Project" in sql and "p.Code in (" in sql:
                 prjs = re.findall(r"'([^']+)'", sql.split("p.Code in (", 1)[1])
                 data = [{"DocNo": "MO001", "DocState": 2, "Qty": 2.0, "ItemCode": "SB01", "ItemName": "横向输送机",
+                         "MachineNo": "P5-12",
                          "ProjectCode": "JSBY-26B-001", "ProjectName": "JSBY-26B-001"},
                         {"DocNo": "MO002", "DocState": 3, "Qty": 1.0, "ItemCode": "SB02", "ItemName": "二号设备",
                          "ProjectCode": "JSBY-26B-001", "ProjectName": "JSBY-26B-001"}]
@@ -962,8 +963,8 @@ def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monk
     assert po[0] == "u9prj-JSBY-26B-001" and po[1] == "IN_PROGRESS"  # 一张开工一张完工
     ods = db.execute("SELECT id, device_no, device_type, sequence_no FROM order_devices WHERE order_id=?"
                      " ORDER BY sequence_no", (po[0],)).fetchall()
-    assert [tuple(r)[1:] for r in ods] == [("MO001", "输送设备", 1), ("MO002", "通用设备", 2)]
-    assert db.execute("SELECT device_name FROM devices WHERE device_no='MO001'").fetchone()[0] == "横向输送机"
+    assert [tuple(r)[1:] for r in ods] == [("26B-001-P5-12", "输送设备", 1), ("MO002", "通用设备", 2)]
+    assert db.execute("SELECT device_name FROM devices WHERE device_no='26B-001-P5-12'").fetchone()[0] == "横向输送机"
     assert db.execute("SELECT COUNT(*) FROM assembly_tasks WHERE order_no='JSBY-26B-001'").fetchone()[0] == 2
     # MO001 的备料表 → 该机台的物料需求（M001 汇总 16，NEW9 0.5 向上取整 1，停用行跳过）
     reqs = dict(db.execute("SELECT m.code, r.required_quantity FROM order_material_requirements r"
@@ -979,10 +980,39 @@ def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monk
     # 测试环境清理：订单、机台绑定、装配任务、物料需求、U9 建的机台档案一并清掉
     r = delete_u9_orders_by_doc_prefix(db, "JSBY-26B")
     assert r["deleted_orders"] == 1 and r["deleted_requirements"] == 2
-    for q in ("SELECT COUNT(*) FROM order_devices WHERE device_no IN ('MO001','MO002')",
+    for q in ("SELECT COUNT(*) FROM order_devices WHERE device_no IN ('26B-001-P5-12','MO002')",
               "SELECT COUNT(*) FROM assembly_tasks WHERE order_no='JSBY-26B-001'",
-              "SELECT COUNT(*) FROM devices WHERE device_no IN ('MO001','MO002')"):
+              "SELECT COUNT(*) FROM devices WHERE device_no IN ('26B-001-P5-12','MO002')"):
         assert db.execute(q).fetchone()[0] == 0, q
+
+
+def test_device_no_rules():
+    from app.u9.sync import device_no_for, project_short
+    assert project_short("JSBY-26B-012") == "26B-012" and project_short("26B-012") == "26B-012"
+    assert device_no_for("JSBY-26B-012", " P5-12 ", "MO-1") == "26B-012-P5-12"
+    assert device_no_for("JSBY-26B-012", None, "MO-1") == "MO-1"
+
+
+def test_sync_projects_renames_old_mo_devices_and_dedupes(db, fake, monkeypatch):
+    """0.17.0 用 MO 单号建的机台，再同步时改成「项目短号-机台编号」；同项目重复编号附 MO 单号。"""
+    _patch_transport(monkeypatch, fake)
+    cfg = make_cfg()
+    run_sync("projects", db, cfg, dry_run=False, projects=["JSBY-26B-001"])
+    db.execute("UPDATE order_devices SET device_no='MO001' WHERE id='u9od-MO001'")
+    db.execute("UPDATE assembly_tasks SET device_no='MO001' WHERE id='u9task-MO001'")
+    db.execute("UPDATE devices SET device_no='MO001' WHERE id='u9dev-MO001'")
+    db.commit()
+    s = run_sync("projects", db, cfg, dry_run=False)["stats"]
+    assert s["devices_renamed"] == 1 and s["devices_inserted"] == 0
+    for t, i in (("order_devices", "u9od-MO001"), ("assembly_tasks", "u9task-MO001"), ("devices", "u9dev-MO001")):
+        assert db.execute(f"SELECT device_no FROM {t} WHERE id=?", (i,)).fetchone()[0] == "26B-001-P5-12", t
+    # 同一项目里另一台已占用该编号 → 附上 MO 单号
+    db.execute("UPDATE order_devices SET device_no='TMP' WHERE id='u9od-MO001'")
+    db.execute("UPDATE order_devices SET device_no='26B-001-P5-12' WHERE id='u9od-MO002'")
+    db.commit()
+    run_sync("projects", db, cfg, dry_run=False)
+    assert db.execute("SELECT device_no FROM order_devices WHERE id='u9od-MO001'").fetchone()[0] \
+        == "26B-001-P5-12(MO001)"
 
 
 def test_lookup_returns_project_codes(fake, monkeypatch):

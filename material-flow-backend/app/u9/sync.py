@@ -513,6 +513,20 @@ def _upsert_mo_requirements(conn, order_id: str, picklist: list[dict], now: str)
 PROJECT_ORDER_PREFIX = "u9prj-"
 
 
+def project_short(code: str) -> str:
+    """项目号去掉公司前缀：JSBY-26B-012 → 26B-012（没有前缀则原样返回）。"""
+    code = (code or "").strip()
+    head, sep, rest = code.partition("-")
+    return rest if sep and rest and head.isalpha() else code
+
+
+def device_no_for(project_code: str, machine_no: str, mo: str) -> str:
+    """机台号口径（用户 2026-10-17 确认）：项目短号-机台编号，如 26B-012-P5-12；
+    U9 料品私有段 2 没填机台编号时退回 MO 单号。机台编号跨项目会重复，故带项目前缀。"""
+    m = str(machine_no or "").strip()
+    return f"{project_short(project_code)}-{m}" if m else mo
+
+
 def _project_status(states: list) -> str:
     vals = []
     for s in states:
@@ -564,6 +578,15 @@ def _upsert_device_requirements(conn, order_id: str, od_id: str, picklist: list[
     return ins, upd, mats
 
 
+def _rename_device(conn, od_id: str, mo: str, order_no: str, old: str, new: str, now: str) -> None:
+    """已同步的机台换成新机台号（如 0.17.0 用 MO 单号建的机台）：订单机台、装配任务、U9 建的机台档案一起改。"""
+    conn.execute("UPDATE order_devices SET device_no=? WHERE id=?", (new, od_id))
+    conn.execute("UPDATE assembly_tasks SET device_no=?, updated_at=? WHERE order_no=? AND device_no=?",
+                 (new, now, order_no, old))
+    if not conn.execute("SELECT 1 FROM devices WHERE device_no=?", (new,)).fetchone():
+        conn.execute("UPDATE devices SET device_no=?, updated_at=? WHERE id=?", (new, now, f"u9dev-{mo}"))
+
+
 def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, client=None,
                    user_id: str = "", **_):
     client = client or get_client(cfg)
@@ -593,7 +616,8 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
     now = _now()
     creator = user_id or "u9-sync"
     st = dict(orders_inserted=0, orders_updated=0, devices_inserted=0, devices_existing=0,
-              requirements_inserted=0, requirements_updated=0, materials_created=0, tasks_created=0)
+              requirements_inserted=0, requirements_updated=0, materials_created=0, tasks_created=0,
+              devices_renamed=0)
     sample: list[dict] = []
     for code in wanted:
         rows = by_prj.get(code) or []
@@ -626,37 +650,46 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
             mo = r["docno"]
             pname = str(r.get("itemname") or "").strip() or str(r.get("itemcode") or "") or mo
             pick = picklists.get(mo, [])
-            od = conn.execute("SELECT id, order_id FROM order_devices WHERE device_no=?", (mo,)).fetchone()
+            dno = device_no_for(code, r.get("machineno"), mo)
+            od_id = f"u9od-{mo}"
+            od = conn.execute("SELECT id, order_id, device_no FROM order_devices WHERE id=?",
+                              (od_id,)).fetchone()
+            taken = conn.execute("SELECT id, order_id FROM order_devices WHERE device_no=?", (dno,)).fetchone()
+            if taken is not None and taken[0] != od_id:
+                if taken[1] != order_id:
+                    errors.append({"key": mo, "error": f"机台号 {dno} 已挂在其他订单（{taken[1]}），跳过"})
+                    continue
+                dno = f"{dno}({mo})"  # 同一项目里机台编号重复：附上 MO 单号区分
             action = "已有"
-            if od is not None and od[1] != order_id:
-                errors.append({"key": mo, "error": f"机台号已挂在其他订单（{od[1]}），跳过"})
-                continue
             workshop, capability = _categorize_device(pname)
+            if od is not None and od[2] != dno:
+                action = "改号"
+                st["devices_renamed"] += 1
+                if not dry_run:
+                    _rename_device(conn, od_id, mo, code, od[2], dno, now)
             if od is None:
                 action = "新增"
                 st["devices_inserted"] += 1
                 seq += 1
-                od_id = f"u9od-{mo}"
                 if not dry_run:
-                    dev = conn.execute("SELECT id FROM devices WHERE device_no=?", (mo,)).fetchone()
+                    dev = conn.execute("SELECT id FROM devices WHERE device_no=?", (dno,)).fetchone()
                     dev_id = dev[0] if dev else f"u9dev-{mo}"
                     if dev is None:
                         conn.execute("INSERT INTO devices(id, device_no, device_name, workshop,"
                                      " model_capability, status, created_by, created_at, updated_at)"
                                      " VALUES(?,?,?,?,?,?,?,?,?)",
-                                     (dev_id, mo, pname, workshop, capability, "ACTIVE", creator, now, now))
+                                     (dev_id, dno, pname, workshop, capability, "ACTIVE", creator, now, now))
                     conn.execute("INSERT INTO order_devices(id, order_id, device_type, device_no,"
                                  " sequence_no, created_at) VALUES(?,?,?,?,?,?)",
-                                 (od_id, order_id, capability, mo, seq, now))
+                                 (od_id, order_id, capability, dno, seq, now))
                     if not conn.execute("SELECT 1 FROM assembly_tasks WHERE order_no=? AND device_no=?",
-                                        (code, mo)).fetchone():
+                                        (code, dno)).fetchone():
                         conn.execute("INSERT INTO assembly_tasks(id, order_no, device_id, device_no, status,"
                                      " progress_stage, task_version, created_at, updated_at)"
                                      " VALUES(?,?,?,?,?,?,?,?,?)",
-                                     (f"u9task-{mo}", code, dev_id, mo, "WAITING_MATERIAL", 0, 1, now, now))
+                                     (f"u9task-{mo}", code, dev_id, dno, "WAITING_MATERIAL", 0, 1, now, now))
                         st["tasks_created"] += 1
             else:
-                od_id = od[0]
                 st["devices_existing"] += 1
             if not dry_run and pick:
                 a, b, c = _upsert_device_requirements(conn, order_id, od_id, pick, now)
@@ -668,7 +701,7 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
                     lbl = mappers.U9_MO_STATUS_LABELS.get(int(r.get("docstate")), str(r.get("docstate")))
                 except (TypeError, ValueError):
                     lbl = "（未查到）"
-                sample.append({"动作": action, "订单（项目号）": code, "机台（MO）": mo,
+                sample.append({"动作": action, "订单（项目号）": code, "机台号": dno, "MO": mo,
                                "产品": pname, "数量": mappers.num(r.get("qty") or 0),
                                "U9状态": lbl, "BOM行": len(pick)})
     not_found = [p for p in wanted if p not in by_prj]

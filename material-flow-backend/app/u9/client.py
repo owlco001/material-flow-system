@@ -645,7 +645,8 @@ class U9CClient(U9Client):
 
         业务口径（用户 2026-10-17 确认）：U9 项目号（如 JSBY-26B-001）= 本地订单，
         项目下每张 MO = 一台机台。只发固定只读 SELECT，项目号/组织编码先过白名单。
-        返回小写键的行：docno, docstate, qty, itemcode, itemname, projectcode, projectname。
+        返回小写键的行：docno, docstate, qty, itemcode, itemname, machineno, projectcode, projectname。
+        machineno = 产品料品私有段 2（机台编号，如 P5-12），可能为空、跨项目重复。
         """
         org = self.cfg.org_code
         if not _SAFE_KEY.match(org or ""):
@@ -661,7 +662,8 @@ class U9CClient(U9Client):
         for chunk in _chunks(keys, 100):
             in_list = ",".join(f"'{k}'" for k in chunk)
             sql = ("select m.DocNo as DocNo, m.DocState as DocState, m.ProductQty as Qty,"
-                   " i.Code as ItemCode, i.Name as ItemName, p.Code as ProjectCode, t.Name as ProjectName"
+                   " i.Code as ItemCode, i.Name as ItemName, i.DescFlexField_PrivateDescSeg2 as MachineNo,"
+                   " p.Code as ProjectCode, t.Name as ProjectName"
                    " from MO_MO m join Base_Organization o on o.ID=m.Org"
                    " join CBO_Project p on p.ID=m.Project"
                    " left join CBO_Project_Trl t on t.ID=p.ID and t.SysMLFlag='zh-CN'"
