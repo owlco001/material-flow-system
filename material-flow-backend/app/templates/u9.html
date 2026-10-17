@@ -93,7 +93,7 @@
         {% else %}<p class="muted" style="margin:0;font-size:12px">注：现场 U9 的整体查询目前在 U9 服务器端报 SQL CLR 程序集错误（ufida.u9.sql.clrlib），需 U9 运维处理；按料号查询正常。</p>{% endif %}
         <input type="hidden" name="update_totals" value="1">
       {% elif e.id == "orders" %}
-        <p style="margin:0 0 6px"><a href="/admin/u9/orders/lookup?year=2026&limit=2000&do=1">按年份查找订单号 →</a></p>
+        <p style="margin:0 0 6px"><a href="/admin/u9/orders/lookup">按年份 / 项目号查找订单，清理导入订单 →</a></p>
         <label>生产订单号（可选，逗号或换行分隔）</label>
         <textarea name="doc_nos" placeholder="如 MO2026100001"></textarea>
         <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地已有订单号</label>

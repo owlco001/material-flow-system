@@ -13,7 +13,7 @@
 </style>
 <div class="compact u9-lookup">
 <h2>按年份 / 项目号查找 U9 生产订单</h2>
-<p class="page-desc">从 U9 取最近 N 个生产订单号，逐单按开工年/完工年筛选；填项目号（如 JSBY-26B-001）则只查该项目下的订单。只读，不写库。查出后可直接一键同步订单与 BOM。</p>
+<p class="page-desc">在 U9 生产订单里按开工年/完工年筛选（最多取最近 N 个）；填项目号（如 JSBY-26B-001）则只查该项目下的订单。只读，不写库。查出后可直接一键同步订单与 BOM。</p>
 <p><a href="/admin/u9">← 返回 U9 集成</a></p>
 
 <div class="card">
@@ -21,7 +21,7 @@
     <input type="hidden" name="do" value="1">
     <div class="row">
       <label>年份（填项目号时可留空）<input type="text" name="year" value="{{ year }}" inputmode="numeric"></label>
-      <label>取最近 N 个单号<input type="text" name="limit" value="{{ limit }}" inputmode="numeric"></label>
+      <label>最多返回 N 个<input type="text" name="limit" value="{{ limit }}" inputmode="numeric"></label>
       <label>项目号（可选）<input type="text" name="project" value="{{ project }}" placeholder="如 JSBY-26B-001" style="width:180px"></label>
       <button type="submit" class="btn" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>查找</button>
     </div>
@@ -46,7 +46,7 @@
 
 {% if result %}
 <div class="card">
-  <h3>{% if result.project %}项目 {{ result.project }}{% if result.year %} · {% endif %}{% endif %}{% if result.year %}{{ result.year }} 年{% endif %}订单：命中 {{ result.matched }} 个（共扫描 {{ result.scanned }} 个）</h3>
+  <h3>{% if result.project %}项目 {{ result.project }}{% if result.year %} · {% endif %}{% endif %}{% if result.year %}{{ result.year }} 年{% endif %}订单：命中 {{ result.matched }} 个（最多 {{ limit }} 个）</h3>
   {% if result.doc_nos %}
   <label style="font-size:13px;color:var(--muted)">订单号（{{ result.doc_nos|length }} 个）</label>
   <textarea readonly>{{ result.doc_nos|join(",") }}</textarea>
@@ -92,9 +92,9 @@
   <h3>样例（前 {{ result.sample|length }} 个）</h3>
   <div class="table-wrap">
   <table>
-    <tr><th>单号</th><th>产品料号</th><th>产品</th><th>数量</th><th>开工日</th><th>完工日</th><th>U9状态</th></tr>
+    <tr><th>单号</th><th>项目号</th><th>产品料号</th><th>产品</th><th>数量</th><th>开工日</th><th>完工日</th><th>U9状态</th></tr>
     {% for s in result.sample %}
-    <tr><td>{{ s["单号"] }}</td><td>{{ s["产品料号"] }}</td><td>{{ s["产品"] }}</td><td>{{ s["数量"] }}</td><td>{{ s["开工日"] }}</td><td>{{ s["完工日"] }}</td><td>{{ s["U9状态"] }}</td></tr>
+    <tr><td>{{ s["单号"] }}</td><td>{{ s.get("项目号", "") }}</td><td>{{ s["产品料号"] }}</td><td>{{ s["产品"] }}</td><td>{{ s["数量"] }}</td><td>{{ s["开工日"] }}</td><td>{{ s["完工日"] }}</td><td>{{ s["U9状态"] }}</td></tr>
     {% endfor %}
   </table>
   </div>

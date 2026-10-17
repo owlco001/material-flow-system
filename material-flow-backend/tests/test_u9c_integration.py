@@ -147,6 +147,15 @@ class FakeU9:
                         for r in self.inventory if codes is None or r["m_itemCode"] in codes]
                 return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
                                        ensure_ascii=False).encode("utf-8")
+            if "from MO_MO m" in sql and "as ItemCode" in sql:
+                data = [{"DocNo": "MO001", "ItemCode": "SB01", "ItemName": "一号设备", "Qty": 2.0,
+                         "StartDate": "2026-10-01T08:00:00", "CompleteDate": "2026-10-05T08:00:00",
+                         "DocState": 2, "ProjectCode": "JSBY-26B-001"},
+                        {"DocNo": "MO002", "ItemCode": "SB02", "ItemName": "二号设备", "Qty": 1.0,
+                         "StartDate": None, "CompleteDate": None, "DocState": 3, "ProjectCode": None},
+                        {"DocNo": "MO002", "ItemCode": "SB02", "ItemName": "二号设备", "Qty": 1.0}]
+                return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
+                                       ensure_ascii=False).encode("utf-8")
             if "from MO_MO m" in sql and "order by m.ID desc" in sql:
                 data = [{"DocNo": "MO001"}, {"DocNo": "MO002"}, {"DocNo": "MO003"}]
                 return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
@@ -396,19 +405,19 @@ def _patch_transport(monkeypatch, fake):
 
 # ------------------------------------------------------------------ 按年份查找订单
 def test_lookup_orders_by_year(fake, monkeypatch):
+    """一条 SQL 在 MO_MO 上按年份筛，不再逐单读 MODoc（2000 单要 3 分钟，页面卡住）。"""
     _patch_transport(monkeypatch, fake)
     from app.u9.sync import lookup_orders_by_year
     r = lookup_orders_by_year(make_cfg(), 2026)
-    assert r["year"] == 2026 and r["scanned"] == 3
-    # MO001 开工 2026-10-01 命中；MO002 无日期且单号不含年份，不命中；MO003 在 U9 不存在
-    assert r["matched"] == 1 and r["doc_nos"] == ["MO001"]
-    assert r["product_codes"] == ["SB01"]
-    assert r["sample"][0]["单号"] == "MO001"
-    assert not r["errors"]
-    # 换年份查不到
-    r = lookup_orders_by_year(make_cfg(), 2025)
-    assert r["matched"] == 0 and r["doc_nos"] == []
-    # 非法年份
+    sql = fake.sqls[-1]
+    assert "year(m.StartDate)=2026" in sql and "o.Code='01'" in sql and "p.Code like" not in sql
+    assert not any(c["path"].endswith("/webapi/MODoc/Query") for c in fake.calls)
+    assert r["year"] == 2026 and r["matched"] == 2 and r["doc_nos"] == ["MO001", "MO002"]  # 去重
+    assert r["product_codes"] == ["SB01", "SB02"]
+    s0 = r["sample"][0]
+    assert s0["单号"] == "MO001" and s0["项目号"] == "JSBY-26B-001" and s0["U9状态"] == "开工" \
+        and s0["开工日"] == "2026-10-01" and s0["数量"] == 2.0
+    assert r["sample"][1]["U9状态"] == "完工" and r["sample"][1]["开工日"] == ""
     with pytest.raises(U9Error):
         lookup_orders_by_year(make_cfg(), 1999)
 
@@ -424,8 +433,8 @@ def test_lookup_orders_route(db, fake, monkeypatch):
         r = client.get("/api/v1/u9/orders/lookup", params={"year": 2026}, headers=h)
         assert r.status_code == 200
         body = r.json()
-        assert body["matched"] == 1 and body["doc_nos"] == ["MO001"] \
-            and body["product_codes"] == ["SB01"]
+        assert body["matched"] == 2 and body["doc_nos"] == ["MO001", "MO002"] \
+            and body["product_codes"] == ["SB01", "SB02"]
         assert client.get("/api/v1/u9/orders/lookup", headers=h).status_code == 422  # 缺 year
         assert client.get("/api/v1/u9/orders/lookup", params={"year": 1999},
                           headers=h).status_code == 502  # 年份非法
@@ -906,12 +915,12 @@ def test_lookup_orders_by_project(fake, monkeypatch):
     _patch_transport(monkeypatch, fake)
     from app.u9.sync import lookup_orders_by_year
     r = lookup_orders_by_year(make_cfg(), None, project="JSBY-26B-001")
-    sql = [s for s in fake.sqls if "order by m.ID desc" in s][-1]
-    assert "join CBO_Project p on p.ID=m.Project" in sql and "p.Code like 'JSBY-26B-001%'" in sql
-    assert "o.Code='01'" in sql
-    # 不按年份过滤：MO001（2026）与 MO002（无日期）都命中
-    assert r["year"] is None and r["project"] == "JSBY-26B-001"
-    assert set(r["doc_nos"]) == {"MO001", "MO002"}
+    sql = fake.sqls[-1]
+    assert "left join CBO_Project p on p.ID=m.Project" in sql and "p.Code like 'JSBY-26B-001%'" in sql
+    assert "o.Code='01'" in sql and "year(" not in sql
+    assert r["year"] is None and r["project"] == "JSBY-26B-001" and r["matched"] == 2
+    r = lookup_orders_by_year(make_cfg(), 2026, project="JSBY-26B")
+    assert "year(m.StartDate)=2026" in fake.sqls[-1] and "p.Code like 'JSBY-26B%'" in fake.sqls[-1]
     with pytest.raises(U9Error):
         lookup_orders_by_year(make_cfg(), None, project="x';drop")
     with pytest.raises(U9Error):

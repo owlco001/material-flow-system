@@ -516,6 +516,36 @@ _SYNC_FNS = {
 
 
 # ---------------------------------------------------------------- 按年份查找订单（只读，不写库）
+def _lookup_orders_via_sql(client, year, project: str, limit: int) -> dict:
+    rows = client.lookup_orders_sql(year=year, project=project, limit=limit)
+    matched: list[str] = []
+    product_codes: list[str] = []
+    seen_pc: set[str] = set()
+    sample: list[dict] = []
+    for r in rows:
+        no = r["docno"]
+        matched.append(no)
+        pc = str(r.get("itemcode") or "").strip()
+        if pc and pc not in seen_pc:
+            seen_pc.add(pc)
+            product_codes.append(pc)
+        if len(sample) < SAMPLE_SIZE:
+            st = r.get("docstate")
+            try:
+                label = mappers.U9_MO_STATUS_LABELS.get(int(st), str(st))
+            except (TypeError, ValueError):
+                label = "（未查到）"
+            sample.append({"单号": no, "项目号": r.get("projectcode") or "",
+                           "产品料号": pc, "产品": r.get("itemname") or pc,
+                           "数量": mappers.num(r.get("qty") or 0),
+                           "开工日": str(r.get("startdate") or "")[:10],
+                           "完工日": str(r.get("completedate") or "")[:10],
+                           "U9状态": label})
+    return {"year": year, "scanned": len(rows), "matched": len(matched),
+            "doc_nos": matched, "product_codes": product_codes,
+            "sample": sample, "errors": [], "project": project}
+
+
 def lookup_orders_by_year(cfg: U9Config, year: int | None, limit: int = 2000,
                           client=None, project: str = "") -> dict:
     """按年份查生产订单号：先取 U9 最近 N 个单号，再逐单读 MODoc 按开工年过滤。
@@ -539,6 +569,8 @@ def lookup_orders_by_year(cfg: U9Config, year: int | None, limit: int = 2000,
             raise U9Error(f"年份超出范围（2000-2100）：{year}")
     client = client or get_client(cfg)
     errors: list[dict] = []
+    if hasattr(client, "lookup_orders_sql"):
+        return _lookup_orders_via_sql(client, year, project, limit)
     doc_nos = client.fetch_recent_order_nos(limit, errors=errors, project=project)
     raw = client.fetch_production_orders(doc_nos, errors=errors) if doc_nos else []
     y = str(year) if year is not None else ""

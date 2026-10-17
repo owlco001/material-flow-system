@@ -680,6 +680,52 @@ class U9CClient(U9Client):
                 out.append(no)
         return out
 
+    def lookup_orders_sql(self, year: int | None = None, project: str = "",
+                          limit: int = 2000) -> list[dict]:
+        """按开工/完工年份和/或项目号直接在 MO_MO 上筛订单（一条只读 SELECT）。
+
+        2026-10-17 实测：逐单读 MODoc 约 0.1 秒/单，2000 单要 3 分多钟，页面会卡住；
+        这里一次 SQL 带出单号、产品料号/名称、数量、开工/完工日、DocState、项目号，约 0.2 秒。
+        返回小写键的行：docno, itemcode, itemname, qty, startdate, completedate, docstate, projectcode。
+        """
+        org = self.cfg.org_code
+        if not _SAFE_KEY.match(org or ""):
+            raise U9Error(f"组织编码不合规，无法查询订单：{org!r}")
+        prefix = (project or "").strip()
+        if prefix and not _SAFE_KEY.match(prefix):
+            raise U9Error(f"项目号不合规：{prefix!r}")
+        try:
+            n = max(1, min(int(limit), 5000))
+        except (TypeError, ValueError):
+            n = 2000
+        where = [f"o.Code='{org}'"]
+        if year is not None:
+            y = int(year)
+            if not 2000 <= y <= 2100:
+                raise U9Error(f"年份超出范围（2000-2100）：{y}")
+            where.append(f"(year(m.StartDate)={y} or year(m.CompleteDate)={y})")
+        if prefix:
+            where.append(f"p.Code like '{prefix}%'")
+        sql = (f"select top {n} m.DocNo as DocNo, i.Code as ItemCode, i.Name as ItemName,"
+               f" m.ProductQty as Qty, m.StartDate as StartDate, m.CompleteDate as CompleteDate,"
+               f" m.DocState as DocState, p.Code as ProjectCode"
+               f" from MO_MO m join Base_Organization o on o.ID=m.Org"
+               f" left join CBO_ItemMaster i on i.ID=m.ItemMaster"
+               f" left join CBO_Project p on p.ID=m.Project"
+               f" where {' and '.join(where)} order by m.ID desc")
+        out: list[dict] = []
+        seen: set[str] = set()
+        for row in self._post(PATH_SQL, {"SqlString": sql}):
+            if not isinstance(row, dict):
+                continue
+            r = {str(k).lower(): v for k, v in row.items()}
+            no = str(r.get("docno") or "").strip()
+            if no and no not in seen:
+                seen.add(no)
+                r["docno"] = no
+                out.append(r)
+        return out
+
 
 # 兼容旧名
 U9CloudClient = U9CClient
