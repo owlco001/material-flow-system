@@ -640,6 +640,45 @@ class U9CClient(U9Client):
                                "complete_qty": r.get("totalcompleteqty")}
         return out
 
+    def fetch_project_mos(self, projects: list[str], errors: list[dict] | None = None) -> list[dict]:
+        """按项目号（精确匹配）列出挂在项目下的全部生产订单（MO）。
+
+        业务口径（用户 2026-10-17 确认）：U9 项目号（如 JSBY-26B-001）= 本地订单，
+        项目下每张 MO = 一台机台。只发固定只读 SELECT，项目号/组织编码先过白名单。
+        返回小写键的行：docno, docstate, qty, itemcode, itemname, projectcode, projectname。
+        """
+        org = self.cfg.org_code
+        if not _SAFE_KEY.match(org or ""):
+            raise U9Error(f"组织编码不合规，无法查询项目订单：{org!r}")
+        keys = []
+        for p in _dedupe(projects):
+            if _SAFE_KEY.match(p):
+                keys.append(p)
+            elif errors is not None:
+                errors.append({"key": p, "error": "项目号含非法字符，跳过"})
+        out: list[dict] = []
+        seen: set[str] = set()
+        for chunk in _chunks(keys, 100):
+            in_list = ",".join(f"'{k}'" for k in chunk)
+            sql = ("select m.DocNo as DocNo, m.DocState as DocState, m.ProductQty as Qty,"
+                   " i.Code as ItemCode, i.Name as ItemName, p.Code as ProjectCode, t.Name as ProjectName"
+                   " from MO_MO m join Base_Organization o on o.ID=m.Org"
+                   " join CBO_Project p on p.ID=m.Project"
+                   " left join CBO_Project_Trl t on t.ID=p.ID and t.SysMLFlag='zh-CN'"
+                   " left join CBO_ItemMaster i on i.ID=m.ItemMaster"
+                   f" where o.Code='{org}' and p.Code in ({in_list}) order by p.Code, m.DocNo")
+            for row in self._post(PATH_SQL, {"SqlString": sql}):
+                if not isinstance(row, dict):
+                    continue
+                r = {str(k).lower(): v for k, v in row.items()}
+                no = str(r.get("docno") or "").strip()
+                if no and no not in seen:
+                    seen.add(no)
+                    r["docno"] = no
+                    r["projectcode"] = str(r.get("projectcode") or "").strip()
+                    out.append(r)
+        return out
+
     def fetch_recent_order_nos(self, limit: int = 2000,
                                errors: list[dict] | None = None,
                                project: str = "") -> list[str]:

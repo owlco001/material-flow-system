@@ -50,18 +50,25 @@
   {% if result.doc_nos %}
   <label style="font-size:13px;color:var(--muted)">订单号（{{ result.doc_nos|length }} 个）</label>
   <textarea readonly>{{ result.doc_nos|join(",") }}</textarea>
-  <form method="post" action="/admin/u9/sync/orders">
+  <p class="page-desc" style="margin-top:8px">导入口径：U9 项目号 = 本地订单，项目下每张 MO = 一台机台，机台物料需求取 MO 备料表（BOM 清单）。没挂项目号的 MO 不导入{% if result.no_project %}（本次 {{ result.no_project }} 张）{% endif %}。</p>
+  {% if result.project_codes %}
+  <label style="font-size:13px;color:var(--muted)">项目号（{{ result.project_codes|length }} 个）</label>
+  <textarea readonly>{{ result.project_codes|join(",") }}</textarea>
+  <form method="post" action="/admin/u9/sync/projects">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="clientOperationId" value="orders-{{ now_ts }}">
-    <input type="hidden" name="doc_nos" value="{{ result.doc_nos|join(',') }}">
+    <input type="hidden" name="clientOperationId" value="projects-{{ now_ts }}">
+    <input type="hidden" name="projects" value="{{ result.project_codes|join(',') }}">
     <input type="hidden" name="include_local" value="0">
     <div class="btn-row">
-      <button type="submit" name="dry_run" value="1" class="btn btn-sm">预览订单同步</button>
+      <button type="submit" name="dry_run" value="1" class="btn btn-sm">预览订单/机台同步</button>
       <button type="submit" name="dry_run" value="0" class="btn btn-danger btn-sm"
-              data-confirm="将把 {{ result.doc_nos|length }} 个订单从 U9 拉取并写入本地生产订单表。建议先预览确认差异。"
-              data-confirm-title="执行订单同步？" data-confirm-ok="执行同步" data-confirm-danger>执行订单同步</button>
+              data-confirm="将把 {{ result.project_codes|length }} 个项目导入为订单，其下 MO 导入为机台并按备料表生成物料需求。建议先预览。"
+              data-confirm-title="执行订单/机台同步？" data-confirm-ok="执行同步" data-confirm-danger>执行订单/机台同步</button>
     </div>
   </form>
+  {% else %}
+  <p class="muted">命中的 MO 都没挂项目号，无可导入的订单。</p>
+  {% endif %}
   {% else %}
   <p class="muted">该年没有命中订单。</p>
   {% endif %}

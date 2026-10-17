@@ -28,7 +28,7 @@ from . import mappers
 from .client import U9Error, U9NotImplemented, get_client
 from .config import U9Config
 
-ENTITIES = ("items", "categories", "boms", "inventory", "orders")
+ENTITIES = ("items", "categories", "boms", "inventory", "orders", "projects")
 
 # 同一进程内同一时间只跑一个同步：U9 同步是长耗时阻塞调用，重复点击只会排队拖垮服务
 _SYNC_LOCK = threading.Lock()
@@ -506,12 +506,186 @@ def _upsert_mo_requirements(conn, order_id: str, picklist: list[dict], now: str)
                 upd += 1
     return ins, upd, mats
 
+# ---------------------------------------------------------------- 项目 → 订单，MO → 机台
+# 业务口径（用户 2026-10-17 确认）：U9 项目号（CBO_Project.Code，如 JSBY-26B-001）对应本地生产订单，
+# 项目下每张生产订单 MO-xxx 对应一台机台（devices + order_devices + assembly_tasks），
+# 机台物料需求取该 MO 的备料表（U9 已按 BOM×数量展开，含替代料）。没挂项目号的 MO 不导入。
+PROJECT_ORDER_PREFIX = "u9prj-"
+
+
+def _project_status(states: list) -> str:
+    vals = []
+    for s in states:
+        try:
+            vals.append(int(s))
+        except (TypeError, ValueError):
+            pass
+    if vals and all(v >= 3 for v in vals):
+        return "COMPLETED"
+    if any(v >= 2 for v in vals):
+        return "IN_PROGRESS"
+    return "RELEASED"
+
+
+def _upsert_device_requirements(conn, order_id: str, od_id: str, picklist: list[dict],
+                                now: str) -> tuple[int, int, int]:
+    """把一张 MO 的备料表写成该机台的物料需求（device_id=order_devices.id）。
+
+    本地没有的料号先建物料档案；已有需求按 U9 更新需求量（不低于已到货量）；不删本地多出来的行。
+    """
+    ins = upd = mats = 0
+    for p in picklist:
+        row = conn.execute("SELECT id FROM materials WHERE code=?", (p["material_code"],)).fetchone()
+        if row:
+            mat_id = row[0]
+        else:
+            mat_id = f"u9mat-{uuid.uuid4().hex[:12]}"
+            conn.execute("INSERT INTO materials(id, code, name, specification, unit) VALUES(?,?,?,?,?)",
+                         (mat_id, p["material_code"], p["material_name"] or p["material_code"], "",
+                          p["unit"] or "件"))
+            mats += 1
+        req = max(1, int(p["required_quantity"]))
+        cur = conn.execute("SELECT id, required_quantity, arrived_quantity FROM order_material_requirements"
+                           " WHERE order_id=? AND device_id=? AND material_id=?",
+                           (order_id, od_id, mat_id)).fetchone()
+        if cur is None:
+            conn.execute("INSERT INTO order_material_requirements(id, order_id, device_id, material_id,"
+                         " required_quantity, arrived_quantity, in_stock_quantity, status_code,"
+                         " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (f"u9req-{uuid.uuid4().hex[:12]}", order_id, od_id, mat_id, req, 0, 0,
+                          "OUT_OF_STOCK", now, now))
+            ins += 1
+        else:
+            req = max(req, int(cur[2] or 0))
+            if req != cur[1]:
+                conn.execute("UPDATE order_material_requirements SET required_quantity=?, updated_at=?"
+                             " WHERE id=?", (req, now, cur[0]))
+                upd += 1
+    return ins, upd, mats
+
+
+def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, client=None,
+                   user_id: str = "", **_):
+    client = client or get_client(cfg)
+    local = [r[0] for r in conn.execute(
+        "SELECT order_no FROM production_orders WHERE id LIKE ? ORDER BY order_no",
+        (PROJECT_ORDER_PREFIX + "%",))] if include_local else []
+    wanted = _codes(_codes(projects) + local)
+    _check_keys(cfg, wanted, "项目号")
+    errors: list[dict] = []
+    mos = client.fetch_project_mos(wanted, errors=errors) if wanted else []
+    mo_nos = [r["docno"] for r in mos]
+    _check_keys(cfg, mo_nos, "生产订单号")
+    picklists: dict[str, list] = {}
+    if mo_nos:
+        for raw in client.fetch_production_orders(mo_nos, errors=errors):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                m = mappers.map_production_order(raw)
+            except ValueError:
+                continue
+            picklists[m["order_no"]] = m["picklist"]
+    by_prj: dict[str, list] = {}
+    for r in mos:
+        by_prj.setdefault(r["projectcode"], []).append(r)
+    from app.main import _categorize_device  # 与聚合 BOM 导入同一套机台归类
+    now = _now()
+    creator = user_id or "u9-sync"
+    st = dict(orders_inserted=0, orders_updated=0, devices_inserted=0, devices_existing=0,
+              requirements_inserted=0, requirements_updated=0, materials_created=0, tasks_created=0)
+    sample: list[dict] = []
+    for code in wanted:
+        rows = by_prj.get(code) or []
+        if not rows:
+            continue
+        name = str(rows[0].get("projectname") or "").strip() or code
+        if name == code:  # 项目名称常与编码相同，取项目总装 MO 的产品名（如 JSBY-26B-001淮安天合项目）
+            name = next((str(r.get("itemname")) for r in rows if code in str(r.get("itemname") or "")), code)
+        status = _project_status([r.get("docstate") for r in rows])
+        cur = conn.execute("SELECT id, status, product_name FROM production_orders WHERE order_no=?",
+                           (code,)).fetchone()
+        if cur is None:
+            order_id = f"{PROJECT_ORDER_PREFIX}{code}"
+            st["orders_inserted"] += 1
+            if not dry_run:
+                conn.execute("INSERT INTO production_orders(id, order_no, product_name, status,"
+                             " created_at, updated_at) VALUES(?,?,?,?,?,?)",
+                             (order_id, code, name, status, now, now))
+        else:
+            order_id = cur[0]
+            new_status = status if mappers.STATUS_RANK.get(status, 0) >                 mappers.STATUS_RANK.get(cur[1], 0) else cur[1]
+            if new_status != cur[1]:
+                st["orders_updated"] += 1
+                if not dry_run:
+                    conn.execute("UPDATE production_orders SET status=?, updated_at=? WHERE id=?",
+                                 (new_status, now, order_id))
+        seq = conn.execute("SELECT COALESCE(MAX(sequence_no),0) FROM order_devices WHERE order_id=?",
+                           (order_id,)).fetchone()[0]
+        for r in rows:
+            mo = r["docno"]
+            pname = str(r.get("itemname") or "").strip() or str(r.get("itemcode") or "") or mo
+            pick = picklists.get(mo, [])
+            od = conn.execute("SELECT id, order_id FROM order_devices WHERE device_no=?", (mo,)).fetchone()
+            action = "已有"
+            if od is not None and od[1] != order_id:
+                errors.append({"key": mo, "error": f"机台号已挂在其他订单（{od[1]}），跳过"})
+                continue
+            workshop, capability = _categorize_device(pname)
+            if od is None:
+                action = "新增"
+                st["devices_inserted"] += 1
+                seq += 1
+                od_id = f"u9od-{mo}"
+                if not dry_run:
+                    dev = conn.execute("SELECT id FROM devices WHERE device_no=?", (mo,)).fetchone()
+                    dev_id = dev[0] if dev else f"u9dev-{mo}"
+                    if dev is None:
+                        conn.execute("INSERT INTO devices(id, device_no, device_name, workshop,"
+                                     " model_capability, status, created_by, created_at, updated_at)"
+                                     " VALUES(?,?,?,?,?,?,?,?,?)",
+                                     (dev_id, mo, pname, workshop, capability, "ACTIVE", creator, now, now))
+                    conn.execute("INSERT INTO order_devices(id, order_id, device_type, device_no,"
+                                 " sequence_no, created_at) VALUES(?,?,?,?,?,?)",
+                                 (od_id, order_id, capability, mo, seq, now))
+                    if not conn.execute("SELECT 1 FROM assembly_tasks WHERE order_no=? AND device_no=?",
+                                        (code, mo)).fetchone():
+                        conn.execute("INSERT INTO assembly_tasks(id, order_no, device_id, device_no, status,"
+                                     " progress_stage, task_version, created_at, updated_at)"
+                                     " VALUES(?,?,?,?,?,?,?,?,?)",
+                                     (f"u9task-{mo}", code, dev_id, mo, "WAITING_MATERIAL", 0, 1, now, now))
+                        st["tasks_created"] += 1
+            else:
+                od_id = od[0]
+                st["devices_existing"] += 1
+            if not dry_run and pick:
+                a, b, c = _upsert_device_requirements(conn, order_id, od_id, pick, now)
+                st["requirements_inserted"] += a
+                st["requirements_updated"] += b
+                st["materials_created"] += c
+            if len(sample) < SAMPLE_SIZE:
+                try:
+                    lbl = mappers.U9_MO_STATUS_LABELS.get(int(r.get("docstate")), str(r.get("docstate")))
+                except (TypeError, ValueError):
+                    lbl = "（未查到）"
+                sample.append({"动作": action, "订单（项目号）": code, "机台（MO）": mo,
+                               "产品": pname, "数量": mappers.num(r.get("qty") or 0),
+                               "U9状态": lbl, "BOM行": len(pick)})
+    not_found = [p for p in wanted if p not in by_prj]
+    return {"requested": len(wanted), "projects": len(by_prj), "mos": len(mos),
+            "total": len(mos), "inserted": st["orders_inserted"] + st["devices_inserted"],
+            "updated": st["orders_updated"], **st,
+            "not_found": not_found[:200], "not_found_count": len(not_found),
+            "errors": errors[:50], "sample": sample}
+
+
 _SYNC_FNS = {
     "items": _sync_items,
     "categories": _sync_categories,
     "boms": _sync_boms,
     "inventory": _sync_inventory,
     "orders": _sync_orders,
+    "projects": _sync_projects,
 }
 
 
@@ -522,9 +696,13 @@ def _lookup_orders_via_sql(client, year, project: str, limit: int) -> dict:
     product_codes: list[str] = []
     seen_pc: set[str] = set()
     sample: list[dict] = []
+    project_codes: list[str] = []
     for r in rows:
         no = r["docno"]
         matched.append(no)
+        pj = str(r.get("projectcode") or "").strip()
+        if pj and pj not in project_codes:
+            project_codes.append(pj)
         pc = str(r.get("itemcode") or "").strip()
         if pc and pc not in seen_pc:
             seen_pc.add(pc)
@@ -542,7 +720,8 @@ def _lookup_orders_via_sql(client, year, project: str, limit: int) -> dict:
                            "完工日": str(r.get("completedate") or "")[:10],
                            "U9状态": label})
     return {"year": year, "scanned": len(rows), "matched": len(matched),
-            "doc_nos": matched, "product_codes": product_codes,
+            "doc_nos": matched, "product_codes": product_codes, "project_codes": project_codes,
+            "no_project": sum(1 for r in rows if not str(r.get("projectcode") or "").strip()),
             "sample": sample, "errors": [], "project": project}
 
 
@@ -609,24 +788,46 @@ def lookup_orders_by_year(cfg: U9Config, year: int | None, limit: int = 2000,
 def delete_u9_orders_by_doc_prefix(conn, doc_prefix: str) -> dict:
     """删除 U9 同步导入的指定单号前缀的订单（测试环境清理用，如 MO- 清掉全部 U9 导入订单）。
 
-    只删 id 为 u9mo-<prefix> 开头的 production_orders，其物料需求经外键级联删除；
+    只删 id 为 u9mo-<prefix> 或 u9prj-<prefix>（项目订单）开头的 production_orders，其物料需求经外键级联删除；
     手工创建的订单（id 非 u9mo- 开头）不受影响。返回 {deleted_orders, deleted_requirements}。
     """
     import re as _re
     prefix = (doc_prefix or "").strip()
     if not prefix or not _re.match(r"^[A-Za-z0-9_\-.]{1,60}$", prefix):
         raise ValueError(f"单号前缀不合规：{prefix!r}")
-    like = f"u9mo-{prefix}%"
     ids = [r[0] for r in conn.execute(
-        "SELECT id FROM production_orders WHERE id LIKE ? ESCAPE '\\'", (like,)).fetchall()]
+        "SELECT id FROM production_orders WHERE id LIKE ? OR id LIKE ?",
+        (f"u9mo-{prefix}%", f"{PROJECT_ORDER_PREFIX}{prefix}%")).fetchall()]
     req = 0
     if ids:
+        q = ",".join("?" * len(ids))
+        # 项目订单带出的机台：装配任务、U9 建的机台档案一并清掉（被别处引用的机台档案保留）
+        devs = conn.execute(f"SELECT od.device_no, po.order_no FROM order_devices od"
+                            f" JOIN production_orders po ON po.id=od.order_id WHERE od.order_id IN ({q})",
+                            ids).fetchall()
+        for dno, ono in devs:
+            conn.execute("SAVEPOINT u9task")
+            try:
+                conn.execute("DELETE FROM assembly_tasks WHERE order_no=? AND device_no=?", (ono, dno))
+                conn.execute("RELEASE u9task")
+            except sqlite3.IntegrityError:  # 已有扫码/进度记录引用的任务保留
+                conn.execute("ROLLBACK TO u9task")
+                conn.execute("RELEASE u9task")
+        dev_nos = [d[0] for d in devs]
         # 物料需求经外键级联删除，先计数
         q = ",".join("?" * len(ids))
         req = conn.execute(
             f"SELECT COUNT(*) FROM order_material_requirements WHERE order_id IN ({q})",
             ids).fetchone()[0]
         conn.execute(f"DELETE FROM production_orders WHERE id IN ({q})", ids)
+        for dno in dev_nos:
+            conn.execute("SAVEPOINT u9dev")
+            try:
+                conn.execute("DELETE FROM devices WHERE device_no=? AND id LIKE 'u9dev-%'", (dno,))
+                conn.execute("RELEASE u9dev")
+            except sqlite3.IntegrityError:
+                conn.execute("ROLLBACK TO u9dev")
+                conn.execute("RELEASE u9dev")
     return {"deleted_orders": len(ids), "deleted_requirements": req}
 
 

@@ -55,6 +55,7 @@ def _require_ready() -> dict:
 
 
 def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", doc_nos: str = "",
+                      projects: str = "",
                       wh: str = "", include_local: bool = True, update_totals: bool = True,
                       user_id: str = "", scope: str = "local") -> dict:
     """把接口/表单参数整理成 run_sync 的 kwargs；BOM 缺编码时抛 ApiError(400)。"""
@@ -71,6 +72,8 @@ def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", 
                 "scope": "all" if (scope or "").strip().lower() == "all" else "local"}
     if entity == "orders":
         return {"doc_nos": split(doc_nos), "include_local": include_local}
+    if entity == "projects":
+        return {"projects": split(projects), "include_local": include_local, "user_id": user_id}
     return {}
 
 
@@ -112,6 +115,7 @@ def u9_sync(entity: str,
             product_codes: str = Query(default="", description="boms：逗号分隔的产品/设备编码"),
             codes: str = Query(default="", description="items/inventory：逗号分隔的料号"),
             doc_nos: str = Query(default="", description="orders：逗号分隔的生产订单号"),
+            projects: str = Query(default="", description="projects：逗号分隔的 U9 项目号（项目=订单，MO=机台）"),
             wh: str = Query(default="", description="inventory：存储地点编码"),
             include_local: bool = Query(default=True, description="items/orders：是否包含本地已有编码/单号"),
             update_totals: bool = Query(default=True, description="inventory：是否回写物料总量/可用量"),
@@ -122,6 +126,7 @@ def u9_sync(entity: str,
     if entity not in ENTITIES:
         raise ApiError(400, "U9_UNKNOWN_ENTITY", f"未知同步实体: {entity}")
     kwargs = build_sync_kwargs(entity, codes=codes, product_codes=product_codes, doc_nos=doc_nos,
+                               projects=projects,
                                wh=wh, include_local=include_local, update_totals=update_totals,
                                user_id=user["id"], scope=scope)
     c = db()

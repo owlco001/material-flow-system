@@ -189,3 +189,14 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 新增同步实体 `categories`（管理台 U9 页「物料分类」）：经 `QueryInfoBySql` 读本组织 `CBO_Category`（中文名取 `CBO_Category_Trl` zh-CN）写入 `material_categories`，父节点按“最长真前缀编码”推导（3 → 304 → 30404 → 30404001）；同时读 `CBO_ItemMaster.MainItemCategory`，按料号回填本地物料的 `category`（分类名）与 `category_code`。只改分类字段，不新增物料、不动数量。料品同步（items）也会写入分类名与编码。
 
 仓库页分类筛选：下拉显示前两级（带物料数，含全部下级），选中后显示面包屑与下级分类统计，按编码前缀筛选。实测 1715 个分类、37427 个料号映射 0.36 秒。
+
+
+## 订单 / 机台（按项目）同步
+
+业务口径：U9 项目号（`CBO_Project.Code`，如 `JSBY-26B-001`）对应本地生产订单；项目下每张生产订单（`MO-` 开头）对应一台机台；机台物料需求取该 MO 的备料表（U9 已按 BOM×数量展开，含替代料）。没挂项目号的 MO 不导入。
+
+- 接口：`POST /api/v1/u9/sync/projects?projects=JSBY-26B-001,JSBY-26B-002&dry_run=true`
+- 写入：`production_orders`（id `u9prj-<项目号>`，状态按项目下 MO 汇总：全部完工→已完成，有开工→生产中，否则已下达，只往前走）、`devices` / `order_devices` / `assembly_tasks`（机台号 = MO 单号）、`order_material_requirements`（device_id = 该机台）。
+- 本地没有的料号自动建物料档案；已有需求只更新需求量（不低于已到货量），不删除本地多出的行。
+- 管理台：U9 集成页「订单 / 机台（按项目）」卡片，或查找页按年份/项目号查出后一键同步。
+- 测试环境清理：查找页按前缀清理，同时清 `u9mo-`（旧口径按 MO 导入）与 `u9prj-` 订单及其机台、装配任务、U9 建的机台档案。

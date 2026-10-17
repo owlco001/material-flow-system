@@ -147,6 +147,15 @@ class FakeU9:
                         for r in self.inventory if codes is None or r["m_itemCode"] in codes]
                 return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
                                        ensure_ascii=False).encode("utf-8")
+            if "join CBO_Project p on p.ID=m.Project" in sql and "p.Code in (" in sql:
+                prjs = re.findall(r"'([^']+)'", sql.split("p.Code in (", 1)[1])
+                data = [{"DocNo": "MO001", "DocState": 2, "Qty": 2.0, "ItemCode": "SB01", "ItemName": "横向输送机",
+                         "ProjectCode": "JSBY-26B-001", "ProjectName": "JSBY-26B-001"},
+                        {"DocNo": "MO002", "DocState": 3, "Qty": 1.0, "ItemCode": "SB02", "ItemName": "二号设备",
+                         "ProjectCode": "JSBY-26B-001", "ProjectName": "JSBY-26B-001"}]
+                data = [r for r in data if r["ProjectCode"] in prjs]
+                return 200, json.dumps({"ResCode": 0, "Success": True, "Data": data},
+                                       ensure_ascii=False).encode("utf-8")
             if "from MO_MO m" in sql and "as ItemCode" in sql:
                 data = [{"DocNo": "MO001", "ItemCode": "SB01", "ItemName": "一号设备", "Qty": 2.0,
                          "StartDate": "2026-10-01T08:00:00", "CompleteDate": "2026-10-05T08:00:00",
@@ -934,3 +943,50 @@ def test_lookup_orders_route_by_project(db, fake, monkeypatch):
         h = {"Authorization": f"Bearer {_api_token(client, ADMIN[1], ADMIN[4])}"}
         r = client.get("/api/v1/u9/orders/lookup", params={"project": "JSBY-26B"}, headers=h)
         assert r.status_code == 200 and r.json()["project"] == "JSBY-26B"
+
+
+
+# ------------------------------------------------------------------ 项目 = 订单，MO = 机台
+def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    from app.u9.sync import delete_u9_orders_by_doc_prefix
+    cfg = make_cfg()
+    s = run_sync("projects", db, cfg, dry_run=True, projects=["JSBY-26B-001", "NOPE-1"])["stats"]
+    assert s["projects"] == 1 and s["mos"] == 2 and s["orders_inserted"] == 1 \
+        and s["devices_inserted"] == 2 and s["not_found"] == ["NOPE-1"]
+    assert "p.Code in ('JSBY-26B-001','NOPE-1')" in [q for q in fake.sqls if "CBO_Project" in q][-1]
+    assert db.execute("SELECT COUNT(*) FROM production_orders WHERE order_no='JSBY-26B-001'").fetchone()[0] == 0
+    s = run_sync("projects", db, cfg, dry_run=False, projects=["JSBY-26B-001"], user_id="u-admin")["stats"]
+    assert s["orders_inserted"] == 1 and s["devices_inserted"] == 2 and s["tasks_created"] == 2
+    po = db.execute("SELECT id, status FROM production_orders WHERE order_no='JSBY-26B-001'").fetchone()
+    assert po[0] == "u9prj-JSBY-26B-001" and po[1] == "IN_PROGRESS"  # 一张开工一张完工
+    ods = db.execute("SELECT id, device_no, device_type, sequence_no FROM order_devices WHERE order_id=?"
+                     " ORDER BY sequence_no", (po[0],)).fetchall()
+    assert [tuple(r)[1:] for r in ods] == [("MO001", "输送设备", 1), ("MO002", "通用设备", 2)]
+    assert db.execute("SELECT device_name FROM devices WHERE device_no='MO001'").fetchone()[0] == "横向输送机"
+    assert db.execute("SELECT COUNT(*) FROM assembly_tasks WHERE order_no='JSBY-26B-001'").fetchone()[0] == 2
+    # MO001 的备料表 → 该机台的物料需求（M001 汇总 16，NEW9 0.5 向上取整 1，停用行跳过）
+    reqs = dict(db.execute("SELECT m.code, r.required_quantity FROM order_material_requirements r"
+                           " JOIN materials m ON m.id=r.material_id WHERE r.device_id=?",
+                           (ods[0][0],)).fetchall())
+    assert reqs == {"M001": 16, "NEW9": 1}
+    assert db.execute("SELECT COUNT(*) FROM order_material_requirements WHERE order_id=? AND device_id IS NULL",
+                      (po[0],)).fetchone()[0] == 0
+    # 再跑一次幂等：本地已导入的项目自动带上
+    s = run_sync("projects", db, cfg, dry_run=False)["stats"]
+    assert s["requested"] == 1 and s["devices_inserted"] == 0 and s["devices_existing"] == 2 \
+        and s["requirements_inserted"] == 0
+    # 测试环境清理：订单、机台绑定、装配任务、物料需求、U9 建的机台档案一并清掉
+    r = delete_u9_orders_by_doc_prefix(db, "JSBY-26B")
+    assert r["deleted_orders"] == 1 and r["deleted_requirements"] == 2
+    for q in ("SELECT COUNT(*) FROM order_devices WHERE device_no IN ('MO001','MO002')",
+              "SELECT COUNT(*) FROM assembly_tasks WHERE order_no='JSBY-26B-001'",
+              "SELECT COUNT(*) FROM devices WHERE device_no IN ('MO001','MO002')"):
+        assert db.execute(q).fetchone()[0] == 0, q
+
+
+def test_lookup_returns_project_codes(fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    from app.u9.sync import lookup_orders_by_year
+    r = lookup_orders_by_year(make_cfg(), 2026)
+    assert r["project_codes"] == ["JSBY-26B-001"] and r["no_project"] == 1

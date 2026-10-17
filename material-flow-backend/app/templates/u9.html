@@ -92,11 +92,11 @@
         {% if config.inventory_via_sql %}<p class="muted" style="margin:0;font-size:12px">可用量为近似值：可用状态现存量减预留占用。</p>
         {% else %}<p class="muted" style="margin:0;font-size:12px">注：现场 U9 的整体查询目前在 U9 服务器端报 SQL CLR 程序集错误（ufida.u9.sql.clrlib），需 U9 运维处理；按料号查询正常。</p>{% endif %}
         <input type="hidden" name="update_totals" value="1">
-      {% elif e.id == "orders" %}
+      {% elif e.id == "projects" %}
         <p style="margin:0 0 6px"><a href="/admin/u9/orders/lookup">按年份 / 项目号查找订单，清理导入订单 →</a></p>
-        <label>生产订单号（可选，逗号或换行分隔）</label>
-        <textarea name="doc_nos" placeholder="如 MO2026100001"></textarea>
-        <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地已有订单号</label>
+        <label>项目号（逗号或换行分隔）</label>
+        <textarea name="projects" placeholder="如 JSBY-26B-001,JSBY-26B-002"></textarea>
+        <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地已导入的项目订单</label>
       {% endif %}
       <div class="btn-row">
         <button type="submit" name="dry_run" value="1" class="btn btn-sm" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>预览同步</button>

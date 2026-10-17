@@ -2474,7 +2474,7 @@ async def admin_exceptions_review(request: Request, eid: str):
 
 
 # ---------------------------------------------------------------- U9 集成页面
-U9_ENTITY_LABELS = {"items": "料品档案", "categories": "物料分类", "boms": "BOM", "inventory": "库存", "orders": "生产订单"}
+U9_ENTITY_LABELS = {"items": "料品档案", "categories": "物料分类", "boms": "BOM", "inventory": "库存", "orders": "生产订单", "projects": "订单/机台（按项目）"}
 U9_STATUS_LABELS = {"OK": "成功", "PENDING_DOC": "待实施商文档", "FAILED": "失败", "RUNNING": "运行中"}
 
 
@@ -2527,9 +2527,10 @@ def admin_u9(request: Request):
                   f"查 U9 现存量/可用量（Invtrans/QueryQohAndAvailable）→ 本地库存（按料号+存储地点-库位），"
                   f"并回写物料总量/可用量。默认按本地 {local_material_count} 个料号逐个查询。"),
          "table": "inventory / locations / materials"},
-        {"id": "orders", "label": "生产订单",
-         "desc": f"按单号查 U9 生产订单（MODoc/Query）→ 本地生产订单。默认包含本地已有 {local_order_count} 个单号。",
-         "table": "production_orders"},
+        {"id": "projects", "label": "订单 / 机台（按项目）",
+         "desc": "U9 项目号（如 JSBY-26B-001）→ 本地订单；项目下每张 MO → 一台机台，"
+                 "机台物料需求取 MO 备料表（BOM 清单）。没挂项目号的 MO 不导入。",
+         "table": "production_orders / order_devices / devices / order_material_requirements"},
     ]
     return templates.TemplateResponse(
         request,
@@ -2672,7 +2673,8 @@ async def admin_u9_sync(request: Request, entity: str):
     try:
         kwargs = build_sync_kwargs(
             entity, codes=str(form.get("codes", "")), product_codes=str(form.get("product_codes", "")),
-            doc_nos=str(form.get("doc_nos", "")), wh=str(form.get("wh", "")),
+            doc_nos=str(form.get("doc_nos", "")), projects=str(form.get("projects", "")),
+            wh=str(form.get("wh", "")),
             include_local=str(form.get("include_local", "")) in ("1", "on", "true"),
             update_totals=str(form.get("update_totals", "1")) in ("1", "on", "true"),
             user_id=user["id"], scope=str(form.get("scope", "local")))
@@ -2700,6 +2702,14 @@ async def admin_u9_sync(request: Request, entity: str):
         return _see_other(f"/admin/u9?msg={quote('经典 U9 接口尚未实现，已记录占位日志')}&ok=0&run={run}")
     s = result["stats"]
     mode = "预览" if dry_run else "执行"
+    if entity == "projects":
+        msg = (f"{U9_ENTITY_LABELS[entity]}{mode}完成：项目 {s.get('projects', 0)} 个、MO {s.get('mos', 0)} 张；"
+               f"新增订单 {s.get('orders_inserted', 0)}、新增机台 {s.get('devices_inserted', 0)}，"
+               f"已有机台 {s.get('devices_existing', 0)}"
+               + ("" if dry_run else f"，新增物料需求 {s.get('requirements_inserted', 0)}、"
+                  f"更新 {s.get('requirements_updated', 0)}")
+               + (f"；U9 查不到的项目 {s.get('not_found_count')} 个" if s.get("not_found_count") else ""))
+        return _see_other(f"/admin/u9?msg={quote(msg)}&ok=1&run={run}#run-detail")
     msg = (f"{U9_ENTITY_LABELS.get(entity, entity)}{mode}完成：U9 返回 {s.get('total', 0)} 条，"
            f"新增 {s.get('inserted', 0)}，更新 {s.get('updated', 0)}，"
            f"不变 {s.get('unchanged', 0)}，跳过 {s.get('skipped', 0)}")
