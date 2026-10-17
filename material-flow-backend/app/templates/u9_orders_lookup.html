@@ -31,7 +31,7 @@
 <div class="card" style="border-left:4px solid #dc3545">
   <h3>清理误导入的订单</h3>
   <p class="page-desc">按 U9 单号前缀删除之前误导入的订单（测试环境用；U9 生产订单单号都是 MO- 开头，填 MO- 即清掉全部导入订单）。只删系统导入的（id 为 u9mo- 开头），手工建的不动，其物料需求会连带删除。</p>
-  <form method="post" action="/admin/u9/orders/cleanup" onsubmit="return confirm('确定删除该前缀的全部 U9 导入订单吗？此操作不可恢复。')">
+  <form method="post" action="/admin/u9/orders/cleanup" data-confirm="确定删除该前缀的全部 U9 导入订单吗？此操作不可恢复。" data-confirm-title="清理导入订单" data-confirm-ok="删除" data-confirm-danger="1">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="row">
       <label>单号前缀<input type="text" name="doc_prefix" value="MO-" style="width:180px"></label>
