@@ -516,27 +516,32 @@ _SYNC_FNS = {
 
 
 # ---------------------------------------------------------------- 按年份查找订单（只读，不写库）
-def lookup_orders_by_year(cfg: U9Config, year: int, limit: int = 2000,
-                          client=None, doc_prefix: str = "") -> dict:
+def lookup_orders_by_year(cfg: U9Config, year: int | None, limit: int = 2000,
+                          client=None, project: str = "") -> dict:
     """按年份查生产订单号：先取 U9 最近 N 个单号，再逐单读 MODoc 按开工年过滤。
 
     U9 的订单同步接口只能按单号查询，没有"列出某年订单"的发现能力，
     本函数补上这一环：返回 {year, scanned, matched, doc_nos, product_codes,
     sample, errors}，调用方可直接把 doc_nos 喂给 sync/orders，
     product_codes 喂给 sync/boms。全程只读，不写任何业务表。
-    doc_prefix 可选：只查单号以该前缀开头的（如 JSBY-26B）。
+    project 可选：只查挂在该 U9 项目号下的订单（如 JSBY-26B-001，前缀匹配）；
+    给了项目号时 year 可为空（None/""），表示不按年份过滤。
     """
-    try:
-        year = int(year)
-    except (TypeError, ValueError):
-        raise U9Error(f"年份无效：{year!r}")
-    if not 2000 <= year <= 2100:
-        raise U9Error(f"年份超出范围（2000-2100）：{year}")
+    project = (project or "").strip()
+    if year in (None, "") and project:
+        year = None
+    else:
+        try:
+            year = int(year)
+        except (TypeError, ValueError):
+            raise U9Error(f"年份无效：{year!r}")
+        if not 2000 <= year <= 2100:
+            raise U9Error(f"年份超出范围（2000-2100）：{year}")
     client = client or get_client(cfg)
     errors: list[dict] = []
-    doc_nos = client.fetch_recent_order_nos(limit, errors=errors, doc_prefix=doc_prefix)
+    doc_nos = client.fetch_recent_order_nos(limit, errors=errors, project=project)
     raw = client.fetch_production_orders(doc_nos, errors=errors) if doc_nos else []
-    y = str(year)
+    y = str(year) if year is not None else ""
     matched: list[str] = []
     product_codes: list[str] = []
     seen_pc: set[str] = set()
@@ -550,7 +555,7 @@ def lookup_orders_by_year(cfg: U9Config, year: int, limit: int = 2000,
             continue
         sd, cd = (m["start_date"] or "")[:4], (m["complete_date"] or "")[:4]
         # 开工年/完工年命中；两个日期都缺时回落为单号含年份（如 MO2026010001）
-        hit = sd == y or cd == y or ((not sd and not cd) and y in m["order_no"])
+        hit = (not y) or sd == y or cd == y or ((not sd and not cd) and y in m["order_no"])
         if not hit:
             continue
         matched.append(m["order_no"])
@@ -565,12 +570,12 @@ def lookup_orders_by_year(cfg: U9Config, year: int, limit: int = 2000,
                            "U9状态": m["u9_state"] or "（未查到）"})
     return {"year": year, "scanned": len(doc_nos), "matched": len(matched),
             "doc_nos": matched, "product_codes": product_codes,
-            "sample": sample, "errors": errors[:50], "doc_prefix": doc_prefix}
+            "sample": sample, "errors": errors[:50], "project": project}
 
 
 # ---------------------------------------------------------------- 入口
 def delete_u9_orders_by_doc_prefix(conn, doc_prefix: str) -> dict:
-    """删除 U9 同步导入的指定单号前缀的订单（用于清理误导入，如 MO- 开头的 BOM 单）。
+    """删除 U9 同步导入的指定单号前缀的订单（测试环境清理用，如 MO- 清掉全部 U9 导入订单）。
 
     只删 id 为 u9mo-<prefix> 开头的 production_orders，其物料需求经外键级联删除；
     手工创建的订单（id 非 u9mo- 开头）不受影响。返回 {deleted_orders, deleted_requirements}。

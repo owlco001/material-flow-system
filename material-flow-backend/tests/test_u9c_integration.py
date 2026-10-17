@@ -899,3 +899,29 @@ def test_sql_code_whitelist_allows_plus_and_cjk(fake):
     sql = fake.sqls[-1]
     assert "'30201001-00001+A'" in sql and "'AL-型材-002'" in sql and "x'" not in sql
     assert len(errs) == 1
+
+
+def test_lookup_orders_by_project(fake, monkeypatch):
+    """JSBY-26B-xxx 是 U9 项目号（MO_MO.Project → CBO_Project.Code），不是单号。"""
+    _patch_transport(monkeypatch, fake)
+    from app.u9.sync import lookup_orders_by_year
+    r = lookup_orders_by_year(make_cfg(), None, project="JSBY-26B-001")
+    sql = [s for s in fake.sqls if "order by m.ID desc" in s][-1]
+    assert "join CBO_Project p on p.ID=m.Project" in sql and "p.Code like 'JSBY-26B-001%'" in sql
+    assert "o.Code='01'" in sql
+    # 不按年份过滤：MO001（2026）与 MO002（无日期）都命中
+    assert r["year"] is None and r["project"] == "JSBY-26B-001"
+    assert set(r["doc_nos"]) == {"MO001", "MO002"}
+    with pytest.raises(U9Error):
+        lookup_orders_by_year(make_cfg(), None, project="x';drop")
+    with pytest.raises(U9Error):
+        lookup_orders_by_year(make_cfg(), None)  # 年份与项目号都没给
+
+
+def test_lookup_orders_route_by_project(db, fake, monkeypatch):
+    _patch_transport(monkeypatch, fake)
+    monkeypatch.setattr(u9config, "_config", make_cfg())
+    with TestClient(backend.app) as client:
+        h = {"Authorization": f"Bearer {_api_token(client, ADMIN[1], ADMIN[4])}"}
+        r = client.get("/api/v1/u9/orders/lookup", params={"project": "JSBY-26B"}, headers=h)
+        assert r.status_code == 200 and r.json()["project"] == "JSBY-26B"

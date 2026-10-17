@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block page_title %}按年份查找 U9 生产订单{% endblock %}
+{% block page_title %}查找 U9 生产订单{% endblock %}
 {% block content %}
 <style>
 .u9-lookup textarea{width:100%;min-height:120px;resize:vertical;padding:6px 8px;font-size:13px}
@@ -12,17 +12,17 @@
 .u9-lookup .err{color:#b02a37;font-size:13px}
 </style>
 <div class="compact u9-lookup">
-<h2>按年份查找 U9 生产订单</h2>
-<p class="page-desc">从 U9 取最近 N 个生产订单号，逐单按开工年/完工年筛选。只读，不写库。查出后可直接一键同步订单与 BOM。</p>
+<h2>按年份 / 项目号查找 U9 生产订单</h2>
+<p class="page-desc">从 U9 取最近 N 个生产订单号，逐单按开工年/完工年筛选；填项目号（如 JSBY-26B-001）则只查该项目下的订单。只读，不写库。查出后可直接一键同步订单与 BOM。</p>
 <p><a href="/admin/u9">← 返回 U9 集成</a></p>
 
 <div class="card">
   <form method="get" action="/admin/u9/orders/lookup">
     <input type="hidden" name="do" value="1">
     <div class="row">
-      <label>年份<input type="text" name="year" value="{{ year }}" inputmode="numeric"></label>
+      <label>年份（填项目号时可留空）<input type="text" name="year" value="{{ year }}" inputmode="numeric"></label>
       <label>取最近 N 个单号<input type="text" name="limit" value="{{ limit }}" inputmode="numeric"></label>
-      <label>单号前缀（可选）<input type="text" name="doc_prefix" value="{{ doc_prefix }}" placeholder="如 JSBY-26B" style="width:180px"></label>
+      <label>项目号（可选）<input type="text" name="project" value="{{ project }}" placeholder="如 JSBY-26B-001" style="width:180px"></label>
       <button type="submit" class="btn" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>查找</button>
     </div>
   </form>
@@ -30,7 +30,7 @@
 
 <div class="card" style="border-left:4px solid #dc3545">
   <h3>清理误导入的订单</h3>
-  <p class="page-desc">按 U9 单号前缀删除之前误导入的订单（如 MO- 开头的 BOM 单）。只删系统导入的（id 为 u9mo- 开头），手工建的不动，其物料需求会连带删除。</p>
+  <p class="page-desc">按 U9 单号前缀删除之前误导入的订单（测试环境用；U9 生产订单单号都是 MO- 开头，填 MO- 即清掉全部导入订单）。只删系统导入的（id 为 u9mo- 开头），手工建的不动，其物料需求会连带删除。</p>
   <form method="post" action="/admin/u9/orders/cleanup" onsubmit="return confirm('确定删除该前缀的全部 U9 导入订单吗？此操作不可恢复。')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="row">
@@ -46,7 +46,7 @@
 
 {% if result %}
 <div class="card">
-  <h3>{{ result.year }} 年订单：命中 {{ result.matched }} 个（共扫描 {{ result.scanned }} 个）</h3>
+  <h3>{% if result.project %}项目 {{ result.project }}{% if result.year %} · {% endif %}{% endif %}{% if result.year %}{{ result.year }} 年{% endif %}订单：命中 {{ result.matched }} 个（共扫描 {{ result.scanned }} 个）</h3>
   {% if result.doc_nos %}
   <label style="font-size:13px;color:var(--muted)">订单号（{{ result.doc_nos|length }} 个）</label>
   <textarea readonly>{{ result.doc_nos|join(",") }}</textarea>

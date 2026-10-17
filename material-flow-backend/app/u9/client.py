@@ -642,29 +642,33 @@ class U9CClient(U9Client):
 
     def fetch_recent_order_nos(self, limit: int = 2000,
                                errors: list[dict] | None = None,
-                               doc_prefix: str = "") -> list[str]:
+                               project: str = "") -> list[str]:
         """取最近 N 个生产订单号（按 MO_MO.ID 倒序）：只发固定的只读 SELECT。
 
         组织编码先过白名单；返回去重后的单号列表（新→旧）。供按年份查找订单时
         先圈定候选单号，再逐单读 MODoc 按开工年过滤。
-        doc_prefix 可选：只取单号以该前缀开头的（如 JSBY-26B），前缀过白名单。
+        project 可选：只取挂在该 U9 项目号下的订单（MO_MO.Project → CBO_Project.Code，
+        前缀匹配，如 JSBY-26B-001 或 JSBY-26B）。U9 生产订单单号统一是 MO- 开头，
+        JSBY-26B-xxx 是项目号而不是单号（2026-10-17 实测）。项目号过白名单。
         """
         org = self.cfg.org_code
         if not _SAFE_KEY.match(org or ""):
             raise U9Error(f"组织编码不合规，无法查询订单：{org!r}")
-        prefix = (doc_prefix or "").strip()
+        prefix = (project or "").strip()
         if prefix and not _SAFE_KEY.match(prefix):
-            raise U9Error(f"单号前缀不合规：{prefix!r}")
+            raise U9Error(f"项目号不合规：{prefix!r}")
         try:
             n = max(1, min(int(limit), 5000))
         except (TypeError, ValueError):
             n = 2000
         sql = (f"select top {n} m.DocNo as DocNo from MO_MO m"
-               f" join Base_Organization o on o.ID=m.Org"
-               f" where o.Code='{org}'")
+               f" join Base_Organization o on o.ID=m.Org")
         if prefix:
-            # 前缀已过白名单（字母数字下划线中划线点），直接拼 LIKE 前缀匹配
-            sql += f" and m.DocNo like '{prefix}%'"
+            # 项目号已过白名单（字母数字下划线中划线点），直接拼 LIKE 前缀匹配
+            sql += (f" join CBO_Project p on p.ID=m.Project"
+                    f" where o.Code='{org}' and p.Code like '{prefix}%'")
+        else:
+            sql += f" where o.Code='{org}'"
         sql += " order by m.ID desc"
         out: list[str] = []
         for row in self._post(PATH_SQL, {"SqlString": sql}):

@@ -2562,9 +2562,9 @@ def admin_u9_orders_lookup(request: Request):
     from app.u9.sync import lookup_orders_by_year
     from app.u9.client import U9Error
     cfg = get_config()
-    year = (request.query_params.get("year", "2026") or "2026").strip()
+    year = (request.query_params.get("year", "2026") or "").strip()
     limit = (request.query_params.get("limit", "2000") or "2000").strip()
-    doc_prefix = (request.query_params.get("doc_prefix", "") or "").strip()
+    project = (request.query_params.get("project", "") or "").strip()
     result, error = None, ""
     if request.query_params.get("do") == "1":
         if not cfg.ready:
@@ -2572,8 +2572,8 @@ def admin_u9_orders_lookup(request: Request):
         else:
             try:
                 result = lookup_orders_by_year(
-                    cfg, int(year), max(1, min(5000, int(limit))),
-                    doc_prefix=doc_prefix)
+                    cfg, (int(year) if year else None), max(1, min(5000, int(limit))),
+                    project=project)
             except U9Error as e:
                 error = f"U9 查询失败：{e}"
             except (TypeError, ValueError):
@@ -2590,7 +2590,7 @@ def admin_u9_orders_lookup(request: Request):
             "ready": cfg.ready,
             "year": year,
             "limit": limit,
-            "doc_prefix": doc_prefix,
+            "project": project,
             "result": result,
             "error": error,
             "now_ts": int(time.time()),

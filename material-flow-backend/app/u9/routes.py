@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import json
 import sqlite3
 
@@ -138,18 +140,20 @@ def u9_sync(entity: str,
 
 
 @router.get("/api/v1/u9/orders/lookup")
-def u9_orders_lookup(year: int = Query(..., description="年份，如 2026"),
+def u9_orders_lookup(year: Optional[int] = Query(default=None, description="年份，如 2026；给了 project 时可省略"),
                      limit: int = Query(default=2000, ge=1, le=5000,
                                         description="从 U9 取最近 N 个单号再按年份过滤"),
-                     doc_prefix: str = Query(default="",
-                                             description="单号前缀过滤，如 JSBY-26B"),
+                     project: str = Query(default="",
+                                          description="U9 项目号（前缀匹配），如 JSBY-26B-001"),
                      user: sqlite3.Row = Depends(current_user)):
     """按年份查生产订单号（只读）：返回该年订单的 doc_nos 与产品料号，
     可直接喂给 POST /api/v1/u9/sync/orders?doc_nos=… 与 sync/boms。"""
     _admin(user)
+    if year is None and not project.strip():
+        raise ApiError(422, "U9_LOOKUP_ARGS", "年份和项目号至少填一个")
     cfg = _require_ready()
     try:
-        return lookup_orders_by_year(cfg, year, limit, doc_prefix=doc_prefix)
+        return lookup_orders_by_year(cfg, year, limit, project=project)
     except U9Error as e:
         raise ApiError(502, "U9_UPSTREAM_ERROR", f"U9 查询失败：{e}")
     except Exception as e:  # noqa: BLE001 - 转中文业务报错，不吞真因
