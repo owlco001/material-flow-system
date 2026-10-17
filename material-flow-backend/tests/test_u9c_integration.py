@@ -973,10 +973,23 @@ def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monk
     assert reqs == {"M001": 16, "NEW9": 1}
     assert db.execute("SELECT COUNT(*) FROM order_material_requirements WHERE order_id=? AND device_id IS NULL",
                       (po[0],)).fetchone()[0] == 0
+    # MO 备料表 = 机台 BOM 清单：机型编码=机台号，每台用量=需求÷MO 数量，挂到项目订单
+    assert s["boms_created"] == 1  # MO002 没有备料表
+    bv = db.execute("SELECT id, version_no, status, row_count FROM bom_versions WHERE model_code='26B-001-P5-12'"
+                    ).fetchall()
+    assert [tuple(r) for r in bv] == [("u9bomv-MO001-1", 1, "PUBLISHED", 2)]
+    items = dict(db.execute("SELECT material_code, quantity FROM bom_items WHERE bom_version_id='u9bomv-MO001-1'"
+                            ).fetchall())
+    assert items == {"M001": 8, "NEW9": 0.25}
+    pom = db.execute("SELECT order_id, model_name, bom_version_id, planned_quantity FROM production_order_models"
+                     " WHERE model_code='26B-001-P5-12'").fetchone()
+    assert tuple(pom) == (po[0], "横向输送机", "u9bomv-MO001-1", 2)
+    assert db.execute("SELECT COUNT(*) FROM production_order_models WHERE model_code='MO002'").fetchone()[0] == 1
     # 再跑一次幂等：本地已导入的项目自动带上
     s = run_sync("projects", db, cfg, dry_run=False)["stats"]
     assert s["requested"] == 1 and s["devices_inserted"] == 0 and s["devices_existing"] == 2 \
-        and s["requirements_inserted"] == 0
+        and s["requirements_inserted"] == 0 and s["boms_created"] == 0 and s["boms_unchanged"] == 1
+    assert db.execute("SELECT COUNT(*) FROM bom_versions WHERE model_code='26B-001-P5-12'").fetchone()[0] == 1
     # BOM 页按订单聚合：用机台备料表汇总（未关联机型的 U9 项目订单）
     db.commit()
     from app.admin_web import _aggregate_order_requirements
@@ -988,7 +1001,10 @@ def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monk
     # 测试环境清理：订单、机台绑定、装配任务、物料需求、U9 建的机台档案一并清掉
     r = delete_u9_orders_by_doc_prefix(db, "JSBY-26B")
     assert r["deleted_orders"] == 1 and r["deleted_requirements"] == 2
-    for q in ("SELECT COUNT(*) FROM order_devices WHERE device_no IN ('26B-001-P5-12','MO002')",
+    for q in ("SELECT COUNT(*) FROM bom_versions WHERE id LIKE 'u9bomv-%'",
+              "SELECT COUNT(*) FROM bom_items WHERE bom_version_id LIKE 'u9bomv-%'",
+              "SELECT COUNT(*) FROM production_order_models WHERE id LIKE 'u9pom-%'",
+              "SELECT COUNT(*) FROM order_devices WHERE device_no IN ('26B-001-P5-12','MO002')",
               "SELECT COUNT(*) FROM assembly_tasks WHERE order_no='JSBY-26B-001'",
               "SELECT COUNT(*) FROM devices WHERE device_no IN ('26B-001-P5-12','MO002')"):
         assert db.execute(q).fetchone()[0] == 0, q
@@ -1014,6 +1030,8 @@ def test_sync_projects_renames_old_mo_devices_and_dedupes(db, fake, monkeypatch)
     assert s["devices_renamed"] == 1 and s["devices_inserted"] == 0
     for t, i in (("order_devices", "u9od-MO001"), ("assembly_tasks", "u9task-MO001"), ("devices", "u9dev-MO001")):
         assert db.execute(f"SELECT device_no FROM {t} WHERE id=?", (i,)).fetchone()[0] == "26B-001-P5-12", t
+    assert db.execute("SELECT model_code FROM production_order_models WHERE id='u9pom-MO001'").fetchone()[0] \
+        == "26B-001-P5-12"
     # 同一项目里另一台已占用该编号 → 附上 MO 单号
     db.execute("UPDATE order_devices SET device_no='TMP' WHERE id='u9od-MO001'")
     db.execute("UPDATE order_devices SET device_no='26B-001-P5-12' WHERE id='u9od-MO002'")

@@ -196,7 +196,7 @@ API（全部 ADMIN，`dry_run` 默认 `true`）：
 业务口径：U9 项目号（`CBO_Project.Code`，如 `JSBY-26B-001`）对应本地生产订单；项目下每张生产订单（`MO-` 开头）对应一台机台；机台物料需求取该 MO 的备料表（U9 已按 BOM×数量展开，含替代料）。没挂项目号的 MO 不导入。
 
 - 接口：`POST /api/v1/u9/sync/projects?projects=JSBY-26B-001,JSBY-26B-002&dry_run=true`
-- 写入：`production_orders`（id `u9prj-<项目号>`，状态按项目下 MO 汇总：全部完工→已完成，有开工→生产中，否则已下达，只往前走）、`devices` / `order_devices` / `assembly_tasks`（机台号 = 项目短号-机台编号，如 `26B-012-P5-12`；机台编号取 MO 产品料品私有段 2，跨项目会重复故带项目前缀；未填时退回 MO 单号；同项目重复时附 `(MO 单号)`；旧的按 MO 单号建的机台再同步时自动改号）、`order_material_requirements`（device_id = 该机台）。
+- 写入：`production_orders`（id `u9prj-<项目号>`，状态按项目下 MO 汇总：全部完工→已完成，有开工→生产中，否则已下达，只往前走）、`devices` / `order_devices` / `assembly_tasks`（机台号 = 项目短号-机台编号，如 `26B-012-P5-12`；机台编号取 MO 产品料品私有段 2，跨项目会重复故带项目前缀；未填时退回 MO 单号；同项目重复时附 `(MO 单号)`；旧的按 MO 单号建的机台再同步时自动改号）、`order_material_requirements`（device_id = 该机台），以及机台 BOM 清单：每张 MO 的备料表写成 `bom_versions`（机型编码 = 机台号，id `u9bomv-<MO>-<版本>`，已发布；每台用量 = 备料需求 ÷ MO 生产数量）并经 `production_order_models`（id `u9pom-<MO>`，计划台数 = MO 生产数量）挂到项目订单，BOM 管理页可直接看版本、按订单聚合算缺料。备料表没变不出新版本，变了出新发布版本、旧版归档；机台改号时 BOM 机型编码跟着改。
 - 本地没有的料号自动建物料档案；已有需求只更新需求量（不低于已到货量），不删除本地多出的行。
 - 管理台：U9 集成页「订单 / 机台（按项目）」卡片，或查找页按年份/项目号查出后一键同步。
 - 测试环境清理：查找页按前缀清理，同时清 `u9mo-`（旧口径按 MO 导入）与 `u9prj-` 订单及其机台、装配任务、U9 建的机台档案。

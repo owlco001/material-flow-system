@@ -578,6 +578,72 @@ def _upsert_device_requirements(conn, order_id: str, od_id: str, picklist: list[
     return ins, upd, mats
 
 
+def _upsert_mo_bom(conn, order_id: str, mo: str, dno: str, pname: str, mo_qty, picklist: list[dict],
+                   creator: str, now: str) -> str:
+    """一张 MO 的备料表 = 该机台的 BOM 清单：机型编码=机台号，挂到项目订单（production_order_models）。
+
+    用量按「每台」：备料表需求量 ÷ MO 生产数量；计划台数=MO 生产数量。
+    备料表没变则不动；变了就新建一个已发布版本、旧发布版本归档。返回 新建/更新/未变/无备料表。
+    """
+    try:
+        planned = max(1, int(round(float(mo_qty or 1))))
+    except (TypeError, ValueError):
+        planned = 1
+    pom_id = f"u9pom-{mo}"
+    pom = conn.execute("SELECT model_code FROM production_order_models WHERE id=?", (pom_id,)).fetchone()
+    old_code = pom[0] if pom else None
+    if old_code and old_code != dno:  # 机台改号：BOM 跟着改机型编码
+        if not conn.execute("SELECT 1 FROM bom_versions WHERE model_code=? AND id NOT LIKE ?",
+                            (dno, f"u9bomv-{mo}-%")).fetchone():
+            conn.execute("UPDATE bom_versions SET model_code=? WHERE id LIKE ?", (dno, f"u9bomv-{mo}-%"))
+    if not picklist:
+        result = "无备料表"
+    else:
+        lines = sorted(picklist, key=lambda p: p["material_code"])
+        sig = json.dumps([[p["material_code"], round(p["qty"] / planned, 6), p["unit"]] for p in lines],
+                         ensure_ascii=False)
+        sha = hashlib.sha256(f"u9mo:{mo}:{sig}".encode("utf-8")).hexdigest()
+        cur = conn.execute("SELECT id, version_no, source_file_sha256 FROM bom_versions WHERE model_code=?"
+                           " AND status='PUBLISHED' ORDER BY version_no DESC LIMIT 1", (dno,)).fetchone()
+        if cur and cur[2] == sha:
+            result = "未变"
+        else:
+            vno = (conn.execute("SELECT COALESCE(MAX(version_no),0) FROM bom_versions WHERE model_code=?",
+                                (dno,)).fetchone()[0] or 0) + 1
+            vid = f"u9bomv-{mo}-{vno}"
+            conn.execute("UPDATE bom_versions SET status='ARCHIVED' WHERE model_code=? AND status='PUBLISHED'",
+                         (dno,))
+            conn.execute("INSERT INTO bom_versions(id, model_code, version_no, status, source_file_sha256,"
+                         " row_count, created_by, created_at, published_by, published_at)"
+                         " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (vid, dno, vno, "PUBLISHED", sha, len(lines), creator, now, creator, now))
+            for i, p in enumerate(lines, start=1):
+                mat = conn.execute("SELECT id, specification FROM materials WHERE code=?",
+                                   (p["material_code"],)).fetchone()
+                conn.execute("INSERT INTO bom_items(id, bom_version_id, material_id, material_code,"
+                             " material_name, specification, unit, quantity, scrap_rate,"
+                             " substitute_material_codes, line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                             (f"{vid}-{i}", vid, mat[0], p["material_code"], p["material_name"],
+                              (mat[1] or "") if mat else "", p["unit"] or "件",
+                              round(p["qty"] / planned, 6), 0, "[]", i))
+            result = "更新" if cur else "新建"
+    vid_row = conn.execute("SELECT id FROM bom_versions WHERE model_code=? AND status='PUBLISHED'"
+                           " ORDER BY version_no DESC LIMIT 1", (dno,)).fetchone()
+    vid = vid_row[0] if vid_row else None
+    if pom is None:
+        if not conn.execute("SELECT 1 FROM production_order_models WHERE model_code=?", (dno,)).fetchone():
+            conn.execute("INSERT INTO production_order_models(id, order_id, model_code, model_name,"
+                         " bom_version_id, planned_quantity, created_at) VALUES(?,?,?,?,?,?,?)",
+                         (pom_id, order_id, dno, pname[:200], vid, planned, now))
+    else:
+        clash = conn.execute("SELECT 1 FROM production_order_models WHERE model_code=? AND id<>?",
+                             (dno, pom_id)).fetchone()
+        conn.execute("UPDATE production_order_models SET model_code=?, model_name=?, bom_version_id=?,"
+                     " planned_quantity=? WHERE id=?",
+                     (old_code if clash else dno, pname[:200], vid, planned, pom_id))
+    return result
+
+
 def _rename_device(conn, od_id: str, mo: str, order_no: str, old: str, new: str, now: str) -> None:
     """已同步的机台换成新机台号（如 0.17.0 用 MO 单号建的机台）：订单机台、装配任务、U9 建的机台档案一起改。"""
     conn.execute("UPDATE order_devices SET device_no=? WHERE id=?", (new, od_id))
@@ -617,7 +683,7 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
     creator = user_id or "u9-sync"
     st = dict(orders_inserted=0, orders_updated=0, devices_inserted=0, devices_existing=0,
               requirements_inserted=0, requirements_updated=0, materials_created=0, tasks_created=0,
-              devices_renamed=0)
+              devices_renamed=0, boms_created=0, boms_updated=0, boms_unchanged=0)
     sample: list[dict] = []
     for code in wanted:
         rows = by_prj.get(code) or []
@@ -696,6 +762,11 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
                 st["requirements_inserted"] += a
                 st["requirements_updated"] += b
                 st["materials_created"] += c
+            if not dry_run:
+                bres = _upsert_mo_bom(conn, order_id, mo, dno, pname, r.get("qty"), pick, creator, now)
+                key = {"新建": "boms_created", "更新": "boms_updated", "未变": "boms_unchanged"}.get(bres)
+                if key:
+                    st[key] += 1
             if len(sample) < SAMPLE_SIZE:
                 try:
                     lbl = mappers.U9_MO_STATUS_LABELS.get(int(r.get("docstate")), str(r.get("docstate")))
@@ -852,7 +923,19 @@ def delete_u9_orders_by_doc_prefix(conn, doc_prefix: str) -> dict:
         req = conn.execute(
             f"SELECT COUNT(*) FROM order_material_requirements WHERE order_id IN ({q})",
             ids).fetchone()[0]
+        mo_ids = [r[0] for r in conn.execute(
+            f"SELECT id FROM production_order_models WHERE order_id IN ({q}) AND id LIKE 'u9pom-%'", ids)]
         conn.execute(f"DELETE FROM production_orders WHERE id IN ({q})", ids)
+        # MO 备料表生成的机台 BOM（u9bomv-<MO>-<版本>）一并清掉，被别处引用的保留
+        for pid in mo_ids:
+            conn.execute("SAVEPOINT u9bom")
+            try:
+                conn.execute("DELETE FROM bom_items WHERE bom_version_id LIKE ?", (f"u9bomv-{pid[6:]}-%",))
+                conn.execute("DELETE FROM bom_versions WHERE id LIKE ?", (f"u9bomv-{pid[6:]}-%",))
+                conn.execute("RELEASE u9bom")
+            except sqlite3.IntegrityError:
+                conn.execute("ROLLBACK TO u9bom")
+                conn.execute("RELEASE u9bom")
         for dno in dev_nos:
             conn.execute("SAVEPOINT u9dev")
             try:
