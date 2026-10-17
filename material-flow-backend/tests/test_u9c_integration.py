@@ -977,6 +977,14 @@ def test_sync_projects_creates_order_devices_and_bom_requirements(db, fake, monk
     s = run_sync("projects", db, cfg, dry_run=False)["stats"]
     assert s["requested"] == 1 and s["devices_inserted"] == 0 and s["devices_existing"] == 2 \
         and s["requirements_inserted"] == 0
+    # BOM 页按订单聚合：用机台备料表汇总（未关联机型的 U9 项目订单）
+    db.commit()
+    from app.admin_web import _aggregate_order_requirements
+    agg = _aggregate_order_requirements("JSBY-26B-001")
+    assert agg["source"] == "order_requirements" and agg["model_count"] == 1
+    assert {m["material_code"]: m["total_quantity"] for m in agg["materials"]} == {"M001": 16, "NEW9": 1}
+    assert agg["materials"][0]["models"] == ["26B-001-P5-12"]
+    assert _aggregate_order_requirements("NOPE") is None
     # 测试环境清理：订单、机台绑定、装配任务、物料需求、U9 建的机台档案一并清掉
     r = delete_u9_orders_by_doc_prefix(db, "JSBY-26B")
     assert r["deleted_orders"] == 1 and r["deleted_requirements"] == 2

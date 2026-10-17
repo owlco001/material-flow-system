@@ -65,7 +65,7 @@
   <div id="agg-result"></div>
 </div>
 <script>
-let aggModels = [], aggOrders = [], aggSel = {}, aggLast = null;
+let aggModels = [], aggOrders = [], aggSel = {}, aggLast = null, aggReqOrder = "";
 const aggEsc = escHtml;  // 统一用 base.html 的 escHtml（已兼容 null/数字）
 const aggFmt = n => Number(n).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 async function aggLoad() {
@@ -75,7 +75,8 @@ async function aggLoad() {
     const sel = document.getElementById("agg-order");
     aggOrders.forEach(o => { const op = document.createElement("option"); op.value = o.order_no;
       op.textContent = o.order_no + (o.product_name ? " · " + o.product_name : "") +
-        (o.model_codes.length ? "（" + o.model_codes.length + " 个机型，" + o.with_bom + " 个有 BOM）" : "（未关联机型）"); sel.appendChild(op); });
+        (o.model_codes.length ? "（" + o.model_codes.length + " 个机型，" + o.with_bom + " 个有 BOM）"
+          : o.req_devices ? "（" + o.req_devices + " 台机台备料表）" : "（未关联机型）"); sel.appendChild(op); });
     const q = new URLSearchParams(location.search).get("aggOrder");
     if (q) { sel.value = q; aggPickOrder(q); aggregateBom(); document.getElementById("agg").scrollIntoView(); }
     else aggRenderModels();
@@ -105,16 +106,28 @@ function aggRenderModels() {
 function aggPickOrder(no) {
   aggSel = {};
   const o = aggOrders.find(x => x.order_no === no);
+  aggReqOrder = o && !o.model_codes.length && o.req_devices ? no : "";
   const box = document.getElementById("agg-result");
-  box.innerHTML = o && !o.model_codes.length ? '<p class="muted">订单 ' + aggEsc(no) + ' 还没有关联机型，可在订单里维护机型与计划台数，或直接手选机型。</p>'
+  box.innerHTML = aggReqOrder ? '<p class="muted">订单 ' + aggEsc(no) + " 按 " + o.req_devices + " 台机台的备料表（U9 MO）汇总，点「聚合」查看缺料。</p>"
+    : o && !o.model_codes.length ? '<p class="muted">订单 ' + aggEsc(no) + ' 还没有关联机型，可在订单里维护机型与计划台数，或直接手选机型。</p>'
     : o && !o.with_bom ? '<p class="muted">订单 ' + aggEsc(no) + ' 的机型都还没有已发布 BOM。</p>' : "";
   if (o) aggModels.filter(m => m.order_no === no && m.has_bom).forEach(m => aggSel[m.model_code] = m.planned_quantity > 0 ? m.planned_quantity : 1);
   aggRenderModels();
 }
-function aggClear() { aggSel = {}; document.getElementById("agg-order").value = ""; document.getElementById("agg-result").innerHTML = ""; aggRenderModels(); }
+function aggClear() { aggSel = {}; aggReqOrder = ""; document.getElementById("agg-order").value = ""; document.getElementById("agg-result").innerHTML = ""; aggRenderModels(); }
 async function aggregateBom() {
   const items = Object.entries(aggSel).map(([k, v]) => k + ":" + v);
   const box = document.getElementById("agg-result");
+  if (aggReqOrder && !items.length) {
+    box.innerHTML = "<p>聚合中…</p>";
+    try {
+      const r = await fetch("/admin/agent/bom/aggregate?order_no=" + encodeURIComponent(aggReqOrder), { headers: csrfHeaders() });
+      const j = await r.json();
+      if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+      aggLast = j; aggShow();
+    } catch (e) { box.innerHTML = '<p class="error">聚合失败：' + aggEsc(e.message) + "</p>"; }
+    return;
+  }
   if (!items.length) { box.innerHTML = '<p class="muted">请先选择订单或勾选机型</p>'; return; }
   box.innerHTML = "<p>聚合中…</p>";
   try {
@@ -133,15 +146,18 @@ function aggShow() {
   const pm = j.per_model || {};
   const used = Object.entries(pm).filter(([k, v]) => !v.error).map(([k, v]) => aggEsc(k) + " ×" + aggFmt(v.quantity) + (v.version_no ? " (v" + v.version_no + ")" : ""));
   const missing = Object.entries(pm).filter(([k, v]) => v.error).map(([k]) => aggEsc(k));
+  const byDev = j.source === "order_requirements";
+  if (byDev) { used.length = 0; used.push("按 " + j.model_count + " 台机台的备料表（U9 MO）汇总"); }
+  const devCell = ms => byDev && ms.length > 5 ? ms.slice(0, 5).map(aggEsc).join("、") + " 等 " + ms.length + " 台" : ms.map(aggEsc).join("、");
   let h = '<p style="margin:8px 0"><b>' + (j.short_types ? '<span style="color:#c0392b">' + j.short_types + " 种物料缺料</span>" : '<span style="color:#1e8449">全部齐套</span>') + "</b>" +
     "，共 " + (j.materials || []).length + " 种物料" + (order ? ' · 订单 <a href="/admin/orders?order_no=' + encodeURIComponent(order) + '">' + aggEsc(order) + "</a>" : "") +
     '<br><span class="muted" style="font-size:12px">' + used.join("、") + (missing.length ? "；无已发布 BOM：" + missing.join("、") : "") +
     (j.stock_source ? "；库存口径：" + aggEsc(j.stock_source) : "") + "</span></p>";
   if (mats.length) {
-    h += '<div style="overflow-x:auto"><table><tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>单位</th><th class="num">总需求</th><th class="num">可用库存</th><th class="num">缺口</th><th>涉及机型</th></tr>' +
+    h += '<div style="overflow-x:auto"><table><tr><th>物料编码</th><th>物料名称</th><th>规格</th><th>单位</th><th class="num">总需求</th><th class="num">可用库存</th><th class="num">缺口</th><th>' + (byDev ? "涉及机台" : "涉及机型") + "</th></tr>" +
       mats.map(m => '<tr class="' + (m.shortage > 0 ? "short" : "") + '"><td>' + aggEsc(m.material_code) + "</td><td>" + aggEsc(m.material_name) + "</td><td>" + aggEsc(m.specification) +
         "</td><td>" + aggEsc(m.unit) + '</td><td class="num"><b>' + aggFmt(m.total_quantity) + '</b></td><td class="num">' + (m.no_stock_record ? '<span class="muted">无记录</span>' : aggFmt(m.available)) +
-        '</td><td class="num">' + (m.shortage > 0 ? '<b style="color:#c0392b">' + aggFmt(m.shortage) + "</b>" : "—") + "</td><td>" + m.models.map(aggEsc).join("、") + "</td></tr>").join("") + "</table></div>";
+        '</td><td class="num">' + (m.shortage > 0 ? '<b style="color:#c0392b">' + aggFmt(m.shortage) + "</b>" : "—") + "</td><td>" + devCell(m.models) + "</td></tr>").join("") + "</table></div>";
     h += '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn btn-sm btn-secondary" onclick="aggCsv()">导出 CSV</button></div>';
   } else h += '<p class="muted">没有符合条件的物料</p>';
   box.innerHTML = h;

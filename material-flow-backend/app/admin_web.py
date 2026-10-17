@@ -4183,14 +4183,58 @@ async def admin_agent_bom_models(request: Request, user: sqlite3.Row = Depends(_
                 orders.append(seen[m["order_no"]])
             seen[m["order_no"]]["model_codes"].append(m["model_code"])
             seen[m["order_no"]]["with_bom"] += 1 if m["has_bom"] else 0
-        # 没关联机型的订单也列出（选中时提示）
-        for r in c.execute("SELECT order_no, product_name, status FROM production_orders ORDER BY created_at DESC").fetchall():
+        # 没关联机型的订单也列出；U9 项目订单的机台带 MO 备料表（机台级物料需求），可直接按订单聚合
+        req_devs = {r[0]: r[1] for r in c.execute(
+            "SELECT order_id, COUNT(DISTINCT device_id) FROM order_material_requirements"
+            " WHERE device_id IS NOT NULL GROUP BY order_id").fetchall()}
+        for r in c.execute("SELECT id, order_no, product_name, status FROM production_orders ORDER BY created_at DESC").fetchall():
             if r["order_no"] not in seen:
                 orders.append({"order_no": r["order_no"], "product_name": r["product_name"] or "",
-                               "status": r["status"], "model_codes": [], "with_bom": 0})
+                               "status": r["status"], "model_codes": [], "with_bom": 0,
+                               "req_devices": req_devs.get(r["id"], 0)})
     finally:
         c.close()
     return JSONResponse({"models": models, "orders": orders})
+
+
+def _aggregate_order_requirements(order_no: str) -> dict | None:
+    """按订单聚合机台级物料需求（U9 项目订单：每台机台 = 一张 MO，需求 = MO 备料表）。
+    输出与机型 BOM 聚合同一结构，per_model 的键是机台号。"""
+    from app.agent.tools import _stock_by_code
+    c = db()
+    try:
+        o = c.execute("SELECT id FROM production_orders WHERE order_no=?", (order_no,)).fetchone()
+        if not o:
+            return None
+        rows = c.execute(
+            "SELECT od.device_no, m.code, m.name, m.specification, m.unit, r.required_quantity"
+            " FROM order_material_requirements r JOIN order_devices od ON od.id=r.device_id"
+            " JOIN materials m ON m.id=r.material_id WHERE r.order_id=? ORDER BY od.sequence_no",
+            (o["id"],)).fetchall()
+        if not rows:
+            return None
+        agg: dict = {}
+        per: dict = {}
+        for dn, code, name, spec, unit, q in rows:
+            per.setdefault(dn, {"rows": 0, "quantity": 1})["rows"] += 1
+            a = agg.setdefault(code, {"material_code": code, "material_name": name, "specification": spec,
+                                      "unit": unit, "total_quantity": 0.0, "models": []})
+            a["total_quantity"] += q or 0
+            a["models"].append(dn)
+        stock, src = _stock_by_code(c, list(agg))
+    finally:
+        c.close()
+    result = sorted(agg.values(), key=lambda x: -x["total_quantity"])
+    short = 0
+    for r in result:
+        r["models"] = sorted(set(r["models"]))
+        r["model_count"] = len(r["models"])
+        r["available"] = round(stock.get(r["material_code"], 0.0), 4)
+        r["shortage"] = round(max(r["total_quantity"] - r["available"], 0.0), 4)
+        r["no_stock_record"] = r["material_code"] not in stock
+        short += 1 if r["shortage"] > 0 else 0
+    return {"materials": result, "per_model": per, "model_count": len(per), "short_types": short,
+            "stock_source": src, "source": "order_requirements", "order_no": order_no}
 
 
 def _parse_bom_agg_items(items: str, model_codes: str) -> list[tuple[str, float]]:
@@ -4216,7 +4260,14 @@ def _parse_bom_agg_items(items: str, model_codes: str) -> list[tuple[str, float]
 
 @router.get("/admin/agent/bom/aggregate")
 async def admin_agent_bom_aggregate(request: Request, model_codes: str = "", items: str = "",
-                                    user: sqlite3.Row = Depends(_agent_bom_read)):
+                                    order_no: str = "", user: sqlite3.Row = Depends(_agent_bom_read)):
+    if order_no.strip():
+        from starlette.concurrency import run_in_threadpool
+        res = await run_in_threadpool(_aggregate_order_requirements, order_no.strip())
+        if res is None:
+            return JSONResponse({"error": {"code": "NOT_FOUND", "message": "订单不存在或没有机台备料表"}},
+                                status_code=404)
+        return JSONResponse(res)
     try:
         pairs = _parse_bom_agg_items(items, model_codes)
     except ValueError as e:
