@@ -2840,18 +2840,75 @@ def _request_with_id(request: Request) -> Request:
     return Request(scope, _no_body)
 
 
+TASK_PAGE_SIZES = (20, 50, 100)
+
+
+def _tasks_query(request: Request) -> dict:
+    qp = request.query_params
+    try:
+        size = int(qp.get("size") or 20)
+    except ValueError:
+        size = 20
+    assigned = (qp.get("assigned") or "").strip()
+    return {
+        "q": (qp.get("q") or "").strip()[:64],
+        "status": (qp.get("status") or "").strip()[:32],
+        "order": (qp.get("order") or "").strip()[:64],
+        "assigned": assigned if assigned in ("yes", "no") else "",
+        "size": size if size in TASK_PAGE_SIZES else 20,
+        "sort": "created" if qp.get("sort") == "created" else "device",
+    }
+
+
+_TASK_ASSIGNED_SQL = ("EXISTS (SELECT 1 FROM assembly_task_members m WHERE m.task_id = t.id"
+                      " AND m.removed_at IS NULL)")
+
+
+def _tasks_listing(c: sqlite3.Connection, f: dict, page: int) -> dict:
+    """管理台机台任务列表：按订单/状态/分配情况筛选，默认按订单+机台号排序，附状态统计。"""
+    from app.main import _assembly_tasks_to_dicts
+    scope, sargs = "1=1", []
+    if f["order"]:
+        scope += " AND t.order_no = ?"
+        sargs.append(f["order"])
+    if f["q"]:
+        scope += " AND (t.order_no LIKE ? OR t.device_no LIKE ?)"
+        sargs += [f"%{f['q']}%", f"%{f['q']}%"]
+    # 统计条只受订单/关键字影响，便于在状态之间切换
+    counts = {r[0]: r[1] for r in c.execute(
+        f"SELECT t.status, COUNT(*) FROM assembly_tasks t WHERE {scope} GROUP BY t.status", sargs).fetchall()}
+    unassigned_n = c.execute(
+        f"SELECT COUNT(*) FROM assembly_tasks t WHERE {scope} AND NOT {_TASK_ASSIGNED_SQL}", sargs).fetchone()[0]
+    where, args = scope, list(sargs)
+    if f["status"]:
+        where += " AND t.status = ?"
+        args.append(f["status"])
+    if f["assigned"] == "no":
+        where += f" AND NOT {_TASK_ASSIGNED_SQL}"
+    elif f["assigned"] == "yes":
+        where += f" AND {_TASK_ASSIGNED_SQL}"
+    total = c.execute(f"SELECT COUNT(*) FROM assembly_tasks t WHERE {where}", args).fetchone()[0]
+    size = f["size"]
+    pages = (total + size - 1) // size if total else 0
+    page = min(page, pages) if pages else 1
+    order_by = ("t.created_at DESC" if f["sort"] == "created"
+                else "t.order_no, LENGTH(t.device_no), t.device_no")
+    rows = c.execute(f"SELECT t.* FROM assembly_tasks t WHERE {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
+                     (*args, size, (page - 1) * size)).fetchall()
+    orders = c.execute(
+        "SELECT order_no, COUNT(*) AS n, SUM(status='COMPLETED') AS done FROM assembly_tasks"
+        " GROUP BY order_no ORDER BY MAX(created_at) DESC LIMIT 200").fetchall()
+    return {"items": _assembly_tasks_to_dicts(c, rows), "page": page, "total_pages": pages, "total": total,
+            "counts": counts, "scope_total": sum(counts.values()), "unassigned": unassigned_n,
+            "orders": [dict(o) for o in orders]}
+
+
 def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     page = _page_param(request)
-    q = (request.query_params.get("q") or "").strip() or None
-    f_status = (request.query_params.get("status") or "").strip() or None
-    try:
-        tasks_data = _api_endpoint("/api/v1/assembly/tasks")(
-            page=page, pageSize=20, q=q, status=f_status, user=user
-        )
-    except HTTPException as exc:
-        return _api_http_error_response(exc, request)
+    f = _tasks_query(request)
     c = db()
     try:
+        data = _tasks_listing(c, f, page)
         assemblers = c.execute(
             "SELECT id, username, display_name FROM users"
             " WHERE role='ASSEMBLER' AND active=1 ORDER BY username"
@@ -2859,43 +2916,64 @@ def _tasks_page(request: Request, user: sqlite3.Row, error: str | None = None):
     finally:
         c.close()
     names = {row["id"]: row["display_name"] for row in assemblers}
-    # /api/v1/assembly/tasks 返回的 members 是驼峰键（assemblerId/assignmentRole），
-    # 模板按 snake_case 取值，此处统一归一化，避免 KeyError: 'assembler_id'。
-    for _item in tasks_data["items"]:
+    for _item in data["items"]:
         _norm = []
         for _m in _item.get("members", []):
             if isinstance(_m, dict):
+                aid = _m.get("assemblerId", _m.get("assembler_id"))
                 _norm.append({
-                    "assembler_id": _m.get("assemblerId", _m.get("assembler_id")),
+                    "assembler_id": aid,
                     "assignment_role": _m.get("assignmentRole", _m.get("assignment_role")),
+                    "name": names.get(aid) or _m.get("displayName") or aid,
                 })
             else:
                 _norm.append(_m)
         _item["members"] = _norm
-    assign_ops = {item["id"]: str(uuid.uuid4()) for item in tasks_data["items"]}
+    assign_ops = {item["id"]: str(uuid.uuid4()) for item in data["items"]}
     remove_ops = {
         f"{item['id']}:{m['assembler_id']}": str(uuid.uuid4())
-        for item in tasks_data["items"]
+        for item in data["items"]
         for m in item.get("members", [])
     }
+    qp = request.query_params
+    notice = NOTICE_TEXTS.get(qp.get("notice", ""))
+    if qp.get("notice") == "batch_assigned":
+        ok, fail = qp.get("ok", "0"), qp.get("fail", "0")
+        notice = f"批量分配完成：成功 {ok} 台" + (f"，失败 {fail} 台" if fail not in ("", "0") else "")
+    # 当前筛选条件，用于表单回跳与分页
+    keep = {k: v for k, v in (("q", f["q"]), ("status", f["status"]), ("order", f["order"]),
+                              ("assigned", f["assigned"]), ("size", str(f["size"]) if f["size"] != 20 else ""),
+                              ("sort", "created" if f["sort"] == "created" else "")) if v}
+    from urllib.parse import urlencode
+    back = "/admin/tasks" + ("?" + urlencode({**keep, "page": data["page"]}) if keep or data["page"] > 1 else "")
     return templates.TemplateResponse(
         request,
         "tasks.html",
         {
             "user": user,
             "csrf_token": user["csrf_token"],
-            "items": tasks_data["items"],
-            "page": tasks_data["page"],
-            "total_pages": tasks_data["totalPages"],
-            "total_rows": tasks_data["total"],
+            "items": data["items"],
+            "page": data["page"],
+            "page_size": f["size"],
+            "page_sizes": TASK_PAGE_SIZES,
+            "total_pages": data["total_pages"],
+            "total_rows": data["total"],
+            "counts": data["counts"],
+            "scope_total": data["scope_total"],
+            "unassigned_n": data["unassigned"],
+            "orders": data["orders"],
+            "f": f,
+            "keep": keep,
+            "back_url": back,
             "assemblers": assemblers,
-            "status_labels": WORKSPACE_STATUS_LABELS,
+            "status_labels": {k: v for k, v in WORKSPACE_STATUS_LABELS.items()
+                              if k in ("WAITING_MATERIAL", "MATERIAL_ACCEPTED", "IN_PROGRESS",
+                                       "PAUSED_FOR_TEMPORARY_TRANSFER", "COMPLETED")},
             "names": names,
             "assign_ops": assign_ops,
             "remove_ops": remove_ops,
-
             "error": error,
-            "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+            "notice_text": notice,
         },
     )
 
@@ -2929,7 +3007,48 @@ async def admin_task_assign(request: Request, tid: str):
     except HTTPException as exc:
         return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
     next_url = str(form.get("next", "") or "")
+    if next_url.startswith("/admin/tasks"):
+        return _see_other(next_url + ("&" if "?" in next_url else "?") + "notice=assigned")
     return _see_other(next_url if next_url.startswith("/admin/") else "/admin/tasks?notice=assigned")
+
+
+def _batch_assign_tasks(request: Request, user: sqlite3.Row, task_ids: list[str],
+                        assembler_ids: list[str]) -> tuple[int, int]:
+    ok = fail = 0
+    fn = _api_endpoint("/api/v1/assembly/tasks/{tid}/assignments", method="POST")
+    for tid in task_ids:
+        op = str(uuid.uuid4())
+        try:
+            fn(tid=tid, body={"clientOperationId": op, "assemblerIds": assembler_ids},
+               request=_request_with_id(request), user=user, idempotency_key=op)
+            ok += 1
+        except HTTPException:
+            fail += 1
+    return ok, fail
+
+
+@router.post("/admin/tasks/batch-assign")
+async def admin_task_batch_assign(request: Request):
+    """勾选多台机台，一次分配同一组装配工（首个为组长；已有成员保留）。"""
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    form = await request.form()
+    if not _csrf_ok(str(form.get("csrf_token", "")), user["csrf_token"]):
+        return _error_page(request, 403, "CSRF 校验失败")
+    task_ids = list(dict.fromkeys(str(v) for v in form.getlist("taskIds") if str(v).strip()))[:200]
+    assembler_ids = list(dict.fromkeys(str(v) for v in form.getlist("assemblerIds") if str(v).strip()))
+    if not task_ids or not assembler_ids:
+        return _tasks_page(request, user, error="请先勾选机台并选择装配工")
+    if len(assembler_ids) > 20:
+        return _tasks_page(request, user, error="装配工最多选 20 人")
+    from starlette.concurrency import run_in_threadpool
+    ok, fail = await run_in_threadpool(_batch_assign_tasks, request, user, task_ids, assembler_ids)
+    next_url = str(form.get("next", "") or "")
+    if not next_url.startswith("/admin/tasks"):
+        next_url = "/admin/tasks"
+    sep = "&" if "?" in next_url else "?"
+    return _see_other(f"{next_url}{sep}notice=batch_assigned&ok={ok}&fail={fail}")
 
 
 @router.post("/admin/tasks/{tid}/assignments/{assembler_id}/remove")
@@ -2953,6 +3072,8 @@ async def admin_task_unassign(request: Request, tid: str, assembler_id: str):
     except HTTPException as exc:
         return _tasks_page(request, user, error=f"{exc.status_code}：{exc.detail}")
     next_url = str(form.get("next", "") or "")
+    if next_url.startswith("/admin/tasks"):
+        return _see_other(next_url + ("&" if "?" in next_url else "?") + "notice=unassigned")
     return _see_other(next_url if next_url.startswith("/admin/") else "/admin/tasks?notice=unassigned")
 
 

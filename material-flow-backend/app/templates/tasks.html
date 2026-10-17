@@ -25,92 +25,183 @@
 </details>
 {% endif %}
 
-{% set q = request.query_params.get("q", "").strip() %}
-{% set f_status = request.query_params.get("status", "").strip() %}
+{% set _stc = {"WAITING_MATERIAL": "st-yellow", "MATERIAL_ACCEPTED": "st-blue", "IN_PROGRESS": "st-blue", "PAUSED_FOR_TEMPORARY_TRANSFER": "st-red", "COMPLETED": "st-green"} %}
+{% macro task_href(over) -%}
+{%- set _p = dict(keep) -%}{%- for k, v in over.items() -%}{%- set _ = _p.update({k: v}) -%}{%- endfor -%}
+/admin/tasks{% set _qs = [] %}{% for k, v in _p.items() if v %}{% set _ = _qs.append(k ~ "=" ~ (v|string|urlencode)) %}{% endfor %}{% if _qs %}?{{ _qs|join("&") }}{% endif %}
+{%- endmacro %}
+<style>
+.task-chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.task-chips a{display:inline-flex;gap:6px;align-items:center;padding:4px 10px;border:1px solid #e5e7eb;border-radius:999px;font-size:13px;color:#374151;text-decoration:none;background:#fff}
+.task-chips a.on{border-color:#0E5FD8;background:#eef4ff;color:#0E5FD8;font-weight:600}
+.task-chips b{font-variant-numeric:tabular-nums}
+.task-prog{display:flex;gap:2px;width:60px}
+.task-prog i{flex:1;height:6px;border-radius:3px;background:#e5e7eb}
+.task-prog i.on{background:#16a34a}
+.task-bulk{position:sticky;bottom:0;z-index:5;background:#fff;border:1px solid #c7d7f5;border-radius:10px;padding:10px 12px;margin-top:10px;box-shadow:0 -4px 12px rgba(15,23,42,.06)}
+.task-bulk[hidden]{display:none}
+.picker-search{max-width:200px;margin:0 0 6px}
+.picker-list{max-height:180px;overflow:auto}
+.task-dev small{color:#6b7280;font-size:12px}
+</style>
+
 <form method="get" action="/admin/tasks" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-  <input name="q" value="{{ q }}" placeholder="搜索订单号/机台编号" style="max-width:220px">
-  <select name="status">
-    <option value="">全部状态</option>
-    {% for _s, _l in status_labels.items() %}
-    <option value="{{ _s }}" {% if f_status == _s %}selected{% endif %}>{{ _l }}</option>
+  <select name="order" style="max-width:260px" onchange="this.form.submit()">
+    <option value="">全部订单</option>
+    {% for o in orders %}
+    <option value="{{ o.order_no }}" {% if f.order == o.order_no %}selected{% endif %}>{{ o.order_no }}（{{ o.done or 0 }}/{{ o.n }} 台完成）</option>
     {% endfor %}
   </select>
+  <input name="q" value="{{ f.q }}" placeholder="搜索订单号/机台号" style="max-width:200px">
+  <select name="assigned" onchange="this.form.submit()">
+    <option value="">分配：全部</option>
+    <option value="no" {% if f.assigned == "no" %}selected{% endif %}>未分配</option>
+    <option value="yes" {% if f.assigned == "yes" %}selected{% endif %}>已分配</option>
+  </select>
+  <select name="sort" onchange="this.form.submit()">
+    <option value="">按机台号</option>
+    <option value="created" {% if f.sort == "created" %}selected{% endif %}>按创建时间</option>
+  </select>
+  <select name="size" onchange="this.form.submit()">
+    {% for n in page_sizes %}<option value="{{ n }}" {% if page_size == n %}selected{% endif %}>每页 {{ n }}</option>{% endfor %}
+  </select>
+  {% if f.status %}<input type="hidden" name="status" value="{{ f.status }}">{% endif %}
   <button type="submit" class="btn btn-sm">搜索</button>
-  {% if q or f_status %}<a href="/admin/tasks" class="btn btn-sm btn-secondary">清除</a>{% endif %}
+  {% if keep %}<a href="/admin/tasks" class="btn btn-sm btn-secondary">清除</a>{% endif %}
 </form>
 
-<p style="color:#6b7280;font-size:13px">共 {{ total_rows }} 条</p>
+<div class="task-chips">
+  <a href="{{ task_href({'status': '', 'assigned': '', 'page': ''}) }}" class="{% if not f.status and not f.assigned %}on{% endif %}">全部 <b>{{ scope_total }}</b></a>
+  {% for _s, _l in status_labels.items() %}
+  <a href="{{ task_href({'status': _s, 'page': ''}) }}" class="{% if f.status == _s %}on{% endif %}"><span class="st {{ _stc.get(_s, 'st-neutral') }}">{{ _l }}</span><b>{{ counts.get(_s, 0) }}</b></a>
+  {% endfor %}
+  <a href="{{ task_href({'assigned': 'no', 'page': ''}) }}" class="{% if f.assigned == 'no' %}on{% endif %}">未分配 <b>{{ unassigned_n }}</b></a>
+</div>
+
+{% set can_assign = user.role in ("ADMIN", "WORKSHOP_SUPERVISOR") %}
+<form id="bulk-form" method="post" action="/admin/tasks/batch-assign">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="next" value="{{ back_url }}">
 <div class="table-wrap">
 <table>
-  <tr><th>序号</th><th>订单</th><th>机台</th><th>状态</th><th>进度</th><th>装配工</th><th>操作</th></tr>
+  <tr>{% if can_assign %}<th style="width:32px"><input type="checkbox" id="task-all" title="全选本页"></th>{% endif %}<th>序号</th><th>订单</th><th>机台</th><th>状态</th><th>进度</th><th>装配工</th>{% if can_assign %}<th>操作</th>{% endif %}</tr>
   {% for item in items %}
   {% set _st = item.status %}
   {% set _row = {"WAITING_MATERIAL": "row-yellow", "MATERIAL_ACCEPTED": "row-blue", "IN_PROGRESS": "row-blue", "PAUSED_FOR_TEMPORARY_TRANSFER": "row-red", "COMPLETED": "row-green"}.get(_st, "") %}
+  {% set _pg = item.progressStage or 0 %}
   <tr class="{{ _row }}">
-    <td>{{ (page-1)*20 + loop.index }}</td>
-    <td><a href="/admin/orders?order_no={{ item.orderNo }}">{{ item.orderNo }}</a></td>
-    <td><a href="/admin/models?dq={{ item.deviceNo }}">{{ item.deviceNo }}</a>{% if item.deviceName %}<br><span style="color:#6b7280;font-size:12px">{{ item.deviceName }}</span>{% endif %}</td>
-    <td><span class="st {% if _st in ('WAITING_MATERIAL',) %}st-yellow{% elif _st in ('MATERIAL_ACCEPTED','IN_PROGRESS') %}st-blue{% elif _st == 'PAUSED_FOR_TEMPORARY_TRANSFER' %}st-red{% elif _st == 'COMPLETED' %}st-green{% else %}st-neutral{% endif %}">{{ status_labels.get(_st, _st) if status_labels else _st }}</span></td>
-    <td>{{ item.progressStage or 0 }}/3</td>
+    {% if can_assign %}<td><input type="checkbox" name="taskIds" value="{{ item.id }}" class="task-pick"></td>{% endif %}
+    <td>{{ (page-1)*page_size + loop.index }}</td>
+    <td><a href="{{ task_href({'order': item.orderNo, 'page': ''}) }}" title="只看该订单">{{ item.orderNo }}</a></td>
+    <td class="task-dev"><a href="/admin/orders/{{ item.orderNo|urlencode }}/tasks/{{ item.id|urlencode }}" title="机台详情：状态、进度、物料、条码"><b>{{ item.deviceNo }}</b></a>{% if item.deviceName %}<br><small>{{ item.deviceName }}</small>{% endif %}</td>
+    <td><span class="st {{ _stc.get(_st, 'st-neutral') }}">{{ status_labels.get(_st, _st) }}</span></td>
+    <td><div class="task-prog" title="{{ _pg }}/3 阶段">{% for i in range(3) %}<i class="{% if i < _pg %}on{% endif %}"></i>{% endfor %}</div><small class="muted">{{ _pg }}/3</small></td>
     <td>
       {% for m in item.members %}
-        <a href="/admin/users?q={{ names.get(m.assembler_id, m.assembler_id) }}">{{ names.get(m.assembler_id, m.assembler_id) }}</a>{% if m.assignment_role == "LEAD" %}(组长){% endif %}{% if not loop.last %}、{% endif %}
+        <a href="/admin/users?q={{ m.name|urlencode }}">{{ m.name }}</a>{% if m.assignment_role == "LEAD" %}(组长){% endif %}{% if not loop.last %}、{% endif %}
       {% else %}<span style="color:#999">未分配</span>{% endfor %}
     </td>
+    {% if can_assign %}
     <td>
-      <details>
+      <details data-row-assign data-task="{{ item.id }}" data-op="{{ assign_ops[item.id] }}">
         <summary style="cursor:pointer;color:#0E5FD8">分配</summary>
         <div style="min-width:280px;padding:8px">
           <p style="margin:4px 0">当前：
             {% for m in item.members %}
-              {{ names.get(m.assembler_id, m.assembler_id) }}
-              <form method="post" action="/admin/tasks/{{ item.id }}/assignments/{{ m.assembler_id }}/remove" style="display:inline">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <input type="hidden" name="clientOperationId" value="{{ remove_ops[item.id ~ ':' ~ m.assembler_id] }}">
-                <button type="submit" class="btn btn-danger btn-sm" style="margin:0 4px">移除</button>
-              </form>
+              {{ m.name }}
+              <button type="submit" class="btn btn-danger btn-sm" style="margin:0 4px"
+                form="rm-{{ item.id }}-{{ loop.index }}">移除</button>
             {% else %}无{% endfor %}
           </p>
-          <form method="post" action="/admin/tasks/{{ item.id }}/assignments">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="clientOperationId" value="{{ assign_ops[item.id] }}">
-            <div class="assembler-picker" data-assembler-picker></div>
-            <button type="submit" class="btn btn-sm" style="margin-top:6px">保存（首个为组长）</button>
-          </form>
+          <div class="assembler-picker" data-assembler-picker></div>
+          <button type="submit" class="btn btn-sm" style="margin-top:6px" form="as-{{ item.id }}">保存（首个为组长）</button>
         </div>
       </details>
     </td>
+    {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="7">暂无数据</td></tr>
+  <tr><td colspan="8">暂无数据</td></tr>
   {% endfor %}
 </table>
 </div>
+{% if can_assign %}
+<div class="task-bulk" id="task-bulk" hidden>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+    <b>已选 <span id="bulk-n">0</span> 台</b>
+    <span class="muted" style="font-size:12px">给选中机台加同一组装配工（首个勾选为组长，已有成员保留）</span>
+  </div>
+  <div class="assembler-picker" data-assembler-picker data-bulk></div>
+  <button type="submit" class="btn btn-sm" style="margin-top:6px">批量分配</button>
+  <button type="button" class="btn btn-sm btn-secondary" style="margin-top:6px" onclick="document.querySelectorAll('.task-pick,#task-all').forEach(function(x){x.checked=false});bulkSync()">取消选择</button>
+</div>
+{% endif %}
+</form>
 
-{# 装配工候选只渲染一次（原先每行一整份，20 行 ≈ 364 KB）；展开「分配」时克隆进该行表单 #}
+{% if can_assign %}
+{# 行内分配/移除的表单放在批量表单外（表单不能嵌套），按钮用 form= 关联 #}
+{% for item in items %}
+<form id="as-{{ item.id }}" method="post" action="/admin/tasks/{{ item.id }}/assignments" style="display:none">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="clientOperationId" value="{{ assign_ops[item.id] }}">
+  <input type="hidden" name="next" value="{{ back_url }}">
+</form>
+{% for m in item.members %}
+<form id="rm-{{ item.id }}-{{ loop.index }}" method="post" action="/admin/tasks/{{ item.id }}/assignments/{{ m.assembler_id }}/remove" style="display:none">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="clientOperationId" value="{{ remove_ops[item.id ~ ':' ~ m.assembler_id] }}">
+  <input type="hidden" name="next" value="{{ back_url }}">
+</form>
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+{# 装配工候选只渲染一次；展开「分配」或出现批量栏时克隆进去 #}
 <template id="assembler-options">
+  {% if assemblers|length > 8 %}<input type="search" class="picker-search" placeholder="搜索装配工…">{% endif %}
+  <div class="picker-list">
   {% for a in assemblers %}
-  <label style="display:inline-block;margin-right:10px;font-size:13px">
+  <label style="display:inline-block;margin-right:10px;font-size:13px" data-name="{{ a.display_name }} {{ a.username }}">
     <input type="checkbox" name="assemblerIds" value="{{ a.id }}">{{ a.display_name }}
   </label>
-  {% endfor %}
-  <br>
+  {% else %}<span class="muted">暂无启用的装配工</span>{% endfor %}
+  </div>
 </template>
 <script>
 (function () {
-  function fill(details) {
-    const box = details.querySelector("[data-assembler-picker]");
+  function fill(box, formId) {
     const tpl = document.getElementById("assembler-options");
-    if (box && tpl && !box.childElementCount) box.appendChild(tpl.content.cloneNode(true));
+    if (!box || !tpl || box.childElementCount) return;
+    box.appendChild(tpl.content.cloneNode(true));
+    if (formId) box.querySelectorAll("input[name=assemblerIds]").forEach(function (i) { i.setAttribute("form", formId); });
+    const s = box.querySelector(".picker-search");
+    if (s) s.oninput = function () {
+      const k = s.value.trim().toLowerCase();
+      box.querySelectorAll("label[data-name]").forEach(function (l) { l.style.display = !k || l.dataset.name.toLowerCase().includes(k) ? "inline-block" : "none"; });
+    };
+    s && s.addEventListener("keydown", function (e) { if (e.key === "Enter") e.preventDefault(); });
   }
   // toggle 不冒泡，用捕获阶段监听；已展开的（如浏览器恢复状态）也补一次
+  function onOpen(d) { fill(d.querySelector("[data-assembler-picker]"), "as-" + d.dataset.task); }
   document.addEventListener("toggle", function (e) {
-    if (e.target.tagName === "DETAILS" && e.target.open) fill(e.target);
+    if (e.target.tagName === "DETAILS" && e.target.open && e.target.dataset.task) onOpen(e.target);
   }, true);
-  document.querySelectorAll("details[open]").forEach(fill);
+  document.querySelectorAll("details[open][data-task]").forEach(onOpen);
+  const bulk = document.getElementById("task-bulk");
+  window.bulkSync = function () {
+    if (!bulk) return;
+    const n = document.querySelectorAll(".task-pick:checked").length;
+    document.getElementById("bulk-n").textContent = n;
+    bulk.hidden = !n;
+    if (n) fill(bulk.querySelector("[data-bulk]"));
+  };
+  const all = document.getElementById("task-all");
+  if (all) all.onchange = function () { document.querySelectorAll(".task-pick").forEach(function (x) { x.checked = all.checked; }); bulkSync(); };
+  document.querySelectorAll(".task-pick").forEach(function (x) { x.onchange = bulkSync; });
+  // 行内「分配」里的装配工勾选框靠 form= 归属行表单，不会混进批量提交
 })();
 </script>
 
-{{ pager(page, total_pages, total_rows, "/admin/tasks", {"q": q, "status": f_status}) }}
+{{ pager(page, total_pages, total_rows, "/admin/tasks", keep) }}
 </div>
 {% endblock %}

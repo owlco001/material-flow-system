@@ -175,3 +175,62 @@ def test_assign_without_csrf_rejected():
         ).fetchone()[0]
         c.close()
         assert count == 0
+
+
+def _seed_many():
+    c = backend.db()
+    t = backend.now()
+    rows = [("tk_a1", "PRJ-A", "26A-P5-10", "WAITING_MATERIAL"), ("tk_a2", "PRJ-A", "26A-P5-9", "COMPLETED"),
+            ("tk_a3", "PRJ-A", "26A-C5-1", "WAITING_MATERIAL"), ("tk_b1", "PRJ-B", "26B-X1", "IN_PROGRESS")]
+    for tid, order, dev, st in rows:
+        c.execute("INSERT INTO assembly_tasks(id,order_no,device_id,device_no,status,progress_stage,"
+                  "task_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (tid, order, "d_" + tid, dev, st, 3 if st == "COMPLETED" else 0, 1, t, t))
+    c.execute("INSERT INTO assembly_task_members(task_id,assembler_id,assignment_role,assigned_by,"
+              "assigned_at,removed_at) VALUES('tk_a2','u_a1','LEAD','u_sup',?,NULL)", (t,))
+    c.commit()
+    c.close()
+
+
+def test_tasks_filter_by_order_status_chips_and_unassigned():
+    _seed_many()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        r = client.get("/admin/tasks?order=PRJ-A")
+        assert r.status_code == 200
+        assert "26A-P5-10" in r.text and "26B-X1" not in r.text
+        assert "PRJ-A（1/3 台完成）" in r.text
+        assert 'href="/admin/orders/PRJ-A/tasks/tk_a1"' in r.text  # 点机台进机台详情页
+        # 按机台号自然排序：P5-9 在 P5-10 前
+        assert r.text.index("26A-P5-9") < r.text.index("26A-P5-10")
+        assert re.search(r"未分配 <b>2</b>", r.text)
+        r = client.get("/admin/tasks?order=PRJ-A&assigned=no&status=WAITING_MATERIAL")
+        assert "26A-C5-1" in r.text and "26A-P5-9" not in r.text
+        r = client.get("/admin/tasks?size=50&sort=created")
+        assert r.status_code == 200 and "26B-X1" in r.text
+
+
+def test_batch_assign_keeps_filters_and_reports_counts():
+    _seed_many()
+    with TestClient(backend.app) as client:
+        assert web_login(client, "supervisor1", "Sup@2026x").status_code == 303
+        page = client.get("/admin/tasks?order=PRJ-A")
+        assert 'action="/admin/tasks/batch-assign"' in page.text
+        r = client.post("/admin/tasks/batch-assign", data={
+            "csrf_token": form_csrf(page.text), "next": "/admin/tasks?order=PRJ-A",
+            "taskIds": ["tk_a1", "tk_a3", "nope"], "assemblerIds": ["u_a2", "u_a1"]}, follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin/tasks?order=PRJ-A&notice=batch_assigned&ok=2&fail=1"
+        c = backend.db()
+        got = {(x[0], x[1]): x[2] for x in c.execute(
+            "SELECT task_id, assembler_id, assignment_role FROM assembly_task_members WHERE removed_at IS NULL")}
+        c.close()
+        assert got[("tk_a1", "u_a2")] == "LEAD" and got[("tk_a3", "u_a1")] == "MEMBER"
+        r = client.get(r.headers["location"])
+        assert "成功 2 台，失败 1 台" in r.text
+        # 缺参数
+        r = client.post("/admin/tasks/batch-assign", data={"csrf_token": form_csrf(page.text), "taskIds": ["tk_a1"]})
+        assert "请先勾选机台并选择装配工" in r.text
+        # CSRF
+        r = client.post("/admin/tasks/batch-assign", data={"taskIds": ["tk_a1"], "assemblerIds": ["u_a1"]})
+        assert r.status_code == 403
