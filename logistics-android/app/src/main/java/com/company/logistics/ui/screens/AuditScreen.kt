@@ -36,6 +36,7 @@ import com.company.logistics.ui.components.SecondaryButton
 import com.company.logistics.ui.components.SectionTitle
 import com.company.logistics.ui.components.StatusTag
 import com.company.logistics.ui.components.VSpace
+import com.company.logistics.ui.components.formatServerTime
 import com.company.logistics.ui.theme.Dimens
 import com.company.logistics.ui.theme.LogisticsColors
 import com.company.logistics.ui.theme.LogisticsTheme
@@ -127,7 +128,7 @@ fun AuditScreen(
                     serverTime?.let {
                         VSpace(Spacing.sm)
                         Text(
-                            "服务端时间 $it",
+                            "服务端时间 " + formatServerTime(it),
                             fontSize = 11.sp,
                             fontFamily = LogisticsType.MonoFamily,
                             color = Color.White.copy(alpha = 0.72f),
@@ -207,7 +208,7 @@ private fun AuditLogCard(log: AuditLog) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "${log.action.ifBlank { "未知动作" }} · ${log.resourceType.ifBlank { "未知资源" }}",
+                    "${log.displayAction} · ${log.displayResource}",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = LogisticsTheme.colors.textPrimary,
@@ -215,8 +216,8 @@ private fun AuditLogCard(log: AuditLog) {
                 VSpace(4.dp)
                 Text(
                     listOfNotNull(
-                        log.operatorId?.takeIf { it.isNotBlank() }?.let { "操作者 $it" },
-                        log.role?.takeIf { it.isNotBlank() }?.let { "角色 $it" },
+                        log.displayOperator?.let { "操作者 $it" },
+                        log.displayRole?.let { "角色 $it" },
                         log.resourceId?.takeIf { it.isNotBlank() }?.let { "资源 $it" },
                     ).joinToString(" · ").ifBlank { "服务端未返回操作者摘要" },
                     fontSize = 12.sp,
@@ -224,7 +225,7 @@ private fun AuditLogCard(log: AuditLog) {
                 )
             }
             StatusTag(
-                label = log.result.ifBlank { "未知结果" },
+                label = log.displayResult,
                 color = if (successful) LogisticsTheme.colors.success else LogisticsTheme.colors.danger,
                 containerColor = if (successful) LogisticsTheme.colors.success.copy(alpha = 0.14f)
                 else LogisticsTheme.colors.danger.copy(alpha = 0.14f),
@@ -234,7 +235,7 @@ private fun AuditLogCard(log: AuditLog) {
         VSpace(Spacing.sm)
         Text(
             listOfNotNull(
-                log.occurredAt?.takeIf { it.isNotBlank() }?.let { "服务端时间 $it" },
+                log.occurredAt?.takeIf { it.isNotBlank() }?.let { "时间 " + formatServerTime(it) },
                 log.requestId?.takeIf { it.isNotBlank() }?.let { "请求 $it" },
             ).joinToString("\n").ifBlank { "服务端未返回时间或请求标识" },
             fontSize = 11.sp,

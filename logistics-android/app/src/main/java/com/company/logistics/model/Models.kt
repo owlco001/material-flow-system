@@ -575,7 +575,35 @@ data class AuditLog(
     val deviceId: String?,
     val occurredAt: String?,
     val result: String,
-)
+    /** 以下为服务端给的中文显示名；旧服务端没有时回退到本地映射或原码。 */
+    val actionLabel: String? = null,
+    val resourceLabel: String? = null,
+    val resultLabel: String? = null,
+    val roleLabel: String? = null,
+    val operatorName: String? = null,
+) {
+    val displayAction: String
+        get() = actionLabel?.takeIf { it.isNotBlank() } ?: action.ifBlank { "未知动作" }
+    val displayResource: String
+        get() = resourceLabel?.takeIf { it.isNotBlank() } ?: resourceType.ifBlank { "未知资源" }
+    val displayResult: String
+        get() = resultLabel?.takeIf { it.isNotBlank() }
+            ?: when (result.uppercase(java.util.Locale.ROOT)) {
+                "SUCCESS" -> "成功"
+                "FAILED", "FAILURE" -> "失败"
+                "PARTIAL" -> "部分成功"
+                "LOCKED" -> "账号已锁定"
+                "" -> "未知结果"
+                else -> result
+            }
+    val displayRole: String?
+        get() = roleLabel?.takeIf { it.isNotBlank() }
+            ?: role?.takeIf { it.isNotBlank() }?.let { code ->
+                UserRole.entries.firstOrNull { it.code.equals(code, ignoreCase = true) }?.label ?: code
+            }
+    val displayOperator: String?
+        get() = operatorName?.takeIf { it.isNotBlank() } ?: operatorId?.takeIf { it.isNotBlank() }
+}
 
 /** GET /api/v1/audit-logs 的服务端分页结果。总数不是接口契约的一部分，以 hasNext 控制翻页。 */
 data class AuditLogPage(

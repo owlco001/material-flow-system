@@ -195,6 +195,12 @@ def test_audit_query_is_admin_only_filtered_paginated_stable_and_redacted():
         assert event_filter.json()["total"] == 1
         assert event_filter.json()["items"][0]["event_type"] == "OUTBOUND_CONFIRMED"
         assert event_filter.json()["items"][0]["entity_id"] == transfer_id
+        # 中文显示名（App 审计页用）
+        labeled = event_filter.json()["items"][0]
+        assert labeled["actionLabel"] == "确认出库"
+        assert labeled["resourceLabel"] == "流转申请"
+        assert labeled["roleLabel"] == "管理员"
+        assert labeled["operatorName"] and labeled["operatorName"] != ""
 
         time_filter = client.get(
             "/api/v1/audit-logs?from=2026-09-14T07:59:59Z&to=2026-09-14T08:00:01Z",

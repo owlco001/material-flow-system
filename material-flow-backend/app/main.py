@@ -6826,6 +6826,7 @@ def audit_logs(
         c.close()
 
     items = [_audit_feed_item(row) for row in rows]
+    _attach_audit_operator_names(items)
     return {
         "items": items,
         "page": page,
@@ -6932,7 +6933,30 @@ def _audit_feed_item(row: sqlite3.Row) -> dict[str, Any]:
     })
     if row["preview_action"]:
         item["action"] = row["preview_action"]
+    from app.audit_labels import action_label, resource_label, result_label, role_label
+    item["actionLabel"] = action_label(item.get("action"))
+    item["resourceLabel"] = resource_label(row["entity_type"])
+    item["resultLabel"] = result_label(row["result"])
+    item["roleLabel"] = role_label(row["actor_role"])
     return item
+
+
+def _attach_audit_operator_names(items: list[dict[str, Any]]) -> None:
+    """给审计条目补操作者显示名（display_name > username > id）。"""
+    ids = {i.get("operator_id") for i in items if i.get("operator_id")}
+    names: dict[str, str] = {}
+    if ids:
+        c = db()
+        try:
+            ph = ",".join("?" for _ in ids)
+            for u in c.execute(f"SELECT id, display_name, username FROM users WHERE id IN ({ph})",
+                               list(ids)).fetchall():
+                names[u["id"]] = u["display_name"] or u["username"] or u["id"]
+        finally:
+            c.close()
+    for i in items:
+        oid = i.get("operator_id")
+        i["operatorName"] = names.get(oid, oid) if oid else None
 
 
 def audit_logs_export_items(user: sqlite3.Row, **filters: Any) -> list[dict[str, Any]]:
@@ -6949,7 +6973,9 @@ def audit_logs_export_items(user: sqlite3.Row, **filters: Any) -> list[dict[str,
         ).fetchall()
     finally:
         c.close()
-    return [_audit_feed_item(row) for row in rows]
+    items = [_audit_feed_item(row) for row in rows]
+    _attach_audit_operator_names(items)
+    return items
 
 
 def _write_trace_and_operation(x_request_id: str | None, idempotency_key: str | None, client_operation_id: uuid.UUID | None) -> tuple[str, str]:

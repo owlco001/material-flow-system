@@ -673,6 +673,11 @@ object ApiParser {
                         deviceId = nullableStringAny(item, "deviceId", "device_id"),
                         occurredAt = nullableStringAny(item, "occurredAt", "occurred_at"),
                         result = nullableStringAny(item, "result").orEmpty(),
+                        actionLabel = nullableStringAny(item, "actionLabel"),
+                        resourceLabel = nullableStringAny(item, "resourceLabel"),
+                        resultLabel = nullableStringAny(item, "resultLabel"),
+                        roleLabel = nullableStringAny(item, "roleLabel"),
+                        operatorName = nullableStringAny(item, "operatorName"),
                     )
                 )
             }
