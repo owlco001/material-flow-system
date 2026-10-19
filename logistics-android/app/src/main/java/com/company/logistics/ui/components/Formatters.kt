@@ -8,9 +8,14 @@ package com.company.logistics.ui.components
 fun formatServerTime(iso: String?): String {
     val s = iso?.trim().orEmpty()
     if (s.isBlank()) return "服务端未提供"
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")
+    // 服务端时间是带时区的 UTC（如 2026-10-19T04:39:00+00:00），转成手机本地时间显示
+    runCatching {
+        return java.time.OffsetDateTime.parse(s.replace(' ', 'T'))
+            .atZoneSameInstant(java.time.ZoneId.systemDefault()).format(fmt)
+    }
     return try {
-        java.time.LocalDateTime.parse(s.take(19))
-            .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+        java.time.LocalDateTime.parse(s.take(19)).format(fmt)
     } catch (_: Exception) {
         s.take(16).replace('T', ' ')
     }

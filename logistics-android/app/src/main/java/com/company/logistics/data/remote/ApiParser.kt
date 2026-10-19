@@ -634,6 +634,7 @@ object ApiParser {
             status = nullableStringAny(json, "status", "statusCode", "status_code").orEmpty(),
             statusLabel = nullableStringAny(json, "statusLabel", "status_label"),
             items = items,
+            itemCount = nullableIntAny(json, "itemCount", "item_count"),
             remark = nullableStringAny(json, "remark") ?: nullableStringAny(payload, "remark"),
             createdBy = nullableStringAny(json, "createdBy", "created_by"),
             createdByName = nullableStringAny(json, "createdByName", "created_by_name"),

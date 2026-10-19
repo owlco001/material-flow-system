@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import com.company.logistics.model.transferTypeLabel
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -177,7 +178,7 @@ private fun FlowDetailHeader(
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            request.type.ifBlank { "流转申请" },
+                            transferTypeLabel(request.type),
                             fontSize = 12.sp,
                             color = Color.White.copy(alpha = 0.78f),
                         )
@@ -237,7 +238,7 @@ private fun FlowDetailContent(
 
     SectionCard(title = "基本信息") {
         FlowKv("单号", request.documentNo ?: request.id, mono = true)
-        FlowKv("类型", request.type.ifBlank { "—" })
+        FlowKv("类型", transferTypeLabel(request.type))
         (request.createdByName ?: request.createdBy)?.let { FlowKv("创建人", it) }
         request.createdAt?.let { FlowKv("创建时间", formatServerTime(it), mono = true) }
         (request.approvedByName ?: request.approvedBy)?.let { FlowKv("审批人", it) }

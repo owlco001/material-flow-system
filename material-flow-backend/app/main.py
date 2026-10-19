@@ -4955,11 +4955,15 @@ def _public_transfer(c: sqlite3.Connection, row: sqlite3.Row,
         "lastHandoverId": handover["id"] if handover else None,
         "lastHandoverAt": handover["created_at"] if handover else None,
     }
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError):
+        payload = {"items": []}
+    if not isinstance(payload, dict):
+        payload = {"items": []}
+    # 列表不带明细，只给条数（App 列表卡片显示「明细 N 条」）
+    item["itemCount"] = len(payload.get("items") or [])
     if include_payload:
-        try:
-            payload = json.loads(row["payload_json"])
-        except (TypeError, ValueError):
-            payload = {"items": []}
         item["payload"] = payload
         item["items"] = payload.get("items", [])
         item["remark"] = payload.get("remark")

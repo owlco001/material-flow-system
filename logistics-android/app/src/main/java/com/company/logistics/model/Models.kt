@@ -518,6 +518,8 @@ data class TransferRequest(
     val status: String,
     val statusLabel: String? = null,
     val items: List<TransferRequestItem> = emptyList(),
+    /** 列表接口不带明细，只给条数；详情接口带明细时以明细为准。 */
+    val itemCount: Int? = null,
     val remark: String? = null,
     val createdBy: String? = null,
     val createdByName: String? = null,
@@ -537,10 +539,18 @@ data class TransferRequest(
     val effectiveStatusCode: String
         get() = status.trim().uppercase(java.util.Locale.ROOT)
 
+    /** 审批状态优先用本地中文（服务端 statusLabel 是工作台口径，待审批的退料/调拨也会显示成「待出库」）。 */
     val displayStatusLabel: String
-        get() = statusLabel?.takeIf { it.isNotBlank() }
-            ?: ApprovalStatus.entries.firstOrNull { it.code == effectiveStatusCode }?.label
+        get() = ApprovalStatus.entries.firstOrNull { it.code == effectiveStatusCode }?.label
+            ?: statusLabel?.takeIf { it.isNotBlank() }
             ?: status.ifBlank { "未知状态" }
+
+    /** 流转类型中文名：INBOUND 入库、OUTBOUND 出库、TRANSFER 厂内调拨、RETURN 退料、STOCKTAKE 盘点。 */
+    val typeLabel: String
+        get() = transferTypeLabel(type)
+
+    val displayItemCount: Int
+        get() = if (items.isNotEmpty()) items.size else (itemCount ?: 0)
 }
 
 /** 列表接口当前最多返回服务端允许的 100 条记录。 */
@@ -1049,3 +1059,15 @@ data class TransferHandoverRecord(
     val createdAt: String?,
     val items: List<TransferHandoverItemRecord> = emptyList(),
 )
+
+
+/** 后端流转申请类型码 → 中文；未知类型原样显示。 */
+fun transferTypeLabel(code: String?): String = when (code?.trim()?.uppercase(java.util.Locale.ROOT)) {
+    "INBOUND" -> "入库"
+    "OUTBOUND" -> "出库"
+    "TRANSFER" -> "厂内调拨"
+    "RETURN" -> "退料"
+    "STOCKTAKE" -> "盘点"
+    null, "" -> "未知类型"
+    else -> code.trim()
+}

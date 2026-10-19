@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import com.company.logistics.model.transferTypeLabel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -1000,12 +1001,6 @@ private fun materialCategoryKey(item: OrderMaterialItem): String {
 }
 
 /** 流转申请类型中文显示 */
-private fun transferTypeLabel(type: String): String = when (type.trim().uppercase(java.util.Locale.ROOT)) {
-    "OUTBOUND" -> "出库"
-    "INBOUND" -> "入库"
-    "TRANSFER" -> "调拨"
-    else -> type.ifBlank { "—" }
-}
 
 /** 机台状态中文显示（devices.status 枚举 + 合成详情的 BOUND），未知值原样兜底 */
 private fun deviceStatusLabel(status: String?): String = when (status?.trim()?.uppercase(java.util.Locale.ROOT)) {

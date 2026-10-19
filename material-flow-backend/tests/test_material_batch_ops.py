@@ -111,6 +111,9 @@ def test_return_type_follows_inbound_approval_rules():
         assert locs == {"LOC-A": 100, "LOC-B": 3}
         listed = client.get("/api/v1/transfer-requests", headers={"Authorization": f"Bearer {admin}"}).json()
         assert any(i.get("type") == "RETURN" for i in listed["items"])
+        # 列表不带明细但给条数，App 卡片「明细 N 条」用
+        ret = next(i for i in listed["items"] if i["id"] == rid)
+        assert ret["itemCount"] == 1 and "items" not in ret
 
 
 def test_relocation_moves_between_locations_without_changing_totals():

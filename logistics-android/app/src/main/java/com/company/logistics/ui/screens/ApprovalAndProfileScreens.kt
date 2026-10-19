@@ -1,5 +1,6 @@
 package com.company.logistics.ui.screens
 
+import com.company.logistics.model.transferTypeLabel
 import com.company.logistics.ui.components.formatServerTime
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -210,7 +211,7 @@ fun ApprovalScreen(
                         label,
                         fontSize = 11.sp,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (selected) LogisticsColors.PrimaryDark
+                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
                         else LogisticsTheme.colors.textSecondary,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(vertical = 8.dp),
@@ -365,7 +366,7 @@ private fun TransferRequestCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "${request.type.ifBlank { "未知类型" }} · ${request.documentNo ?: "无关联单据"}",
+                    "${request.typeLabel} · ${request.documentNo ?: "无关联单据"}",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = LogisticsTheme.colors.textPrimary,
@@ -390,7 +391,7 @@ private fun TransferRequestCard(
             listOfNotNull(
                 (request.createdByName ?: request.createdBy)?.let { "创建人 $it" },
                 request.createdAt?.let { "创建 " + formatServerTime(it) },
-                "明细 ${request.items.size} 条",
+                "明细 ${request.displayItemCount} 条",
             ).joinToString(" · "),
             fontSize = 11.sp,
             color = LogisticsTheme.colors.textTertiary,
@@ -398,7 +399,7 @@ private fun TransferRequestCard(
         VSpace(Spacing.sm)
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             SecondaryButton(
-                text = if (selected) "收起详情" else "查看详情",
+                text = if (selected) "收起" else "详情",
                 onClick = onSelect,
                 enabled = !submitting,
                 modifier = Modifier.weight(1f),
@@ -560,12 +561,6 @@ private fun requestStatusSymbol(status: String): String = when (status.uppercase
 }
 
 /** 流转申请类型中文映射 */
-private fun transferTypeLabel(type: String): String = when (type.trim().uppercase(java.util.Locale.ROOT)) {
-    "OUTBOUND" -> "出库"
-    "INBOUND" -> "入库"
-    "TRANSFER" -> "调拨"
-    else -> type.ifBlank { "—" }
-}
 
 /** 库存查询页（列表入口，扫码进入详情） */
 @Composable
