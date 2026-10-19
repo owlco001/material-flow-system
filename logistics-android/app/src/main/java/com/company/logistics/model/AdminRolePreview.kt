@@ -4,6 +4,7 @@ package com.company.logistics.model
 enum class WorkspaceViewRole(val code: String, val label: String) {
     OPERATOR("OPERATOR", "操作员"),
     MATERIAL("MATERIAL", "物料员"),
+    PLANNER("PLANNER", "计划员"),
     WAREHOUSE_ADMIN("WAREHOUSE_ADMIN", "仓库管理员"),
     ADMIN("ADMIN", "管理员"),
     WORKSHOP_SUPERVISOR("WORKSHOP_SUPERVISOR", "车间主管"),
@@ -12,7 +13,9 @@ enum class WorkspaceViewRole(val code: String, val label: String) {
     fun toUserRole(): UserRole = UserRole.valueOf(name)
 
     companion object {
-        fun from(role: UserRole): WorkspaceViewRole = valueOf(role.name)
+        /** 每个 UserRole 都必须有对应项；万一服务端新增角色，退回只读的操作员视图而不是崩溃。 */
+        fun from(role: UserRole): WorkspaceViewRole =
+            entries.firstOrNull { it.name == role.name } ?: OPERATOR
 
         fun from(code: String?): WorkspaceViewRole? =
             entries.firstOrNull { it.code.equals(code, ignoreCase = true) }

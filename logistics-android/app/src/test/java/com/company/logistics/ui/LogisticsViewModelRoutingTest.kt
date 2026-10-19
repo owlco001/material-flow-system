@@ -53,4 +53,19 @@ class LogisticsViewModelRoutingTest {
         assertFalse(LogisticsViewModel.canNavigate(UserRole.MATERIAL, Screen.BOM_IMPORT))
         assertFalse(LogisticsViewModel.canNavigate(UserRole.ASSEMBLER, Screen.BOM_IMPORT))
     }
+
+    @Test
+    fun everyRoleHasProfileTabForLogout() {
+        UserRole.entries.forEach { role ->
+            assertTrue("$role 缺少「我的」页（退出登录入口）", LogisticsViewModel.tabsFor(role).contains(NavTab.PROFILE))
+        }
+    }
+
+    @Test
+    fun everyRoleMapsToWorkspaceViewRole() {
+        UserRole.entries.forEach { role ->
+            assertEquals(role.name, com.company.logistics.model.WorkspaceViewRole.from(role).name)
+            com.company.logistics.model.InMemoryAdminRolePreviewController(role)  // 计划员登录曾在此抛异常闪退
+        }
+    }
 }

@@ -15,6 +15,7 @@ class AdminRolePreviewTest {
             listOf(
                 WorkspaceViewRole.OPERATOR,
                 WorkspaceViewRole.MATERIAL,
+                WorkspaceViewRole.PLANNER,
                 WorkspaceViewRole.WAREHOUSE_ADMIN,
                 WorkspaceViewRole.ADMIN,
                 WorkspaceViewRole.WORKSHOP_SUPERVISOR,
