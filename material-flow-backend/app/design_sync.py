@@ -28,6 +28,7 @@ import secrets
 import shutil
 import sqlite3
 import stat
+import time
 import uuid
 import zipfile
 from datetime import datetime
@@ -192,6 +193,46 @@ def _split_scope(text: str | None) -> list[str]:
     return [p for p in (text or "").split(",") if p]
 
 
+# Argon2id 校验缓存：同一把密钥的同一份原文在 TTL 内复用首次校验结论。
+# 密钥行（含 revoked_at / ip_scope / device_scope）每个请求仍然读库，
+# 所以吊销和收紧范围都是即时生效的，缓存只省掉重复的 Argon2 计算。
+KEY_VERIFY_CACHE_TTL = 60.0
+_verify_cache: dict[str, tuple[float, str]] = {}
+
+
+def _key_digest(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _verify_key_hash(stored: str, raw: str) -> bool:
+    try:
+        return _main._ph.verify(stored, raw)
+    except (VerifyMismatchError, InvalidHashError, VerificationError):
+        return False
+
+
+def _verify_cache_get(key_id: str, raw: str) -> bool | None:
+    """命中返回 True；未命中/过期/原文不符返回 None（要求走一次真实校验）。"""
+    hit = _verify_cache.get(key_id)
+    if hit is None:
+        return None
+    expires, digest = hit
+    if expires < time.monotonic() or digest != _key_digest(raw):
+        _verify_cache.pop(key_id, None)
+        return None
+    return True
+
+
+def _verify_cache_store(key_id: str, raw: str) -> None:
+    if len(_verify_cache) > 256:  # 防止无界增长
+        _verify_cache.clear()
+    _verify_cache[key_id] = (time.monotonic() + KEY_VERIFY_CACHE_TTL, _key_digest(raw))
+
+
+def _verify_cache_drop(key_id: str) -> None:
+    _verify_cache.pop(key_id, None)
+
+
 def authenticate(request: Request, trace_id: str) -> sqlite3.Row:
     raw = (request.headers.get("x-design-key") or "").strip()
     m = re.fullmatch(KEY_PREFIX + r"([0-9a-f]{8})_[A-Za-z0-9_\-]{20,128}", raw)
@@ -202,10 +243,12 @@ def authenticate(request: Request, trace_id: str) -> sqlite3.Row:
         row = c.execute("SELECT * FROM design_keys WHERE key_prefix=?", (m.group(1),)).fetchone()
         ok = False
         if row is not None:
-            try:
-                ok = _main._ph.verify(row["key_hash"], raw)
-            except (VerifyMismatchError, InvalidHashError, VerificationError):
-                ok = False
+            ok = _verify_cache_get(row["id"], raw)
+            if ok is None:
+                ok = _verify_key_hash(row["key_hash"], raw)
+                if ok:
+                    _verify_cache_store(row["id"], raw)
+            # 吊销状态每请求都读库，缓存只省 Argon2 计算，不影响吊销的即时性
         if not ok or row["revoked_at"]:
             raise ApiError(401, CODE_KEY_INVALID, "设计同步密钥无效或已吊销", trace_id=trace_id)
         scope = _split_scope(row["ip_scope"]) or list(DEFAULT_IP_SCOPE)
@@ -423,6 +466,7 @@ def inspect_zip(fp, manifest: dict[str, Any], trace_id: str) -> None:
         if len(infos) > MAX_ENTRIES:
             raise ApiError(400, CODE_INVALID, f"zip 条目数超过上限 {MAX_ENTRIES}", trace_id=trace_id)
         names: dict[str, zipfile.ZipInfo] = {}
+        seen_lower: set[str] = set()
         total = 0
         for info in infos:
             name = info.filename
@@ -436,8 +480,10 @@ def inspect_zip(fp, manifest: dict[str, Any], trace_id: str) -> None:
                 raise ApiError(400, CODE_UNSAFE_PATH, f"zip 不允许包含符号链接：{name[:80]}", trace_id=trace_id)
             if info.flag_bits & 0x1:
                 raise ApiError(400, CODE_INVALID, "zip 不允许加密条目", trace_id=trace_id)
-            if name.lower() in {k.lower() for k in names}:
+            low = name.lower()
+            if low in seen_lower:  # 大小写不敏感的重名检查，O(1) 查表
                 raise ApiError(400, CODE_INVALID, f"zip 条目重复：{name[:80]}", trace_id=trace_id)
+            seen_lower.add(low)
             names[name] = info
             total += info.file_size
             if total > MAX_UNCOMPRESSED_BYTES:
@@ -1091,7 +1137,8 @@ async def admin_key_create(request: Request):
         c.execute("INSERT INTO design_keys(id, key_prefix, key_hash, label, device_scope, ip_scope, created_by, created_at)"
                   " VALUES(?,?,?,?,?,?,?,?)", (key_id, prefix, _main.hash_password(plain), label, ",".join(devices),
                                                ",".join(ip_scope), user["id"], _main.now()))
-        _main.audit(c, user["id"], user["role"], "DESIGN_KEY_CREATE", "DESIGN_KEY", key_id, "SUCCESS", "web-admin")
+        _main.audit(c, user["id"], user["role"], "DESIGN_KEY_CREATE", "DESIGN_KEY", key_id, "SUCCESS",
+                    _trace(request))
         c.commit()
     finally:
         c.close()
@@ -1110,7 +1157,8 @@ async def admin_key_update(key_id: str, request: Request):
     if not _KEY_ID_RE.fullmatch(key_id):
         return _redirect("/admin/design-packages", "key_not_found")
     try:
-        ip_scope = parse_ip_scope(str(form.get("ip_scope", "")))
+        # 空值回落默认网段，与 key 创建时的语义保持一致
+        ip_scope = parse_ip_scope(str(form.get("ip_scope", "")).strip() or DEFAULT_IP_SCOPE)
     except ValueError:
         return _redirect("/admin/design-packages", "key_bad_scope")
     c = _main.db()
@@ -1122,7 +1170,9 @@ async def admin_key_update(key_id: str, request: Request):
                         (str(form.get("label", "")).strip()[:80], ",".join(devices), ",".join(ip_scope), key_id))
         if not cur.rowcount:
             return _redirect("/admin/design-packages", "key_not_found")
-        _main.audit(c, user["id"], user["role"], "DESIGN_KEY_UPDATE", "DESIGN_KEY", key_id, "SUCCESS", "web-admin")
+        _verify_cache_drop(key_id)
+        _main.audit(c, user["id"], user["role"], "DESIGN_KEY_UPDATE", "DESIGN_KEY", key_id, "SUCCESS",
+                    _trace(request))
         c.commit()
     finally:
         c.close()
@@ -1141,7 +1191,9 @@ async def admin_key_revoke(key_id: str, request: Request):
     try:
         cur = c.execute("UPDATE design_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (_main.now(), key_id))
         if cur.rowcount:
-            _main.audit(c, user["id"], user["role"], "DESIGN_KEY_REVOKE", "DESIGN_KEY", key_id, "SUCCESS", "web-admin")
+            _verify_cache_drop(key_id)
+            _main.audit(c, user["id"], user["role"], "DESIGN_KEY_REVOKE", "DESIGN_KEY", key_id, "SUCCESS",
+                        _trace(request))
         c.commit()
     finally:
         c.close()

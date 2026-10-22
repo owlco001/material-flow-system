@@ -545,3 +545,48 @@ def test_admin_list_detail_diff_download_and_bind():
         assert len(client.get("/api/v1/devices/JT-002/drawings", headers=auth).json()["drawings"]) == 1
     binds = _rows("SELECT created_by FROM design_package_bindings")
     assert [b["created_by"] for b in binds] == ["u_admin"]
+
+
+def test_verify_cache_skips_argon2_but_keeps_revocation_immediate(monkeypatch):
+    """校验缓存只省 Argon2 计算：同一把钥匙重复请求不打哈希器，吊销后立刻 401，错钥匙永不吃缓存。"""
+    _seed()
+    ds._verify_cache.clear()
+    key_id, plain = make_key()
+    calls = {"n": 0}
+    real = ds._verify_key_hash
+
+    def counting(stored, raw):
+        calls["n"] += 1
+        return real(stored, raw)
+
+    monkeypatch.setattr(ds, "_verify_key_hash", counting)
+    with client_from() as api:
+        for _ in range(3):
+            assert api.get("/api/v1/design-sync/packages", headers={"X-Design-Key": plain}).status_code == 200
+        assert calls["n"] == 1, f"第二次起应命中缓存，实际调用了 {calls['n']} 次"
+
+        # 另一把钥匙（同进程、缓存已存在）不能被缓存放行
+        _, other = make_key()
+        assert api.get("/api/v1/design-sync/packages", headers={"X-Design-Key": other}).status_code == 200
+        assert api.get("/api/v1/design-sync/packages", headers={"X-Design-Key": plain[:-1] + "x"}).status_code == 401
+
+    c = backend.db()
+    c.execute("UPDATE design_keys SET revoked_at=? WHERE id=?", (backend.now(), key_id))
+    c.commit()
+    c.close()
+    with client_from() as api:  # 缓存仍在内存里，但吊销必须即时生效
+        assert api.get("/api/v1/design-sync/packages", headers={"X-Design-Key": plain}).status_code == 401
+
+
+def test_admin_key_update_blank_ip_scope_falls_back_to_default():
+    _seed()
+    key_id, _ = make_key(ip_scope=["192.168.1.0/24"])
+    with TestClient(backend.app) as client:
+        assert web_login(client, "owlco", "Admin@2026").status_code == 303
+        csrf = _csrf(client.get("/admin/design-packages").text)
+        r = client.post(f"/admin/design-packages/keys/{key_id}/update",
+                        data={"csrf_token": csrf, "label": "默认网段", "device_scope": "", "ip_scope": "   "},
+                        follow_redirects=False)
+        assert "key_updated" in r.headers["location"]
+    row = _rows("SELECT ip_scope FROM design_keys WHERE id=?", key_id)[0]
+    assert row["ip_scope"].split(",") == [str(__import__("ipaddress").ip_network(s)) for s in ds.DEFAULT_IP_SCOPE]
