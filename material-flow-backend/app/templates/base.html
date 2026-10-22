@@ -36,6 +36,7 @@
 <symbol id="i-barcode" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M8 7v10"/><path d="M12 7v10"/><path d="M17 7v10"/></symbol>
 <symbol id="i-sync" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+<symbol id="i-archive" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
 <symbol id="i-drawing" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 18l3-6 2 3 3-5"/></symbol>
 <symbol id="i-bom" viewBox="0 0 24 24"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></symbol>
 <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
@@ -65,7 +66,7 @@
     "work": _p == '/admin/workspace' or _p.startswith('/admin/exceptions'),
     "prod": _p.startswith('/admin/orders') or _p.startswith('/admin/tasks') or _p.startswith('/admin/reports'),
     "wh": _p.startswith('/admin/flows') or _p.startswith('/admin/handovers') or _p == '/admin/warehouse' or _p.startswith('/admin/barcodes'),
-    "master": _p.startswith('/admin/material-master') or _p.startswith('/admin/boms') or _p.startswith('/admin/models') or _p.startswith('/admin/drawings'),
+    "master": _p.startswith('/admin/material-master') or _p.startswith('/admin/boms') or _p.startswith('/admin/models') or _p.startswith('/admin/drawings') or _p.startswith('/admin/design-packages'),
     "sys": _p.startswith('/admin/users') or _p.startswith('/admin/audit') or _p.startswith('/admin/u9') or _p.startswith('/admin/releases') or _p.startswith('/admin/system') or _p.startswith('/admin/agent'),
   } %}
   <nav class="side-nav" id="sideNav">
@@ -110,6 +111,7 @@
       {% if _v.boms %}{{ side_link("/admin/boms", "BOM", "i-bom", _p.startswith('/admin/boms')) }}{% endif %}
       {% if _v.wh %}{{ side_link("/admin/models", "模型", "i-box", _p.startswith('/admin/models')) }}{% endif %}
       {% if _v.admin %}{{ side_link("/admin/drawings", "图纸", "i-drawing", _p.startswith('/admin/drawings')) }}{% endif %}
+      {% if _v.admin %}{{ side_link("/admin/design-packages", "设计包", "i-archive", _p.startswith('/admin/design-packages')) }}{% endif %}
       </div>
     </div>
     {% endif %}

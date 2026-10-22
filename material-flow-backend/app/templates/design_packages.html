@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block page_title %}设计包{% endblock %}
+{% block content %}
+{% from "_notice.html" import flash %}
+<div class="compact">
+<h2>设计包</h2>
+<p class="page-desc">桌面设计端通过「设计同步 API」推送的设计包（zip + manifest）。BOM 只做归档与版本比对，不会写入 BOM 版本或物料主档；绑定到机台/物料后，包内 PDF 会出现在终端图纸列表，model.glb 会成为该机台的 3D 模型。</p>
+{{ flash(notice_text, notice_error) }}
+
+{% if new_key %}
+<div class="card" style="border:2px solid #f59e0b">
+  <h3>新密钥（只显示这一次）</h3>
+  <p>请立即复制到桌面端「设置 → 设计同步」。关闭或刷新本页后无法再次查看，遗失只能吊销后重新生成。</p>
+  <input readonly value="{{ new_key }}" id="newDesignKey" style="font-family:monospace;width:100%" onclick="this.select()">
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:12px">
+  <h3>查询</h3>
+  <form method="get" action="/admin/design-packages" class="btn-row" style="gap:8px;flex-wrap:wrap">
+    <input name="device" value="{{ device_q }}" placeholder="机台编号" style="max-width:180px">
+    <input name="project" value="{{ project_q }}" placeholder="项目编号 / 名称" style="max-width:200px">
+    <button type="submit" class="btn btn-sm">查询</button>
+    {% if device_q or project_q %}<a href="/admin/design-packages" class="btn btn-sm btn-secondary">清除</a>{% endif %}
+  </form>
+</div>
+
+<div class="card" style="margin-top:12px">
+{% if packages %}
+<div class="table-wrap">
+<table>
+  <tr><th>项目</th><th>机台</th><th>版本</th><th>文件</th><th>上传</th><th>绑定</th><th style="width:200px">操作</th></tr>
+  {% for p in packages %}
+  <tr>
+    <td><b>{{ p.projectName or p.projectId }}</b><br><span class="muted">{{ p.projectId }}</span></td>
+    <td>{{ p.deviceNo or p.deviceId }}{% if p.device_name %}<br><span class="muted">{{ p.device_name }}</span>{% endif %}</td>
+    <td>V{{ p.version }}</td>
+    <td class="muted" style="white-space:nowrap">{{ p.fileCount }} 个 · {{ p.zip_mb }} MB</td>
+    <td class="muted" style="white-space:nowrap">{{ p.uploadedAt|local_dt }}</td>
+    <td>{% if p.bind_count %}<span class="st st-green">{{ p.bind_count }} 处</span>{% else %}<span class="muted">未绑定</span>{% endif %}</td>
+    <td><div class="btn-row" style="gap:4px">
+      <a class="btn btn-sm" href="/admin/design-packages/{{ p.packageId }}">详情 / 比对</a>
+      <a class="btn btn-sm btn-secondary" href="/admin/design-packages/{{ p.packageId }}/download">下载</a>
+    </div></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">{% if device_q or project_q %}没有匹配的设计包{% else %}还没有设计包。先在下方生成密钥，配置到桌面设计端后推送。{% endif %}</p>
+{% endif %}
+</div>
+
+<div class="card" style="margin-top:12px">
+  <h3>设计同步密钥</h3>
+  <p class="muted">密钥只保存哈希。来源网段为 CIDR，每行一个；默认是全部内网段。机台范围留空表示全部机台。</p>
+  <form method="post" action="/admin/design-packages/keys/create">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">
+      <div><label>名称</label><input name="label" maxlength="80" placeholder="如 设计部-张工 工作站"></div>
+      <div><label>机台范围（机台编号，逗号或换行分隔，可空）</label><textarea name="device_scope" rows="3"></textarea></div>
+      <div><label>允许的来源网段</label><textarea name="ip_scope" rows="3">{{ default_ip_scope }}</textarea></div>
+    </div>
+    <button type="submit" class="btn btn-sm">生成密钥</button>
+  </form>
+
+  {% if keys %}
+  <div class="table-wrap" style="margin-top:12px">
+  <table>
+    <tr><th>密钥</th><th>设置</th><th>状态</th><th style="width:90px">操作</th></tr>
+    {% for k in keys %}
+    <tr>
+      <td><code>{{ k.prefix }}_…</code><br><span class="muted">生成于 {{ k.created_at|local_dt }}{% if k.last_used_at %}<br>最近使用 {{ k.last_used_at|local_dt }}{% endif %}</span></td>
+      <td>
+        {% if k.revoked_at %}
+          <b>{{ k.label or "未命名" }}</b><br><span class="muted">机台：{{ k.device_scope or "全部" }}</span>
+        {% else %}
+        <form method="post" action="/admin/design-packages/keys/{{ k.id }}/update" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;align-items:end">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div><label>名称</label><input name="label" value="{{ k.label }}" maxlength="80"></div>
+          <div><label>机台范围</label><textarea name="device_scope" rows="2">{{ k.device_scope }}</textarea></div>
+          <div><label>来源网段</label><textarea name="ip_scope" rows="2">{{ k.ip_scope }}</textarea></div>
+          <button type="submit" class="btn btn-sm btn-secondary">保存</button>
+        </form>
+        {% endif %}
+      </td>
+      <td>{% if k.revoked_at %}<span class="st st-red">已吊销</span><br><span class="muted">{{ k.revoked_at|local_dt }}</span>{% else %}<span class="st st-green">有效</span>{% endif %}</td>
+      <td>{% if not k.revoked_at %}
+        <form method="post" action="/admin/design-packages/keys/{{ k.id }}/revoke"
+              data-confirm="吊销后使用该密钥的桌面端将立即无法上传，且不可恢复。确定吊销？" data-confirm-title="吊销密钥" data-confirm-ok="吊销" data-confirm-danger="1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger btn-sm">吊销</button>
+        </form>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+</div>
+{% endblock %}

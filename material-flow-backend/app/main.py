@@ -858,6 +858,9 @@ def _init_db(c: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_material_handovers_work_item ON material_handovers(work_item_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_id, id);
     """)
+    # 0.22.0：设计同步（design_keys / design_packages / design_package_files / 绑定记录），建表见 app/design_sync.py
+    from app.design_sync import init_tables as _init_design_sync_tables
+    _init_design_sync_tables(c)
     # 迁移必须跑在种子数据之前：种子 INSERT 的列数按迁移后结构书写
     #（如 materials.category），历史库缺列时先补齐，否则新库初始化崩溃。
     _migrate_schema(c)
@@ -7861,3 +7864,9 @@ try:
 except ImportError:
     from app_sync import router as _app_sync_router
 app.include_router(_app_sync_router)
+# 设计同步 API（0.22.0）：桌面设计端以 X-Design-Key 机器身份推送设计包；独立路由，不改动既有 /api/v1 行为。
+try:
+    from .design_sync import router as _design_sync_router
+except ImportError:
+    from design_sync import router as _design_sync_router
+app.include_router(_design_sync_router)

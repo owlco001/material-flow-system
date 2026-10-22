@@ -10,11 +10,20 @@
 | 项 | 值 |
 |----|-----|
 | 主仓库 | GitHub `owlco001/material-flow-system`（镜像 Gitee `owlco001/material-flow-system`），主干 `main` |
-| 基线 | 后端 **0.21.16**、App **0.5.50**（versionCode 57），本地工作目录 `/root/mf-main`（GitHub 干净 clone） |
+| 基线 | 后端 **0.22.0**（feature/design-sync；main 为 0.21.16）、App **0.5.50**（versionCode 57），本地工作目录 `/root/mf-main`（GitHub 干净 clone） |
 | 生产 | `jsby@221.231.106.194:5556` 的 `/srv/material-flow`（systemd `material-flow.service`，cloudflared 221）；更新用 `sudo -n /bin/bash /srv/material-flow/deploy/update.sh`（含 DB 热备 + 失败自动回滚） |
-| 后端测试 | `cd material-flow-backend && env -u PYTHONPATH ./.venv/bin/python -m pytest tests/ -q -p no:cacheprovider` → **512 passed**，约 3.5 分钟 |
+| 后端测试 | `cd material-flow-backend && env -u PYTHONPATH ./.venv/bin/python -m pytest tests/ -q -p no:cacheprovider` → **540 passed**（含设计同步 28 例），约 4 分钟 |
 | App 测试 | `cd logistics-android && ANDROID_HOME=/opt/android-sdk ./gradlew :app:testDebugUnitTest` → **206 例 0 失败**；发版 `:app:assembleRelease` |
 | 门禁 | `python3 scripts/check_emoji_icons.py` 必须 PASS（75 个 .kt） |
+
+**2026-10-23 设计同步 API（后端 0.22.0，分支 `feature/design-sync`）**
+- 新增 `app/design_sync.py`：`/api/v1/design-sync/*`（上传 / 列表 / 详情 / 比对 / 绑定 / 下载），契约见 `docs/设计同步API契约.md`
+- 机器身份 `X-Design-Key`（只存前缀 + Argon2id 哈希），每个密钥有来源网段 `ip_scope`（默认全部内网段，不要求 HTTPS）和可选机台范围；
+  来源地址沿用 `request.client.host`（uvicorn 只信任 127.0.0.1 的 XFF），另对 `Cf-Connecting-Ip` 做只收紧的校验
+- 设计包 BOM 只归档 + 比对，不写 bom_versions / materials；绑定时 PDF/DXF 走现有图纸入库，GLB 注册为机型码 `DS-<机台编号>` 并设 `devices.model_3d_code`
+- 管理台「主数据 → 设计包」（仅 ADMIN）：列表、比对、下载、绑定、密钥生成 / 编辑 / 吊销；新表在 `init_db` 里建
+- **注意**：若某个密钥要给经 cloudflared 进来的公网客户端用，需在管理台显式放开对应网段；默认网段含 127.0.0.0/8，
+  反代若不转发 `Cf-Connecting-Ip` 会把隧道流量看成本机——上线前在 221 上确认 cloudflared → 反代链路保留该头
 
 **2026-10-20～21 这一批已完成**（都已在 221 上线 / 双端 Release）
 - 批次一 P2：离线解包误判、损坏静默成功、跨订单测试、SQL 别名改写

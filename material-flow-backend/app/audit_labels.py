@@ -28,6 +28,14 @@ ACTION_LABELS = {
     "DRAWING_BIND": "绑定图纸",
     "DRAWING_UNBIND": "解绑图纸",
     "DRAWING_DELETE": "删除图纸",
+    "DESIGN_PACKAGE_UPLOAD": "上传设计包",
+    "DESIGN_PACKAGE_UPLOADED": "上传设计包",
+    "DESIGN_PACKAGE_BIND": "绑定设计包",
+    "DESIGN_PACKAGE_BOUND": "绑定设计包",
+    "DESIGN_KEY_CREATE": "生成设计同步密钥",
+    "DESIGN_KEY_UPDATE": "修改设计同步密钥",
+    "DESIGN_KEY_REVOKE": "吊销设计同步密钥",
+    "DESIGN_SYNC_IP_DENIED": "设计同步来源地址被拒绝",
     "PURGE_DEMO_DATA": "清除演示数据",
     "APP_RELEASE_SYNC": "同步 App 版本",
     "FLOW_TRANSFER_CREATED": "发起流转申请",
@@ -67,6 +75,8 @@ RESOURCE_LABELS = {
     "DEVICE": "机台",
     "DEVICE_MODEL_3D": "机台 3D 模型",
     "DRAWING": "图纸",
+    "DESIGN_PACKAGE": "设计包",
+    "DESIGN_KEY": "设计同步密钥",
     "EXCEPTION": "异常",
     "HANDOVER": "交接",
     "MATERIAL_HANDOVER": "物料交接",
@@ -101,6 +111,7 @@ ROLE_LABELS = {
     "MATERIAL": "物料员",
     "WORKSHOP_SUPERVISOR": "车间主管",
     "ASSEMBLER": "装配工",
+    "DESIGN_KEY": "设计同步密钥",
 }
 
 _WORDS = {

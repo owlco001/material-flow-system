@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block page_title %}设计包详情{% endblock %}
+{% block content %}
+{% from "_notice.html" import flash %}
+<div class="compact">
+<p><a href="/admin/design-packages">← 返回设计包列表</a></p>
+<h2>{{ p.projectName or p.projectId }} · V{{ p.version }}</h2>
+<p class="page-desc">项目 {{ p.projectId }} · 机台 {{ p.deviceNo or p.deviceId }} · 设计时间 {{ p.createdAt|local_dt }} · 上传 {{ p.uploadedAt|local_dt }}{% if p.appVersion %} · 客户端 {{ p.appVersion }}{% endif %}</p>
+{{ flash(notice_text, notice_error) }}
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div class="card" style="flex:2;min-width:320px">
+  <h3>文件（{{ p.files|length }}）</h3>
+  <div class="table-wrap"><table>
+    <tr><th>路径</th><th>类型</th><th>大小</th><th>SHA-256</th></tr>
+    {% for f in p.files %}
+    <tr><td>{{ f.path }}</td><td>{{ f.kind }}</td><td class="muted">{{ f.size }}</td><td class="muted"><code>{{ f.sha256[:12] }}…</code></td></tr>
+    {% endfor %}
+  </table></div>
+  <div class="btn-row" style="margin-top:8px"><a class="btn btn-sm btn-secondary" href="/admin/design-packages/{{ p.packageId }}/download">下载原始 zip</a></div>
+</div>
+<div class="card" style="flex:1;min-width:260px">
+  <h3>绑定</h3>
+  {% for b in p.bindings %}
+    <p><span class="st {{ 'st-blue' if b.targetType == 'DEVICE' else 'st-green' }}">{{ "机台" if b.targetType == "DEVICE" else "物料" }} {{ b.targetNo or b.targetKey }}</span>
+    <span class="muted">图纸 {{ (b.drawings or [])|length }} 张{% if b.model %} · 3D 模型 {{ b.model.modelCode }} V{{ b.model.version }}{% endif %}</span>
+    {% for w in b.warnings or [] %}<br><span class="muted">提示：{{ w }}</span>{% endfor %}</p>
+  {% else %}<p class="muted">未绑定</p>{% endfor %}
+  <form method="post" action="/admin/design-packages/{{ p.packageId }}/bind" class="btn-row" style="gap:4px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="target_type" style="width:auto"><option value="DEVICE">机台</option><option value="MATERIAL">物料</option></select>
+    <input name="target_key" placeholder="机台编号 / 物料编码" value="{{ p.deviceNo or '' }}" style="max-width:160px" required>
+    <button type="submit" class="btn btn-sm">绑定</button>
+  </form>
+  <p class="muted" style="margin-top:6px">PDF/DXF 注册为图纸；绑定机台时 model.glb 注册为该机台 3D 模型；STEP 只归档。重复绑定不会重复入库。</p>
+</div>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <h3>与上一版比对{% if diff.base %}（V{{ diff.base.version }} → V{{ p.version }}）{% else %}（无上一版，全部视为新增）{% endif %}</h3>
+  <div class="table-wrap"><table>
+    <tr><th style="width:90px">变化</th><th>BOM 序号</th><th>内容</th></tr>
+    {% for r in diff.bomAdded %}<tr><td><span class="st st-green">新增</span></td><td>{{ r.no }}</td><td>{{ r.name }} {{ r.spec }} × {{ r.qty }} {{ r.mat or "" }}</td></tr>{% endfor %}
+    {% for r in diff.bomRemoved %}<tr><td><span class="st st-red">删除</span></td><td>{{ r.no }}</td><td>{{ r.name }} {{ r.spec }} × {{ r.qty }} {{ r.mat or "" }}</td></tr>{% endfor %}
+    {% for r in diff.bomChanged %}<tr><td><span class="st st-yellow">修改</span></td><td>{{ r.no }}</td><td>{{ r.field }}：{{ r["from"] }} → {{ r.to }}</td></tr>{% endfor %}
+    {% for f in diff.filesAdded %}<tr><td><span class="st st-green">新增文件</span></td><td>—</td><td>{{ f.path }}</td></tr>{% endfor %}
+    {% for f in diff.filesRemoved %}<tr><td><span class="st st-red">删除文件</span></td><td>—</td><td>{{ f.path }}</td></tr>{% endfor %}
+    {% for f in diff.filesChanged %}<tr><td><span class="st st-yellow">文件变更</span></td><td>—</td><td>{{ f.path }}（{{ f.fromSize }} → {{ f.toSize }} 字节）</td></tr>{% endfor %}
+    {% if not (diff.bomAdded or diff.bomRemoved or diff.bomChanged or diff.filesAdded or diff.filesRemoved or diff.filesChanged) %}
+    <tr><td colspan="3" class="muted">没有差异</td></tr>{% endif %}
+  </table></div>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <h3>BOM（{{ p.bom|length }} 行，仅归档）</h3>
+  <div class="table-wrap"><table>
+    <tr><th>序号</th><th>名称</th><th>规格</th><th>数量</th><th>材料</th></tr>
+    {% for r in p.bom %}<tr><td>{{ r.no }}</td><td>{{ r.name }}</td><td>{{ r.spec }}</td><td>{{ r.qty }}</td><td>{{ r.mat }}</td></tr>{% endfor %}
+  </table></div>
+</div>
+</div>
+{% endblock %}
