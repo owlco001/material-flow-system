@@ -1,0 +1,18 @@
+# 查询预算以行为测试中 set_trace_callback 统计实际 SQL 为准，不按匹配文件数计算。
+ratchets:
+  - id: shadowed-assembly-list
+    scope: material-flow-backend/app/assembly_routes.py
+    query: 'def list_tasks('
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 删除被主路由遮蔽的重复GET入口；实际路由表由行为测试守护
+  - id: migration-todo
+    scope: [material-flow-backend/app, logistics-android/app/src/main]
+    query: 'TODO(migration)'
+    count_mode: literal occurrences
+    baseline: 0
+    maximum: 0
+    target: 0
+    rationale: 不在产品逻辑遗留临时迁移分支

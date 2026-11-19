@@ -1,0 +1,28 @@
+slice_id,kind,capability,current_path,target_path,status,delete_in_pr,verification,notes
+transfer-consistency,source,inventory,material-flow-backend/app/main.py,material-flow-backend/app/main.py,verified,no,pytest transfer consistency,atomic execution
+transfer-consistency,test,inventory,,material-flow-backend/tests/test_transfer_execution_consistency.py,verified,no,pytest transfer consistency,behavior regression
+assembly-query,source,assembly,material-flow-backend/app/assembly_routes.py,material-flow-backend/app/assembly_routes.py,verified,no,pytest assembly list performance,batch members
+assembly-query,test,assembly,,material-flow-backend/tests/test_assembly_list_performance.py,verified,no,pytest assembly list performance,query budget
+offline-drain,source,offline,logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt,logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt,verified,no,Android unit tests,drain queue
+offline-drain,source,offline,logistics-android/app/src/main/java/com/company/logistics/data/LogisticsDatabase.kt,logistics-android/app/src/main/java/com/company/logistics/data/LogisticsDatabase.kt,verified,no,Android unit tests,due pagination
+offline-drain,test,offline,,logistics-android/app/src/test/java/com/company/logistics/OfflineQueueDrainTest.kt,verified,no,Android unit tests,batch behavior
+stocktake-generation,source,stocktake,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt,verified,no,Android unit tests,discard stale replies
+stocktake-generation,test,stocktake,,logistics-android/app/src/test/java/com/company/logistics/ui/LogisticsViewModelStocktakeRaceTest.kt,verified,no,Android unit tests,deterministic deferred ordering
+inventory-sort,test,inventory,,material-flow-backend/tests/test_inventory_sort_performance.py,verified,no,pytest inventory sort performance,query plan and median timing
+offline-drain,source,worker,logistics-android/app/src/main/java/com/company/logistics/data/OfflineSyncWorker.kt,logistics-android/app/src/main/java/com/company/logistics/data/OfflineSyncWorker.kt,verified,no,Android unit tests,pending-only retry scheduling
+offline-drain,tool,room,,scripts/check_offline_room_queries.py,verified,no,python3 scripts/check_offline_room_queries.py,execute generated SQL in isolated SQLite
+convergence,config,ci,.github/workflows/backend-tests.yml,.github/workflows/backend-tests.yml,verified,no,guard,ratchet integration
+convergence,config,ci,.github/workflows/android-tests.yml,.github/workflows/android-tests.yml,verified,no,Room checker and guard,generated SQL integration
+convergence,config,version,material-flow-backend/VERSION,material-flow-backend/VERSION,verified,no,version checks,patch increment
+convergence,config,version,logistics-android/app/build.gradle.kts,logistics-android/app/build.gradle.kts,verified,no,Android build,patch increment
+convergence,test,version,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,verified,no,Android unit tests,version assertion
+convergence,docs,handoff,NEXT.md,NEXT.md,verified,no,manual diff,current facts
+convergence,docs,report,,docs/optimization-report.md,verified,no,manual diff,results and limitations
+convergence,docs,control,,.claude/migration/CHARTER.md,verified,no,guard,mission
+convergence,docs,control,,.claude/migration/DECISIONS.md,verified,no,guard,decisions
+convergence,config,control,,.claude/migration/SLICES.yaml,verified,no,guard,slice ledger
+convergence,config,control,,.claude/migration/MAP.csv,verified,no,guard,touched paths
+convergence,config,control,,.claude/migration/RATCHETS.yaml,verified,no,guard,budgets
+convergence,docs,control,,.claude/migration/SHIP_CHECKLIST.md,verified,no,guard,verification
+convergence,tool,control,,.claude/migration/guard.sh,verified,no,guard,invariant checks
+convergence,docs,control,,.claude/migration/HANDOFF.md,verified,no,manual diff,resumable state

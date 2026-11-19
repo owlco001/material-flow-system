@@ -5,11 +5,15 @@ on:
   pull_request:
     paths:
       - "logistics-android/**"
+      - "scripts/check_offline_room_queries.py"
+      - ".claude/migration/**"
       - ".github/workflows/android-tests.yml"
   push:
     branches: [main]
     paths:
       - "logistics-android/**"
+      - "scripts/check_offline_room_queries.py"
+      - ".claude/migration/**"
       - ".github/workflows/android-tests.yml"
 
 jobs:
@@ -44,6 +48,10 @@ jobs:
           PY
             exit 1
           }
+      - name: 验证 Room 生成 SQL 与优化不变量
+        run: |
+          python3 scripts/check_offline_room_queries.py
+          bash .claude/migration/guard.sh
       - name: 上传测试报告
         if: failure()
         uses: actions/upload-artifact@v4

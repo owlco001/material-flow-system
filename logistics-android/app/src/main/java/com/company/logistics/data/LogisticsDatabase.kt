@@ -65,6 +65,21 @@ interface OfflineOperationDao {
     @Query("SELECT * FROM offline_operations WHERE status = 'PENDING' ORDER BY createdAt ASC LIMIT 20")
     suspend fun pending(): List<OfflineOperationEntity>
 
+    /**
+     * Due records are filtered before LIMIT so older items in backoff cannot starve later due work.
+     * createdBeforeMillis bounds one sync snapshot; new queue rows are picked up next run. The default
+     * fallback preserves simple JVM fakes but sees only their legacy pending() page; Room executes SQL.
+     */
+    @Query("SELECT * FROM offline_operations WHERE status = 'PENDING' AND (nextRetryAt IS NULL OR nextRetryAt <= :nowMillis) AND createdAt <= :createdBeforeMillis ORDER BY createdAt ASC LIMIT 20")
+    suspend fun pendingDue(nowMillis: Long, createdBeforeMillis: Long): List<OfflineOperationEntity> = pending()
+        .filter {
+            (it.nextRetryAt == null || it.nextRetryAt <= nowMillis) && it.createdAt <= createdBeforeMillis
+        }
+        .take(20)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM offline_operations WHERE status = 'PENDING')")
+    suspend fun hasPending(): Boolean = pending().any { it.status == "PENDING" }
+
     @Query("SELECT COUNT(*) FROM offline_operations WHERE status IN ('PENDING','FAILED','SYNCING')")
     fun observePendingCount(): Flow<Int>
 
@@ -110,9 +125,26 @@ interface OfflineOperationDao {
     suspend fun deleteById(id: String)
 }
 
+/**
+ * Room skips SQL generation for interface methods with bodies. Keep test-friendly defaults on
+ * OfflineOperationDao, but redeclare production queries abstract so KSP must generate their SQL.
+ */
+@Dao
+interface RoomOfflineOperationDao : OfflineOperationDao {
+    @Query("SELECT * FROM offline_operations WHERE status = 'PENDING' AND (nextRetryAt IS NULL OR nextRetryAt <= :nowMillis) AND createdAt <= :createdBeforeMillis ORDER BY createdAt ASC LIMIT 20")
+    override suspend fun pendingDue(nowMillis: Long, createdBeforeMillis: Long): List<OfflineOperationEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM offline_operations WHERE status = 'PENDING')")
+    override suspend fun hasPending(): Boolean
+
+    @Query("UPDATE offline_operations SET status = :status, errorMessage = :error, " +
+           "retryCount = :retryCount, nextRetryAt = :nextRetryAt WHERE id = :id")
+    override suspend fun scheduleRetry(id: String, status: String, error: String?, retryCount: Int, nextRetryAt: Long?)
+}
+
 @Database(entities = [OfflineOperationEntity::class], version = 3, exportSchema = false)
 abstract class LogisticsDatabase : RoomDatabase() {
-    abstract fun offlineOperationDao(): OfflineOperationDao
+    abstract fun offlineOperationDao(): RoomOfflineOperationDao
 
     companion object {
         /** 2 → 3：离线队列增加自动重试计数与下次重试时间（0.5.45）。 */

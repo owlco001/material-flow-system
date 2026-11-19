@@ -376,6 +376,7 @@ class LogisticsViewModel(
     private var transferRequestLoadGeneration = 0L
     private var transferRequestDetailGeneration = 0L
     private var auditLoadGeneration = 0L
+    private var stocktakeLoadGeneration = 0L
     private var workspaceLoadGeneration = 0L
     private var workspaceLoadJob: Job? = null
     private val multiOrderDetails = MultiOrderDetailState()
@@ -2058,15 +2059,20 @@ class LogisticsViewModel(
         }
     }
 
-    /** 盘点列表（0.5.45）：物料员/仓管/管理员可见；0.5.47 起分页，先取第一页。 */
+    /** 盘点列表：刷新产生新世代，旧第一页/追加页及旧会话响应均不得再写入。 */
     fun refreshStocktakes() {
         if (!_state.value.loggedIn) return
+        val generation = ++stocktakeLoadGeneration
+        val currentSession = sessionGeneration
+        _state.update {
+            it.copy(stocktakeState = WorkspaceLoadState.LOADING, stocktakeError = null, stocktakeLoadingMore = false)
+        }
         operationScope.launch {
-            _state.update { it.copy(stocktakeState = WorkspaceLoadState.LOADING, stocktakeError = null) }
+            if (!isStocktakeLoadActive(currentSession, generation)) return@launch
             repo.stocktakes(page = 1, pageSize = STOCKTAKE_PAGE_SIZE)
                 .onSuccess { page ->
                     _state.update {
-                        it.copy(
+                        if (!isStocktakeLoadActive(currentSession, generation)) it else it.copy(
                             stocktakes = page.items,
                             stocktakeTotal = page.total,
                             stocktakePage = page.page,
@@ -2078,11 +2084,12 @@ class LogisticsViewModel(
                 }
                 .onFailure { e ->
                     _state.update {
-                        it.copy(
+                        if (!isStocktakeLoadActive(currentSession, generation)) it else it.copy(
                             stocktakeState = WorkspaceLoadState.ERROR,
                             stocktakeError = if (e is ApiException) e.safeMessage("加载盘点记录失败") else "网络不可用",
                             stocktakes = emptyList(),
                             stocktakeTotal = 0,
+                            stocktakePage = 1,
                             stocktakeLoadingMore = false,
                         )
                     }
@@ -2090,29 +2097,38 @@ class LogisticsViewModel(
         }
     }
 
-    /** 盘点"加载更多"：追加下一页，失败保留已加载数据只提示。 */
+    private fun isStocktakeLoadActive(session: Long, generation: Long): Boolean =
+        generation == stocktakeLoadGeneration && isSessionActive(session)
+
+    /** 盘点加载更多：同一刷新世代只追加一页，失败保留已有数据与页码以便重试。 */
     fun loadMoreStocktakes() {
         val st = _state.value
-        if (!st.loggedIn || st.stocktakeLoadingMore) return
+        if (!st.loggedIn || st.stocktakeLoadingMore || st.stocktakeState != WorkspaceLoadState.CONTENT) return
         if (st.stocktakes.size >= st.stocktakeTotal) return
+        val generation = stocktakeLoadGeneration
+        val currentSession = sessionGeneration
+        // 在 launch 前占位，避免协程尚未调度时的连续点击发出重复请求。
+        _state.update { it.copy(stocktakeLoadingMore = true) }
         operationScope.launch {
-            _state.update { it.copy(stocktakeLoadingMore = true) }
+            if (!isStocktakeLoadActive(currentSession, generation)) return@launch
             repo.stocktakes(page = st.stocktakePage + 1, pageSize = STOCKTAKE_PAGE_SIZE)
                 .onSuccess { page ->
                     _state.update { cur ->
-                        val merged = (cur.stocktakes + page.items).distinctBy { it.id }
-                        cur.copy(
-                            stocktakes = merged,
-                            stocktakeTotal = page.total,
-                            stocktakePage = page.page,
-                            stocktakeLoadingMore = false,
-                            stocktakeError = null,
-                        )
+                        if (!isStocktakeLoadActive(currentSession, generation)) cur else {
+                            val merged = (cur.stocktakes + page.items).distinctBy { it.id }
+                            cur.copy(
+                                stocktakes = merged,
+                                stocktakeTotal = page.total,
+                                stocktakePage = page.page,
+                                stocktakeLoadingMore = false,
+                                stocktakeError = null,
+                            )
+                        }
                     }
                 }
                 .onFailure { e ->
                     _state.update {
-                        it.copy(
+                        if (!isStocktakeLoadActive(currentSession, generation)) it else it.copy(
                             stocktakeLoadingMore = false,
                             stocktakeError = if (e is ApiException) e.safeMessage("加载更多盘点失败") else "网络不可用，加载更多失败",
                         )

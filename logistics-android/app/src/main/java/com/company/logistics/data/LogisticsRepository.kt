@@ -41,7 +41,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -75,6 +78,12 @@ open class LogisticsRepository(
     @Volatile
     private var authenticatedRole: com.company.logistics.model.UserRole? = null
 
+    /** Prevents overlapping UI/worker drains from replaying the same due batch concurrently. */
+    private val syncPendingMutex = Mutex()
+
+    /** Explicit session transitions only; access-token rotation during refresh is not a new identity. */
+    private val sessionGeneration = AtomicLong(0)
+
     /**
      * 契约 API 句柄。
      *
@@ -103,6 +112,7 @@ open class LogisticsRepository(
     // ==================== 会话 ====================
 
     open suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
+        sessionGeneration.incrementAndGet()
         val result = api.login(username, password, deviceId, CLIENT_VERSION)
         authenticatedRole = result.user.role
         val canPersistSession = remember && sessionStore?.encrypted == true
@@ -118,6 +128,7 @@ open class LogisticsRepository(
     }
 
     fun logout() {
+        sessionGeneration.incrementAndGet()
         persistSession = false
         authenticatedRole = null
         api.updateToken(null)
@@ -148,6 +159,7 @@ open class LogisticsRepository(
 
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
+        sessionGeneration.incrementAndGet()
         try {
             api.logout()
         } catch (cancelled: CancellationException) {
@@ -167,6 +179,7 @@ open class LogisticsRepository(
      * 首个业务请求会触发 401 → 自动刷新，无需在此处预判时效。
      */
     fun restoreSession(): Boolean {
+        sessionGeneration.incrementAndGet()
         val store = sessionStore ?: return false
         if (!store.encrypted) {
             store.clear()
@@ -887,27 +900,55 @@ open class LogisticsRepository(
     fun observePendingCount(): Flow<Int> = dao.observePendingCount()
     fun observeAttentionCount(): Flow<Int> = dao.observeAttentionCount()
 
+    /** Whether any retryable PENDING records remain, including future backoff entries. */
+    suspend fun hasPendingOperations(): Boolean = dao.hasPending()
+
     /**
      * 同步全部待处理记录。
      * 逐条重放，成功标记 SYNCED，失败标记 FAILED 并记录原因；
      * 冲突（409）标记 CONFLICT，交由用户决定。
      */
-    suspend fun syncPending(): SyncReport = coroutineScope {
-        // 只重放 PENDING 且已到下次重试时间的记录：FAILED 是终态（等用户手动处理），
-        // 退避未到期的记录这一轮跳过，避免断网时每次进前台都去撞同一批请求。
-        val nowMillis = System.currentTimeMillis()
-        val pending = dao.pending().filter { it.nextRetryAt == null || it.nextRetryAt <= nowMillis }
-        val permits = kotlinx.coroutines.sync.Semaphore(MAX_CONCURRENT_OPERATIONS)
-        val outcomes = pending.map { item -> async(Dispatchers.IO) {
-            permits.acquire()
-            try { syncOne(item) } finally { permits.release() }
-        } }.awaitAll()
-        SyncReport(
-            success = outcomes.count { it == SyncOutcome.SUCCESS },
-            failed = outcomes.count { it == SyncOutcome.FAILED },
-            conflict = outcomes.count { it == SyncOutcome.CONFLICT },
-            retrying = outcomes.count { it == SyncOutcome.RETRY_SCHEDULED },
-        )
+    suspend fun syncPending(): SyncReport = syncPendingMutex.withLock {
+        coroutineScope {
+            val sessionAtStart = sessionGeneration.get()
+            // Fix both due-time and enqueue-time at the start: a long drain must not retry the same
+            // newly deferred row after its backoff elapses or absorb writes added during this pass.
+            val drainCutoff = System.currentTimeMillis()
+            val attemptedIds = mutableSetOf<String>()
+            var success = 0
+            var failed = 0
+            var conflict = 0
+            var retrying = 0
+
+            while (sessionGeneration.get() == sessionAtStart) {
+                val dueBatch = dao.pendingDue(drainCutoff, drainCutoff)
+                // A login/logout during the query must not start another batch in the new session.
+                if (sessionGeneration.get() != sessionAtStart || dueBatch.isEmpty()) break
+                val batch = dueBatch.filter { attemptedIds.add(it.id) }
+                if (batch.isEmpty()) break
+
+                val permits = kotlinx.coroutines.sync.Semaphore(MAX_CONCURRENT_OPERATIONS)
+                val outcomes = batch.map { item -> async(Dispatchers.IO) {
+                    permits.acquire()
+                    try {
+                        if (sessionGeneration.get() == sessionAtStart) syncOne(item) else null
+                    } finally {
+                        permits.release()
+                    }
+                } }.awaitAll()
+                outcomes.filterNotNull().forEach { outcome ->
+                    when (outcome) {
+                        SyncOutcome.SUCCESS -> success++
+                        SyncOutcome.FAILED -> failed++
+                        SyncOutcome.CONFLICT -> conflict++
+                        SyncOutcome.RETRY_SCHEDULED -> retrying++
+                    }
+                }
+                if (sessionGeneration.get() != sessionAtStart || dueBatch.size < MAX_BATCH_SIZE) break
+            }
+
+            SyncReport(success = success, failed = failed, conflict = conflict, retrying = retrying)
+        }
     }
 
     /**

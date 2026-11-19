@@ -130,20 +130,6 @@ def register(app, db, now, current_user, audit_event, api_error=None):
     @app.post('/api/v1/assembly/tasks/{tid}/stages/{stage_no}/rework')
     def stage_rework(tid:str, stage_no:int, body:dict, request:Request, user=Depends(current_user), idempotency_key:str|None=Header(None,alias='Idempotency-Key')):
         return mutate_stage(tid,stage_no,body,request,user,idempotency_key,'rework')
-    @app.get('/api/v1/assembly/tasks')
-    def list_tasks(page:int=Query(1,ge=1), pageSize:int=Query(20,ge=1,le=100), deviceId:str|None=None, user=Depends(current_user)):
-        c=db(); clauses=[]; args=[]
-        if user['role']=='ASSEMBLER':
-            clauses.append("(EXISTS (SELECT 1 FROM assembly_task_members m WHERE m.task_id=assembly_tasks.id AND m.assembler_id=? AND m.removed_at IS NULL) OR assigned_assembler_id=?)")
-            args += [user['id'], user['id']]
-        if deviceId: clauses.append('device_id=?'); args.append(deviceId)
-        where=' AND '.join(clauses) or '1=1'
-        total=c.execute(f'SELECT count(*) n FROM assembly_tasks WHERE {where}',args).fetchone()['n']; rows=c.execute(f'SELECT * FROM assembly_tasks WHERE {where} ORDER BY created_at LIMIT ? OFFSET ?',args+[pageSize,(page-1)*pageSize]).fetchall()
-        items=[]
-        for r in rows:
-            x=result_task(r); x['members']=task_members(c,r['id']); items.append(x)
-        c.close(); return {'items':items,'page':page,'pageSize':pageSize,'total':total,'totalPages':(total+pageSize-1)//pageSize}
-
     def assignment_operation(body, key, request):
         client=body.get('clientOperationId')
         try: uuid.UUID(str(client))

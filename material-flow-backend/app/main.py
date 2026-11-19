@@ -730,6 +730,8 @@ def init_db() -> None:
 # 生产库重启时幂等迁移；历史库缺列时静默跳过，不影响启动。
 PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("idx_material_work_items_requirement", "material_work_items", ("requirement_id",)),
+    ("idx_materials_available_code", "materials", ("available_quantity", "code")),
+    ("idx_materials_category_available_code", "materials", ("category", "available_quantity", "code")),
     ("idx_assembly_tasks_device", "assembly_tasks", ("device_id",)),
     ("idx_assembly_tasks_order_no", "assembly_tasks", ("order_no",)),
     ("idx_transfer_requests_status_created", "transfer_requests", ("status", "created_at")),
@@ -6166,8 +6168,8 @@ def _execute_transfer_items(
     """在单个事务内执行库存变更。
 
     契约 4.3 / 6 节：
-      - 逐 item 校验 expectedInventoryVersion，任一冲突整单回滚
-      - 同时更新 materials 汇总与 inventory 库位明细
+      - 逐 item 按物料事务起始快照校验 expectedInventoryVersion，任一冲突整单回滚
+      - 同料汇总一次变更版本，同时更新 materials 汇总与 inventory 库位明细
       - 库存不足、库位不存在整单回滚
       - 已执行过的单据再次执行返回原结果，不重复扣减
     """
@@ -6205,21 +6207,31 @@ def _execute_transfer_items(
             raise ApiError(409, CODE_APPROVAL_EXECUTOR_SAME_USER,
                            "审批人与执行人不能是同一用户", trace_id=trace_id)
 
+        transfer_type = row["type"]
+        if transfer_type not in TRANSFER_INBOUND_TYPES | {"OUTBOUND", "TRANSFER"}:
+            # 盘点 quantity 无法表达实盘差异，应由专用确认流程处理；不能当作出库。
+            raise ApiError(400, CODE_VALIDATION_ERROR,
+                           "该类型不支持通用流转执行，盘点请通过盘点确认处理", trace_id=trace_id)
+
         payload = json.loads(row["payload_json"])
-        for item in payload.get("items", []):
+        items = payload.get("items", [])
+        materials: dict[str, sqlite3.Row] = {}
+        deltas: dict[str, int] = {}
+        for item in items:
             material_id = item.get("materialId")
             quantity = item.get("quantity")
             expected_version = item.get("expectedInventoryVersion")
-            source_code = item.get("sourceLocationCode")
-            target_code = item.get("targetLocationCode")
+            if material_id not in materials:
+                material = c.execute(
+                    "SELECT id,available_quantity,version FROM materials WHERE id=?", (material_id,)
+                ).fetchone()
+                if not material:
+                    raise ApiError(400, CODE_VALIDATION_ERROR, "物料不存在", trace_id=trace_id)
+                materials[material_id] = material
+                deltas[material_id] = 0
+            material = materials[material_id]
 
-            material = c.execute(
-                "SELECT id,available_quantity,version FROM materials WHERE id=?", (material_id,)
-            ).fetchone()
-            if not material:
-                raise ApiError(400, CODE_VALIDATION_ERROR, "物料不存在", trace_id=trace_id)
-
-            # 乐观锁：版本不匹配整单回滚
+            # 同料的每行均与事务起始版本比较，不能与本单前一行递增后的版本比较。
             if expected_version is not None and material["version"] != expected_version:
                 raise ApiError(
                     409, CODE_INVENTORY_VERSION_CONFLICT,
@@ -6228,29 +6240,31 @@ def _execute_transfer_items(
                              "serverVersion": material["version"],
                              "clientVersion": expected_version},
                 )
-
-            transfer_type = row["type"]
-            # 入库/退料增加库存；厂内调拨只在库位间移动，汇总数量不变；其余扣减
             if transfer_type in TRANSFER_INBOUND_TYPES:
-                delta = quantity
-            elif transfer_type == "TRANSFER":
-                delta = 0
-            else:
-                delta = -quantity
+                deltas[material_id] += quantity
+            elif transfer_type == "OUTBOUND":
+                deltas[material_id] -= quantity
+            elif material["available_quantity"] < quantity:
+                raise ApiError(409, CODE_INSUFFICIENT_INVENTORY,
+                               "库存不足", trace_id=trace_id,
+                               details={"materialId": material_id,
+                                        "available": material["available_quantity"],
+                                        "requested": quantity})
 
-            if transfer_type in {"OUTBOUND", "TRANSFER"}:
-                if material["available_quantity"] < quantity:
-                    raise ApiError(409, CODE_INSUFFICIENT_INVENTORY,
-                                   "库存不足", trace_id=trace_id,
-                                   details={"materialId": material_id,
-                                            "available": material["available_quantity"],
-                                            "requested": quantity})
-
+        # 每个物料只变更一次汇总与版本；重复行合计不足和真实旧版本仍整单回滚。
+        for material_id, material in materials.items():
+            delta = deltas[material_id]
+            if material["available_quantity"] + delta < 0:
+                raise ApiError(409, CODE_INSUFFICIENT_INVENTORY,
+                               "库存不足", trace_id=trace_id,
+                               details={"materialId": material_id,
+                                        "available": material["available_quantity"],
+                                        "requested": -delta})
             updated = c.execute(
                 "UPDATE materials SET total_quantity=total_quantity+?, "
                 "available_quantity=available_quantity+?, version=version+1 "
                 "WHERE id=? AND version=? AND available_quantity+? >= 0",
-                (delta, delta, material["id"], material["version"], delta),
+                (delta, delta, material_id, material["version"], delta),
             )
             if updated.rowcount != 1:
                 raise ApiError(
@@ -6259,11 +6273,16 @@ def _execute_transfer_items(
                     details={"materialId": material_id},
                 )
 
-            # 同步库位明细，避免汇总与明细漂移
+        # 保留逐行库位移动语义（含先调入再调出），任一不足仍回滚汇总及全部明细。
+        for item in items:
+            material_id = item.get("materialId")
+            quantity = item.get("quantity")
+            source_code = item.get("sourceLocationCode")
+            target_code = item.get("targetLocationCode")
             if source_code and transfer_type in {"OUTBOUND", "TRANSFER"}:
-                _adjust_location_qty(c, material["id"], source_code, -quantity, trace_id)
+                _adjust_location_qty(c, material_id, source_code, -quantity, trace_id)
             if target_code and (transfer_type in TRANSFER_INBOUND_TYPES or transfer_type == "TRANSFER"):
-                _adjust_location_qty(c, material["id"], target_code, quantity, trace_id)
+                _adjust_location_qty(c, material_id, target_code, quantity, trace_id)
 
         execution_time = now()
         c.execute(

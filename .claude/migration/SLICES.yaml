@@ -1,0 +1,92 @@
+slices:
+  - id: transfer-consistency
+    type: implementation
+    name: 流转多行版本校验与合法库存操作
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/tests/test_transfer_execution_consistency.py]
+    external_surfaces: [transfer API, materials and inventory]
+    contracts: {added: [], changed: [拒绝无法保持库存一致性的非法流转操作], removed: []}
+    deletion_targets: [同事务每行对已被自己递增版本重复校验的路径]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/optimization-report.md]
+    residue_queries: ["检查 transfer 类型分支无 STOCKTAKE 隐式扣减"]
+    verification_commands: ["python -m pytest tests/test_transfer_execution_consistency.py -q"]
+    risks: [兼容已存在的流转单据，保留真实并发冲突与整单回滚]
+  - id: assembly-query
+    type: implementation
+    name: 删除遮蔽的装配列表注册并锁定有效路由预算
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/assembly_routes.py, material-flow-backend/tests/test_assembly_list_performance.py]
+    external_surfaces: [assembly task list]
+    contracts: {added: [], changed: [], removed: []}
+    deletion_targets: [assembly_routes.py中被main.py遮蔽的同路径GET注册]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/optimization-report.md]
+    residue_queries: ["列表循环不再调用 task_members"]
+    verification_commands: ["python -m pytest tests/test_assembly_list_performance.py -q"]
+    risks: [权限与人员排序不变，避免空列表 IN 查询及 SQLite 参数上限]
+  - id: offline-drain
+    type: implementation
+    name: 离线重放完整处理超过20条积压
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt, logistics-android/app/src/main/java/com/company/logistics/data/LogisticsDatabase.kt, logistics-android/app/src/main/java/com/company/logistics/data/OfflineSyncWorker.kt, logistics-android/app/src/test/java/com/company/logistics/OfflineQueueDrainTest.kt, scripts/check_offline_room_queries.py]
+    external_surfaces: [offline queue]
+    contracts: {added: [], changed: [], removed: []}
+    deletion_targets: [单次仅取20条即成功结束的同步路径]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/optimization-report.md]
+    residue_queries: ["核对退避与终态记录不会阻挡后续到期项"]
+    verification_commands: ["ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest"]
+    risks: [避免失败忙循环，维护幂等并阻止运行中会话切换继续发请求；持久化账号归属另见D6]
+  - id: stocktake-generation
+    type: implementation
+    name: 盘点刷新分页响应世代隔离
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/test]
+    external_surfaces: [stocktake state]
+    contracts: {added: [], changed: [], removed: []}
+    deletion_targets: [过期盘点请求无条件合并或覆盖状态]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/optimization-report.md]
+    residue_queries: ["所有盘点异步成功失败写入均检查世代"]
+    verification_commands: ["ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest"]
+    risks: [刷新及退出登录后的旧响应、loading 状态]
+  - id: inventory-sort
+    type: implementation
+    name: 库存优先排序索引
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/tests/test_inventory_sort_performance.py]
+    external_surfaces: [warehouse inventory listing, SQLite startup indexes]
+    contracts: {added: [], changed: [], removed: []}
+    deletion_targets: [缺少匹配索引导致的临时排序]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/optimization-report.md]
+    residue_queries: ["EXPLAIN QUERY PLAN 不再出现TEMP B-TREE"]
+    verification_commands: ["python -m pytest tests/test_inventory_sort_performance.py -q"]
+    risks: [索引增加写入成本与占用，启动幂等与旧表缺列需兼容]
+  - id: convergence
+    type: convergence
+    name: 版本门禁全量回归与交付报告
+    status: done
+    dependencies: [transfer-consistency, assembly-query, inventory-sort, offline-drain, stocktake-generation]
+    touched_paths: [.claude/migration, docs/optimization-report.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, NEXT.md]
+    external_surfaces: [version configuration, documentation]
+    deletion_targets: []
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [NEXT.md, docs/optimization-report.md]
+    residue_queries: ["git diff --check", "检查无临时调试或新的 TODO(migration)"]
+    verification_commands: ["bash .claude/migration/guard.sh", "python -m pytest tests/ -q -p no:cacheprovider", "ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_emoji_icons.py", "python3 scripts/check_offline_room_queries.py"]
+    risks: [基线失败单独报告，未验证设备行为不声称通过]
+
+verification_summary: "后端560 passed；Android234 passed及Debug构建成功；Room生成SQL与guard通过。旧独立脚本基线失败和真机限制见HANDOFF。"
