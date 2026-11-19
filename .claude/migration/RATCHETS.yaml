@@ -16,3 +16,43 @@ ratchets:
     maximum: 0
     target: 0
     rationale: 不在产品逻辑遗留临时迁移分支
+  - id: shadowed-workshop-summary
+    scope: material-flow-backend/app/assembly_routes.py
+    query: 'def summary(user=Depends(current_user))'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 路由唯一性和OpenAPI采用实际main入口
+  - id: shadowed-machine-progress
+    scope: material-flow-backend/app/assembly_routes.py
+    query: 'def machine(user=Depends(current_user)'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 防止重新引入被遮蔽的统计路由
+  - id: assembly-total-from-page-size
+    scope: logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt
+    query: 'assemblyTaskTotal = tasks.size'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 总量来自服务端而不是当前页长度
+  - id: filtered-full-item-assembly
+    scope: material-flow-backend/app/main.py
+    query: 'all_items = _workspace_items(c, user, normalized_order_no, viewRole)'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 筛选必须先轻量派生再装饰页内记录
+  - id: labor-or-join
+    scope: material-flow-backend/app/assembly_routes.py
+    query: 'ON (l.task_id=t.id OR ('
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 归属集合去重及VM预算另由行为回归验证

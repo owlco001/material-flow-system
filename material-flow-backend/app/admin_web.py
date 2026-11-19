@@ -98,8 +98,10 @@ from app.main import (
     workspace_material_items as api_workspace_items,
     workspace_summary as api_workspace_summary,
     _workspace_context,
-    _workspace_filter_status,
-    _workspace_items,
+    _workspace_page,
+    _workspace_requirements_sql,
+    _order_material_payload,
+    _workspace_light_counts,
     _workspace_summary_flow_counts,
     _workspace_summary_payload,
     audit_logs_export_items,
@@ -1746,12 +1748,68 @@ def admin_audit_logs(request: Request):
 # ==================== S7：生产订单查询（契约 §6.7）====================
 
 
+def _admin_order_materials_page(request: Request, user, order_no: str) -> dict[str, Any]:
+    """Match the old template's literal, case-sensitive filters before SQL pagination."""
+    if user["role"] not in REPORT_ROLES:
+        raise ApiError(403, "FORBIDDEN", "无权查看该订单")
+    q = str(request.query_params.get("mat_q", "")).strip()
+    category = str(request.query_params.get("mat_cat", "")).strip()
+    page = _int_param(request, "mat_page")
+    try:
+        size = int(request.query_params.get("mat_size", "20"))
+    except ValueError:
+        size = 20
+    if size not in {10, 20, 50, 100}:
+        size = 20
+    c = db()
+    try:
+        if not c.in_transaction:
+            c.execute("BEGIN")  # Count and page must describe the same committed read view.
+        if not c.execute("SELECT 1 FROM production_orders WHERE order_no=?", (order_no,)).fetchone():
+            raise ApiError(404, "ORDER_NOT_FOUND", "订单不存在")
+        query, args = _workspace_requirements_sql(user, order_no)
+        unfiltered = c.execute(f"SELECT COUNT(*) FROM ({query})", args).fetchone()[0]
+        if user["role"] not in {"ADMIN", "WORKSHOP_SUPERVISOR"} and not unfiltered:
+            raise ApiError(403, "FORBIDDEN", "无权查看该订单")
+        if q:
+            query += " AND (instr(COALESCE(m.code,''),?) > 0 OR instr(COALESCE(m.name,''),?) > 0)"
+            args += [q, q]
+        if category:
+            query += " AND COALESCE(m.category,'') = ?"
+            args.append(category)
+        total = (c.execute(f"SELECT COUNT(*) FROM ({query})", args).fetchone()[0]
+                 if q or category else unfiltered)
+        pages = (total + size - 1) // size if total else 0
+        page = min(page, pages) if pages else 1
+        query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id LIMIT ? OFFSET ?"
+        rows = c.execute(query, [*args, size, (page - 1) * size]).fetchall()
+        return {
+            "materials": _order_material_payload(rows), "materialsTotal": unfiltered,
+            "materialsFilteredTotal": total, "materialsPage": page,
+            "materialsPageSize": size, "materialsTotalPages": pages,
+        }
+    finally:
+        c.close()
+
+
 @router.get("/admin/orders", response_class=HTMLResponse)
 def admin_orders(request: Request):
     user, denied = _report_or_403(request)
     if denied:
         return denied
     order_no = str(request.query_params.get("order_no", "")).strip()
+    if request.query_params.get("partial") == "materials":
+        try:
+            detail = _admin_order_materials_page(request, user, order_no) if order_no else {
+                "materials": [], "materialsFilteredTotal": 0, "materialsPage": 1,
+                "materialsPageSize": 20, "materialsTotalPages": 0,
+            }
+        except ApiError as exc:
+            return _error_page(request, exc.status_code, _api_error_message(exc))
+        return templates.TemplateResponse(request, "_order_materials.html", {
+            "user": user, "csrf_token": user["csrf_token"], "order_no": order_no,
+            "detail": detail, "status_labels": WORKSPACE_STATUS_LABELS,
+        })
     page = _page_param(request)
     c = db()
     try:
@@ -1769,8 +1827,9 @@ def admin_orders(request: Request):
     if order_no:
         try:
             detail = api_order_detail(
-                order_no=order_no, page=1, pageSize=500, user=user
+                order_no=order_no, page=1, pageSize=500, materialsPageSize=1, user=user
             )
+            detail.update(_admin_order_materials_page(request, user, order_no))
         except ApiError as exc:
             error = _api_error_message(exc)
         except HTTPException as exc:
@@ -1786,8 +1845,6 @@ def admin_orders(request: Request):
         "error": error,
         "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
     }
-    if request.query_params.get("partial") == "materials":
-        return templates.TemplateResponse(request, "_order_materials.html", ctx)
     return templates.TemplateResponse(
         request,
         "orders.html",
@@ -2825,30 +2882,33 @@ def _workspace_or_403(request: Request):
     return user, None
 
 
-def _workspace_snapshot(user: sqlite3.Row, order_no: str | None, status: str | None):
-    """管理台工作台：一次计算全量工作项，汇总与列表/导出都从同一结果派生。
-
-    语义与分别调用 api_workspace_summary + api_workspace_items 完全一致：
-    汇总按全量（不受 orderNo/status 过滤），列表先按 orderNo 再按 status 过滤。
-    """
+def _workspace_snapshot(
+    user: sqlite3.Row, order_no: str | None, status: str | None,
+    *, limit: int | None = None, offset: int = 0, include_summary: bool = True,
+):
+    """Global summary stays unfiltered; only the requested order/page is fully decorated."""
     trace_id = str(uuid.uuid4())
     effective_role, preview, trace_id, _ = _workspace_context(user, None, trace_id, None)
     c = db()
     try:
-        all_items = _workspace_items(c, user)
-        flow_counts = _workspace_summary_flow_counts(c, user, None)
+        if not c.in_transaction:
+            c.execute("BEGIN")  # Keep the page and unfiltered summary on one WAL snapshot.
+        visible, total = _workspace_page(
+            c, user, order_no.strip() if order_no is not None else None,
+            None, status, limit, offset, trace_id,
+        )
+        summary = None
+        if include_summary:
+            counts, handover_counts = _workspace_light_counts(c, user)
+            flow_counts = _workspace_summary_flow_counts(c, user, None)
+            summary = _workspace_summary_payload(
+                None, flow_counts, effective_role=effective_role, preview=preview,
+                user=user, trace_id=trace_id, status_counts=counts,
+                handover_status_counts=handover_counts,
+            )
     finally:
         c.close()
-    summary = _workspace_summary_payload(
-        all_items, flow_counts, effective_role=effective_role, preview=preview,
-        user=user, trace_id=trace_id,
-    )
-    visible = all_items
-    if order_no is not None:
-        normalized = order_no.strip()
-        visible = [item for item in visible if item["orderNo"] == normalized]
-    visible = _workspace_filter_status(visible, status, trace_id)
-    return summary, visible
+    return summary, visible, total
 
 
 WORKSPACE_FILTER_ORDER = (
@@ -2866,15 +2926,14 @@ def admin_workspace(request: Request):
     page = _page_param(request)
     page_size = 20
     try:
-        summary, visible = _workspace_snapshot(
+        summary, visible, total = _workspace_snapshot(
             user, q.get("orderNo") or None, q.get("status") or None,
+            limit=page_size, offset=(page - 1) * page_size,
         )
     except ApiError as exc:
         return _error_page(request, exc.status_code, _api_error_message(exc))
     except HTTPException as exc:
         return _api_http_error_response(exc, request)
-    total = len(visible)
-    start = (page - 1) * page_size
     return templates.TemplateResponse(
         request,
         "workspace.html",
@@ -2882,7 +2941,7 @@ def admin_workspace(request: Request):
             "user": user,
             "csrf_token": user["csrf_token"],
             "summary": {**summary, "generatedAt": _local_time(summary.get("generatedAt"))},
-            "items": visible[start:start + page_size],
+            "items": visible,
             "page": page,
             "total_pages": (total + page_size - 1) // page_size if total else 0,
             "total_rows": total,
@@ -3592,7 +3651,9 @@ def admin_workspace_export(request: Request):
     if denied:
         return denied
     q = request.query_params
-    _, rows = _workspace_snapshot(user, q.get("orderNo") or None, q.get("status") or None)
+    _, rows, _ = _workspace_snapshot(
+        user, q.get("orderNo") or None, q.get("status") or None, include_summary=False,
+    )
     return _csv_response("material-workspace", rows)
 
 

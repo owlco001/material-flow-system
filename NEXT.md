@@ -1,5 +1,16 @@
 # NEXT.md — 交接看板
 
+## 2026-11-20 深查第二轮修复（本地分支，未推送／未部署）
+
+- 分支 `fix-deep-audit-138ff95`，基线 `138ff95`；后端 `0.22.2`，Android `0.5.53 / 60`。
+- 完成网络与持久化身份epoch/ticket保护、单claim取消恢复、取消不误入队、装配真实分页、工时请求结构化取消及并发上限4。
+- 工时报表改归属集合去重，清理两个遮蔽车间路由；工作台先轻量筛选再组装页内item；Web物料SQL筛选后分页，partial不构造完整订单，页与summary共享只读快照。
+- 最终后端 **593 passed**；Android **251项/49类零失败**，Debug构建成功；真实生成Room取消CAS、图标75文件、guard及diff检查通过。
+- 1000任务工时报表同机handler中位 **1660.828→24.369ms**、VM **67282000→243000**；2万需求状态筛选完整item **20000→20**、中位 **683.846→313.939ms**。不外推生产耗时。
+- 细节、失败前/修复后证据与限制见 `docs/deep-audit-fixes.md`、`.claude/migration/HANDOFF.md`。队列owner政策、旧独立验收基线失败与真机/U9/远端CI限制仍保留。
+
+---
+
 ## 2026-11-19 功能与性能优化（本地分支，未推送／未部署）
 
 - 独立副本：`/tmp/material-flow-optimization`，分支 `optimize-function-performance`，基于 GitHub main `b0719b2`。

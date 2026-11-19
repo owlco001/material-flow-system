@@ -3,16 +3,11 @@
   {% set _mb_actions = material_batch_actions_for(user["role"]) if user else [] %}
   {% set mat_q = request.query_params.get("mat_q", "").strip() %}
   {% set mat_cat = request.query_params.get("mat_cat", "").strip() %}
-  {% set mat_list_all = detail.get("materials") or [] %}
-  {% set mat_list = [] %}
-  {% for m in mat_list_all %}
-    {% set _code = (m.get("materialCode") or m.get("material_id") or m.get("materialId") or "")|string %}
-    {% set _name = (m.get("materialName") or m.get("material_name") or "")|string %}
-    {% set _cat = (m.get("materialCategory") or m.get("material_category") or "")|string %}
-    {% if (not mat_q or mat_q in _code or mat_q in _name) and (not mat_cat or mat_cat == _cat) %}
-      {% set _ = mat_list.append(m) %}
-    {% endif %}
-  {% endfor %}
+  {% set page_items = detail.get("materials") or [] %}
+  {% set page = detail.get("materialsPage", 1) %}
+  {% set per_page = detail.get("materialsPageSize", 20) %}
+  {% set total = detail.get("materialsFilteredTotal", 0) %}
+  {% set total_pages = detail.get("materialsTotalPages", 0) %}
   <form method="get" data-partial-form data-page-param="mat_page" style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
     <input type="hidden" name="order_no" value="{{ order_no }}">
     <input type="text" name="mat_q" value="{{ mat_q }}" placeholder="搜索物料编码/名称" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;width:220px">
@@ -32,15 +27,6 @@
     </select>
     <span class="muted">条</span>
   </form>
-  {% set page = request.query_params.get("mat_page", "1")|int %}
-  {% set per_page = request.query_params.get("mat_size", "20")|int %}
-  {% if per_page not in [10, 20, 50, 100] %}{% set per_page = 20 %}{% endif %}
-  {% set total = mat_list|length %}
-  {% set total_pages = (total // per_page) + (1 if total % per_page else 0) %}
-  {% if page < 1 %}{% set page = 1 %}{% endif %}
-  {% if page > total_pages and total_pages > 0 %}{% set page = total_pages %}{% endif %}
-  {% set start = (page - 1) * per_page %}
-  {% set page_items = mat_list[start:start + per_page] %}
   <p class="muted">共 {{ total }} 条{% if total_pages > 1 %}，第 {{ page }}/{{ total_pages }} 页{% endif %}</p>
   <div data-mb-root data-order="{{ order_no }}" data-csrf="{{ csrf_token }}">
   {{ batch_bar(_mb_actions) }}

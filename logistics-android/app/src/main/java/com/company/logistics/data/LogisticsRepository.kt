@@ -35,9 +35,13 @@ import com.company.logistics.model.TransferRequestPage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -83,6 +87,8 @@ open class LogisticsRepository(
 
     /** Explicit session transitions only; access-token rotation during refresh is not a new identity. */
     private val sessionGeneration = AtomicLong(0)
+    private val sessionStateLock = Any()
+    private var ownedApiEpoch: Long? = api.currentIdentityEpoch()
 
     /**
      * 契约 API 句柄。
@@ -96,12 +102,23 @@ open class LogisticsRepository(
         // 网络层每次轮转令牌都同步落盘 / 擦除磁盘副本。
         // 不接这个回调的话，刷新后的新令牌只留在内存：
         // 下次冷启动会拿已被消费的旧令牌去刷新，被服务端判为重放并吊销整族会话。
-        api.onTokensRotated = { access, refresh ->
-            if (access == null && refresh == null) {
-                sessionStore?.clear()
-                onSessionExpired?.invoke()
-            } else if (persistSession) {
-                sessionStore?.updateTokens(access, refresh)
+        api.onTokensChangedForIdentity = { sourceEpoch, resultEpoch, access, refresh ->
+            synchronized(sessionStateLock) {
+                if (ownedApiEpoch == sourceEpoch && api.isCurrentIdentityEpoch(resultEpoch)) {
+                    if (access == null && refresh == null) {
+                        ownedApiEpoch = resultEpoch
+                        sessionGeneration.incrementAndGet()
+                        persistSession = false
+                        authenticatedRole = null
+                        sessionStore?.clear()
+                        // The app callback is synchronous and logout is reentrant on this monitor.
+                        // Keep delivery atomic with explicit login/logout, not just the prefs write.
+                        onSessionExpired?.invoke()
+                    } else if (api.tokensForIdentity(resultEpoch) == (access to refresh)) {
+                        ownedApiEpoch = resultEpoch
+                        if (persistSession) sessionStore?.updateTokens(access, refresh)
+                    }
+                }
             }
         }
     }
@@ -112,26 +129,40 @@ open class LogisticsRepository(
     // ==================== 会话 ====================
 
     open suspend fun login(username: String, password: String, deviceId: String, remember: Boolean = true): LoginResult {
-        sessionGeneration.incrementAndGet()
-        val result = api.login(username, password, deviceId, CLIENT_VERSION)
-        authenticatedRole = result.user.role
-        val canPersistSession = remember && sessionStore?.encrypted == true
-        persistSession = canPersistSession
-        if (canPersistSession) {
-            sessionStore?.save(result.accessToken, result.refreshToken, deviceId,
-                SessionStore.UserSummary(result.user.id, result.user.username, result.user.displayName,
-                    result.user.role, result.mustChangePassword))
-        } else {
+        val (ticket, identity) = synchronized(sessionStateLock) {
+            val generation = sessionGeneration.incrementAndGet()
+            ownedApiEpoch = null
+            persistSession = false
+            authenticatedRole = null
             sessionStore?.clear()
+            generation to api.beginLoginIdentity()
+        }
+        val result = api.loginForIdentity(identity, username, password, deviceId, CLIENT_VERSION)
+        synchronized(sessionStateLock) {
+            if (sessionGeneration.get() != ticket || !api.isCurrentIdentityEpoch(identity)) {
+                throw CancellationException("Login belongs to an older session")
+            }
+            authenticatedRole = result.user.role
+            ownedApiEpoch = identity
+            val canPersistSession = remember && sessionStore?.encrypted == true
+            persistSession = canPersistSession
+            if (canPersistSession) {
+                sessionStore?.save(result.accessToken, result.refreshToken, deviceId,
+                    SessionStore.UserSummary(result.user.id, result.user.username, result.user.displayName,
+                        result.user.role, result.mustChangePassword))
+            } else {
+                sessionStore?.clear()
+            }
         }
         return result
     }
 
-    fun logout() {
+    fun logout(): Unit = synchronized(sessionStateLock) {
         sessionGeneration.incrementAndGet()
+        ownedApiEpoch = null
         persistSession = false
         authenticatedRole = null
-        api.updateToken(null)
+        api.clearIdentityForRepository()
         sessionStore?.clear()
     }
 
@@ -159,17 +190,24 @@ open class LogisticsRepository(
 
     /** 登出并通知服务端吊销该设备令牌（网络失败也保证本地已清） */
     suspend fun logoutRemote() {
-        sessionGeneration.incrementAndGet()
-        try {
-            api.logout()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            // 本地会话仍需清除；网络失败不阻止退出。
+        val (ticket, identity) = synchronized(sessionStateLock) {
+            val generation = sessionGeneration.incrementAndGet()
+            ownedApiEpoch = null
+            persistSession = false
+            authenticatedRole = null
+            sessionStore?.clear()
+            generation to api.currentIdentityEpoch()
         }
-        persistSession = false
-        authenticatedRole = null
-        sessionStore?.clear()
+        try {
+            api.logout(identity)
+        } finally {
+            synchronized(sessionStateLock) {
+                if (sessionGeneration.get() == ticket) {
+                    api.clearIdentityForRepository()
+                    sessionStore?.clear()
+                }
+            }
+        }
     }
 
     /**
@@ -178,39 +216,42 @@ open class LogisticsRepository(
      * 只有完整摘要和 token 对才恢复 UI 登录态；access token 可能已过期，
      * 首个业务请求会触发 401 → 自动刷新，无需在此处预判时效。
      */
-    fun restoreSession(): Boolean {
+    fun restoreSession(): Boolean = synchronized(sessionStateLock) {
         sessionGeneration.incrementAndGet()
-        val store = sessionStore ?: return false
+        ownedApiEpoch = null
+        persistSession = false
+        authenticatedRole = null
+        val store = sessionStore ?: return@synchronized false
         if (!store.encrypted) {
             store.clear()
-            api.updateToken(null)
-            return false
+            api.clearIdentityForRepository()
+            return@synchronized false
         }
         val access = store.accessToken()
         val refresh = store.refreshToken()
-        if (access == null || refresh == null || store.userSummary() == null) {
+        val summary = store.userSummary()
+        if (access == null || refresh == null || summary == null) {
             store.clear()
-            api.updateToken(null)
-            return false
+            api.clearIdentityForRepository()
+            return@synchronized false
         }
+        ownedApiEpoch = api.restoreIdentityForRepository(access, refresh, store.deviceId() ?: "unknown")
         persistSession = true
-        authenticatedRole = store.userSummary()?.role
-        api.restoreSession(
-            access = access,
-            refresh = refresh,
-            device = store.deviceId() ?: "unknown"
-        )
-        return true
+        authenticatedRole = summary.role
+        true
     }
 
-    fun persistedUser(): SessionStore.UserSummary? = sessionStore?.let { store ->
-        if (persistSession && api.accessToken != null && api.refreshToken != null) store.userSummary() else null
+    fun persistedUser(): SessionStore.UserSummary? = synchronized(sessionStateLock) {
+        val epoch = ownedApiEpoch
+        if (persistSession && epoch != null && api.isCurrentIdentityEpoch(epoch)
+            && api.accessToken != null && api.refreshToken != null) sessionStore?.userSummary() else null
     }
 
     /** 刷新成功后由网络层回调落盘，此处无需再手动调用 */
     @Deprecated("由 api.onTokensRotated 回调自动完成", ReplaceWith(""))
-    fun persistTokens() {
-        if (persistSession) sessionStore?.updateTokens(api.accessToken, api.refreshToken)
+    fun persistTokens(): Unit = synchronized(sessionStateLock) {
+        val tokens = ownedApiEpoch?.let(api::tokensForIdentity)
+        if (persistSession && tokens != null) sessionStore?.updateTokens(tokens.first, tokens.second)
     }
 
     val isLoggedIn: Boolean get() = api.accessToken != null || api.refreshToken != null
@@ -849,6 +890,8 @@ open class LogisticsRepository(
                     SubmitResult.Queued(clientOpId, safeReason)
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             // 网络异常：落本地队列
             val safeReason = "网络不可用，请稍后重试"
@@ -932,6 +975,11 @@ open class LogisticsRepository(
                     permits.acquire()
                     try {
                         if (sessionGeneration.get() == sessionAtStart) syncOne(item) else null
+                    } catch (cancelled: CancellationException) {
+                        // Identity replacement stops this pass with its partial report. A true
+                        // worker/job cancellation still propagates after syncOne releases the claim.
+                        if (sessionGeneration.get() != sessionAtStart && currentCoroutineContext().isActive) null
+                        else throw cancelled
                     } finally {
                         permits.release()
                     }
@@ -973,8 +1021,8 @@ open class LogisticsRepository(
     }
 
     private suspend fun syncOne(item: OfflineOperationEntity): SyncOutcome {
-        dao.updateStatus(item.id, SyncStatus.SYNCING.name)
         try {
+            dao.updateStatus(item.id, SyncStatus.SYNCING.name)
             when (OfflineOpType.valueOf(item.operationType)) {
                 OfflineOpType.INBOUND, OfflineOpType.OUTBOUND -> {
                     if (item.materialId == null) {
@@ -1083,6 +1131,11 @@ open class LogisticsRepository(
             }
             return scheduleRetry(item, e.safeMessage("同步失败，请重试"))
         } catch (cancelled: CancellationException) {
+            try {
+                withContext(NonCancellable) { dao.restoreCancelledClaim(item.id) }
+            } catch (cleanup: Exception) {
+                cancelled.addSuppressed(cleanup)
+            }
             throw cancelled
         } catch (e: Exception) {
             return scheduleRetry(item, "网络不可用，请重试")

@@ -1,4 +1,27 @@
-# Handoff — 2026-11-19
+# Handoff — 2026-11-20 第二轮修复完成
+
+## What changed
+基线138ff95，分支fix-deep-audit-138ff95。完成API/Repository身份epoch与提交ticket、取消claim恢复及取消不入队、装配分页与工时结构化生命周期、工时报表集合查询、工作台轻量筛选、Web物料真实分页和重复车间路由清理。后端0.22.2，App0.5.53/60。代码与报告在本地；未推送／部署。报告见docs/deep-audit-fixes.md。
+
+## What is now true
+后端最终593 passed（571.08s）；Android251项／49类零失败、零错误、零跳过，testDebugUnitTest＋assembleDebug成功（2m18s）。新增17项正确不变量通过。真实Room生成SQL验证单ID/状态CAS、不影响其他claim与已完成记录、保留退避元数据；图标75文件与优化guard通过。独立复核发现的Web读快照分叉已用红→绿并发回归修复。
+1000任务工时报表VM67282000→243000、同机handler中位1660.828→24.369ms；2万状态筛选完整item20000→20、683.846→313.939ms。不是HTTP或生产负载承诺。
+
+## What remains
+队列持久化账号归属不做隐式迁移，仍需另定旧记录政策。真实Android crypto/磁盘、厂商后台调度、摄像头、生产U9与远端CI未验收。四个旧独立验收本轮再次得到19/19、5/26、28/35、24/33，与原始基线一致；后三项仍为既有失败。
+
+## What blocks shipping right now
+本轮修复已通过本地代码验收，可供审查；不能将其表述为完整生产发布验收通过。旧独立验收、owner政策、真机/现场和远端CI限制仍在。没有推送或部署授权。
+
+## Exact next steps
+1. 审阅本地分支提交、docs/deep-audit-fixes.md及基于138ff95增量／b0719b2累计补丁。
+2. 后端目录运行PYTHONPATH="$PWD" /path/to/venv/bin/python -m pytest tests/ -q -p no:cacheprovider。
+3. Android目录运行ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug；根目录运行python3 scripts/check_offline_room_queries.py和bash .claude/migration/guard.sh。
+4. 如用户明确授权，再推分支与PR运行远端CI；生产部署需现场验收。不要直接执行下方历史发布指令。
+
+---
+
+# Handoff — 2026-11-19（历史已交付）
 
 ## What changed
 

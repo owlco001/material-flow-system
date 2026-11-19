@@ -89,4 +89,91 @@ slices:
     verification_commands: ["bash .claude/migration/guard.sh", "python -m pytest tests/ -q -p no:cacheprovider", "ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_emoji_icons.py", "python3 scripts/check_offline_room_queries.py"]
     risks: [基线失败单独报告，未验证设备行为不声称通过]
 
-verification_summary: "后端560 passed；Android234 passed及Debug构建成功；Room生成SQL与guard通过。旧独立脚本基线失败和真机限制见HANDOFF。"
+  - id: r2-session-cancel
+    type: implementation
+    name: 会话身份提交隔离与取消claim恢复
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/data, logistics-android/app/src/test/java/com/company/logistics/audit/SessionIdentityRegressionTest.kt, logistics-android/app/src/test/java/com/company/logistics/data/OfflineCancellationRegressionTest.kt, logistics-android/app/src/test/java/com/company/logistics/data/RepositorySessionPersistenceRegressionTest.kt]
+    external_surfaces: [API session identity, Room offline claim, SessionStore]
+    deletion_targets: [旧请求跨身份刷新重放, 取消后无条件遗留SYNCING]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest", "python3 scripts/check_offline_room_queries.py"]
+    residue_queries: ["核对所有session提交和clear的epoch保护"]
+    risks: [普通刷新去重不退化, 仅恢复本轮claim, 不迁移队列owner]
+  - id: r2-assembly-lifecycle
+    type: implementation
+    name: 服务端装配分页与工时结构化生命周期
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/test/java/com/company/logistics/ui/AssemblyPagingLifecycleRegressionTest.kt]
+    external_surfaces: [workspace pagination and labor state]
+    deletion_targets: [强制单页元数据, 不受workspace job管理的工时子请求]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest"]
+    residue_queries: ["工时成功失败状态更新均检查会话与工作台世代"]
+    risks: [设备筛选和分页契约兼容, 限并发不阻塞主列表]
+  - id: r2-labor-query
+    type: implementation
+    name: 工时报表可索引归属集合与路由唯一性
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/assembly_routes.py, material-flow-backend/tests/test_labor_summary_scaling.py, material-flow-backend/tests/test_workshop_route_uniqueness.py]
+    external_surfaces: [labor summary API and CSV, workshop OpenAPI]
+    deletion_targets: [任务工时OR关联, 被main遮蔽的两个车间GET]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["python -m pytest tests/test_labor_summary_scaling.py tests/test_workshop_route_uniqueness.py -q"]
+    residue_queries: ["路由(method,path)唯一性", "SQL VM步数预算"]
+    risks: [临调来源等于目标必须去重, ACTIVE动态工时, 分页导出一致]
+  - id: r2-workspace-filter
+    type: implementation
+    name: 轻量状态筛选后仅构造页内工作项
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/app/admin_web.py, material-flow-backend/tests/test_workspace_filtered_paging.py]
+    external_surfaces: [workspace API, admin workspace and export]
+    deletion_targets: [筛选前全量完整item构造, 导出无用汇总]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["python -m pytest tests/test_workspace_filtered_paging.py tests/test_workspace_contract.py tests/test_workspace_summary_light_counts.py -q"]
+    residue_queries: ["筛选第一页完整item构造不超过pageSize"]
+    risks: [statusCode或lastHandoverStatus语义, 旧ID与投影兼容, 审计预览权限]
+  - id: r2-web-materials
+    type: implementation
+    name: Web物料筛选下推与真实分页
+    status: done
+    dependencies: [r2-workspace-filter]
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/app/admin_web.py, material-flow-backend/app/templates/_order_materials.html, material-flow-backend/tests/test_admin_materials_paging.py]
+    external_surfaces: [admin order materials partial, order detail optional query]
+    deletion_targets: [模板全量筛选后切页, partial无用订单详情计算]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["python -m pytest tests/test_admin_materials_paging.py tests/test_admin_web_orders.py -q"]
+    residue_queries: ["partial物料响应仅查询页内明细"]
+    risks: [筛选后分页语义不变, 分类和汇总口径保留, 批量操作跨页选择不回归]
+  - id: r2-convergence
+    type: convergence
+    name: 第二轮全量回归与补丁交付
+    status: done
+    dependencies: [r2-session-cancel, r2-assembly-lifecycle, r2-labor-query, r2-workspace-filter, r2-web-materials]
+    touched_paths: [.claude/migration, docs/deep-audit-fixes.md, NEXT.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt, scripts/check_offline_room_queries.py]
+    external_surfaces: [version and deployment documentation]
+    deletion_targets: []
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [NEXT.md, .claude/migration/HANDOFF.md, docs/deep-audit-fixes.md]
+    verification_commands: ["python -m pytest tests/ -q", "./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "bash .claude/migration/guard.sh", "git diff --check"]
+    residue_queries: ["检查无半成品回调、临时代码或未登记文件"]
+    risks: [旧独立验收基线失败单列, 未跑远端CI与真机不宣称发布验收]
+
+round1_verification_summary: "后端560 passed；Android234 passed及Debug构建成功；Room生成SQL与guard通过。旧独立脚本基线失败和真机限制见HANDOFF。"
+
+round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"

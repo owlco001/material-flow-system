@@ -120,6 +120,11 @@ interface OfflineOperationDao {
     @Query("UPDATE offline_operations SET status = 'PENDING', errorMessage = NULL WHERE id = :id")
     suspend fun resetToPending(id: String)
 
+    /** Release only this cancelled claim; production overrides this fallback with an atomic CAS. */
+    suspend fun restoreCancelledClaim(id: String) {
+        if (findById(id)?.status == "SYNCING") resetToPending(id)
+    }
+
     /** 失败/冲突记录：放弃 → 直接删除，不再重放。 */
     @Query("DELETE FROM offline_operations WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -131,6 +136,9 @@ interface OfflineOperationDao {
  */
 @Dao
 interface RoomOfflineOperationDao : OfflineOperationDao {
+    @Query("UPDATE offline_operations SET status = 'PENDING', errorMessage = NULL WHERE id = :id AND status = 'SYNCING'")
+    override suspend fun restoreCancelledClaim(id: String)
+
     @Query("SELECT * FROM offline_operations WHERE status = 'PENDING' AND (nextRetryAt IS NULL OR nextRetryAt <= :nowMillis) AND createdAt <= :createdBeforeMillis ORDER BY createdAt ASC LIMIT 20")
     override suspend fun pendingDue(nowMillis: Long, createdBeforeMillis: Long): List<OfflineOperationEntity>
 

@@ -55,6 +55,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 
 /**
@@ -379,6 +381,9 @@ class LogisticsViewModel(
     private var stocktakeLoadGeneration = 0L
     private var workspaceLoadGeneration = 0L
     private var workspaceLoadJob: Job? = null
+    private val assemblyLaborPermits = Semaphore(ASSEMBLY_LABOR_CONCURRENCY)
+    private var assemblyLaborDetailJob: Job? = null
+    private var assemblyLaborDetailGeneration = 0L
     private val multiOrderDetails = MultiOrderDetailState()
     /** 最近订单列表是否已加载（本次会话内只拉一次，重试可 force） */
     private var recentOrdersLoaded = false
@@ -561,6 +566,7 @@ class LogisticsViewModel(
     fun logout() {
         sessionGeneration++
         cancelWorkspaceLoad()
+        assemblyLaborDetailJob?.cancel()
         previewController = null
         repo.logout()
         _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
@@ -574,6 +580,7 @@ class LogisticsViewModel(
         if (!_state.value.loggedIn) return
         sessionGeneration++
         cancelWorkspaceLoad()
+        assemblyLaborDetailJob?.cancel()
         previewController = null
         repo.logout()
         _state.value = LogisticsUiState(
@@ -583,16 +590,34 @@ class LogisticsViewModel(
     }
 
     fun refreshAssemblyLabor(task: AssemblyTask) {
+        if (!_state.value.loggedIn) return
+        val generation = ++assemblyLaborDetailGeneration
+        val currentSession = sessionGeneration
+        assemblyLaborDetailJob?.cancel()
         if (task.id.isBlank() || task.deviceId.isBlank()) {
             _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.EMPTY, assemblyLaborSummary = emptyMap()) }
             return
         }
-        operationScope.launch {
-            _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.LOADING, assemblyLaborError = null) }
-            repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
-                val items = page.items.filter { it.taskId == null || it.taskId == task.id }
-                _state.update { it.copy(assemblyLaborSummary = items.mapNotNull { i -> i.taskId?.let { id -> id to i } }.toMap(), assemblyLaborState = if (items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT) }
-            }.onFailure { e -> _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.ERROR, assemblyLaborError = e.message ?: "工时加载失败") } }
+        _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.LOADING, assemblyLaborError = null) }
+        assemblyLaborDetailJob = operationScope.launch {
+            assemblyLaborPermits.withPermit {
+                if (generation != assemblyLaborDetailGeneration || !isSessionActive(currentSession)) return@withPermit
+                repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
+                    val items = page.items.filter { it.taskId == null || it.taskId == task.id }
+                    _state.update {
+                        if (generation != assemblyLaborDetailGeneration || !isSessionActive(currentSession)) it else it.copy(
+                            assemblyLaborSummary = items.mapNotNull { i -> i.taskId?.let { id -> id to i } }.toMap(),
+                            assemblyLaborState = if (items.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
+                        )
+                    }
+                }.onFailure { error ->
+                    _state.update {
+                        if (generation != assemblyLaborDetailGeneration || !isSessionActive(currentSession)) it else it.copy(
+                            assemblyLaborState = WorkspaceLoadState.ERROR, assemblyLaborError = error.message ?: "工时加载失败",
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -1078,17 +1103,33 @@ class LogisticsViewModel(
                             assemblyTaskUnavailable = false,
                             assemblyTaskPage = result.page,
                             assemblyTaskPageSize = result.pageSize,
-                            assemblyTaskTotal = tasks.size,
-                            assemblyTaskTotalPages = if (tasks.isEmpty()) 0 else 1,
+                            assemblyTaskTotal = result.total,
+                            assemblyTaskTotalPages = result.totalPages,
                             workspaceServerTime = result.serverTime ?: it.workspaceServerTime,
                         )
                     }
-                    result.items.filter { it.id.isNotBlank() && it.deviceId.isNotBlank() }.forEach { task ->
-                        operationScope.launch {
-                            repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
-                                val facts = page.items.filter { it.taskId == null || it.taskId == task.id }
-                                _state.update { state -> state.copy(assemblyLaborSummary = state.assemblyLaborSummary + facts.mapNotNull { fact -> fact.taskId?.let { it to fact } }.toMap(), assemblyLaborState = if (facts.isEmpty()) state.assemblyLaborState else WorkspaceLoadState.CONTENT) }
-                            }.onFailure { error -> _state.update { it.copy(assemblyLaborState = WorkspaceLoadState.ERROR, assemblyLaborError = error.message ?: "工时加载失败") } }
+                    _state.value.assemblyTasks.filter { it.id.isNotBlank() && it.deviceId.isNotBlank() }.forEach { task ->
+                        // Child of this workspace job: refresh/page/logout cancel queued and active work.
+                        launch {
+                            assemblyLaborPermits.withPermit {
+                                if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) return@withPermit
+                                repo.assemblyTaskLaborSummary(task.id).onSuccess { page ->
+                                    val facts = page.items.filter { it.taskId == null || it.taskId == task.id }
+                                    _state.update { state ->
+                                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) state else state.copy(
+                                            assemblyLaborSummary = state.assemblyLaborSummary + facts.mapNotNull { fact -> fact.taskId?.let { it to fact } }.toMap(),
+                                            assemblyLaborState = if (facts.isEmpty()) state.assemblyLaborState else WorkspaceLoadState.CONTENT,
+                                        )
+                                    }
+                                }.onFailure { error ->
+                                    _state.update {
+                                        if (!isWorkspaceLoadActive(currentSession, generation, loadContext)) it else it.copy(
+                                            assemblyLaborState = WorkspaceLoadState.ERROR,
+                                            assemblyLaborError = error.message ?: "工时加载失败",
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2724,7 +2765,7 @@ class LogisticsViewModel(
                     assemblyTaskState = if (matched.isEmpty()) WorkspaceLoadState.EMPTY else WorkspaceLoadState.CONTENT,
                     assemblyTaskError = null, assemblyTaskUnavailable = false,
                     assemblyTaskPage = result.page, assemblyTaskPageSize = result.pageSize,
-                    assemblyTaskTotal = matched.size, assemblyTaskTotalPages = if (matched.isEmpty()) 0 else 1,
+                    assemblyTaskTotal = result.total, assemblyTaskTotalPages = result.totalPages,
                     message = if (matched.isEmpty()) "未找到机台 $value 的装配任务" else "已匹配机台 $value",
                     assemblyMaterialState = WorkspaceLoadState.LOADING,
                     assemblyMaterialError = null,
@@ -3417,6 +3458,8 @@ class LogisticsViewModel(
     }
 
     companion object {
+        private const val ASSEMBLY_LABOR_CONCURRENCY = 4
+
         fun filterAssemblyTasksByDevice(tasks: List<AssemblyTask>, deviceValue: String): List<AssemblyTask> {
             val value = deviceValue.trim()
             return tasks.filter { it.deviceNo == value || it.deviceId == value }

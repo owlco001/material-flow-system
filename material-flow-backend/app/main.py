@@ -4509,6 +4509,19 @@ def audit_purge(
             "serverTime": now()}
 
 
+def _order_material_payload(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    """Shared material wire format for API details and server-paged admin partials."""
+    return [{
+        "requirementId": r["requirement_id"], "deviceId": r["device_id"],
+        "deviceType": r["device_type"], "deviceNo": r["device_no"],
+        "materialId": r["material_id"], "materialCode": r["material_code"],
+        "materialName": r["material_name"], "materialCategory": r["material_category"],
+        "specification": r["specification"], "unit": r["unit"],
+        "requiredQuantity": r["required_quantity"], "arrivedQuantity": r["arrived_quantity"],
+        "inStockQuantity": r["in_stock_quantity"], "statusCode": r["requirement_status_code"],
+    } for r in rows]
+
+
 @app.get("/api/v1/orders/{order_no}/detail")
 def order_detail(
     order_no: str,
@@ -4670,16 +4683,7 @@ def order_detail(
     material_summary = (_scoped_material_summary(c, user, order_no)
                         if materialsPageSize else _material_summary(scoped))
     c.close()
-    materials = [{
-        "requirementId": r["requirement_id"], "deviceId": r["device_id"],
-        "deviceType": r["device_type"], "deviceNo": r["device_no"],
-        "materialId": r["material_id"], "materialCode": r["material_code"],
-        "materialName": r["material_name"], "materialCategory": r["material_category"],
-        "specification": r["specification"],
-        "unit": r["unit"], "requiredQuantity": r["required_quantity"],
-        "arrivedQuantity": r["arrived_quantity"], "inStockQuantity": r["in_stock_quantity"],
-        "statusCode": r["requirement_status_code"],
-    } for r in scoped]
+    materials = _order_material_payload(scoped)
     assembly_minutes = labor_totals.get("ASSEMBLY", 0)
     transfer_minutes = labor_totals.get("TEMPORARY_TRANSFER", 0)
     return {
@@ -5702,6 +5706,68 @@ def _upsert_workspace_projection(
     )
 
 
+def _workspace_status_rows(
+    c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None = None,
+    view_role: str | None = None, *, ordered: bool = True,
+) -> list[sqlite3.Row]:
+    """Only the columns needed by the shared fact/status projection; no item decoration."""
+    columns = """SELECT r.id AS requirement_id, COALESCE(wi.id, r.id) AS work_item_id,
+                        o.order_no AS order_no, r.device_id AS device_id,
+                        r.material_id AS material_id, r.status_code AS requirement_status_code"""
+    query, args = _workspace_requirements_sql(user, order_no, view_role, columns)
+    if ordered:
+        query += " ORDER BY o.order_no, COALESCE(d.sequence_no, 0), m.code, r.id"
+    return c.execute(query, args).fetchall()
+
+
+def _workspace_facts(c: sqlite3.Connection, rows: list[sqlite3.Row]):
+    work_item_ids = {
+        work_item_id for row in rows
+        for work_item_id in (row["requirement_id"], row["work_item_id"]) if work_item_id
+    }
+    return (
+        _workspace_handovers(c, work_item_ids),
+        _workspace_projections(c, work_item_ids),
+        _workspace_transfer_records(c, {row["order_no"] for row in rows}),
+    )
+
+
+def _workspace_page(
+    c: sqlite3.Connection, user: sqlite3.Row, order_no: str | None = None,
+    view_role: str | None = None, status: str | None = None,
+    limit: int | None = None, offset: int = 0, trace_id: str = "",
+) -> tuple[list[dict[str, Any]], int]:
+    """Filter lightweight facts first and construct full wire-format items only for the page."""
+    if not status:
+        total = _workspace_requirements_count(c, user, order_no, view_role)
+        return _workspace_items(c, user, order_no, view_role, limit, offset), total
+    _workspace_filter_status([], status, trace_id)  # Validate before loading facts or auditing.
+    normalized = status.strip().upper()
+    rows = _workspace_status_rows(c, user, order_no, view_role)
+    handovers, projections, transfers = _workspace_facts(c, rows)
+    matches = []
+    for row in rows:
+        code, _, latest_handover, _, _, _ = _workspace_status_projection(row, handovers, projections, transfers)
+        if code == normalized or (latest_handover and latest_handover["status"] == normalized):
+            matches.append(row["requirement_id"])
+    total = len(matches)
+    selected = matches[offset:] if limit is None else matches[offset:offset + limit]
+    if not selected:
+        return [], total
+    # A page is small; exports are chunked to respect older SQLite parameter limits.
+    by_id = {}
+    for start in range(0, len(selected), 500):
+        batch = selected[start:start + 500]
+        query, args = _workspace_requirements_sql(user, order_no, view_role)
+        query += " AND r.id IN (" + ",".join("?" for _ in batch) + ")"
+        for row in c.execute(query, [*args, *batch]).fetchall():
+            by_id[row["requirement_id"]] = row
+    return [
+        _workspace_item(by_id[rid], handovers, projections, transfers)
+        for rid in selected if rid in by_id
+    ], total
+
+
 def _workspace_light_counts(
     c: sqlite3.Connection, user: sqlite3.Row,
     order_no: str | None = None, view_role: str | None = None,
@@ -5711,16 +5777,8 @@ def _workspace_light_counts(
     状态派生复用列表同一份 `_workspace_status_projection`，所以计数口径和列表一致；
     省掉的是 20k 行 × 完整字典/格式化/汇总的开销（实测约 230ms）。
     """
-    rows = _workspace_requirements(c, user, order_no, view_role)
-    work_item_ids = {
-        work_item_id
-        for row in rows
-        for work_item_id in (row["requirement_id"], row["work_item_id"])
-        if work_item_id
-    }
-    handovers = _workspace_handovers(c, work_item_ids)
-    projections = _workspace_projections(c, work_item_ids)
-    transfers = _workspace_transfer_records(c, {row["order_no"] for row in rows})
+    rows = _workspace_status_rows(c, user, order_no, view_role, ordered=False)
+    handovers, projections, transfers = _workspace_facts(c, rows)
     status_counts = {status: 0 for status in WORKSPACE_SUMMARY_STATUSES}
     handover_counts = {status: 0 for status in HANDOVER_STATES}
     for row in rows:
@@ -5738,15 +5796,7 @@ def _workspace_items(c: sqlite3.Connection, user: sqlite3.Row,
                      view_role: str | None = None,
                      limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
     rows = _workspace_requirements(c, user, order_no, view_role, limit, offset)
-    work_item_ids = {
-        work_item_id
-        for row in rows
-        for work_item_id in (row["requirement_id"], row["work_item_id"])
-        if work_item_id
-    }
-    handovers = _workspace_handovers(c, work_item_ids)
-    projections = _workspace_projections(c, work_item_ids)
-    transfers = _workspace_transfer_records(c, {row["order_no"] for row in rows})
+    handovers, projections, transfers = _workspace_facts(c, rows)
     return [_workspace_item(row, handovers, projections, transfers) for row in rows]
 
 
@@ -5974,15 +6024,9 @@ def workspace_material_items(
     start = (page - 1) * pageSize
     c = db()
     try:
-        if status:
-            # 状态是逐行派生（交接/出库/投影）的结果，只能先算全量再过滤。
-            all_items = _workspace_items(c, user, normalized_order_no, viewRole)
-        else:
-            # 无状态过滤：SQL 层 LIMIT/OFFSET，只为当前页派生工作项。
-            total = _workspace_requirements_count(c, user, normalized_order_no, viewRole)
-            items = _workspace_items(
-                c, user, normalized_order_no, viewRole, limit=pageSize, offset=start,
-            )
+        items, total = _workspace_page(
+            c, user, normalized_order_no, viewRole, status, pageSize, start, trace_id,
+        )
         if preview:
             _append_role_preview_audit(
                 c, actor=user, view_role=effective_role, action="QUERY",
@@ -5991,10 +6035,6 @@ def workspace_material_items(
             c.commit()
     finally:
         c.close()
-    if status:
-        visible_items = _workspace_filter_status(all_items, status, trace_id)
-        total = len(visible_items)
-        items = visible_items[start:start + pageSize]
     return {
         "items": items,
         "role": effective_role,

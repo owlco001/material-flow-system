@@ -26,3 +26,15 @@ convergence,config,control,,.claude/migration/RATCHETS.yaml,verified,no,guard,bu
 convergence,docs,control,,.claude/migration/SHIP_CHECKLIST.md,verified,no,guard,verification
 convergence,tool,control,,.claude/migration/guard.sh,verified,no,guard,invariant checks
 convergence,docs,control,,.claude/migration/HANDOFF.md,verified,no,manual diff,resumable state
+r2-session-cancel,source,identity,logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt,logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt,verified,no,Android regression,identity epoch
+r2-session-cancel,test,identity,,logistics-android/app/src/test/java/com/company/logistics/audit/SessionIdentityRegressionTest.kt,verified,no,Android regression,controlled loopback identity
+r2-session-cancel,test,cancellation,,logistics-android/app/src/test/java/com/company/logistics/data/OfflineCancellationRegressionTest.kt,verified,no,Android regression,claim restoration
+r2-session-cancel,test,persistence,,logistics-android/app/src/test/java/com/company/logistics/data/RepositorySessionPersistenceRegressionTest.kt,verified,no,Android regression,real SessionStore methods with memory preferences
+r2-assembly-lifecycle,test,workspace,,logistics-android/app/src/test/java/com/company/logistics/ui/AssemblyPagingLifecycleRegressionTest.kt,verified,no,Android regression,paging and child jobs
+r2-labor-query,test,labor,,material-flow-backend/tests/test_labor_summary_scaling.py,verified,no,pytest labor scaling,VM budget and compatibility
+r2-labor-query,test,routes,,material-flow-backend/tests/test_workshop_route_uniqueness.py,verified,no,pytest route uniqueness,OpenAPI validation
+r2-workspace-filter,test,workspace,,material-flow-backend/tests/test_workspace_filtered_paging.py,verified,no,pytest workspace paging,light state then full page
+r2-web-materials,source,admin,material-flow-backend/app/admin_web.py,material-flow-backend/app/admin_web.py,verified,no,pytest admin paging,filter before page
+r2-web-materials,template,admin,material-flow-backend/app/templates/_order_materials.html,material-flow-backend/app/templates/_order_materials.html,verified,no,pytest admin paging,native server paging
+r2-web-materials,test,admin,,material-flow-backend/tests/test_admin_materials_paging.py,verified,no,pytest admin paging,partial work budget
+r2-convergence,docs,report,,docs/deep-audit-fixes.md,verified,no,manual evidence,second round results

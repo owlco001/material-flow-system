@@ -268,25 +268,6 @@ def register(app, db, now, current_user, audit_event, api_error=None):
             audit_event(c,'TEMPORARY_TRANSFER_COMPLETED',xid,user,request_id,o,{},out,request,entity_type='TEMPORARY_TRANSFER'); c.commit(); return out
         except Exception: c.rollback(); raise
         finally: c.close()
-    @app.get('/api/v1/workshop/summary')
-    def summary(user=Depends(current_user)):
-        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
-        c=db(); t=c.execute('SELECT count(*) n, sum(status="COMPLETED") done, coalesce(sum(progress_stage),0) p FROM assembly_tasks').fetchone(); a=c.execute("SELECT coalesce(sum(duration_minutes),0) n FROM labor_records WHERE type='ASSEMBLY'").fetchone(); x=c.execute("SELECT coalesce(sum(duration_minutes),0) n FROM labor_records WHERE type='TEMPORARY_TRANSFER'").fetchone(); c.close(); total=t['n']; return {'totalTasks':total,'completedTasks':t['done'] or 0,'overallProgressPercent':round((t['p'] or 0)*100/(total*3)) if total else 0,'assemblyLaborMinutes':a['n'],'temporaryTransferLaborMinutes':x['n'],'totalLaborMinutes':a['n']+x['n'],'generatedAt':now()}
-    @app.get('/api/v1/workshop/machine-progress')
-    def machine(user=Depends(current_user),page:int=1,pageSize:int=20,deviceId:str|None=None):
-        if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
-        c=db(); args=[]; where=''
-        if deviceId: where='WHERE t.device_id=?'; args.append(deviceId)
-        rows=c.execute(f'''SELECT t.device_id,t.device_no,count(*) taskCount,sum(t.status="COMPLETED") completedTaskCount,
-          round(sum(t.progress_stage)*100.0/(count(*)*3)) progressPercent,
-          coalesce(sum(CASE WHEN l.type='ASSEMBLY' THEN l.duration_minutes ELSE 0 END),0) assemblyLaborMinutes,
-          coalesce(sum(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN l.duration_minutes ELSE 0 END),0) temporaryTransferLaborMinutes
-          FROM assembly_tasks t LEFT JOIN labor_records l ON (l.task_id=t.id OR EXISTS (SELECT 1 FROM temporary_transfers x WHERE x.labor_record_id=l.id AND x.source_task_id=t.id))
-          {where} GROUP BY t.device_id,t.device_no LIMIT ? OFFSET ?''',args+[pageSize,(page-1)*pageSize]).fetchall(); c.close()
-        items=[]
-        for r in rows:
-            x=dict(r); x['totalLaborMinutes']=x['assemblyLaborMinutes']+x['temporaryTransferLaborMinutes']; items.append(x)
-        return {'items':items,'page':page,'pageSize':pageSize}
 
     def labor_minutes_expr(alias='l'):
         # ACTIVE rows are projected from server time only; they are never updated here.
@@ -324,19 +305,56 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         rows=labor_snapshot(c,tid,assemblerId if user['role']!='ASSEMBLER' else user['id']); items=[labor_item(r,x) for x in rows]
         c.close(); return {'items':items,'task':{'taskId':r['id'],'orderNo':r['order_no'],'deviceId':r['device_id'],'deviceNo':r['device_no']}}
 
-    def labor_summary_grouped(deviceId=None, orderNo=None, assemblerId=None):
-        clauses=[]; args=[]
-        if deviceId: clauses.append('t.device_id=?'); args.append(deviceId)
-        if orderNo: clauses.append('t.order_no=?'); args.append(orderNo)
-        if assemblerId: clauses.append('l.worker_user_id=?'); args.append(assemblerId)
-        where=(' AND '.join(clauses)+' AND ') if clauses else ''
-        base=f"""FROM assembly_tasks t JOIN labor_records l ON (l.task_id=t.id OR (l.type='TEMPORARY_TRANSFER' AND EXISTS (SELECT 1 FROM temporary_transfers z WHERE z.labor_record_id=l.id AND z.source_task_id=t.id)))
-                 JOIN users u ON u.id=l.worker_user_id LEFT JOIN temporary_transfers tt ON tt.labor_record_id=l.id WHERE {where}1=1"""
-        grouped=f"""SELECT t.id task_id,t.order_no,t.device_id,t.device_no,l.worker_user_id assembler_id,u.display_name assembler_name,
-          SUM(CASE WHEN l.type='ASSEMBLY' THEN {labor_minutes_expr()} ELSE 0 END) assembly_minutes,
-          SUM(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN {labor_minutes_expr()} ELSE 0 END) transfer_minutes {base}
-          GROUP BY t.id,t.order_no,t.device_id,t.device_no,l.worker_user_id,u.display_name ORDER BY t.id,l.worker_user_id"""
-        return grouped, [now(),now()]+args
+    def labor_attribution(device_id, order_no, assembler_id, *, group_keys_only=False):
+        filters = []
+        args = []
+        if device_id:
+            filters.append('t.device_id=?')
+            args.append(device_id)
+        if order_no:
+            filters.append('t.order_no=?')
+            args.append(order_no)
+        if assembler_id:
+            filters.append('l.worker_user_id=?')
+            args.append(assembler_id)
+        extra = ''.join(' AND ' + clause for clause in filters)
+        keys = 't.id AS task_id, l.worker_user_id AS assembler_id'
+        if not group_keys_only:
+            keys += ', l.id AS labor_id'
+        # UNION deduplicates when source and target coincide. The count projects
+        # just task/worker keys, so the same UNION also produces unique groups.
+        # Scan transfers once and look up each source and record by primary key.
+        cte = f"""WITH attribution AS (
+            SELECT {keys}
+            FROM assembly_tasks t JOIN labor_records l ON l.task_id=t.id
+            WHERE 1=1{extra}
+            UNION
+            SELECT {keys}
+            FROM temporary_transfers tt
+            CROSS JOIN assembly_tasks t ON t.id=tt.source_task_id
+            CROSS JOIN labor_records l ON l.id=tt.labor_record_id
+            WHERE l.type='TEMPORARY_TRANSFER'{extra}
+        )"""
+        return cte, args + args
+
+    def labor_summary_grouped(device_id, order_no, assembler_id):
+        attribution, args = labor_attribution(device_id, order_no, assembler_id)
+        grouped = f"""{attribution}
+            SELECT a.task_id,t.order_no,t.device_id,t.device_no,a.assembler_id,u.display_name assembler_name,
+                SUM(CASE WHEN l.type='ASSEMBLY' THEN {labor_minutes_expr()} ELSE 0 END) assembly_minutes,
+                SUM(CASE WHEN l.type='TEMPORARY_TRANSFER' THEN {labor_minutes_expr()} ELSE 0 END) transfer_minutes
+            FROM attribution a
+            JOIN assembly_tasks t ON t.id=a.task_id
+            JOIN users u ON u.id=a.assembler_id
+            JOIN labor_records l ON l.id=a.labor_id
+            GROUP BY a.task_id,a.assembler_id ORDER BY a.task_id,a.assembler_id"""
+        report_time = now()
+        return grouped, args + [report_time, report_time]
+
+    def labor_summary_count(c, device_id, order_no, assembler_id):
+        attribution, args = labor_attribution(device_id, order_no, assembler_id, group_keys_only=True)
+        return c.execute(f"""{attribution}
+            SELECT COUNT(*) n FROM attribution a JOIN users u ON u.id=a.assembler_id""", args).fetchone()['n']
 
     def labor_rows_to_items(rows):
         return [labor_item({'id':x['task_id'],'order_no':x['order_no'],'device_id':x['device_id'],'device_no':x['device_no']},x) for x in rows]
@@ -346,12 +364,15 @@ def register(app, db, now, current_user, audit_event, api_error=None):
         if user['role'] not in ('WORKSHOP_SUPERVISOR','ADMIN'): raise HTTPException(403,'无统计权限')
         if pageSize != 20: raise HTTPException(422,'pageSize 固定为 20')
         c=db()
-        grouped, query_args = labor_summary_grouped(deviceId, orderNo, assemblerId)
-        rows=c.execute(grouped+' LIMIT ? OFFSET ?',query_args+[20,(page-1)*20]).fetchall()
-        total=c.execute('SELECT COUNT(*) n FROM ('+grouped+')',query_args).fetchone()['n']
-        items=labor_rows_to_items(rows)
-        total_minutes=sum(x['totalLaborMinutes'] for x in items)
-        c.close(); return {'items':items,'page':page,'pageSize':20,'total':total,'totalLaborMinutes':total_minutes,'totalPages':(total+19)//20}
+        try:
+            grouped, query_args = labor_summary_grouped(deviceId, orderNo, assemblerId)
+            rows = c.execute(grouped+' LIMIT ? OFFSET ?', query_args + [20, (page-1)*20]).fetchall()
+            total = labor_summary_count(c, deviceId, orderNo, assemblerId)
+        finally:
+            c.close()
+        items = labor_rows_to_items(rows)
+        total_minutes = sum(x['totalLaborMinutes'] for x in items)
+        return {'items':items,'page':page,'pageSize':20,'total':total,'totalLaborMinutes':total_minutes,'totalPages':(total+19)//20}
 
     def labor_summary_export(user, deviceId=None, orderNo=None, assemblerId=None):
         """导出：一次查询取全量，字段/顺序与逐页拼接一致。"""

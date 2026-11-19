@@ -30,6 +30,16 @@ def main() -> None:
     due = query("SELECT * FROM offline_operations", "nextRetryAt")
     pending = query("SELECT EXISTS", "offline_operations")
     retry = query("UPDATE offline_operations", "retryCount")
+    recovery_queries = []
+    for value in literals:
+        sql = " ".join(value.lower().split())
+        if (sql.startswith("update offline_operations")
+                and re.search(r"(?:where|and)\s+id\s*=\s*\?", sql)
+                and re.search(r"(?:where|and)\s+status\s*=\s*'syncing'", sql)):
+            recovery_queries.append(value)
+    assert len(set(recovery_queries)) == 1, "Expected one native per-ID SYNCING-only cancellation recovery query"
+    recover_claim = recovery_queries[0]
+    assert recover_claim.count("?") == 1, "Claim recovery must only bind the owned record ID"
     with sqlite3.connect(":memory:") as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("CREATE TABLE offline_operations (id TEXT PRIMARY KEY, status TEXT, "
@@ -50,11 +60,19 @@ def main() -> None:
         )
         assert "21" not in {row["id"] for row in connection.execute(due, (1000, 1000))}
         assert connection.execute(pending).fetchone()[0] == 1
+        connection.execute("UPDATE offline_operations SET status='SYNCING' WHERE id IN ('21','22')")
+        assert connection.execute(recover_claim, ("21",)).rowcount == 1
+        recovered = connection.execute("SELECT * FROM offline_operations WHERE id='21'").fetchone()
+        assert (recovered["status"], recovered["retryCount"], recovered["nextRetryAt"]) == ("PENDING", 1, 3000)
+        assert connection.execute("SELECT status FROM offline_operations WHERE id='22'").fetchone()[0] == "SYNCING"
+        connection.execute("UPDATE offline_operations SET status='SYNCED' WHERE id='21'")
+        assert connection.execute(recover_claim, ("21",)).rowcount == 0, "A completed claim must never be reset"
+        assert connection.execute("SELECT status FROM offline_operations WHERE id='21'").fetchone()[0] == "SYNCED"
         connection.execute("UPDATE offline_operations SET status='FAILED'")
         assert connection.execute(pending).fetchone()[0] == 0, "Terminal rows must not trigger worker retries"
         connection.execute("INSERT INTO offline_operations VALUES('new','PENDING',2001,NULL,0,NULL)")
         assert not connection.execute(due, (3000, 1000)).fetchall(), "New enqueues belong to the next snapshot"
-    print("Room generated SQL PASS: native DAO, due-before-limit, later batches, retry persistence, pending-only scheduling, snapshot cutoff")
+    print("Room generated SQL PASS: native DAO, due-before-limit, later batches, retry persistence, pending-only scheduling, snapshot cutoff, owned-claim cancellation CAS")
 
 
 if __name__ == "__main__":

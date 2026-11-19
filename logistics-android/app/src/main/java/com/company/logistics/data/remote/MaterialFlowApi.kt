@@ -37,6 +37,8 @@ import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.URLEncoder
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -85,52 +87,133 @@ open class MaterialFlowApi(
     @Volatile
     var deviceId: String = "unknown"
 
-    /**
-     * 令牌轮转回调。
-     *
-     * 刷新发生在网络层内部，上层（SessionStore）无从感知。
-     * 若不回调，新令牌只留在内存 —— 下次冷启动会拿着已被消费的旧令牌
-     * 去刷新，被服务端判定为重放并吊销整族会话。
-     */
+    /** Compatibility callback for token owners that do not need identity metadata. */
     @Volatile
     var onTokensRotated: ((access: String?, refresh: String?) -> Unit)? = null
 
-    fun updateToken(token: String?) {
-        accessToken = token
-        if (token == null) refreshToken = null
+    /** Token changes carry the identity epoch they belong to; callbacks run outside sessionLock. */
+    @Volatile
+    var onTokensChangedForIdentity: ((sourceEpoch: Long, resultEpoch: Long, access: String?, refresh: String?) -> Unit)? = null
+
+    private data class SessionSnapshot(
+        val epoch: Long,
+        val access: String?,
+        val refresh: String?,
+        val device: String,
+    )
+
+    private data class SessionChange(
+        val sourceEpoch: Long,
+        val resultEpoch: Long,
+        val access: String?,
+        val refresh: String?,
+    )
+
+    private class ReservedLoginIdentity(val epoch: Long) : AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<ReservedLoginIdentity>
     }
 
-    /** Clear both in-memory tokens and notify the session owner exactly once. */
-    private fun clearSession() {
+    private val sessionLock = Any()
+    private var identityEpoch: Long = 0L
+
+    /** Exposed only to cooperating app-layer session owners; not an authentication credential. */
+    internal fun currentIdentityEpoch(): Long = synchronized(sessionLock) { identityEpoch }
+
+    internal fun isCurrentIdentityEpoch(epoch: Long): Boolean = synchronized(sessionLock) { identityEpoch == epoch }
+
+    internal fun tokensForIdentity(epoch: Long): Pair<String?, String?>? = synchronized(sessionLock) {
+        if (identityEpoch == epoch) accessToken to refreshToken else null
+    }
+
+    fun updateToken(token: String?) {
+        synchronized(sessionLock) {
+            identityEpoch += 1
+            accessToken = token
+            if (token == null) refreshToken = null
+            lastRefreshEpoch = null
+        }
+    }
+
+    private fun clearSession(expectedEpoch: Long): SessionChange? = synchronized(sessionLock) {
+        if (identityEpoch != expectedEpoch) return@synchronized null
         val hadToken = accessToken != null || refreshToken != null
         accessToken = null
         refreshToken = null
-        if (hadToken) onTokensRotated?.invoke(null, null)
+        identityEpoch += 1
+        lastRefreshEpoch = null
+        if (hadToken) SessionChange(expectedEpoch, identityEpoch, null, null) else null
     }
 
-    /** 从持久化存储恢复会话（冷启动时调用） */
+    private fun notifySessionChange(change: SessionChange) {
+        onTokensChangedForIdentity?.invoke(change.sourceEpoch, change.resultEpoch, change.access, change.refresh)
+        onTokensRotated?.invoke(change.access, change.refresh)
+    }
+
+    private fun currentSnapshot(): SessionSnapshot = synchronized(sessionLock) {
+        SessionSnapshot(identityEpoch, accessToken, refreshToken, deviceId)
+    }
+
+    /** Restore is an explicit identity transition and invalidates every older request. */
     fun restoreSession(access: String?, refresh: String?, device: String) {
+        synchronized(sessionLock) {
+            identityEpoch += 1
+            accessToken = access
+            refreshToken = refresh
+            deviceId = device
+            lastRefreshEpoch = null
+        }
+    }
+
+    internal fun beginLoginIdentity(): Long = synchronized(sessionLock) {
+        identityEpoch += 1
+        accessToken = null
+        refreshToken = null
+        lastRefreshEpoch = null
+        identityEpoch
+    }
+
+    internal fun clearIdentityForRepository(): Long = synchronized(sessionLock) {
+        identityEpoch += 1
+        accessToken = null
+        refreshToken = null
+        lastRefreshEpoch = null
+        identityEpoch
+    }
+
+    internal fun restoreIdentityForRepository(access: String?, refresh: String?, device: String): Long = synchronized(sessionLock) {
+        identityEpoch += 1
         accessToken = access
         refreshToken = refresh
         deviceId = device
+        lastRefreshEpoch = null
+        identityEpoch
+    }
+
+    /** Reserve identity at the repository call boundary while preserving the open login override. */
+    internal suspend fun loginForIdentity(
+        epoch: Long, username: String, password: String, device: String, clientVersion: String,
+    ): LoginResultDto = withContext(ReservedLoginIdentity(epoch)) {
+        login(username, password, device, clientVersion)
     }
 
     /**
-     * 并发刷新去重锁。
-     *
-     * 多个请求同时收到 401 时会争相刷新，而刷新令牌是一次性的：
-     * 第二个请求拿着已被消费的旧令牌去刷新，会被服务端判定为
-     * 「令牌重放」并吊销整族会话 —— 用户被莫名踢下线。
-     * 因此刷新必须是串行的，且后来者直接复用第一次的结果。
+     * Concurrent 401s serialize within an identity; a later caller reuses the rotated token pair.
+     * The identity lock is never held across network I/O or callbacks.
      */
     private val refreshLock = Any()
 
     @Volatile
-    private var lastRefreshAt = 0L
+    private var lastRefreshEpoch: Long? = null
+
+    private enum class RefreshOutcome {
+        REFRESHED,
+        INVALID,
+        RETRYABLE_FAILURE,
+        STALE_IDENTITY,
+    }
 
     /**
      * 全局共享的 OkHttpClient：连接池 + HTTP/2 复用。
-     * 原来每个请求都 new HttpURLConnection + disconnect()，扫码解析这类高频请求
      * 每次都要重建 TCP/TLS；现在同一 host 的连接会被复用。
      * 超时取 ApiConfig 构建时的配置值（运行时未被修改过，见 ApiConfig）。
      */
@@ -141,28 +224,21 @@ open class MaterialFlowApi(
             .build()
     }
 
-    /**
-     * 用刷新令牌换取新的令牌对。
-     *
-     * 区分令牌失效与临时网络失败：只有前者清理会话，后者保留令牌并允许再次重试。
-     */
-    private enum class RefreshOutcome {
-        REFRESHED,
-        INVALID,
-        RETRYABLE_FAILURE,
-    }
-
-    private suspend fun refreshAccessToken(): RefreshOutcome = withContext(Dispatchers.IO) {
-        val token = refreshToken ?: return@withContext RefreshOutcome.INVALID
-
-        synchronized(refreshLock) {
-            // 双重检查：若刚才已有其他协程刷新成功，直接用新令牌
-            if (accessToken != null && lastRefreshAt > System.currentTimeMillis() - 1000) {
-                return@withContext RefreshOutcome.REFRESHED
+    private suspend fun refreshAccessToken(requestIdentity: Long, requestAccess: String): RefreshOutcome = withContext(Dispatchers.IO) {
+        var notification: SessionChange? = null
+        val outcome = synchronized(refreshLock) {
+            val snapshot = currentSnapshot()
+            if (snapshot.epoch != requestIdentity) return@synchronized RefreshOutcome.STALE_IDENTITY
+            if (snapshot.refresh == null) {
+                notification = clearSession(requestIdentity)
+                return@synchronized if (notification == null) RefreshOutcome.STALE_IDENTITY else RefreshOutcome.INVALID
+            }
+            if (lastRefreshEpoch == requestIdentity && snapshot.access != requestAccess) {
+                return@synchronized RefreshOutcome.REFRESHED
             }
             val requestBody = JSONObject().apply {
-                put("refreshToken", token)
-                put("deviceId", deviceId)
+                put("refreshToken", snapshot.refresh)
+                put("deviceId", snapshot.device)
             }.toString().toRequestBody(JSON_MEDIA_TYPE)
             val httpRequest = Request.Builder()
                 .url(config.baseUrl.trimEnd('/') + "/api/v1/auth/refresh")
@@ -175,33 +251,47 @@ open class MaterialFlowApi(
                     response.code to (response.body?.string() ?: "")
                 }
                 if (code !in 200..299) {
-                    // 4xx 表示 refresh token 已失效；5xx/网关错误仍可重试，不能把用户
-                    // 因一次临时网络故障踢回登录页。
-                    return@withContext if (code in 400..499) {
-                        clearSession()
-                        RefreshOutcome.INVALID
-                    } else {
+                    if (code in 400..499) {
+                        val cleared = clearSession(requestIdentity)
+                        if (cleared == null) RefreshOutcome.STALE_IDENTITY else {
+                            notification = cleared
+                            RefreshOutcome.INVALID
+                        }
+                    } else if (isCurrentIdentityEpoch(requestIdentity)) {
                         RefreshOutcome.RETRYABLE_FAILURE
+                    } else {
+                        RefreshOutcome.STALE_IDENTITY
+                    }
+                } else {
+                    val json = JSONObject(text)
+                    val newAccess = json.optString("accessToken").takeIf { it.isNotEmpty() }
+                    if (newAccess == null) {
+                        RefreshOutcome.RETRYABLE_FAILURE
+                    } else {
+                        val newRefresh = json.optString("refreshToken").takeIf { it.isNotEmpty() } ?: snapshot.refresh
+                        val changed = synchronized(sessionLock) {
+                            if (identityEpoch != requestIdentity) null else {
+                                accessToken = newAccess
+                                refreshToken = newRefresh
+                                lastRefreshEpoch = requestIdentity
+                                SessionChange(requestIdentity, requestIdentity, newAccess, newRefresh)
+                            }
+                        }
+                        if (changed == null) RefreshOutcome.STALE_IDENTITY else {
+                            notification = changed
+                            RefreshOutcome.REFRESHED
+                        }
                     }
                 }
-                val json = JSONObject(text)
-                val newAccess = json.optString("accessToken").takeIf { it.isNotEmpty() }
-                    ?: return@withContext RefreshOutcome.RETRYABLE_FAILURE
-                accessToken = newAccess
-                json.optString("refreshToken")
-                    .takeIf { it.isNotEmpty() }
-                    ?.let { refreshToken = it }
-                lastRefreshAt = System.currentTimeMillis()
-                // 通知上层落盘，否则新令牌只存在于内存
-                onTokensRotated?.invoke(accessToken, refreshToken)
-                RefreshOutcome.REFRESHED
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                // 网络异常：保留令牌，下次请求再试
-                RefreshOutcome.RETRYABLE_FAILURE
+                if (isCurrentIdentityEpoch(requestIdentity)) RefreshOutcome.RETRYABLE_FAILURE
+                else RefreshOutcome.STALE_IDENTITY
             }
         }
+        notification?.let(::notifySessionChange)
+        outcome
     }
 
     // ==================== 4.1 登录 ====================
@@ -212,6 +302,7 @@ open class MaterialFlowApi(
         deviceId: String,
         clientVersion: String
     ): LoginResultDto = withContext(Dispatchers.IO) {
+        val loginIdentity = coroutineContext[ReservedLoginIdentity]?.epoch ?: beginLoginIdentity()
         val body = JSONObject().apply {
             // 服务端同时兼容 username / employeeNo；Android 使用员工工号字段。
             put("employeeNo", username)
@@ -220,12 +311,15 @@ open class MaterialFlowApi(
             put("deviceId", deviceId)
             put("clientVersion", clientVersion)
         }
-        val json = request("POST", "/api/v1/auth/login", body.toString(), auth = false)
+        val json = request("POST", "/api/v1/auth/login", body.toString(), auth = false, expectedIdentity = loginIdentity)
         val result = ApiParser.parseLogin(json)
-        accessToken = result.accessToken
-        refreshToken = result.refreshToken
-        // 显式限定，否则参数 shadow 掉属性变成自赋值空操作
-        this@MaterialFlowApi.deviceId = deviceId
+        synchronized(sessionLock) {
+            if (identityEpoch == loginIdentity) {
+                accessToken = result.accessToken
+                refreshToken = result.refreshToken
+                this@MaterialFlowApi.deviceId = deviceId
+            }
+        }
         result
     }
 
@@ -291,6 +385,7 @@ open class MaterialFlowApi(
     suspend fun previewBomImport(fileName: String, fileBytes: ByteArray, modelCode: String): BomImportPreview = withContext(Dispatchers.IO) {
         require(fileBytes.size <= MAX_BOM_FILE_BYTES) { "BOM 文件不能超过 10 MB" }
         require(modelCode.isNotBlank()) { "modelCode 不能为空" }
+        val identity = authenticatedSnapshot()
         val multipart = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("modelCode", modelCode)
@@ -298,13 +393,11 @@ open class MaterialFlowApi(
             .build()
         val httpRequest = Request.Builder()
             .url(config.baseUrl.trimEnd('/') + "/api/v1/boms/import/preview")
-            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Authorization", "Bearer ${identity.access}")
             .header("X-Request-Id", UUID.randomUUID().toString())
             .post(multipart)
             .build()
-        val (code, text) = httpClient.newCall(httpRequest).execute().use { response ->
-            response.code to (response.body?.string() ?: "")
-        }
+        val (code, text) = executeOnce(httpRequest, identity)
         if (code !in 200..299) throw ApiParser.parseError(code, text)
         val root = JSONObject(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true) })
         val errors = root.optJSONArray("errors") ?: JSONArray()
@@ -354,10 +447,19 @@ open class MaterialFlowApi(
     }
 
 
-    suspend fun logout(): Unit = withContext(Dispatchers.IO) {
-        runCatching { request("POST", "/api/v1/auth/logout", "{}") }
-        accessToken = null
-        refreshToken = null
+    suspend fun logout(expectedIdentity: Long? = null) {
+        val identity = expectedIdentity ?: currentIdentityEpoch()
+        withContext(Dispatchers.IO) {
+            try {
+                request("POST", "/api/v1/auth/logout", "{}", expectedIdentity = identity)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Local logout is guaranteed even if the captured server session is unavailable.
+            } finally {
+                clearSession(identity)?.let(::notifySessionChange)
+            }
+        }
     }
 
     // ==================== 4.2 扫码解析 ====================
@@ -620,6 +722,7 @@ open class MaterialFlowApi(
         operationId: UUID,
         onProgress: (Long) -> Unit = {},
     ): AssemblyModelMeta = withContext(Dispatchers.IO) {
+        val identity = authenticatedSnapshot()
         val boundary = "----MaterialFlowAssemblyModel${UUID.randomUUID().toString().replace("-", "")}"
         val prefix = "--$boundary\r\nContent-Disposition: form-data; name=\"modelCode\"\r\n\r\n$modelCode\r\n" +
             "--$boundary\r\nContent-Disposition: form-data; name=\"modelName\"\r\n\r\n$modelName\r\n" +
@@ -632,11 +735,13 @@ open class MaterialFlowApi(
             override fun contentType() = "multipart/form-data; boundary=$boundary".toMediaType()
             override fun contentLength() = totalLength
             override fun writeTo(sink: BufferedSink) {
+                ensureCurrentIdentity(identity)
                 sink.write(prefix.toByteArray(Charsets.UTF_8))
                 val buffer = ByteArray(64 * 1024)
                 var sent = 0L
                 while (true) {
                     val count = content.read(buffer)
+                    ensureCurrentIdentity(identity)
                     if (count < 0) break
                     sink.write(buffer, 0, count)
                     sent += count
@@ -648,13 +753,13 @@ open class MaterialFlowApi(
         }
         val httpRequest = Request.Builder()
             .url(fullUrl("/api/v1/assembly-models"))
-            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Authorization", "Bearer ${identity.access}")
             .header("Idempotency-Key", operationId.toString())
             .header("X-Request-Id", requestId.toString())
             .post(streamingBody)
             .build()
         try {
-            val (code, text) = executeOnce(httpRequest)
+            val (code, text) = executeOnce(httpRequest, identity)
             if (code !in 200..299) throw ApiParser.parseError(code, text)
             ApiParser.parseAssemblyModelMeta(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true) })
         } finally { content.close() }
@@ -666,12 +771,14 @@ open class MaterialFlowApi(
         output: OutputStream,
         onProgress: (Long) -> Unit = {},
     ): Long = withContext(Dispatchers.IO) {
+        val identity = authenticatedSnapshot()
         val httpRequest = Request.Builder()
             .url(fullUrl("/api/v1/assembly-models/${encodeQuery(meta.modelCode)}/versions/${meta.version}/content"))
-            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Authorization", "Bearer ${identity.access}")
             .get()
             .build()
         httpClient.newCall(httpRequest).execute().use { response ->
+            ensureCurrentIdentity(identity)
             if (response.code !in 200..299) {
                 throw ApiParser.parseError(response.code, response.body?.string() ?: "")
             }
@@ -680,11 +787,13 @@ open class MaterialFlowApi(
                 var received = 0L
                 while (true) {
                     val count = input.read(buffer)
+                    ensureCurrentIdentity(identity)
                     if (count < 0) break
                     output.write(buffer, 0, count)
                     received += count
                     onProgress(received)
                 }
+                ensureCurrentIdentity(identity)
                 received
             }
         }
@@ -998,18 +1107,18 @@ open class MaterialFlowApi(
         fileName: String,
         purpose: String
     ): FileUploadResult = withContext(Dispatchers.IO) {
-        val token = requireToken()
+        val identity = authenticatedSnapshot()
         val multipart = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("file", fileName, fileBytes.toRequestBody("application/octet-stream".toMediaType()))
             .build()
         val httpRequest = Request.Builder()
             .url(fullUrl("/api/v1/files?purpose=$purpose"))
-            .header("Authorization", "Bearer $token")
+            .header("Authorization", "Bearer ${identity.access}")
             .post(multipart)
             .build()
 
-        val (code, text) = executeOnce(httpRequest)
+        val (code, text) = executeOnce(httpRequest, identity)
         if (code !in 200..299) throw ApiParser.parseError(code, text)
         ApiParser.parseFileUpload(
             text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "上传响应为空", retryable = true) }
@@ -1096,16 +1205,19 @@ open class MaterialFlowApi(
 
     /** 带鉴权读取小文件（缩略图），超过 maxBytes 抛错。 */
     suspend fun fetchAuthorizedBytes(path: String, maxBytes: Int = 2 * 1024 * 1024): ByteArray = withContext(Dispatchers.IO) {
+        val identity = authenticatedSnapshot()
         val httpRequest = Request.Builder()
             .url(fullUrl(path))
-            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Authorization", "Bearer ${identity.access}")
             .get()
             .build()
         httpClient.newCall(httpRequest).execute().use { response ->
+            ensureCurrentIdentity(identity)
             if (response.code !in 200..299) {
                 throw ApiParser.parseError(response.code, response.body?.string() ?: "")
             }
             val bytes = response.body!!.bytes()
+            ensureCurrentIdentity(identity)
             if (bytes.size > maxBytes) throw ApiException(413, "TOO_LARGE", "文件过大")
             bytes
         }
@@ -1117,12 +1229,14 @@ open class MaterialFlowApi(
         output: OutputStream,
         onProgress: (received: Long, total: Long) -> Unit = { _, _ -> },
     ): Long = withContext(Dispatchers.IO) {
+        val identity = authenticatedSnapshot()
         val httpRequest = Request.Builder()
             .url(fullUrl(path))
-            .header("Authorization", "Bearer ${requireToken()}")
+            .header("Authorization", "Bearer ${identity.access}")
             .get()
             .build()
         httpClient.newCall(httpRequest).execute().use { response ->
+            ensureCurrentIdentity(identity)
             if (response.code !in 200..299) {
                 throw ApiParser.parseError(response.code, response.body?.string() ?: "")
             }
@@ -1133,11 +1247,13 @@ open class MaterialFlowApi(
                 var received = 0L
                 while (true) {
                     val count = input.read(buffer)
+                    ensureCurrentIdentity(identity)
                     if (count < 0) break
                     output.write(buffer, 0, count)
                     received += count
                     onProgress(received, total)
                 }
+                ensureCurrentIdentity(identity)
                 received
             }
         }
@@ -1147,8 +1263,13 @@ open class MaterialFlowApi(
 
     // ==================== 内部实现 ====================
 
-    private fun requireToken(): String =
-        accessToken ?: throw ApiException(401, "NOT_LOGGED_IN", "未登录，请先登录")
+    private fun authenticatedSnapshot(): SessionSnapshot = currentSnapshot().also {
+        if (it.access == null) throw ApiException(401, "NOT_LOGGED_IN", "未登录，请先登录")
+    }
+
+    private fun ensureCurrentIdentity(identity: SessionSnapshot) {
+        if (!isCurrentIdentityEpoch(identity.epoch)) throw CancellationException("Request belongs to an older session")
+    }
 
     private fun encodeQuery(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
@@ -1160,10 +1281,14 @@ open class MaterialFlowApi(
      * 同步执行一次 HTTP 调用，返回（状态码，响应体文本）。
      * ResponseBody.string() 读完即关闭；外层 use 确保连接可被连接池复用。
      */
-    private fun executeOnce(httpRequest: Request): Pair<Int, String> =
-        httpClient.newCall(httpRequest).execute().use { response ->
-            response.code to (response.body?.string() ?: "")
+    private fun executeOnce(httpRequest: Request, identity: SessionSnapshot? = null): Pair<Int, String> {
+        identity?.let(::ensureCurrentIdentity)
+        return httpClient.newCall(httpRequest).execute().use { response ->
+            val result = response.code to (response.body?.string() ?: "")
+            identity?.let(::ensureCurrentIdentity)
+            result
         }
+    }
 
     private suspend fun request(
         method: String,
@@ -1174,8 +1299,13 @@ open class MaterialFlowApi(
         allowRetry: Boolean = true,
         requestId: String? = null,
         clientOperationId: String? = null,
+        expectedIdentity: Long? = null,
     ): String = withContext(Dispatchers.IO) {
-        val token = if (auth) requireToken() else null
+        val snapshot = currentSnapshot()
+        if (expectedIdentity != null && snapshot.epoch != expectedIdentity) {
+            throw CancellationException("Request belongs to an older session")
+        }
+        val token = if (auth) snapshot.access ?: throw ApiException(401, "NOT_LOGGED_IN", "未登录，请先登录") else null
         val builder = Request.Builder()
             .url(fullUrl(path))
             .header("Accept", "application/json")
@@ -1191,14 +1321,20 @@ open class MaterialFlowApi(
         // GET 不带 body；DELETE 允许带 body（服务端删除用户接口需要）。
         builder.method(method, body?.toRequestBody(JSON_MEDIA_TYPE))
 
-        val (code, text) = executeOnce(builder.build())
+        val (code, text) = executeOnce(builder.build(), if (auth) snapshot else null)
+        if (auth && !isCurrentIdentityEpoch(snapshot.epoch)) {
+            throw CancellationException("Request belongs to an older session")
+        }
 
         // access token 过期 → 静默刷新后重试一次。
         // allowRetry 防死循环：刷新后的新令牌若仍 401（如账号被停用），
         // 说明不是时效问题，直接按失败处理。
         if (code == 401 && auth && allowRetry) {
-            when (refreshAccessToken()) {
+            when (refreshAccessToken(snapshot.epoch, token!!)) {
                 RefreshOutcome.REFRESHED -> {
+                    if (!isCurrentIdentityEpoch(snapshot.epoch)) {
+                        throw CancellationException("Request belongs to an older session")
+                    }
                     return@withContext request(
                         method = method,
                         path = path,
@@ -1208,8 +1344,10 @@ open class MaterialFlowApi(
                         allowRetry = false,
                         requestId = requestId,
                         clientOperationId = clientOperationId,
+                        expectedIdentity = snapshot.epoch,
                     )
                 }
+                RefreshOutcome.STALE_IDENTITY -> throw CancellationException("Request belongs to an older session")
                 RefreshOutcome.RETRYABLE_FAILURE -> {
                     // Keep the old token pair. A later user retry can attempt refresh again.
                     throw ApiException(
@@ -1224,9 +1362,8 @@ open class MaterialFlowApi(
         }
 
         if (code !in 200..299) {
-            // 401 且无法刷新 → 清空会话并擦除磁盘副本
-            if (code == 401) {
-                clearSession()
+            if (auth && code == 401) {
+                clearSession(snapshot.epoch)?.let(::notifySessionChange)
             }
             throw ApiParser.parseError(code, text)
         }
