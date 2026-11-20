@@ -515,11 +515,14 @@ open class MaterialFlowApi(
         documentNo: String,
         page: Int = 1,
         pageSize: Int = 0,
+        deviceNo: String? = null,
     ): OrderMaterialStatus = withContext(Dispatchers.IO) {
-        require(page >= 1 && pageSize >= 0) { "分页参数不合法" }
+        require(page >= 1 && pageSize in 0..500) { "分页参数不合法" }
+        require(deviceNo == null || deviceNo.isNotBlank()) { "机台编号不合法" }
         val body = JSONObject().apply {
             put("documentType", documentType)
             put("documentNo", documentNo)
+            deviceNo?.let { put("deviceNo", it.trim()) }
             if (pageSize > 0) {
                 put("page", page)
                 put("pageSize", pageSize)

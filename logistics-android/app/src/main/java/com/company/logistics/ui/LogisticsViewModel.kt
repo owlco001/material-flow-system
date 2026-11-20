@@ -2887,11 +2887,11 @@ class LogisticsViewModel(
             val tasks = repo.assemblyTaskPage(1, 20, deviceNo, deviceId).getOrNull()?.items
                 ?.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
                 .orEmpty()
-            // 物料情况：逐订单取物料状态，按机台过滤
+            // 服务端先按机台筛选，每页200行；Repository取完后续页，不下载其他机台物料。
             val materials = mutableListOf<OrderMaterialItem>()
-            for (order in detail.orders) {
-                repo.orderMaterialStatus(order.orderNo).getOrNull()?.let { status ->
-                    materials += status.items.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
+            for (order in detail.orders.distinctBy { it.orderNo }) {
+                repo.deviceOrderMaterials(order.orderNo, deviceId, deviceNo).getOrNull()?.let { rows ->
+                    materials += rows
                 }
             }
             // 物料流转申请：流转单 documentNo 即订单号，按机台关联订单过滤

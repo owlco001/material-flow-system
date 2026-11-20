@@ -4348,8 +4348,20 @@ def material_status(
         c.close()
         raise ApiError(400, CODE_VALIDATION_ERROR, "分页参数不合法", trace_id=trace_id)
 
-    total = c.execute("SELECT COUNT(*) FROM order_material_requirements WHERE order_id=?",
-                      (order["id"],)).fetchone()[0]
+    device_no = body.get("deviceNo")
+    if device_no is not None and (not isinstance(device_no, str) or not device_no.strip()):
+        c.close()
+        raise ApiError(400, CODE_VALIDATION_ERROR, "deviceNo 必须为非空机台编号", trace_id=trace_id)
+    scope_where = ""
+    scope_args = [order["id"]]
+    if device_no is not None:
+        scope_where = " AND r.device_id = (SELECT id FROM order_devices WHERE order_id=? AND device_no=?)"
+        scope_args.extend([order["id"], device_no.strip()])
+
+    total = c.execute(
+        "SELECT COUNT(*) FROM order_material_requirements r WHERE r.order_id=?" + scope_where,
+        scope_args,
+    ).fetchone()[0]
     rows = c.execute(
         """
         SELECT r.id            AS requirement_id,
@@ -4371,9 +4383,9 @@ def material_status(
         JOIN materials m ON m.id = r.material_id
         LEFT JOIN order_devices d ON d.id = r.device_id
         WHERE r.order_id = ?
-        ORDER BY COALESCE(d.sequence_no, 0), m.code
-        """ + (" LIMIT ? OFFSET ?" if page_size else ""),
-        ((order["id"], page_size, (page - 1) * page_size) if page_size else (order["id"],)),
+        """ + scope_where + " ORDER BY COALESCE(d.sequence_no, 0), m.code, r.id"
+        + (" LIMIT ? OFFSET ?" if page_size else ""),
+        (*scope_args, page_size, min((page - 1) * page_size, 2**63 - 1)) if page_size else scope_args,
     ).fetchall()
     # 汇总始终按全量算（不受分页影响），否则齐套率会随翻页变化。
     summary_rows = c.execute(
@@ -4383,15 +4395,15 @@ def material_status(
                   SUM(r.arrived_quantity) AS arrived_quantity,
                   SUM(r.in_stock_quantity) AS in_stock_quantity
              FROM order_material_requirements r JOIN materials m ON m.id = r.material_id
-            WHERE r.order_id=? GROUP BY r.material_id ORDER BY m.code""",
-        (order["id"],),
+            WHERE r.order_id=?""" + scope_where + " GROUP BY r.material_id ORDER BY m.code",
+        scope_args,
     ).fetchall()
     material_summary = _material_summary_grouped(summary_rows)
     # 缺料行数（按需求行计数，与端上原来 items.count{OUT_OF_STOCK} 语义一致）。
     # 分页后端上不能再拿当前页 items 数缺料，必须由服务端按全量给。
     shortage_line_count = c.execute(
-        "SELECT COUNT(*) FROM order_material_requirements WHERE order_id=? AND status_code='OUT_OF_STOCK'",
-        (order["id"],),
+        "SELECT COUNT(*) FROM order_material_requirements r WHERE r.order_id=? AND r.status_code='OUT_OF_STOCK'" + scope_where,
+        scope_args,
     ).fetchone()[0]
     c.close()
 

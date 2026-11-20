@@ -44,6 +44,10 @@ r3-order-session,test,order cache,,logistics-android/app/src/test/java/com/compa
 r3-convergence,docs,report,,docs/deep-audit-fixes.md,modified,no,manual evidence,third-round order cache audit
 r3-order-session,source,order cache,,logistics-android/app/src/main/java/com/company/logistics/ui/MultiOrderDetailState.kt,added,no,Android regression,material-status cache and append generation
 r3-order-session,test,order cache,,logistics-android/app/src/test/java/com/company/logistics/ui/MultiOrderSessionPagingRegressionTest.kt,modified,no,Android regression,identity and same-order paging races
-r3-convergence,config,version,logistics-android/app/build.gradle.kts,logistics-android/app/build.gradle.kts,modified,no,Android version bump to 0.5.54 / 61
+r3-convergence,config,version,logistics-android/app/build.gradle.kts,logistics-android/app/build.gradle.kts,modified,no,Android version bump to 0.5.54 / 61,
 r3-convergence,test,version,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,modified,no,Android unit tests,version assertion
 r3-order-session,docs,report,,docs/deep-audit-round3.md,modified,no,manual evidence,third-round audit fixes
+r4-device-materials,test,device material scope,,material-flow-backend/tests/test_material_status_paging.py,verified,no,full regression,device scope compatibility
+r4-device-materials,test,device material scope,,material-flow-backend/tests/test_device_material_payload_budget.py,verified,no,full regression,synthetic payload budget
+r4-device-materials,test,device material scope,,logistics-android/app/src/test/java/com/company/logistics/data/DeviceMaterialPagingTest.kt,verified,no,full regression,loopback page draining
+r4-device-materials,docs,device material scope,,docs/deep-audit-round4.md,verified,no,full regression,fourth round results

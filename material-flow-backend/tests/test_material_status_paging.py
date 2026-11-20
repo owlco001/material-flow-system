@@ -72,6 +72,65 @@ def test_material_status_pages_without_changing_summary():
         assert full_body["materialSummary"]["totalRequiredQuantity"] == 50
 
 
+def test_material_status_can_filter_one_order_device_before_paging():
+    seed(rows=6)
+    c = backend.db()
+    now = backend.now()
+    c.execute("INSERT INTO order_devices VALUES(?,?,?,?,?,?)", ("od-ms2", "o-ms", "T2", "DEV-MS-2", 2, now))
+    c.execute("UPDATE order_material_requirements SET device_id='od-ms2' WHERE id IN ('r-ms3','r-ms4','r-ms5')")
+    c.commit(); c.close()
+
+    with TestClient(backend.app) as client:
+        token = login(client, "ms-admin", "Pw@2026x")
+        p1 = query(client, token, deviceNo="DEV-MS-2", page="1", pageSize="2")
+        assert p1.status_code == 200, p1.text
+        first = p1.json()
+        assert first["total"] == 3
+        assert [row["requirementId"] for row in first["items"]] == ["r-ms3", "r-ms4"]
+        assert all(row["deviceNo"] == "DEV-MS-2" for row in first["items"])
+        assert first["materialSummary"]["totalRequiredQuantity"] == 30
+        assert first["shortageLineCount"] == 2
+        p2 = query(client, token, deviceNo="DEV-MS-2", page="2", pageSize="2").json()
+        assert p2["total"] == 3 and [row["requirementId"] for row in p2["items"]] == ["r-ms5"]
+        # Legacy unfiltered requests retain the complete order totals.
+        full = query(client, token).json()
+        assert full["total"] == 6 and full["materialSummary"]["totalRequiredQuantity"] == 60
+
+
+def test_material_status_unknown_device_is_empty_without_falling_back_to_whole_order():
+    seed(rows=5)
+    with TestClient(backend.app) as client:
+        token = login(client, "ms-admin", "Pw@2026x")
+        body = query(client, token, deviceNo="' OR 1=1 --", page=1, pageSize=2).json()
+        assert body["items"] == [] and body["total"] == 0 and body["hasMore"] is False
+        assert body["materialSummary"]["totalRequiredQuantity"] == 0
+        assert body["shortageLineCount"] == 0
+        trimmed = query(client, token, deviceNo="  DEV-MS ", page=1, pageSize=2).json()
+        assert trimmed["total"] == 5 and len(trimmed["items"]) == 2
+
+
+def test_material_status_accepts_historical_imported_long_device_number():
+    seed(rows=2)
+    long_no = "IMPORTED-" + "机台" * 40
+    c = backend.db()
+    c.execute("UPDATE order_devices SET device_no=? WHERE id='od-ms'", (long_no,))
+    c.commit(); c.close()
+    with TestClient(backend.app) as client:
+        token = login(client, "ms-admin", "Pw@2026x")
+        response = query(client, token, deviceNo=long_no, page=1, pageSize=1)
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == 2
+        assert response.json()["items"][0]["deviceNo"] == long_no
+
+
+def test_material_status_rejects_invalid_device_no():
+    seed(rows=2)
+    with TestClient(backend.app) as client:
+        token = login(client, "ms-admin", "Pw@2026x")
+        for value in (123, "", " "):
+            assert query(client, token, deviceNo=value).status_code == 400
+
+
 def test_material_status_rejects_bad_paging():
     seed(rows=2)
     with TestClient(backend.app) as client:

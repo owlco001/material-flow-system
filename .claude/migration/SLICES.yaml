@@ -203,6 +203,25 @@ slices:
     residue_queries: ["检查订单缓存无跨身份复用，已删toOrderStatus路径不存在"]
     risks: [未执行远端CI/真机不宣称发布验收]
 
+  - id: r4-device-materials
+    type: implementation
+    name: 服务端机台物料范围下推与客户端分批读取
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/tests/test_material_status_paging.py, material-flow-backend/tests/test_device_material_payload_budget.py, logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt, logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt, logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/test/java/com/company/logistics/data/DeviceMaterialPagingTest.kt]
+    deletion_targets: [机台详情整单全量取回后过滤]
+    verification_commands: ["python -m pytest tests/ -q", "./gradlew :app:testDebugUnitTest :app:assembleDebug"]
+    risks: [历史长编号兼容, 旧服务器分页兼容, 汇总和total使用同范围]
+  - id: r4-convergence
+    type: convergence
+    name: 第四轮全量验收与本地补丁
+    status: done
+    dependencies: [r4-device-materials]
+    touched_paths: [.claude/migration, NEXT.md, docs/deep-audit-round4.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
+    verification_commands: ["bash .claude/migration/guard.sh", "python3 scripts/check_offline_room_queries.py", "git diff --check"]
+
 round3_verification_summary: "订单缓存正确不变量7项通过；Android258项/50 suites零失败且Debug构建成功；后端593项沿用无源码改动基线；Room生成CAS、图标、guard、diff均通过。"
 
 round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"
+
+round4_verification_summary: "Backend598 passed; Android265 passed/51 suites, Debug build SUCCESS; device paging7 passed; no push/deploy/APK publication."

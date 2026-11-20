@@ -46,3 +46,6 @@ claim写SYNCING也进入try；取消时在NonCancellable中调用专用restoreCa
 ## 2026-11-20 D16：权威物料分页状态与订单详情分开缓存
 OrderDetail属于任务/时间线聚合，OrderMaterialStatus属于权威库存/交接投影并承载全量summary、total/page/hasMore。不得用toOrderStatus(OrderDetail)相互转换。每订单缓存两者，并使用material refresh世代和单append token；刷新失效旧追加，检查页序/documentNo/token，排序和全量汇总字段来自最新服务器页。
 优化后分页与全局summary分别查询，独立复核通过并发写入测试证明可能读到不同版本。两个无写Web helper在没有既存事务时BEGIN读事务，close或请求共享连接代理rollback结束；WAL允许并发写入。分页总数、页内行和全局summary在同一读视图，不将该事务扩展至带预览audit写入的API以免引入读转写升级。
+
+## 2026-11-20 D17：机台物料只改变显式筛选范围
+可选deviceNo在当前order_id内绑定order_devices，明细/total/汇总/缺料共用参数化谓词；旧无筛选保持整单。允许历史导入长编号，不套用手工创建的64字符限制。客户端专用方法逐页200行取完，保留旧服务器忽略筛选后的防御过滤和分页兼容。现有权限范围不在本切片调整。

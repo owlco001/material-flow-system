@@ -1,3 +1,22 @@
+# Handoff — 第四轮机台物料优化完成
+
+## What changed
+基线d40aad6，当前本地分支fix-deep-audit-138ff95。新增可选deviceNo物料范围，四组查询同口径；Android专用每页200读取全部目标机台页，原订单API覆盖方法不变。后端0.22.3，Android0.5.55/62。
+
+## What is now true
+冻结后端598 passed，Android265项/51类零失败，Debug构建成功；新loopback机台7项全绿。真实Room SQL、图标75文件和guard/diff通过。合成20k→200行，7708617→129585字节，137.268→3.514ms，仅handler基准。独立复核发现并修复历史导入长编号兼容问题。
+
+## What remains
+旧队列owner迁移策略、旧独立脚本基线失败、真机/加密磁盘/后台调度/U9/远端CI限制仍保留。旧服务端忽略筛选时正确性兼容但没有新性能收益。机台其他聚合请求与既有生命周期不在本切片重构。
+
+## Shipping blockers
+本轮代码可审查，完整生产验收未做。未推送、未部署、未发布APK。先前测试环境仍是0.22.2/d40aad6，不应声称已上线本轮筛选。
+
+## Exact next steps
+审查docs/deep-audit-round4.md及本地增量补丁。重验后端pytest和Android testDebugUnitTest/assembleDebug；经用户明确授权再推送/部署/发布APK。
+
+---
+
 # Handoff — 2026-11-20 第三轮修复完成
 
 ## What changed

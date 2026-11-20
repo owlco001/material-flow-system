@@ -41,6 +41,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -272,6 +273,33 @@ open class LogisticsRepository(
         pageSize: Int = 0,
     ): Result<OrderMaterialStatus> = resultOf {
         api.orderMaterialStatus("PRODUCTION_ORDER", documentNo, page, pageSize)
+    }
+
+    /** Fetch only this machine's rows, draining bounded pages without changing order-page APIs. */
+    open suspend fun deviceOrderMaterials(documentNo: String, deviceId: String, deviceNo: String): Result<List<com.company.logistics.model.OrderMaterialItem>> = resultOf {
+        require(documentNo.isNotBlank() && deviceNo.isNotBlank()) { "订单号和机台编号必填" }
+        val identity = api.currentIdentityEpoch()
+        val generation = sessionGeneration.get()
+        val items = linkedMapOf<String, com.company.logistics.model.OrderMaterialItem>()
+        var requestedPage = 1
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            if (generation != sessionGeneration.get() || !api.isCurrentIdentityEpoch(identity)) {
+                throw CancellationException("Machine materials belong to an older session")
+            }
+            val response = api.orderMaterialStatus("PRODUCTION_ORDER", documentNo, requestedPage, 200, deviceNo)
+            if (generation != sessionGeneration.get() || !api.isCurrentIdentityEpoch(identity)) {
+                throw CancellationException("Machine materials belong to an older session")
+            }
+            check(response.documentNo == documentNo && response.page == requestedPage) { "机台物料分页响应不一致" }
+            response.items.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }.forEach {
+                items[(it.deviceId ?: "") + "|" + it.materialId] = it
+            }
+            if (!response.hasMore) break
+            check(response.items.isNotEmpty()) { "机台物料分页未推进" }
+            requestedPage++
+        }
+        items.values.toList()
     }
 
     open suspend fun orderDetail(
