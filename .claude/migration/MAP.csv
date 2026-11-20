@@ -55,3 +55,7 @@ r5-device,test,device lifecycle,,logistics-android/app/src/test/java/com/company
 r5-device,source,device lifecycle,,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsApp.kt,verified,no,Android regression,aggregate warning wiring
 r5-device,source,device lifecycle,,logistics-android/app/src/main/java/com/company/logistics/ui/screens/DeviceDetailScreen.kt,verified,no,Android regression,aggregate warning
 r5-device,docs,device lifecycle,,docs/deep-audit-round5.md,verified,no,Android regression,fifth-round results
+r6-convergence,test,device scoped concurrency,,material-flow-backend/tests/test_transfer_order_scope.py,verified,no,full regression,backend exact document scope
+r6-convergence,test,device scoped concurrency,,logistics-android/app/src/test/java/com/company/logistics/data/DeviceTransferScopeTest.kt,verified,no,full regression,loopback scoped paging
+r6-convergence,test,device scoped concurrency,,logistics-android/app/src/test/java/com/company/logistics/ui/DeviceAggregateConcurrencyTest.kt,verified,no,full regression,bounded progressive sections
+r6-convergence,docs,device scoped concurrency,,docs/deep-audit-round6.md,verified,no,full regression,sixth round results

@@ -61,6 +61,8 @@ import com.company.logistics.model.OrderMaterialItem
 import com.company.logistics.model.TransferRequest
 import com.company.logistics.model.UserRole
 import com.company.logistics.model.MaterialBatchAction
+import com.company.logistics.ui.DeviceAggregateSection
+import com.company.logistics.ui.WorkspaceLoadState
 import com.company.logistics.ui.components.AppCard
 import com.company.logistics.ui.components.MaterialBatchActionBar
 import com.company.logistics.ui.components.MaterialBatchCheckBox
@@ -100,8 +102,13 @@ fun DeviceDetailScreen(
     readOnly: Boolean = false,
     batchSubmitting: Boolean = false,
     aggregateError: String? = null,
+    aggregateSections: Map<DeviceAggregateSection, WorkspaceLoadState> = emptyMap(),
     drawings: @Composable (deviceId: String) -> Unit = {},
 ) {
+    val taskSection = aggregateSections[DeviceAggregateSection.TASKS]
+    val materialSection = aggregateSections[DeviceAggregateSection.MATERIALS]
+    val transferSection = aggregateSections[DeviceAggregateSection.TRANSFERS]
+    val laborSection = aggregateSections[DeviceAggregateSection.LABOR]
     val context = LocalContext.current
     var showMaterialRequestDialog by remember { mutableStateOf(false) }
     var exceptionMaterial by remember { mutableStateOf<OrderMaterialItem?>(null) }
@@ -245,9 +252,11 @@ fun DeviceDetailScreen(
 
                 // ---- 物料情况：搜索 + 类型标签汇聚 + 紧凑列表 + 勾选批量流转 ----
                 AppCard {
-                    SectionBarTitle("物料情况（${materials.size}）")
+                    SectionBarTitle(deviceSectionTitle("物料情况", materials.size, materialSection))
                     VSpace(Spacing.sm)
-                    if (materials.isEmpty()) {
+                    if (materialSection == WorkspaceLoadState.LOADING || (materialSection == WorkspaceLoadState.ERROR && materials.isEmpty())) {
+                        DeviceSectionMessage(materialSection)
+                    } else if (materials.isEmpty()) {
                         Text(
                             "该机台暂无关联物料",
                             fontSize = 13.sp,
@@ -404,7 +413,7 @@ fun DeviceDetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(Modifier.weight(1f)) {
-                            SectionBarTitle("物料流转申请（${transferRequests.size}）")
+                            SectionBarTitle(deviceSectionTitle("物料流转申请", transferRequests.size, transferSection))
                         }
                         TextButton(
                             onClick = { showMaterialRequestDialog = true },
@@ -414,7 +423,9 @@ fun DeviceDetailScreen(
                         }
                     }
                     VSpace(Spacing.sm)
-                    if (transferRequests.isEmpty()) {
+                    if (transferSection == WorkspaceLoadState.LOADING || transferSection == WorkspaceLoadState.ERROR) {
+                        DeviceSectionMessage(transferSection)
+                    } else if (transferRequests.isEmpty()) {
                         Text(
                             "该机台关联订单暂无流转申请",
                             fontSize = 13.sp,
@@ -470,9 +481,11 @@ fun DeviceDetailScreen(
 
                 // ---- 装配进度 ----
                 AppCard {
-                    SectionBarTitle("装配进度（${assemblyTasks.size}）")
+                    SectionBarTitle(deviceSectionTitle("装配进度", assemblyTasks.size, taskSection))
                     VSpace(Spacing.sm)
-                    if (assemblyTasks.isEmpty()) {
+                    if (taskSection == WorkspaceLoadState.LOADING || taskSection == WorkspaceLoadState.ERROR) {
+                        DeviceSectionMessage(taskSection)
+                    } else if (assemblyTasks.isEmpty()) {
                         Text(
                             "该机台暂无装配任务",
                             fontSize = 13.sp,
@@ -551,7 +564,9 @@ fun DeviceDetailScreen(
                 AppCard {
                     SectionBarTitle("工时")
                     VSpace(Spacing.sm)
-                    if (labor == null || laborItems.isEmpty()) {
+                    if (laborSection == WorkspaceLoadState.LOADING || laborSection == WorkspaceLoadState.ERROR) {
+                        DeviceSectionMessage(laborSection)
+                    } else if (labor == null || laborItems.isEmpty()) {
                         Text(
                             "该机台暂无工时记录",
                             fontSize = 13.sp,
@@ -582,9 +597,11 @@ fun DeviceDetailScreen(
                     }.distinctBy { it.first }
                 }
                 AppCard {
-                    SectionBarTitle("人员（${assemblerEntries.size}）")
+                    SectionBarTitle(deviceSectionTitle("人员", assemblerEntries.size, taskSection))
                     VSpace(Spacing.sm)
-                    if (assemblerEntries.isEmpty()) {
+                    if (taskSection == WorkspaceLoadState.LOADING || taskSection == WorkspaceLoadState.ERROR) {
+                        DeviceSectionMessage(taskSection)
+                    } else if (assemblerEntries.isEmpty()) {
                         Text(
                             "该机台暂无指派人员",
                             fontSize = 13.sp,
@@ -756,6 +773,19 @@ private fun formatMinutes(minutes: Int): String {
     val h = minutes / 60
     val m = minutes % 60
     return if (h > 0) "${h}小时${m}分钟" else "${m}分钟"
+}
+
+private fun deviceSectionTitle(title: String, count: Int, state: WorkspaceLoadState?): String =
+    if (state == WorkspaceLoadState.LOADING || state == WorkspaceLoadState.ERROR) title else "$title（$count）"
+
+@Composable
+private fun DeviceSectionMessage(state: WorkspaceLoadState?) {
+    val failed = state == WorkspaceLoadState.ERROR
+    Text(
+        if (failed) "读取失败，请重新打开机台重试" else "正在加载…",
+        fontSize = 13.sp,
+        color = if (failed) MaterialTheme.colorScheme.error else LogisticsTheme.colors.textSecondary,
+    )
 }
 
 @Composable

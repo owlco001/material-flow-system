@@ -6494,11 +6494,13 @@ def list_transfers(
     status: str | None = Query(default=None, max_length=32),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=100, alias="pageSize"),
+    document_nos: list[str] | None = Query(default=None, alias="documentNo"),
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     # FastAPI 解析后的 page/page_size 已是 int；直接走内部实现。
     # 注意：Query 默认值对象不能直接做算术，内部调用方（admin_web）请调 _list_transfers。
-    return _list_transfers(status=status, page=page, page_size=page_size, user=user)
+    return _list_transfers(status=status, page=page, page_size=page_size, user=user,
+                            document_nos=document_nos)
 
 
 def _list_transfers(
@@ -6506,34 +6508,59 @@ def _list_transfers(
     page: int,
     page_size: int,
     user: sqlite3.Row,
+    document_nos: list[str] | None = None,
 ) -> dict[str, Any]:
+    normalized_documents = None
+    if document_nos is not None:
+        normalized_documents = []
+        seen_documents = set()
+        for value in document_nos:
+            document_no = value.strip()
+            if not document_no:
+                raise HTTPException(400, "documentNo 不能为空")
+            if document_no not in seen_documents:
+                seen_documents.add(document_no)
+                normalized_documents.append(document_no)
+        if len(normalized_documents) > 100:
+            raise HTTPException(422, "documentNo 最多 100 个不同编号")
+
     c = db()
-    if status is not None:
-        status = status.strip().upper()
-        if status not in TRANSFER_STATES:
-            c.close()
-            raise HTTPException(400, "status 不是有效的流转申请状态")
-    query = """SELECT t.id,t.client_operation_id,t.type,t.document_no,t.status,
-                      t.payload_json,t.created_by,t.created_at,t.approved_by,t.approved_at,t.executed_at
-                 FROM transfer_requests t"""
-    scope, args = _transfer_visibility_sql(user, "t")
-    query += " WHERE " + scope
-    if status:
-        query += " AND t.status=?"
-        args.append(status)
-    total = c.execute("SELECT COUNT(*) FROM transfer_requests t WHERE " + scope +
-                      (" AND t.status=?" if status else ""), args).fetchone()[0]
-    offset = (page - 1) * page_size
-    rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
-                     args + [page_size, offset]).fetchall()
-    prefetch = _transfer_list_prefetch(c, rows)
-    items = [_public_transfer(c, row, prefetch=prefetch) for row in rows]
-    c.close()
-    total_pages = (total + page_size - 1) // page_size
-    # 向后兼容：老客户端不传 page/pageSize 时默认 page=1&pageSize=100，
-    # 响应仍是 items + serverTime，只追加分页元数据。
-    return {"items": items, "serverTime": now(),
-            "page": page, "pageSize": page_size, "total": total, "totalPages": total_pages}
+    try:
+        if status is not None:
+            status = status.strip().upper()
+            if status not in TRANSFER_STATES:
+                raise HTTPException(400, "status 不是有效的流转申请状态")
+        scope, args = _transfer_visibility_sql(user, "t")
+        clauses = [scope]
+        if status:
+            clauses.append("t.status=?")
+            args.append(status)
+        if normalized_documents is not None:
+            placeholders = ",".join("?" for _ in normalized_documents)
+            clauses.append(f"t.document_no IN ({placeholders})")
+            args.extend(normalized_documents)
+        where = " AND ".join(f"({clause})" for clause in clauses)
+        query = """SELECT t.id,t.client_operation_id,t.type,t.document_no,t.status,
+                          t.payload_json,t.created_by,t.created_at,t.approved_by,t.approved_at,t.executed_at
+                     FROM transfer_requests t WHERE """ + where
+
+        # Hold one SQLite read snapshot for both paging metadata and page rows,
+        # while respecting the shared read transaction used by admin web requests.
+        if not c.in_transaction:
+            c.execute("BEGIN")
+        total = c.execute("SELECT COUNT(*) FROM transfer_requests t WHERE " + where, args).fetchone()[0]
+        offset = (page - 1) * page_size
+        rows = c.execute(query + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
+                         args + [page_size, offset]).fetchall()
+        prefetch = _transfer_list_prefetch(c, rows)
+        items = [_public_transfer(c, row, prefetch=prefetch) for row in rows]
+        total_pages = (total + page_size - 1) // page_size
+        # 向后兼容：老客户端不传 page/pageSize 时默认 page=1&pageSize=100，
+        # 响应仍是 items + serverTime，只追加分页元数据。
+        return {"items": items, "serverTime": now(),
+                "page": page, "pageSize": page_size, "total": total, "totalPages": total_pages}
+    finally:
+        c.close()
 
 
 def _audit_event(c: sqlite3.Connection, event_type: str, entity_id: str,

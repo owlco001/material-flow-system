@@ -1,3 +1,22 @@
+# Handoff — 第六轮三Agent并发集成完成
+
+## What changed
+基线815b4a9，本地分支fix-deep-audit-138ff95。三路实现：main.py流转多订单精确筛选；Android专用每批20/每页100读取及完整性保护；机台4分区同job渐进加载与跨刷新共享Semaphore4。Lead统一接口/构建/复核/版本。后端0.22.4，Android0.5.57/64。
+
+## What is now true
+后端完整602 passed（302.81s）；Android307项/54类零失败/错误/跳过，Debug构建成功1m3s。新流转scope15项、并发7项和原20项机台回归全绿。初始Android11测10红、交叉复核4边界红后修复。合成旧10页1000条599119bytes→新1页2条1302bytes。真实Room SQL、75文件图标和所有guard通过。原listTransferRequests(status)保留，不将机台scope改动宣传为全局列表迁移。
+
+## What remains
+旧服务端忽略筛选时仍可能各批全量下载；旧无筛选流转方法的50页上限另列后续。单document_no查询仍可能SCAN，未盲加索引。HTTP多页/多批无事务快照；不能识别所有等量替换。离线owner政策、旧独立脚本基线失败、真机/加密磁盘/厂商后台/U9/远端CI限制保留。
+
+## What blocks shipping right now
+本地可审查，不宣称完整生产验收。未push、未部署、未发布APK，未连接测试服务器。服务器最后已知仍0.22.2/d40aad6，勿视为本轮已上线。
+
+## Exact next steps
+审阅docs/deep-audit-round6.md及新增量补丁。复验后端pytest、Android testDebugUnitTest/assembleDebug与Room/图标/guard；需要部署或APK发布时由用户另行明确授权。继续优化优先对全局旧流转读取做独立迁移，或量化document_no复合索引收益。
+
+---
+
 # Handoff — 第五轮机台响应隔离与完整分页
 
 ## What changed

@@ -57,3 +57,12 @@ OrderDetail属于任务/时间线聚合，OrderMaterialStatus属于权威库存/
 沿用20条固定页与既有权限/筛选，每页验证元数据和推进，任务按task id、工时按task+assembler去重。冻结首total（任务还冻结totalPages），检测变化则失败提示，不静默发布部分总量。老工时无total以短页终止。跨HTTP分页不是事务快照，不能检测所有等量替换或ACTIVE时钟变化。新增测试依赖coroutines-test只进入JVM测试，不进生产运行依赖。
 
 后台订单刷新与显式导航分离：只有显式打开/切换订单或前台手动刷新失效旧机台请求；写后后台刷新不取消新机台加载，非订单前台的订单回调只更新缓存，不改当前全局页面。
+
+## 第六轮 D20：跨层订单流转过滤接口冻结
+GET /api/v1/transfer-requests使用重复documentNo query参数精确过滤，权限/status/document范围对count与items一致，未传时旧契约保留。新repo.transferRequestsForOrders(Set<String>)与API.listTransferRequestsForOrders(Set<String>)为机台专用读取，空集合无HTTP；客户端每批20编号，每页100行。异常保护到上限必须显式失败，不静默返回截断集合。旧服务端忽略filter只能退化读取后过滤，不能冒充有新性能收益。
+
+## 第六轮 D21：互斥写范围并发开发与集中构建
+服务端、Android传输层、Android机台聚合UI三路文件互斥，共享接口由Lead冻结；Android Gradle只由Lead串行执行。分区请求结构化子job、共享Semaphore4、完成后独立发布并再次校验session/request/router。Lead负责版本台账、完整回归、交叉复核和最终本地提交，不推送部署。
+
+## 第六轮 D22：规范编号、分页证明和返回未完成页面
+服务端与客户端对订单编号统一trim后去重，query和响应过滤使用同集合。专用流转每批冻结分页元数据（含有无），尊重totalPages，短页与后续页矛盾时显式失败，不能假成功。返回被取消但仍有LOADING分区的缓存机台时，通过原openDeviceDetail重新启动完整受控加载，不将取消改成伪空态。

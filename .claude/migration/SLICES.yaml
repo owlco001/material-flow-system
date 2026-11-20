@@ -258,6 +258,62 @@ slices:
     touched_paths: [.claude/migration, NEXT.md, docs/deep-audit-round5.md, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
     verification_commands: ["./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
 
+  - id: r6-transfer-scope
+    type: implementation
+    name: 流转申请多订单权限内筛选
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/tests/test_transfer_order_scope.py]
+    external_surfaces: [GET transfer-requests重复documentNo查询参数]
+    contracts: [权限与status和订单谓词共用count及items, 无筛选行为不变]
+    deletion_targets: [机台流转读取必须下载全站可见历史的约束]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round6.md]
+    verification_commands: ["python -m pytest tests/test_transfer_order_scope.py -q"]
+    residue_queries: [筛选前全量public projection不得新增]
+    risks: [不能绕过角色权限, count与items一致, 历史长编号]
+  - id: r6-client-scope
+    type: implementation
+    name: Android订单范围流转读取与完整分页
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt, logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt, logistics-android/app/src/test/java/com/company/logistics/data/DeviceTransferScopeTest.kt]
+    external_surfaces: [transferRequestsForOrders]
+    contracts: [重复documentNo参数每批20每页100, 空集零HTTP, 页上限不得静默成功]
+    deletion_targets: [机台专用读取的5000条静默截断]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round6.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests '*DeviceTransferScopeTest'"]
+    residue_queries: [专用机台分页不得复用旧50页静默成功]
+    risks: [旧服务器忽略筛选, 身份切换, 元数据变化, 编号编码]
+  - id: r6-device-concurrency
+    type: implementation
+    name: 机台分区共享限流与渐进显示
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsApp.kt, logistics-android/app/src/main/java/com/company/logistics/ui/screens/DeviceDetailScreen.kt, logistics-android/app/src/test/java/com/company/logistics/ui/DeviceAggregateConcurrencyTest.kt, logistics-android/app/src/test/java/com/company/logistics/ui/DeviceDetailLifecycleRegressionTest.kt]
+    external_surfaces: [机台分区loading与error]
+    contracts: [同job子请求与session/request/router校验, 跨刷新共享并发上限4, 分区完成立即展示]
+    deletion_targets: [所有聚合串行完成后统一回填, 机台全量transferRequests调用]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round6.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests '*DeviceAggregateConcurrencyTest' --tests '*DeviceDetailLifecycleRegressionTest'"]
+    residue_queries: [机台聚合不得调用全量transferRequests]
+    risks: [失败分区不取消其他分区, 取消不合作旧请求不绕过限流, 不把loading当空态]
+  - id: r6-convergence
+    type: convergence
+    name: 三路并发集成与完整验收
+    status: done
+    dependencies: [r6-transfer-scope, r6-client-scope, r6-device-concurrency]
+    touched_paths: [.claude/migration, docs/deep-audit-round6.md, NEXT.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [.claude/migration/HANDOFF.md, .claude/migration/SHIP_CHECKLIST.md]
+    verification_commands: ["python -m pytest tests/ -q", "./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
+
 round3_verification_summary: "订单缓存正确不变量7项通过；Android258项/50 suites零失败且Debug构建成功；后端593项沿用无源码改动基线；Room生成CAS、图标、guard、diff均通过。"
 
 round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"
@@ -265,3 +321,5 @@ round2_verification_summary: "后端593 passed；Android251 passed及Debug构建
 round4_verification_summary: "Backend598 passed; Android265 passed/51 suites, Debug build SUCCESS; device paging7 passed; no push/deploy/APK publication."
 
 round5_verification_summary: "Android285 passed/52 suites, 20 device regressions, Debug SUCCESS55s; backend focused11 passed; backend full598 from unchanged round4 baseline; no deployment."
+
+round6_verification_summary: "Backend602 passed; Android307 passed/54 suites, scope15/concurrency7/legacyDevice20 green; Debug SUCCESS1m3s; no push/deploy/APK publication."

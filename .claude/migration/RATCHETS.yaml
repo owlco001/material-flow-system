@@ -72,3 +72,11 @@ ratchets:
     maximum: 0
     target: 0
     rationale: 不把机台工时第一页作为完整总量
+  - id: device-global-transfer-read
+    scope: logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt
+    query: 'repo.transferRequests().getOrThrow().items.filter'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 机台页必须使用订单范围专用读取而非全站下载后过滤

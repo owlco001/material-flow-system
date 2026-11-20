@@ -24,6 +24,8 @@ import com.company.logistics.model.OrderDetail
 import com.company.logistics.model.ExceptionSubmissionResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -1036,6 +1038,101 @@ open class MaterialFlowApi(
             page++
         }
         TransferRequestPage(items = all, statusFilter = status, serverTime = serverTime)
+    }
+
+    /** Scoped reads keep one identity across every chunk and page, including legacy servers. */
+    suspend fun listTransferRequestsForOrders(documentNos: Set<String>): TransferRequestPage =
+        listTransferRequestsForOrders(documentNos, currentIdentityEpoch())
+
+    internal suspend fun listTransferRequestsForOrders(documentNos: Set<String>, identity: Long): TransferRequestPage = withContext(Dispatchers.IO) {
+        require(documentNos.none { it.isBlank() }) { "订单号不能为空" }
+        val orders = documentNos.map { it.trim() }.distinct().sorted()
+        val all = linkedMapOf<String, TransferRequest>()
+        var serverTime: String? = null
+        suspend fun checkSession() {
+            currentCoroutineContext().ensureActive()
+            if (!isCurrentIdentityEpoch(identity)) throw CancellationException("Transfer scope belongs to an older session")
+        }
+        checkSession()
+        for (chunk in orders.chunked(20)) {
+            val scope = chunk.toSet()
+            val seen = mutableSetOf<String>()
+            var expectedTotal: Long? = null
+            var expectedPages: Long? = null
+            var expectedSizeMetadata: Long? = null
+            var requestedPage = 1
+            while (true) {
+                checkSession()
+                val path = buildString {
+                    append("/api/v1/transfer-requests?page=$requestedPage&pageSize=100")
+                    chunk.forEach { append("&documentNo=${encodeQuery(it)}") }
+                }
+                val json = request("GET", path, null, expectedIdentity = identity)
+                checkSession()
+                val root = JSONObject(json)
+                check(root.optJSONArray("items") != null) { "流转列表缺少记录数组" }
+                fun metadata(name: String): Long? {
+                    if (!root.has(name)) return null
+                    val value = root.opt(name)
+                    check(value is Number && value.toDouble().isFinite() && value.toDouble() == value.toLong().toDouble() && value.toLong() >= 0) {
+                        "流转分页元数据无效：$name"
+                    }
+                    return (value as Number).toLong()
+                }
+                val responsePage = metadata("page")
+                val responseSize = metadata("pageSize")
+                val total = metadata("total")
+                val totalPages = metadata("totalPages")
+                check(responsePage == null || responsePage == requestedPage.toLong()) { "流转分页页码未推进" }
+                check(responseSize == null || responseSize == 100L) { "流转分页大小不一致" }
+                if (requestedPage == 1) {
+                    expectedTotal = total
+                    expectedPages = totalPages
+                    expectedSizeMetadata = responseSize
+                } else {
+                    check(total == expectedTotal && totalPages == expectedPages && responseSize == expectedSizeMetadata) {
+                        "流转分页元数据变化，无法确认列表完整"
+                    }
+                }
+                if (total != null && totalPages != null) {
+                    val calculatedPages = total / 100 + if (total % 100 == 0L) 0 else 1
+                    check(if (total == 0L) totalPages in 0L..1L else totalPages == calculatedPages) {
+                        "流转总数与页数不一致"
+                    }
+                }
+                val rows = ApiParser.parseTransferRequestList(json)
+                check(rows.items.size <= 100) { "流转分页超过约定大小" }
+                rows.items.forEach { item ->
+                    check(item.id.isNotBlank() && seen.add(item.id)) { "流转分页包含空标识或重复记录" }
+                    // Older servers may ignore documentNo. Drain their visible list, then filter.
+                    if (item.documentNo in scope) all.putIfAbsent(item.id, item)
+                }
+                if (rows.serverTime != null) serverTime = rows.serverTime
+                if (total != null) {
+                    val expectedSize = minOf(100L, (total - (requestedPage - 1L) * 100L).coerceAtLeast(0L))
+                    check(rows.items.size.toLong() == expectedSize) { "流转分页记录数不足，无法确认列表完整" }
+                    check(seen.size.toLong() <= total) { "流转分页记录数超过总数" }
+                    if (seen.size.toLong() == total) break
+                } else if (totalPages != null) {
+                    if (totalPages == 0L) {
+                        check(requestedPage == 1 && rows.items.isEmpty()) { "流转零页列表包含记录" }
+                        break
+                    }
+                    check(requestedPage.toLong() <= totalPages) { "流转分页超过声明页数" }
+                    if (requestedPage.toLong() == totalPages) break
+                    check(rows.items.size == 100) { "流转短页与剩余页数冲突，无法确认列表完整" }
+                } else {
+                    // A short legacy response is complete under the established 100-row contract.
+                    // A full response without page metadata cannot prove that page is honored.
+                    if (rows.items.size < 100) break
+                    check(responsePage != null) { "旧服务端未提供分页元数据，无法确认列表完整" }
+                }
+                check(requestedPage < 1_000) { "流转列表超过分页安全上限，未返回部分列表" }
+                requestedPage++
+            }
+        }
+        checkSession()
+        TransferRequestPage(items = all.values.toList(), statusFilter = null, serverTime = serverTime)
     }
 
     /** 查询流转申请详情；详情响应中的 payload 由 parser 投影为明细条目。 */

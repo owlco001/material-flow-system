@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -144,6 +145,12 @@ private const val STOCKTAKE_PAGE_SIZE = 50
 private const val ORDER_MATERIAL_PAGE_SIZE = 200
 
 
+enum class DeviceAggregateSection(val warningLabel: String) {
+    TASKS("装配任务/人员"), MATERIALS("物料"), TRANSFERS("流转申请"), LABOR("工时")
+}
+
+private const val DEVICE_AGGREGATE_CONCURRENCY = 4
+
 data class LogisticsUiState(
     val authState: AuthState = AuthState.Restoring,
 
@@ -168,6 +175,7 @@ data class LogisticsUiState(
     val deviceTransferRequests: List<TransferRequest> = emptyList(),
     val deviceLabor: LaborSummaryPage? = null,
     val deviceAggregateError: String? = null,
+    val deviceAggregateSections: Map<DeviceAggregateSection, WorkspaceLoadState> = emptyMap(),
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     /** 订单页空态展示的最近订单列表（服务端 created_at 倒序，点击即查详情） */
     val recentOrders: List<MaterialFlowApi.RecentOrderItem> = emptyList(),
@@ -388,6 +396,8 @@ class LogisticsViewModel(
     private var assemblyLaborDetailJob: Job? = null
     private var assemblyLaborDetailGeneration = 0L
     private var deviceLoadJob: Job? = null
+    private val deviceAggregatePermits = Semaphore(DEVICE_AGGREGATE_CONCURRENCY)
+    @Volatile
     private var deviceLoadGeneration = 0L
     private val multiOrderDetails = MultiOrderDetailState()
     /** 最近订单列表是否已加载（本次会话内只拉一次，重试可 force） */
@@ -677,7 +687,15 @@ class LogisticsViewModel(
             it.copy(screen = screen, error = null)
         }
     }.also {
-        if (_state.value.screen != Screen.DEVICE_DETAIL) cancelDeviceLoad()
+        val current = _state.value
+        if (current.screen != Screen.DEVICE_DETAIL) {
+            cancelDeviceLoad()
+        } else if (screen == Screen.DEVICE_DETAIL && deviceLoadJob?.isActive != true &&
+            WorkspaceLoadState.LOADING in current.deviceAggregateSections.values
+        ) {
+            // Returning from the scanner can reopen a detail whose aggregate was cancelled.
+            current.deviceDetail?.let { openDeviceDetail(it.deviceId) }
+        }
         when (screen) {
             Screen.APPROVAL -> refreshTransferRequests()
             Screen.AUDIT -> refreshAuditLogs()
@@ -2870,13 +2888,17 @@ class LogisticsViewModel(
                 loading = if (pendingDetail) false else it.loading,
                 deviceDetail = null, deviceAssemblyTasks = emptyList(), deviceMaterials = emptyList(),
                 deviceTransferRequests = emptyList(), deviceLabor = null, deviceAggregateError = null,
+                deviceAggregateSections = emptyMap(),
             ) else it.copy(loading = false)
         }
     }
 
+    private fun ownsDeviceLoad(state: LogisticsUiState, session: Long, generation: Long, screen: Screen): Boolean =
+        session == sessionGeneration && state.loggedIn && generation == deviceLoadGeneration && state.screen == screen
+
     private suspend fun ensureDeviceLoadActive(session: Long, generation: Long, expectedScreen: Screen = Screen.DEVICE_DETAIL) {
         currentCoroutineContext().ensureActive()
-        if (!isSessionActive(session) || generation != deviceLoadGeneration || _state.value.screen != expectedScreen) {
+        if (!ownsDeviceLoad(_state.value, session, generation, expectedScreen)) {
             throw CancellationException("Device detail request was superseded")
         }
     }
@@ -2892,42 +2914,98 @@ class LogisticsViewModel(
             val response = resultOf { repo.deviceDetail(deviceId).getOrThrow() }
             ensureDeviceLoadActive(session, generation, originScreen)
             val detail = response.getOrElse { error ->
-                _state.update { it.copy(loading = false,
-                    error = if (error is ApiException) error.safeMessage("机台查询失败") else "网络不可用") }
+                _state.update { state ->
+                    if (!ownsDeviceLoad(state, session, generation, originScreen)) state else state.copy(
+                        loading = false,
+                        error = if (error is ApiException) error.safeMessage("机台查询失败") else "网络不可用",
+                    )
+                }
                 return@launch
             }
-            _state.update { it.copy(deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false) }
+            _state.update { state ->
+                if (!ownsDeviceLoad(state, session, generation, originScreen)) state else state.copy(
+                    deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false,
+                    deviceAggregateSections = DeviceAggregateSection.entries.associateWith { WorkspaceLoadState.LOADING },
+                )
+            }
             loadDeviceAggregate(detail, session, generation)
         }
     }
 
-    /** Same job as the selected detail: cancelling or changing identity owns every aggregate request. */
-    private suspend fun loadDeviceAggregate(detail: DeviceDetail, session: Long, generation: Long) {
-        val failures = mutableListOf<String>()
-        suspend fun <T> section(name: String, read: suspend () -> T): T? {
-            ensureDeviceLoadActive(session, generation)
-            val response = resultOf { read() }
-            ensureDeviceLoadActive(session, generation)
-            if (response.isFailure) failures += name
-            return response.getOrNull()
+    /** Every section is a child of the selected device job and publishes independently. */
+    private suspend fun loadDeviceAggregate(detail: DeviceDetail, session: Long, generation: Long) = coroutineScope {
+        fun publish(section: DeviceAggregateSection, status: WorkspaceLoadState,
+                    content: (LogisticsUiState) -> LogisticsUiState = { it }) {
+            _state.update { state ->
+                if (!ownsDeviceLoad(state, session, generation, Screen.DEVICE_DETAIL) ||
+                    state.deviceDetail?.deviceId != detail.deviceId) return@update state
+                val sections = state.deviceAggregateSections + (section to status)
+                val failures = DeviceAggregateSection.entries.filter { sections[it] == WorkspaceLoadState.ERROR }
+                content(state).copy(
+                    deviceAggregateSections = sections,
+                    deviceAggregateError = failures.takeIf { it.isNotEmpty() }
+                        ?.joinToString("、", postfix = "读取不完整，请重新打开机台重试") { it.warningLabel },
+                )
+            }
         }
-        val tasks = section("装配任务/人员") { loadAllDeviceTasks(detail, session, generation) }.orEmpty()
-        val materials = mutableListOf<OrderMaterialItem>()
-        for (order in detail.orders.distinctBy { it.orderNo }) {
-            section("物料") { repo.deviceOrderMaterials(order.orderNo, detail.deviceId, detail.deviceNo).getOrThrow() }
-                ?.let { materials += it }
+
+        suspend fun <T> readSection(read: suspend () -> T): Result<T> {
+            val result = deviceAggregatePermits.withPermit {
+                ensureDeviceLoadActive(session, generation)
+                resultOf { read() }
+            }
+            ensureDeviceLoadActive(session, generation)
+            return result
         }
-        val orderNos = detail.orders.map { it.orderNo }.toSet()
-        val transfers = section("流转申请") { repo.transferRequests().getOrThrow().items.filter { it.documentNo in orderNos } }.orEmpty()
-        val labor = section("工时") { loadAllDeviceLabor(detail, session, generation) }
-        ensureDeviceLoadActive(session, generation)
-        if (_state.value.screen != Screen.DEVICE_DETAIL || _state.value.deviceDetail?.deviceId != detail.deviceId) return
-        _state.update { it.copy(
-            deviceAssemblyTasks = tasks, deviceMaterials = materials,
-            deviceTransferRequests = transfers, deviceLabor = labor,
-            deviceAggregateError = failures.distinct().takeIf { it.isNotEmpty() }
-                ?.joinToString("、", postfix = "读取不完整，请重新打开机台重试"),
-        ) }
+
+        launch {
+            val result = readSection { loadAllDeviceTasks(detail, session, generation) }
+            val tasks = result.getOrNull().orEmpty()
+            publish(DeviceAggregateSection.TASKS, deviceSectionStatus(result.isFailure, tasks.isEmpty())) {
+                it.copy(deviceAssemblyTasks = tasks)
+            }
+        }
+        val orders = detail.orders.map { it.orderNo }.filter { it.isNotBlank() }.toSet()
+        if (orders.isEmpty()) {
+            ensureDeviceLoadActive(session, generation)
+            publish(DeviceAggregateSection.MATERIALS, WorkspaceLoadState.EMPTY)
+            publish(DeviceAggregateSection.TRANSFERS, WorkspaceLoadState.EMPTY)
+        } else {
+            launch {
+                // Keep order iteration sequential. Preserve successful orders even if one order fails.
+                val materials = mutableListOf<OrderMaterialItem>()
+                var incomplete = false
+                for (orderNo in orders) {
+                    val result = readSection { repo.deviceOrderMaterials(orderNo, detail.deviceId, detail.deviceNo).getOrThrow() }
+                    result.onSuccess { materials += it }.onFailure { incomplete = true }
+                }
+                ensureDeviceLoadActive(session, generation)
+                publish(DeviceAggregateSection.MATERIALS, deviceSectionStatus(incomplete, materials.isEmpty())) {
+                    it.copy(deviceMaterials = materials.toList())
+                }
+            }
+            launch {
+                val result = readSection { repo.transferRequestsForOrders(orders).getOrThrow() }
+                val transfers = result.getOrNull()?.items.orEmpty()
+                publish(DeviceAggregateSection.TRANSFERS, deviceSectionStatus(result.isFailure, transfers.isEmpty())) {
+                    it.copy(deviceTransferRequests = transfers)
+                }
+            }
+        }
+        launch {
+            val result = readSection { loadAllDeviceLabor(detail, session, generation) }
+            val labor = result.getOrNull()
+            publish(DeviceAggregateSection.LABOR, deviceSectionStatus(result.isFailure, labor?.items.isNullOrEmpty())) {
+                it.copy(deviceLabor = labor)
+            }
+        }
+        Unit
+    }
+
+    private fun deviceSectionStatus(failed: Boolean, empty: Boolean): WorkspaceLoadState = when {
+        failed -> WorkspaceLoadState.ERROR
+        empty -> WorkspaceLoadState.EMPTY
+        else -> WorkspaceLoadState.CONTENT
     }
 
     /** Keep server authorization and machine filters on every page; never publish partial counts. */

@@ -518,6 +518,21 @@ open class LogisticsRepository(
         api.listTransferRequests(status)
     }
 
+    open suspend fun transferRequestsForOrders(orderNos: Set<String>): Result<TransferRequestPage> = resultOf {
+        val (generation, identity) = synchronized(sessionStateLock) {
+            sessionGeneration.get() to api.currentIdentityEpoch()
+        }
+        currentCoroutineContext().ensureActive()
+        val response = api.listTransferRequestsForOrders(orderNos, identity)
+        synchronized(sessionStateLock) {
+            if (sessionGeneration.get() != generation || !api.isCurrentIdentityEpoch(identity)) {
+                throw CancellationException("Transfer scope belongs to an older session")
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        response
+    }
+
     /** 读取单条流转申请详情，供审批页展开查看服务端明细。 */
     open suspend fun transferRequestDetail(requestId: String): Result<TransferRequest> = resultOf {
         api.transferRequestDetail(requestId)
