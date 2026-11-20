@@ -1,47 +1,22 @@
-# 交付检查
+# 第三轮交付验收清单
 
-在仓库根运行，PY=/root/mf-main/material-flow-backend/.venv/bin/python。
+代码基线：`53b1b67`。修复提交：`ba5a3e4364950cce9e7ea8db8c06e3b54f29b955`，分支`fix-deep-audit-138ff95`。
 
-- [x] 优化前后完整后端基线：`cd material-flow-backend && env -u PYTHONPATH "$PY" -m pytest tests/ -q -p no:cacheprovider`
-- [ ] 四个独立脚本：在后端目录运行 `$PY tests/test_auth_security.py`、`$PY tests/test_contract_acceptance.py`、`$PY tests/test_order_material_status.py`、`$PY tests/test_token_lifecycle.py`
-- [x] 新增库存与查询预算回归：`cd material-flow-backend && "$PY" -m pytest tests/test_transfer_execution_consistency.py tests/test_assembly_list_performance.py -q`
-- [x] Android完整单测及Debug包：`cd logistics-android && ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug`
-- [x] UI图标门禁：`python3 scripts/check_emoji_icons.py`；记录已有失败与本轮增量。
-- [x] 优化guard：`bash .claude/migration/guard.sh`
-- [x] 格式差异：`git diff --check`
-- [x] 所有变更文件登记MAP.csv；SLICES.yaml状态与实际一致；无临时日志/副本/调试路径/新增迁移TODO。
-- [x] 后端/Android版本按现有规则递增，测试断言一致。
-- [x] 报告包含复现、查询数/时间前后对比、测试结果与限制、可复制命令。
-- [x] HANDOFF.md包含变更、当前事实、剩余事项、交付阻塞、下一步。
+## 自动化验收
 
-## 无法由本机替代的验收
-扫码摄像头、真机网络切换、后台worker系统调度、UI实际渲染与生产U9链路未实测时必须说明；不据此阻止交付可审查代码，但不得宣称生产验收完成。
+- [x] 第三轮红/绿订单回归：`MultiOrderSessionPagingRegressionTest` 7项全部通过（跨账号缓存、角色预览、同单在途切回、旧刷新成功/失败、旧append、分页/摘要恢复）。
+- [x] Android全量：`ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug` → **258项、50 suite，0失败/错误/跳过；BUILD SUCCESSFUL**。
+- [x] 后端全量沿用第二轮无后端源码改动基线：**593 passed**。
+- [x] Room实际生成SQL：`python3 scripts/check_offline_room_queries.py` → 含取消claim id+SYNCING CAS、其他claim/已完成行隔离、退避元数据不变。
+- [x] 图标门禁：`python3 scripts/check_emoji_icons.py` → 扫描75个Kotlin文件PASS。
+- [x] 反回归ratchets：`bash .claude/migration/guard.sh` → 全部PASS。
+- [x] 代码格式：`git diff --check` → PASS。
+- [x] 本地diff commit与修复补丁已在各自基线索引中验证可应用；未推送/部署。
 
-## 2026-11-20 第三轮延续检查
+## 已知非发布验收项
 
-- [x] MultiOrderSessionPagingRegressionTest：6项通过，覆盖缓存身份/角色预览清理、非选中迟到刷新、同订单刷新tab切换不重复发请求、刷新淘汰旧append、切回订单恢复权威分页与workflow投影。
-- [x] 第三轮Android最终：257项／50类，0失败、0错误、0跳过；`:app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL。
-- [x] 后端未改源码，第二轮冻结全量593 passed沿用；真实Room SQL、图标扫描、guard、diff-check均通过。
-- [ ] 账号owner迁移政策、真机/Android加密磁盘与生产U9/远端CI未验收，不能宣称全生产发布验收通过。
+- [ ] 三个独立旧脚本仍存在原始基线失败：contract 5/26、order material status 28/35、token lifecycle 24/33；auth 19/19。已在基线及各轮结果中对照，无新增失败。
+- [ ] 真实Android加密SharedPreferences磁盘、厂商进程杀死/重启、摄像头、UI实机、生产U9和远端CI未验收。
+- [ ] 离线队列历史记录没有持久化账号owner；需业务明确旧数据处置和迁移策略后单列处理。本轮未隐式迁移。
 
-## 最终结果
-
-## 2026-11-20 第三轮订单缓存验收
-
-- [x] 修复前正确不变量复现：账号缓存/同单旧分页等；订单SessionPaging专项7项通过。
-- [x] Android最终全量258项/50 suites，0失败/0错误/0跳过；`:app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL。
-- [x] Room原生取消CAS、图标75文件、迁移guard、`git diff --check` PASS。
-- [ ] 真机/加密磁盘、厂商调度、U9及远端CI未测试；队列owner迁移政策未决定。
-
-最终结果：三轮代码位于本地修复分支，未推送/部署。后端560 passed；Android234项零失败、Debug构建成功；Room真实生成SQL、图标及优化guard通过。独立脚本已逐个运行并与基线对照：auth19/19，其余5/26、28/35、24/33均为原有失败，故该发布门禁保持未勾选，不宣称完整发布验收通过。CI配置已审阅，尚未推送执行。
-
-## 2026-11-20 第二轮最终验收
-
-- [x] 冻结后端全套593 passed，新增状态/分页/快照/归属与路由测试覆盖。
-- [x] Android全套251项、49类、零失败/错误/跳过，Debug构建成功（2m18s）。
-- [x] 新增17项身份/持久化/取消/分页生命周期正确不变量全部绿测。
-- [x] 真实生成Room SQL验证单ID且仍SYNCING的取消CAS及退避元数据保留。
-- [x] 图标75文件PASS；guard与diff格式通过；新预算接入既有CI门禁。
-- [x] 四个独立旧验收本轮再次对照19/19、5/26、28/35、24/33，与原始基线相同。后三项原有失败不勾选为发布通过。
-- [x] SQL基准和完整item构造预算有前后数据，时间仅指同机合成handler，不外推生产。
-- [ ] 真机/加密磁盘/生产U9/远端CI验收；队列owner迁移政策仍需独立处理。
+因此本轮本地代码与自动化回归通过，可供审阅；**不宣称完整现场/生产发布验收通过**。任何push、PR、部署需用户另行授权。

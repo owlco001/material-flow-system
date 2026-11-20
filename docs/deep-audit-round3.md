@@ -12,7 +12,7 @@
 
 `MultiOrderDetailState`以orderNo为键并常驻ViewModel。先前logout、401失效、再登录与管理员角色预览切换只重置部分UI state，不清该LRU。低权限的后继身份可先看到此前管理员缓存订单的列表条目，并通过本地select直接恢复其完整detail/材料，无需重新请求服务端。服务端在将来的请求上仍有权限控制，故本问题界定为客户端缓存信息暴露/权限预览失真，不描述为绕过API认证。
 
-现在身份改变、登出/失效以及进入/退出角色预览都清除订单缓存。低权限重新选择时只能触发当前会话下的Repository读取，权限拒绝则不显示旧详情。有效Open仍刷新；同身份普通tab切换可保留已缓存的detail与权威物料状态。
+订单LRU仍可在同一账号内保留按订单隔离的detail/material状态；`MultiOrderSnapshot`暴露的是最近订单列表元数据，不直接暴露完整物料明细，但清理能同步清除条目错误/加载状态，并避免后续本地选择跨身份命中。低权限重新打开旧订单必须重新经过Repository及服务端授权。
 
 ### P1/P2：非选中订单的迟到刷新覆盖当前订单全局视图
 
@@ -36,8 +36,7 @@ detail和material-status是两个不同的服务端事实面。先前LRU只保�
 
 新增`MultiOrderSessionPagingRegressionTest`，修复前以同一ViewModel和Deferred Fake Repository复现账号切换旧缓存恢复、A刷新覆盖B、旧page2污染新page1、切回缓存丢失server metadata。另覆盖角色预览清缓存及同订单在途刷新避免重复请求。修复后的订单专项7项通过，包括迟到失败不污染当前订单错误状态。
 
-最终Android完整验证：**258项／50类，0失败、0错误、0跳过**；`testDebugUnitTest + assembleDebug`为BUILD SUCCESSFUL。后端593 passed沿用第二轮最终结果（第三轮无后端源码改动）。Room原生取消CAS、75文件图标、migration guard及diff-check均通过。所有数据取自对应命令结果/JUnit XML，不把构建成功等同于现场或生产验收。
-
+最终Android完整验证：**258项／50类，0失败、0错误、0跳过**；`testDebugUnitTest + assembleDebug`为BUILD SUCCESSFUL。后端593 passed沿用第二轮最终结果（第三轮无后端源码改动）。Room原生取消CAS、75文件图标、migration guard及diff-check均通过。第三轮已本地提交`ba5a3e4`，增量与累计补丁按各自基线校验可应用。所有数据取自对应命令结果/JUnit XML，不把构建成功等同于现场或生产验收。
 
 ## 保留限制
 
