@@ -40,5 +40,9 @@ API登录/退出/恢复变更身份epoch，刷新仍在同epoch内轮转。Repos
 ## 2026-11-20 D13：取消claim与显式换号部分报告
 claim写SYNCING也进入try；取消时在NonCancellable中调用专用restoreCancelledClaim(id)，生产Room抽象方法SQL限定id且status仍SYNCING，保留幂等、重试次数与时间。不要修改手动resetToPending的语义，不全库重置。外部worker/job取消继续抛出；显式身份变更且外层job仍活跃时，在claim清理后终止本轮并保留部分同步报告。通用submit必须重抛取消，不能将旧身份取消变成新离线记录。真实生成SQL门禁覆盖CAS，不用fake条件更新冒充生产实现。
 
-## 2026-11-20 D14：页与计数共享Web只读快照
+## 2026-11-20 D15：订单缓存必须受身份与展示选择约束
+多订单详情缓存按当前已验证身份在同一会话内复用；logout/401/新login和角色预览进出均清空缓存。详情刷新token可更新非选中订单的本地entry，但只有当前选中订单、当前session世代可改全局UI。删除无调用方的legacy loadOrder全局写入路径。显式打开仍刷新，select已缓存完整订单才本地恢复。
+
+## 2026-11-20 D16：权威物料分页状态与订单详情分开缓存
+OrderDetail属于任务/时间线聚合，OrderMaterialStatus属于权威库存/交接投影并承载全量summary、total/page/hasMore。不得用toOrderStatus(OrderDetail)相互转换。每订单缓存两者，并使用material refresh世代和单append token；刷新失效旧追加，检查页序/documentNo/token，排序和全量汇总字段来自最新服务器页。
 优化后分页与全局summary分别查询，独立复核通过并发写入测试证明可能读到不同版本。两个无写Web helper在没有既存事务时BEGIN读事务，close或请求共享连接代理rollback结束；WAL允许并发写入。分页总数、页内行和全局summary在同一读视图，不将该事务扩展至带预览audit写入的API以免引入读转写升级。

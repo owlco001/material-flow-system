@@ -38,3 +38,12 @@ r2-web-materials,source,admin,material-flow-backend/app/admin_web.py,material-fl
 r2-web-materials,template,admin,material-flow-backend/app/templates/_order_materials.html,material-flow-backend/app/templates/_order_materials.html,verified,no,pytest admin paging,native server paging
 r2-web-materials,test,admin,,material-flow-backend/tests/test_admin_materials_paging.py,verified,no,pytest admin paging,partial work budget
 r2-convergence,docs,report,,docs/deep-audit-fixes.md,verified,no,manual evidence,second round results
+r3-order-session,source,order cache,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt,modified,no,Android regression,identity cache and selected-order projection
+r3-order-session,source,order cache,,logistics-android/app/src/main/java/com/company/logistics/ui/MultiOrderDetailState.kt,modified,no,Android regression,material-status cache and append generation
+r3-order-session,test,order cache,,logistics-android/app/src/test/java/com/company/logistics/ui/MultiOrderSessionPagingRegressionTest.kt,modified,no,Android regression,identity and same-order paging races
+r3-convergence,docs,report,,docs/deep-audit-fixes.md,modified,no,manual evidence,third-round order cache audit
+r3-order-session,source,order cache,,logistics-android/app/src/main/java/com/company/logistics/ui/MultiOrderDetailState.kt,added,no,Android regression,material-status cache and append generation
+r3-order-session,test,order cache,,logistics-android/app/src/test/java/com/company/logistics/ui/MultiOrderSessionPagingRegressionTest.kt,modified,no,Android regression,identity and same-order paging races
+r3-convergence,config,version,logistics-android/app/build.gradle.kts,logistics-android/app/build.gradle.kts,modified,no,Android version bump to 0.5.54 / 61
+r3-convergence,test,version,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt,modified,no,Android unit tests,version assertion
+r3-order-session,docs,report,,docs/deep-audit-round3.md,modified,no,manual evidence,third-round audit fixes

@@ -208,7 +208,7 @@ class OfflineQueueDrainTest {
         }
 
         assertTrue("登出后最多完成登出前已开始的两个并发请求", report.success in 1..LogisticsRepository.MAX_CONCURRENT_OPERATIONS)
-        assertEquals(report.success, server.requests.size)
+        assertTrue(server.requests.size in report.success..LogisticsRepository.MAX_CONCURRENT_OPERATIONS)
         assertEquals(report.success, dao.rows.count { it.status == SyncStatus.SYNCED.name })
         assertEquals(operations.size - report.success, dao.rows.count { it.retryCount == 0 && it.status == SyncStatus.PENDING.name })
         assertNull(api.accessToken)

@@ -399,6 +399,7 @@ open class MaterialFlowApi(
             .build()
         val (code, text) = executeOnce(httpRequest, identity)
         if (code !in 200..299) throw ApiParser.parseError(code, text)
+        ensureCurrentIdentity(identity)
         val root = JSONObject(text.ifEmpty { throw ApiException(code, "EMPTY_BODY", "预览响应为空", retryable = true) })
         val errors = root.optJSONArray("errors") ?: JSONArray()
         BomImportPreview(root.optString("previewId"), root.optString("modelCode"), root.optInt("totalRows"), root.optInt("validRows"), root.optInt("invalidRows"), root.optBoolean("canCommit"), (0 until errors.length()).map { i -> val e = errors.getJSONObject(i); BomImportError(e.optInt("lineNo"), e.optString("field"), e.optString("code"), e.optString("message")) })

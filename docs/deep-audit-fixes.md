@@ -73,8 +73,19 @@ materials partial不再计算任务、工时、timeline或订单列表；完整�
 
 三个旧独立验收脚本在原版和前轮优化版已有相同失败（contract5/26、order status28/35、token lifecycle24/33；auth19/19通过），不修改认证政策迎合它们。真机、Android加密存储／磁盘、厂商后台调度、摄像头和生产U9链路未验收；JVM内存替身及生成SQL测试不能替代现场。
 
-## 验证命令
+## 第三轮：同ViewModel订单缓存、材料分页和刷新并发（2026-11-20）
 
+静态检查及受控Deferred测试发现三类竞态：
+
+1. 多订单LRU原按orderNo驻留ViewModel，logout/401未清理；较低权限的新会话可在不发请求的情况下，从缓存选择上一账号已查看订单。每次新身份登录、logout/失效清缓存；角色预览进入/退出亦清缓存，防Admin detail留在低角色模拟界面。新回归确认旧条目删除、低权限重新选择必须重新走Repository并得到FORBIDDEN，不能展示旧内容。
+2. order-detail刷新按订单request token防旧detail覆盖，但结果落入全局UI时未核当前所选订单。A晚响应可在B选中时将全局显示改回A。现在仍允许更新同身份A自己的缓存，但非当前订单不碰全局UI；失败也按同规则处理。回归先切到B、放行A结果，要求selected=B且全局detail=B，同时A缓存可独立更新。
+3. 每订单只缓存OrderDetail，未缓存权威OrderMaterialStatus，切回订单会丢服务端分页/total/hasMore/summary与workflow投影。现每个LRU entry另外保存status与刷新generation/append token；select读取该权威缓存，显式刷新仍去服务器。
+4. 旧page2在同订单新page1之后返回，原来只比documentNo，旧items和旧summary可覆盖新快照。每订单刷新generation使旧append失效，追加还需匹配页码、append request token；失败结果也校验token/session/当前选中订单。新旧首页以明确不同摘要值的Deferred复现。
+
+订单测试文件`MultiOrderSessionPagingRegressionTest.kt`包含跨账号/权限、role preview、非选中迟到刷新、同订单旧append及切换缓存保留分页/工作流状态。修复前最初1次编译未通过（测试fixture缺必填colorToken），修正后红测确认3项产品缺陷；修复后4项订单不变量全部通过（结果见最终Android全量）。
+
+## 第三轮最终状态
+第三轮局部订单回归：4项全绿。仍需将其合并计入全量Android测试、检查最终CI与补丁状态，不能用局部结果代替全套验收。
 ```bash
 cd material-flow-backend
 PYTHONPATH="$PWD" /path/to/venv/bin/python -m pytest tests/ -q -p no:cacheprovider

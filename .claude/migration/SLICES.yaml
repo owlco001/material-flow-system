@@ -174,6 +174,35 @@ slices:
     residue_queries: ["检查无半成品回调、临时代码或未登记文件"]
     risks: [旧独立验收基线失败单列, 未跑远端CI与真机不宣称发布验收]
 
-round1_verification_summary: "后端560 passed；Android234 passed及Debug构建成功；Room生成SQL与guard通过。旧独立脚本基线失败和真机限制见HANDOFF。"
+  - id: r3-order-cache
+    type: implementation
+    name: 隔离订单缓存并保持材料分页世代
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/main/java/com/company/logistics/ui/MultiOrderDetailState.kt, logistics-android/app/src/test/java/com/company/logistics/ui/MultiOrderSessionPagingRegressionTest.kt, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt, docs/deep-audit-round3.md, NEXT.md, .claude/migration/SHIP_CHECKLIST.md]
+    external_surfaces: [order details, account switch, role preview, material-status pagination]
+    deletion_targets: [orderNo-only cache crossing identity, OrderDetail toOrderStatus lossy conversion, stale append merge]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-fixes.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests com.company.logistics.ui.MultiOrderSessionPagingRegressionTest"]
+    residue_queries: ["不得再出现toOrderStatus(OrderDetail)分页重建", "所有物料append检查per-order generation"]
+    risks: [LRU同账号复用保持, 显式open刷新但仅cache切换不重拉, 角色预览两侧清cache]
+  - id: r3-convergence
+    type: convergence
+    name: 第三轮全量回归与补丁交付
+    status: done
+    dependencies: [r3-order-cache]
+    touched_paths: [.claude/migration/DECISIONS.md, .claude/migration/MAP.csv, .claude/migration/SLICES.yaml, .claude/migration/SHIP_CHECKLIST.md, .claude/migration/HANDOFF.md, docs/deep-audit-fixes.md, docs/deep-audit-round3.md, NEXT.md, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
+    external_surfaces: [version configuration, patch and local commit]
+    deletion_targets: []
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [NEXT.md, .claude/migration/HANDOFF.md, docs/deep-audit-fixes.md]
+    verification_commands: ["python -m pytest tests/ -q -p no:cacheprovider", "./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
+    residue_queries: ["检查订单缓存无跨身份复用，已删toOrderStatus路径不存在"]
+    risks: [未执行远端CI/真机不宣称发布验收]
+
+round3_verification_summary: "订单缓存正确不变量7项通过；Android258项/50 suites零失败且Debug构建成功；后端593项沿用无源码改动基线；Room生成CAS、图标、guard、diff均通过。"
 
 round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"

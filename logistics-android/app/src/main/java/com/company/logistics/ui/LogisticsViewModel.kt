@@ -450,6 +450,8 @@ class LogisticsViewModel(
             return
         }
         val loginGeneration = ++sessionGeneration
+        multiOrderDetails.clear()
+        _state.update { it.copy(orderDetail = null, orderStatus = null, multiOrderSnapshot = multiOrderDetails.snapshot(), materialLoadingMore = false) }
         operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             resultOf { repo.login(username, password, deviceId, remember) }
@@ -568,6 +570,7 @@ class LogisticsViewModel(
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
         previewController = null
+        multiOrderDetails.clear()
         repo.logout()
         _state.value = LogisticsUiState(authState = AuthState.Unauthenticated)
     }
@@ -582,6 +585,7 @@ class LogisticsViewModel(
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
         previewController = null
+        multiOrderDetails.clear()
         repo.logout()
         _state.value = LogisticsUiState(
             authState = AuthState.Unauthenticated,
@@ -711,8 +715,13 @@ class LogisticsViewModel(
         val result = controller.enterPreview(role)
         result.onSuccess {
             cancelWorkspaceLoad()
+            multiOrderDetails.clear()
             _state.update {
                 it.copy(
+                    orderDetail = null,
+                    orderStatus = null,
+                    multiOrderSnapshot = multiOrderDetails.snapshot(),
+                    materialLoadingMore = false,
                     previewRole = role,
                     workspaceSummary = RoleWorkspaceSummary.empty(role.toUserRole()),
                     workspaceSummaryState = WorkspaceLoadState.IDLE,
@@ -776,8 +785,13 @@ class LogisticsViewModel(
             )
         result.onSuccess {
             cancelWorkspaceLoad()
+            multiOrderDetails.clear()
             _state.update {
                 it.copy(
+                    orderDetail = null,
+                    orderStatus = null,
+                    multiOrderSnapshot = multiOrderDetails.snapshot(),
+                    materialLoadingMore = false,
                     previewRole = null,
                     workspaceSummary = RoleWorkspaceSummary.empty(it.role),
                     workspaceSummaryState = WorkspaceLoadState.IDLE,
@@ -2817,37 +2831,16 @@ class LogisticsViewModel(
             }
     }
 
-    private suspend fun loadOrder(orderNo: String) {
-        repo.orderDetail(orderNo)
-            .onSuccess { detail ->
-                _state.update {
-                    it.copy(
-                        orderDetail = detail,
-                        orderStatus = OrderMaterialStatus(detail.orderNo, "PRODUCTION_ORDER", detail.materials, null, detail.orderId, detail.productName, detail.orderStatus),
-                        screen = Screen.ORDER_DETAIL,
-                        loading = false,
-                        message = "订单详情已更新"
-                    )
-                }
-            }
-            .onFailure { e ->
-                _state.update {
-                    it.copy(
-                        loading = false,
-                        error = if (e is ApiException) {
-                            e.safeMessage("订单查询失败，请重试")
-                        } else {
-                            "网络不可用，请检查连接后重试"
-                        },
-                    )
-                }
-            }
-    }
-
     fun openOrderDetail(orderNo: String, resourceId: String? = null) {
         if (orderNo.isBlank()) return
         _state.update { it.copy(orderResourceId = resourceId) }
         multiOrderDetails.select(orderNo)
+        val entry = multiOrderDetails.state(orderNo)
+        _state.update {
+            it.copy(orderDetail = entry?.content, orderStatus = entry?.materialStatus,
+                screen = Screen.ORDER_DETAIL, loading = entry?.isLoading == true,
+                error = entry?.error, materialLoadingMore = false)
+        }
         publishMultiOrderState()
         refreshOrderDetail(orderNo)
     }
@@ -2953,8 +2946,13 @@ class LogisticsViewModel(
         if (!multiOrderDetails.orderNos.contains(orderNo)) return openOrderDetail(orderNo)
         multiOrderDetails.select(orderNo)
         val entry = multiOrderDetails.state(orderNo)
-        _state.update { it.copy(orderDetail = entry?.content, orderStatus = entry?.content?.let(::toOrderStatus), loading = entry?.isLoading == true, error = entry?.error) }
+        _state.update {
+            it.copy(orderDetail = entry?.content, orderStatus = entry?.materialStatus,
+                screen = Screen.ORDER_DETAIL, loading = entry?.isLoading == true, error = entry?.error,
+                materialLoadingMore = entry?.materialAppendRequestId != null)
+        }
         publishMultiOrderState()
+        if (entry?.isLoading != true && (entry?.content == null || entry.materialStatus == null)) refreshOrderDetail(orderNo)
     }
 
     /** Re-reads the selected order only; each order owns its loading/error/content state. */
@@ -2968,31 +2966,36 @@ class LogisticsViewModel(
         if (!st.loggedIn || st.materialLoadingMore || !status.hasMore) return
         val orderNo = st.multiOrderSnapshot.selectedOrderNo ?: status.documentNo
         if (orderNo.isBlank()) return
+        val appendToken = multiOrderDetails.beginMaterialAppend(orderNo) ?: return
+        val currentSession = sessionGeneration
+        _state.update { it.copy(materialLoadingMore = true) }
         operationScope.launch {
-            _state.update { it.copy(materialLoadingMore = true) }
             repo.orderMaterialStatus(orderNo, page = status.page + 1, pageSize = ORDER_MATERIAL_PAGE_SIZE)
                 .onSuccess { next ->
+                    if (!isSessionActive(currentSession)) return@onSuccess
+                    val wasCurrentAppend = multiOrderDetails.isMaterialAppendRequestCurrent(orderNo, appendToken.first, appendToken.second)
+                    val accepted = multiOrderDetails.appendMaterialSuccess(orderNo, appendToken.first, appendToken.second, next)
                     _state.update { cur ->
-                        val base = cur.orderStatus
-                        if (base == null || base.documentNo != next.documentNo) {
+                        if (!isSessionActive(currentSession)
+                            || cur.multiOrderSnapshot.selectedOrderNo != orderNo) cur
+                        else if (!accepted && wasCurrentAppend) {
                             cur.copy(materialLoadingMore = false)
-                        } else {
-                            val merged = (base.items + next.items)
-                                .distinctBy { (it.deviceId ?: "") + "|" + it.materialId }
-                            cur.copy(
-                                orderStatus = next.copy(items = merged),
-                                materialLoadingMore = false,
-                                error = null,
-                            )
+                        }
+                        else if (!accepted) cur
+                        else {
+                            val base = multiOrderDetails.state(orderNo)?.materialStatus ?: return@update cur.copy(materialLoadingMore = false)
+                            cur.copy(orderStatus = base, materialLoadingMore = false, error = null)
                         }
                     }
+                    publishMultiOrderState()
                 }
                 .onFailure { e ->
+                    val accepted = multiOrderDetails.appendMaterialError(orderNo, appendToken.first, appendToken.second)
+                    if (!accepted || !isSessionActive(currentSession)
+                        || _state.value.multiOrderSnapshot.selectedOrderNo != orderNo) return@onFailure
                     _state.update {
-                        it.copy(
-                            materialLoadingMore = false,
-                            error = if (e is ApiException) e.safeMessage("加载更多物料失败") else "网络不可用，加载更多物料失败",
-                        )
+                        it.copy(materialLoadingMore = false,
+                            error = if (e is ApiException) e.safeMessage("加载更多物料失败") else "网络不可用，加载更多物料失败")
                     }
                 }
         }
@@ -3005,33 +3008,59 @@ class LogisticsViewModel(
 
     private fun refreshOrderDetail(orderNo: String) {
         val requestId = multiOrderDetails.beginRefresh(orderNo)
+        val sessionAtStart = sessionGeneration
+        val isSelectedAtStart = multiOrderDetails.currentOrderNo == orderNo
+        val materialGeneration = multiOrderDetails.beginMaterialRefresh(orderNo)
+        if (isSelectedAtStart) {
+            _state.update { it.copy(orderDetail = null, orderStatus = null, materialLoadingMore = false, loading = true, error = null) }
+        }
         publishMultiOrderState()
         operationScope.launch {
             repo.orderDetail(orderNo)
-                .onSuccess { detail ->
+                .onSuccess detailLoaded@{ detail ->
+                    if (!isSessionActive(sessionAtStart)
+                        || multiOrderDetails.state(orderNo)?.requestId != requestId) return@detailLoaded
                     // The material-status endpoint is the source of truth for the list;
                     // order detail remains the aggregate source for tasks/timeline.
                     repo.orderMaterialStatus(orderNo, page = 1, pageSize = ORDER_MATERIAL_PAGE_SIZE)
-                        .onSuccess { materialStatus ->
-                    if (!multiOrderDetails.applySuccess(orderNo, requestId, detail)) return@onSuccess
-                    _state.update { it.copy(orderDetail = detail, orderStatus = materialStatus, screen = Screen.ORDER_DETAIL, loading = false, error = null, message = "订单详情已更新") }
-                    publishMultiOrderState()
+                        .onSuccess materialsLoaded@{ materialStatus ->
+                            if (!isSessionActive(sessionAtStart)) return@materialsLoaded
+                            if (!multiOrderDetails.applySuccess(orderNo, requestId, detail)) return@materialsLoaded
+                            if (!multiOrderDetails.applyMaterialSuccess(orderNo, materialGeneration, materialStatus)) return@materialsLoaded
+                            if (multiOrderDetails.currentOrderNo != orderNo) {
+                                publishMultiOrderState()
+                                return@materialsLoaded
+                            }
+                            _state.update { it.copy(orderDetail = detail, orderStatus = multiOrderDetails.state(orderNo)?.materialStatus,
+                                screen = Screen.ORDER_DETAIL, loading = false, error = null, message = "订单详情已更新", materialLoadingMore = false) }
+                            publishMultiOrderState()
                         }
                         .onFailure { error ->
                             if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
-                            _state.update { it.copy(loading = false, error = orderErrorMessage(error)) }
+                            if (sessionAtStart != sessionGeneration || !isSessionActive(sessionAtStart)) return@onFailure
+                            if (multiOrderDetails.currentOrderNo != orderNo) {
+                                publishMultiOrderState()
+                                return@onFailure
+                            }
+                            _state.update { it.copy(orderDetail = null, orderStatus = null, loading = false, error = orderErrorMessage(error)) }
                             publishMultiOrderState()
                         }
                 }
                 .onFailure { error ->
                     if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
-                    _state.update { it.copy(loading = false, error = orderErrorMessage(error)) }
+                    if (sessionAtStart != sessionGeneration || !isSessionActive(sessionAtStart)) return@onFailure
+                    if (multiOrderDetails.currentOrderNo != orderNo) {
+                        publishMultiOrderState()
+                        return@onFailure
+                    }
+                    _state.update { it.copy(orderDetail = multiOrderDetails.state(orderNo)?.content,
+                        orderStatus = multiOrderDetails.state(orderNo)?.materialStatus,
+                        loading = false, error = orderErrorMessage(error)) }
                     publishMultiOrderState()
                 }
         }
     }
 
-    private fun toOrderStatus(detail: OrderDetail) = OrderMaterialStatus(detail.orderNo, "PRODUCTION_ORDER", detail.materials, null, detail.orderId, detail.productName, detail.orderStatus)
     private fun orderErrorMessage(error: Throwable) = if (error is ApiException) error.safeMessage("订单查询失败，请重试") else "网络不可用，请检查连接后重试"
     private fun publishMultiOrderState() { _state.update { it.copy(multiOrderSnapshot = multiOrderDetails.snapshot()) } }
 

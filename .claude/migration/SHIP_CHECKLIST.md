@@ -17,9 +17,23 @@
 ## 无法由本机替代的验收
 扫码摄像头、真机网络切换、后台worker系统调度、UI实际渲染与生产U9链路未实测时必须说明；不据此阻止交付可审查代码，但不得宣称生产验收完成。
 
+## 2026-11-20 第三轮延续检查
+
+- [x] MultiOrderSessionPagingRegressionTest：6项通过，覆盖缓存身份/角色预览清理、非选中迟到刷新、同订单刷新tab切换不重复发请求、刷新淘汰旧append、切回订单恢复权威分页与workflow投影。
+- [x] 第三轮Android最终：257项／50类，0失败、0错误、0跳过；`:app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL。
+- [x] 后端未改源码，第二轮冻结全量593 passed沿用；真实Room SQL、图标扫描、guard、diff-check均通过。
+- [ ] 账号owner迁移政策、真机/Android加密磁盘与生产U9/远端CI未验收，不能宣称全生产发布验收通过。
+
 ## 最终结果
 
-后端560 passed；Android234项零失败、Debug构建成功；Room真实生成SQL、图标及优化guard通过。独立脚本已逐个运行并与基线对照：auth19/19，其余5/26、28/35、24/33均为原有失败，故该发布门禁保持未勾选，不宣称完整发布验收通过。CI配置已审阅，尚未推送执行。
+## 2026-11-20 第三轮订单缓存验收
+
+- [x] 修复前正确不变量复现：账号缓存/同单旧分页等；订单SessionPaging专项7项通过。
+- [x] Android最终全量258项/50 suites，0失败/0错误/0跳过；`:app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL。
+- [x] Room原生取消CAS、图标75文件、迁移guard、`git diff --check` PASS。
+- [ ] 真机/加密磁盘、厂商调度、U9及远端CI未测试；队列owner迁移政策未决定。
+
+最终结果：三轮代码位于本地修复分支，未推送/部署。后端560 passed；Android234项零失败、Debug构建成功；Room真实生成SQL、图标及优化guard通过。独立脚本已逐个运行并与基线对照：auth19/19，其余5/26、28/35、24/33均为原有失败，故该发布门禁保持未勾选，不宣称完整发布验收通过。CI配置已审阅，尚未推送执行。
 
 ## 2026-11-20 第二轮最终验收
 

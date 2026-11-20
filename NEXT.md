@@ -1,5 +1,16 @@
 # NEXT.md — 交接看板
 
+## 2026-11-20 深查第三轮修复（本地分支，未推送／未部署）
+
+- 分支 `fix-deep-audit-138ff95`，基线 `53b1b67`；Android `0.5.54 / 61`，后端 `0.22.2`（本轮无后端运行代码改动）。
+- 修复ViewModel订单LRU跨登出/账号/角色预览泄露；detail/status分开缓存，切回恢复服务端分页/汇总/workflow；同订单旧append按刷新generation/page/request token淘汰，非选中请求不得覆盖全局UI。
+- 更新源码位置：[LogisticsViewModel.kt](logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt)、[MultiOrderDetailState.kt](logistics-android/app/src/main/java/com/company/logistics/ui/MultiOrderDetailState.kt)。回归：[MultiOrderSessionPagingRegressionTest.kt](logistics-android/app/src/test/java/com/company/logistics/ui/MultiOrderSessionPagingRegressionTest.kt)。详见[第三轮报告](docs/deep-audit-round3.md)。
+- 第三轮修复同VM订单缓存跨账号/预览泄露、非选中详情响应覆盖当前页、切换缓存丢分页/汇总、同订单旧append污染新首刷；订单正确不变量6项通过。
+- Android最终 **258项/50类零失败**（含订单缓存7项回归），`testDebugUnitTest + assembleDebug` BUILD SUCCESSFUL，版本0.5.54/61。后端593 passed沿用第二轮（本轮无后端源码改动）；Room SQL、图标、guard和diff门禁通过。
+- 源码、复现步骤与范围见 `docs/deep-audit-round3.md`。本地分支未推送/部署；队列owner/真机/厂商后台/生产U9/远端CI限制沿用此前记录。
+
+---
+
 ## 2026-11-20 深查第二轮修复（本地分支，未推送／未部署）
 
 - 分支 `fix-deep-audit-138ff95`，基线 `138ff95`；后端 `0.22.2`，Android `0.5.53 / 60`。

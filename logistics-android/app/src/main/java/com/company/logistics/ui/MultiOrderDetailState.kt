@@ -1,13 +1,20 @@
 package com.company.logistics.ui
 
 import com.company.logistics.model.OrderDetail
+import com.company.logistics.model.OrderMaterialStatus
 
 /** Lifecycle state for one order detail request. */
 data class OrderDetailLoadState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val content: OrderDetail? = null,
-    /** Monotonically increasing request id; results must match it before applying. */
+    /** Authoritative paged material-status projection; never reconstruct it from OrderDetail. */
+    val materialStatus: OrderMaterialStatus? = null,
+    /** Identity of the current first-page material fetch. */
+    val materialRequestId: Long = 0L,
+    /** At most one append request per order/material generation. */
+    val materialAppendRequestId: Long? = null,
+    /** Monotonically increasing detail request token. */
     val requestId: Long = 0L,
 )
 
@@ -54,6 +61,69 @@ class MultiOrderDetailState(
         require(orderNo.isNotBlank()) { "orderNo must not be blank" }
         selectedOrderNo = orderNo
         return touch(orderNo)
+    }
+
+    fun beginMaterialRefresh(orderNo: String): Long {
+        val old = touch(orderNo)
+        val generation = ++nextRequestId
+        entries[orderNo] = old.copy(materialRequestId = generation, materialStatus = null, materialAppendRequestId = null)
+        return generation
+    }
+
+    fun beginMaterialAppend(orderNo: String): Pair<Long, Long>? {
+        val old = entries[orderNo] ?: return null
+        val status = old.materialStatus ?: return null
+        if (!status.hasMore || old.materialAppendRequestId != null) return null
+        val requestId = ++nextRequestId
+        entries[orderNo] = old.copy(materialAppendRequestId = requestId)
+        return old.materialRequestId to requestId
+    }
+
+    fun applyMaterialSuccess(orderNo: String, generation: Long, value: OrderMaterialStatus): Boolean =
+        updateMaterialIfCurrent(orderNo, generation) { old ->
+            require(value.page == 1) { "Material refresh must start at page 1" }
+            value.copy(items = value.items.distinctBy { (it.deviceId ?: "") + "|" + it.materialId })
+        }
+
+    fun isMaterialAppendRequestCurrent(orderNo: String, generation: Long, requestId: Long): Boolean =
+        entries[orderNo]?.let { it.materialRequestId == generation && it.materialAppendRequestId == requestId } == true
+
+    fun appendMaterialSuccess(orderNo: String, generation: Long, requestId: Long, value: OrderMaterialStatus): Boolean {
+        val old = entries[orderNo] ?: return false
+        if (old.materialRequestId != generation || old.materialAppendRequestId != requestId) return false
+        val base = old.materialStatus ?: return false
+        if (value.documentNo != orderNo || value.page != base.page + 1) {
+            entries[orderNo] = old.copy(materialAppendRequestId = null)
+            return false
+        }
+        val merged = (base.items + value.items).distinctBy { (it.deviceId ?: "") + "|" + it.materialId }
+        entries[orderNo] = old.copy(materialStatus = value.copy(items = merged), materialAppendRequestId = null)
+        evictIfNeeded()
+        return true
+    }
+
+    fun appendMaterialError(orderNo: String, generation: Long, requestId: Long): Boolean {
+        val old = entries[orderNo] ?: return false
+        if (old.materialRequestId != generation || old.materialAppendRequestId != requestId) return false
+        entries[orderNo] = old.copy(materialAppendRequestId = null)
+        return true
+    }
+
+    private fun updateMaterialIfCurrent(
+        orderNo: String, generation: Long, update: (OrderMaterialStatus?) -> OrderMaterialStatus?,
+    ): Boolean {
+        val old = entries[orderNo] ?: return false
+        if (old.materialRequestId != generation) return false
+        entries[orderNo] = old.copy(materialStatus = update(old.materialStatus), materialAppendRequestId = null)
+        evictIfNeeded()
+        return true
+    }
+
+    /** Explicit identity boundary: an order entry must not survive logout/account changes. */
+    fun clear() {
+        nextRequestId++
+        entries.clear()
+        selectedOrderNo = null
     }
 
     /** Starts a refresh only for [orderNo], returning its opaque request token. */
