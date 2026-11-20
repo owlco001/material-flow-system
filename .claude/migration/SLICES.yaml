@@ -220,8 +220,48 @@ slices:
     touched_paths: [.claude/migration, NEXT.md, docs/deep-audit-round4.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
     verification_commands: ["bash .claude/migration/guard.sh", "python3 scripts/check_offline_room_queries.py", "git diff --check"]
 
+  - id: r5-device-lifecycle
+    type: implementation
+    name: 机台详情会话和请求生命周期隔离
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/test/java/com/company/logistics/ui/DeviceDetailLifecycleRegressionTest.kt]
+    external_surfaces: [机台页面导航与状态]
+    contracts: [迟到详情与聚合不得覆盖新机台或登出后的状态]
+    deletion_targets: [独立viewModelScope机台请求和无世代全局写回]
+    temp_artifacts: []
+    dependency_changes: [kotlinx-coroutines-test测试依赖]
+    docs_to_update: [docs/deep-audit-round5.md]
+    residue_queries: [机台路径不得直接viewModelScope.launch]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests '*DeviceDetailLifecycleRegressionTest'"]
+    risks: [取消不配合的迟到回调, 角色预览和页面导航]
+  - id: r5-device-pages
+    type: implementation
+    name: 机台装配任务和工时完整分页读取
+    status: done
+    dependencies: [r5-device-lifecycle]
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsApp.kt, logistics-android/app/src/main/java/com/company/logistics/ui/screens/DeviceDetailScreen.kt, logistics-android/app/src/test/java/com/company/logistics/ui/DeviceDetailLifecycleRegressionTest.kt]
+    external_surfaces: [机台任务人员工时卡]
+    contracts: [保留服务端权限和工时口径, 第21条记录必须展示]
+    deletion_targets: [机台聚合单页假总量]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round5.md]
+    residue_queries: [机台聚合不得只取page1后冒充全部]
+    verification_commands: ["./gradlew :app:testDebugUnitTest :app:assembleDebug"]
+    risks: [错误分页不能正常返回部分总数, 老服务端缺total]
+  - id: r5-convergence
+    type: convergence
+    name: 第五轮完整验收与本地补丁
+    status: done
+    dependencies: [r5-device-lifecycle, r5-device-pages]
+    touched_paths: [.claude/migration, NEXT.md, docs/deep-audit-round5.md, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
+    verification_commands: ["./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
+
 round3_verification_summary: "订单缓存正确不变量7项通过；Android258项/50 suites零失败且Debug构建成功；后端593项沿用无源码改动基线；Room生成CAS、图标、guard、diff均通过。"
 
 round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"
 
 round4_verification_summary: "Backend598 passed; Android265 passed/51 suites, Debug build SUCCESS; device paging7 passed; no push/deploy/APK publication."
+
+round5_verification_summary: "Android285 passed/52 suites, 20 device regressions, Debug SUCCESS55s; backend focused11 passed; backend full598 from unchanged round4 baseline; no deployment."

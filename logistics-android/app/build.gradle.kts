@@ -30,8 +30,8 @@ android {
         applicationId = "com.company.logistics"
         minSdk = 26
         targetSdk = 34
-        versionCode = 62
-        versionName = "0.5.55"
+        versionCode = 63
+        versionName = "0.5.56"
 
         buildConfigField("String", "API_BASE_URL", "\"$escapedApiBaseUrl\"")
 
@@ -119,6 +119,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     // Android 本地单测不提供 org.json 实现（android.jar 仅含桩）；用同包 JVM 实现验证 parser。
     testImplementation("org.json:json:20240303")
 

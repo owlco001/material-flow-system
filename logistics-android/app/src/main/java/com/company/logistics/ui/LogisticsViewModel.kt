@@ -54,6 +54,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -165,6 +167,7 @@ data class LogisticsUiState(
     val deviceMaterials: List<OrderMaterialItem> = emptyList(),
     val deviceTransferRequests: List<TransferRequest> = emptyList(),
     val deviceLabor: LaborSummaryPage? = null,
+    val deviceAggregateError: String? = null,
     val multiOrderSnapshot: MultiOrderSnapshot = MultiOrderSnapshot(null, emptyList()),
     /** 订单页空态展示的最近订单列表（服务端 created_at 倒序，点击即查详情） */
     val recentOrders: List<MaterialFlowApi.RecentOrderItem> = emptyList(),
@@ -384,6 +387,8 @@ class LogisticsViewModel(
     private val assemblyLaborPermits = Semaphore(ASSEMBLY_LABOR_CONCURRENCY)
     private var assemblyLaborDetailJob: Job? = null
     private var assemblyLaborDetailGeneration = 0L
+    private var deviceLoadJob: Job? = null
+    private var deviceLoadGeneration = 0L
     private val multiOrderDetails = MultiOrderDetailState()
     /** 最近订单列表是否已加载（本次会话内只拉一次，重试可 force） */
     private var recentOrdersLoaded = false
@@ -450,6 +455,7 @@ class LogisticsViewModel(
             return
         }
         val loginGeneration = ++sessionGeneration
+        cancelDeviceLoad(clearContent = true)
         multiOrderDetails.clear()
         _state.update { it.copy(orderDetail = null, orderStatus = null, multiOrderSnapshot = multiOrderDetails.snapshot(), materialLoadingMore = false) }
         operationScope.launch {
@@ -567,6 +573,7 @@ class LogisticsViewModel(
 
     fun logout() {
         sessionGeneration++
+        cancelDeviceLoad(clearContent = true)
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
         previewController = null
@@ -582,6 +589,7 @@ class LogisticsViewModel(
     private fun expireSession() {
         if (!_state.value.loggedIn) return
         sessionGeneration++
+        cancelDeviceLoad(clearContent = true)
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
         previewController = null
@@ -669,6 +677,7 @@ class LogisticsViewModel(
             it.copy(screen = screen, error = null)
         }
     }.also {
+        if (_state.value.screen != Screen.DEVICE_DETAIL) cancelDeviceLoad()
         when (screen) {
             Screen.APPROVAL -> refreshTransferRequests()
             Screen.AUDIT -> refreshAuditLogs()
@@ -714,6 +723,7 @@ class LogisticsViewModel(
         }
         val result = controller.enterPreview(role)
         result.onSuccess {
+            cancelDeviceLoad(clearContent = true)
             cancelWorkspaceLoad()
             multiOrderDetails.clear()
             _state.update {
@@ -784,6 +794,7 @@ class LogisticsViewModel(
                 )
             )
         result.onSuccess {
+            cancelDeviceLoad(clearContent = true)
             cancelWorkspaceLoad()
             multiOrderDetails.clear()
             _state.update {
@@ -2695,6 +2706,7 @@ class LogisticsViewModel(
      */
     fun onScanned(rawValue: String) {
         if (rawValue.isBlank()) return
+        cancelDeviceLoad()
         operationScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             repo.resolveScan(rawValue)
@@ -2766,6 +2778,7 @@ class LogisticsViewModel(
     }
 
     private suspend fun loadAssemblyTasksForDevice(deviceId: String?, deviceNo: String?) {
+        cancelDeviceLoad()
         val id = deviceId?.trim().orEmpty().ifBlank { null }
         val no = deviceNo?.trim().orEmpty().ifBlank { null }
         val value = no ?: id ?: return
@@ -2804,6 +2817,7 @@ class LogisticsViewModel(
     }
 
     private suspend fun loadMaterial(code: String) {
+        cancelDeviceLoad()
         repo.materialInventory(code)
             .onSuccess { inv ->
                 _state.update {
@@ -2833,6 +2847,7 @@ class LogisticsViewModel(
 
     fun openOrderDetail(orderNo: String, resourceId: String? = null) {
         if (orderNo.isBlank()) return
+        cancelDeviceLoad()
         _state.update { it.copy(orderResourceId = resourceId) }
         multiOrderDetails.select(orderNo)
         val entry = multiOrderDetails.state(orderNo)
@@ -2845,71 +2860,126 @@ class LogisticsViewModel(
         refreshOrderDetail(orderNo)
     }
 
-    fun openDeviceDetail(deviceId: String) {
-        if (deviceId.isBlank()) return
-        viewModelScope.launch {
-            _state.update {
-                it.copy(
-                    loading = true, error = null, deviceDetail = null,
-                    deviceAssemblyTasks = emptyList(), deviceMaterials = emptyList(),
-                    deviceTransferRequests = emptyList(), deviceLabor = null,
-                )
-            }
-            repo.deviceDetail(deviceId)
-                .onSuccess { detail ->
-                    _state.update {
-                        it.copy(deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false)
-                    }
-                    loadDeviceAggregate(detail)
-                }
-                .onFailure { e ->
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            error = if (e is ApiException) e.safeMessage("机台查询失败") else "网络不可用",
-                        )
-                    }
-                }
+    private fun cancelDeviceLoad(clearContent: Boolean = false) {
+        val pendingDetail = deviceLoadJob?.isActive == true && _state.value.deviceDetail == null
+        deviceLoadGeneration++
+        deviceLoadJob?.cancel()
+        deviceLoadJob = null
+        if (clearContent || pendingDetail) _state.update {
+            if (clearContent) it.copy(
+                loading = if (pendingDetail) false else it.loading,
+                deviceDetail = null, deviceAssemblyTasks = emptyList(), deviceMaterials = emptyList(),
+                deviceTransferRequests = emptyList(), deviceLabor = null, deviceAggregateError = null,
+            ) else it.copy(loading = false)
         }
     }
 
-    /**
-     * 机台页聚合数据：装配任务（进度/人员）、物料情况、物料流转申请、工时。
-     * 全部使用现有只读接口，任一失败不阻塞页面主体展示。
-     */
-    private fun loadDeviceAggregate(detail: DeviceDetail) {
-        viewModelScope.launch {
-            val deviceId = detail.deviceId
-            val deviceNo = detail.deviceNo
-            // 装配任务：进度、人员。服务端按机台过滤（fix5l），
-            // 修「人员为 0」：此前拉全局第一页 20 条再客户端过滤，
-            // 大订单任务不在首屏导致机台详情任务/人员恒为 0。
-            val tasks = repo.assemblyTaskPage(1, 20, deviceNo, deviceId).getOrNull()?.items
-                ?.filter { it.deviceId == deviceId || it.deviceNo == deviceNo }
-                .orEmpty()
-            // 服务端先按机台筛选，每页200行；Repository取完后续页，不下载其他机台物料。
-            val materials = mutableListOf<OrderMaterialItem>()
-            for (order in detail.orders.distinctBy { it.orderNo }) {
-                repo.deviceOrderMaterials(order.orderNo, deviceId, deviceNo).getOrNull()?.let { rows ->
-                    materials += rows
-                }
-            }
-            // 物料流转申请：流转单 documentNo 即订单号，按机台关联订单过滤
-            val orderNos = detail.orders.map { it.orderNo }.toSet()
-            val transfers = repo.transferRequests().getOrNull()?.items
-                ?.filter { it.documentNo in orderNos }
-                .orEmpty()
-            // 工时：服务端按机台过滤
-            val labor = repo.workshopLaborSummary(deviceId = deviceId).getOrNull()
-            _state.update {
-                it.copy(
-                    deviceAssemblyTasks = tasks,
-                    deviceMaterials = materials,
-                    deviceTransferRequests = transfers,
-                    deviceLabor = labor,
-                )
-            }
+    private suspend fun ensureDeviceLoadActive(session: Long, generation: Long, expectedScreen: Screen = Screen.DEVICE_DETAIL) {
+        currentCoroutineContext().ensureActive()
+        if (!isSessionActive(session) || generation != deviceLoadGeneration || _state.value.screen != expectedScreen) {
+            throw CancellationException("Device detail request was superseded")
         }
+    }
+
+    fun openDeviceDetail(deviceId: String) {
+        if (deviceId.isBlank() || !_state.value.loggedIn) return
+        cancelDeviceLoad(clearContent = true)
+        val session = sessionGeneration
+        val generation = deviceLoadGeneration
+        val originScreen = _state.value.screen
+        _state.update { it.copy(loading = true, error = null) }
+        deviceLoadJob = operationScope.launch {
+            val response = resultOf { repo.deviceDetail(deviceId).getOrThrow() }
+            ensureDeviceLoadActive(session, generation, originScreen)
+            val detail = response.getOrElse { error ->
+                _state.update { it.copy(loading = false,
+                    error = if (error is ApiException) error.safeMessage("机台查询失败") else "网络不可用") }
+                return@launch
+            }
+            _state.update { it.copy(deviceDetail = detail, screen = Screen.DEVICE_DETAIL, loading = false) }
+            loadDeviceAggregate(detail, session, generation)
+        }
+    }
+
+    /** Same job as the selected detail: cancelling or changing identity owns every aggregate request. */
+    private suspend fun loadDeviceAggregate(detail: DeviceDetail, session: Long, generation: Long) {
+        val failures = mutableListOf<String>()
+        suspend fun <T> section(name: String, read: suspend () -> T): T? {
+            ensureDeviceLoadActive(session, generation)
+            val response = resultOf { read() }
+            ensureDeviceLoadActive(session, generation)
+            if (response.isFailure) failures += name
+            return response.getOrNull()
+        }
+        val tasks = section("装配任务/人员") { loadAllDeviceTasks(detail, session, generation) }.orEmpty()
+        val materials = mutableListOf<OrderMaterialItem>()
+        for (order in detail.orders.distinctBy { it.orderNo }) {
+            section("物料") { repo.deviceOrderMaterials(order.orderNo, detail.deviceId, detail.deviceNo).getOrThrow() }
+                ?.let { materials += it }
+        }
+        val orderNos = detail.orders.map { it.orderNo }.toSet()
+        val transfers = section("流转申请") { repo.transferRequests().getOrThrow().items.filter { it.documentNo in orderNos } }.orEmpty()
+        val labor = section("工时") { loadAllDeviceLabor(detail, session, generation) }
+        ensureDeviceLoadActive(session, generation)
+        if (_state.value.screen != Screen.DEVICE_DETAIL || _state.value.deviceDetail?.deviceId != detail.deviceId) return
+        _state.update { it.copy(
+            deviceAssemblyTasks = tasks, deviceMaterials = materials,
+            deviceTransferRequests = transfers, deviceLabor = labor,
+            deviceAggregateError = failures.distinct().takeIf { it.isNotEmpty() }
+                ?.joinToString("、", postfix = "读取不完整，请重新打开机台重试"),
+        ) }
+    }
+
+    /** Keep server authorization and machine filters on every page; never publish partial counts. */
+    private suspend fun loadAllDeviceTasks(detail: DeviceDetail, session: Long, generation: Long): List<AssemblyTask> {
+        val items = linkedMapOf<String, AssemblyTask>()
+        var expectedTotal = -1
+        var expectedPages = -1
+        var page = 1
+        while (true) {
+            ensureDeviceLoadActive(session, generation)
+            val result = repo.assemblyTaskPage(page, 20, detail.deviceNo, detail.deviceId).getOrThrow()
+            ensureDeviceLoadActive(session, generation)
+            check(result.page == page && result.total >= 0 && result.totalPages >= 0) { "装配分页响应不一致" }
+            if (page == 1) {
+                expectedTotal = result.total
+                expectedPages = result.totalPages
+            }
+            check(result.total == expectedTotal && result.totalPages == expectedPages) { "装配总数已变化，请重试" }
+            val before = items.size
+            for (task in result.items) {
+                check(task.id.isNotBlank()) { "装配任务标识缺失" }
+                items[task.id] = task
+            }
+            if (items.size >= expectedTotal && page >= expectedPages) break
+            check(result.items.isNotEmpty() && items.size > before) { "装配分页未推进" }
+            page++
+        }
+        return items.values.filter { it.deviceId == detail.deviceId || it.deviceNo == detail.deviceNo }
+    }
+
+    private suspend fun loadAllDeviceLabor(detail: DeviceDetail, session: Long, generation: Long): LaborSummaryPage {
+        val items = linkedMapOf<Pair<String?, String?>, LaborSummaryItem>()
+        var expectedTotal: Int? = null
+        var page = 1
+        while (true) {
+            ensureDeviceLoadActive(session, generation)
+            val result = repo.workshopLaborSummary(page = page, deviceId = detail.deviceId).getOrThrow()
+            ensureDeviceLoadActive(session, generation)
+            check(result.page == page && result.pageSize > 0 && (result.total == null || result.total >= 0)) { "工时分页响应不一致" }
+            if (page == 1) expectedTotal = result.total
+            check(result.total == expectedTotal) { "工时总数已变化，请重试" }
+            val before = items.size
+            for (item in result.items) {
+                check(!item.taskId.isNullOrBlank() && !item.assemblerId.isNullOrBlank()) { "工时归属标识缺失" }
+                items[item.taskId to item.assemblerId] = item
+            }
+            if (expectedTotal != null && items.size >= expectedTotal) break
+            if (expectedTotal == null && result.items.size < result.pageSize) break
+            check(result.items.isNotEmpty() && items.size > before) { "工时分页未推进" }
+            page++
+        }
+        return LaborSummaryPage(items.values.toList(), total = items.size)
     }
 
     /**
@@ -2943,6 +3013,7 @@ class LogisticsViewModel(
     }
 
     fun selectOrder(orderNo: String) {
+        cancelDeviceLoad()
         if (!multiOrderDetails.orderNos.contains(orderNo)) return openOrderDetail(orderNo)
         multiOrderDetails.select(orderNo)
         val entry = multiOrderDetails.state(orderNo)
@@ -3002,6 +3073,7 @@ class LogisticsViewModel(
     }
 
     fun refreshOrderDetail() {
+        if (_state.value.screen == Screen.ORDER_DETAIL) cancelDeviceLoad()
         _state.value.multiOrderSnapshot.selectedOrderNo?.let(::refreshOrderDetail)
             ?: _state.value.orderStatus?.documentNo?.let(::refreshOrderDetail)
     }
@@ -3009,7 +3081,7 @@ class LogisticsViewModel(
     private fun refreshOrderDetail(orderNo: String) {
         val requestId = multiOrderDetails.beginRefresh(orderNo)
         val sessionAtStart = sessionGeneration
-        val isSelectedAtStart = multiOrderDetails.currentOrderNo == orderNo
+        val isSelectedAtStart = multiOrderDetails.currentOrderNo == orderNo && _state.value.screen == Screen.ORDER_DETAIL
         val materialGeneration = multiOrderDetails.beginMaterialRefresh(orderNo)
         if (isSelectedAtStart) {
             _state.update { it.copy(orderDetail = null, orderStatus = null, materialLoadingMore = false, loading = true, error = null) }
@@ -3027,7 +3099,7 @@ class LogisticsViewModel(
                             if (!isSessionActive(sessionAtStart)) return@materialsLoaded
                             if (!multiOrderDetails.applySuccess(orderNo, requestId, detail)) return@materialsLoaded
                             if (!multiOrderDetails.applyMaterialSuccess(orderNo, materialGeneration, materialStatus)) return@materialsLoaded
-                            if (multiOrderDetails.currentOrderNo != orderNo) {
+                            if (multiOrderDetails.currentOrderNo != orderNo || _state.value.screen != Screen.ORDER_DETAIL) {
                                 publishMultiOrderState()
                                 return@materialsLoaded
                             }
@@ -3038,7 +3110,7 @@ class LogisticsViewModel(
                         .onFailure { error ->
                             if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
                             if (sessionAtStart != sessionGeneration || !isSessionActive(sessionAtStart)) return@onFailure
-                            if (multiOrderDetails.currentOrderNo != orderNo) {
+                            if (multiOrderDetails.currentOrderNo != orderNo || _state.value.screen != Screen.ORDER_DETAIL) {
                                 publishMultiOrderState()
                                 return@onFailure
                             }
@@ -3049,7 +3121,7 @@ class LogisticsViewModel(
                 .onFailure { error ->
                     if (!multiOrderDetails.applyError(orderNo, requestId, orderErrorMessage(error))) return@onFailure
                     if (sessionAtStart != sessionGeneration || !isSessionActive(sessionAtStart)) return@onFailure
-                    if (multiOrderDetails.currentOrderNo != orderNo) {
+                    if (multiOrderDetails.currentOrderNo != orderNo || _state.value.screen != Screen.ORDER_DETAIL) {
                         publishMultiOrderState()
                         return@onFailure
                     }
@@ -3065,7 +3137,8 @@ class LogisticsViewModel(
     private fun publishMultiOrderState() { _state.update { it.copy(multiOrderSnapshot = multiOrderDetails.snapshot()) } }
 
     private fun refreshOrderAfterMutation() {
-        if (_state.value.orderStatus != null) refreshOrderDetail()
+        if (_state.value.screen != Screen.ORDER_DETAIL) return
+        _state.value.orderStatus?.documentNo?.let(::refreshOrderDetail)
     }
 
     /** 仅在服务端订单详情中已加载的机台物料上提报异常；不写入本地伪成功状态。 */

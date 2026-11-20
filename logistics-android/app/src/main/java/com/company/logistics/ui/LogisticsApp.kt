@@ -405,6 +405,7 @@ fun LogisticsApp(
                         state.deviceMaterials,
                         state.deviceTransferRequests,
                         state.deviceLabor,
+                        aggregateError = state.deviceAggregateError,
                         onBack = { viewModel.navigate(Screen.SCANNER) },
                         onSubmitMaterialRequest = { material, orderNo, qty, remark, evidences ->
                             viewModel.submitDeviceMaterialRequest(material, orderNo, qty, remark, evidences)

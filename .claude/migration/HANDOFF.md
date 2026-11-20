@@ -1,3 +1,22 @@
+# Handoff — 第五轮机台响应隔离与完整分页
+
+## What changed
+基线32fa40b；本地分支fix-deep-audit-138ff95。Android0.5.56/63，后端保持0.22.3无源码变化。机台详情与聚合同job，session/request与路由归属双校验，登录/登出/401/角色预览及直接订单/扫码导航失效旧任务。任务、工时读完整20行分页，异常/总数变化提示不完整。
+
+## What is now true
+最初8项红测与独立复核补充3项红测已转绿。最终Android285项/52类零失败，新增20项，Debug构建成功55s。后端相关契约11项复验通过；后端完整598项沿用第四轮已验基线，不是本轮重跑。真实Room SQL、75文件图标及全部guard通过。测试依赖新增coroutines-test1.8.1，不新增生产依赖。
+
+## What remains
+流转全量下载/5000条上限、聚合串行、机台master/orderDevice标识历史差异单列后续。多次HTTP分页无事务快照；检测count变化和重复页不能识别所有等量替换。离线owner政策、旧独立脚本基线失败和真机/后台调度/U9/远端CI限制保留。
+
+## What blocks shipping right now
+本轮仅本地交付可供审查，未推送/部署/发布APK，未连接测试服务器。物理设备与生产验收未完成。服务器最后已知仍为0.22.2/d40aad6，勿将本轮当已部署。
+
+## Exact next steps
+审阅docs/deep-audit-round5.md及本地增量补丁；复验Android testDebugUnitTest/assembleDebug、Room/图标/guard。需要继续优化时单独处理机台流转范围筛选；推送/部署/APK发布需另行明确授权。
+
+---
+
 # Handoff — 第四轮机台物料优化完成
 
 ## What changed
@@ -47,7 +66,7 @@
 ## What is now true
 
 - 后端冻结后全量560 passed（657.82s），基线542 passed。
-- Android全量234项／45类，0失败、0错误、0跳过；Debug构建成功（4m21s），基线219项。
+- Android全量234项／45类，0失败、0错误、0跳过；Debug构建成功（4m21s），基线220项。
 - 真实Room生产DAO生成SQL已实跑检查：到期前置过滤、后续批次、退避次数／时间持久化、终态不重试、创建快照均PASS。
 - 图标门禁75文件PASS，优化guard和git diff --check通过。
 - 库存20,004条合成数据的第一页排序查询中位数：全量2.8175→0.0359ms，精确分类2.3623→0.0384ms，均消除临时排序，返回数据一致。不是整页或生产响应耗时。

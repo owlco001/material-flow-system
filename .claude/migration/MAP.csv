@@ -51,3 +51,7 @@ r4-device-materials,test,device material scope,,material-flow-backend/tests/test
 r4-device-materials,test,device material scope,,material-flow-backend/tests/test_device_material_payload_budget.py,verified,no,full regression,synthetic payload budget
 r4-device-materials,test,device material scope,,logistics-android/app/src/test/java/com/company/logistics/data/DeviceMaterialPagingTest.kt,verified,no,full regression,loopback page draining
 r4-device-materials,docs,device material scope,,docs/deep-audit-round4.md,verified,no,full regression,fourth round results
+r5-device,test,device lifecycle,,logistics-android/app/src/test/java/com/company/logistics/ui/DeviceDetailLifecycleRegressionTest.kt,verified,no,Android regression,controlled deferred and pagination tests
+r5-device,source,device lifecycle,,logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsApp.kt,verified,no,Android regression,aggregate warning wiring
+r5-device,source,device lifecycle,,logistics-android/app/src/main/java/com/company/logistics/ui/screens/DeviceDetailScreen.kt,verified,no,Android regression,aggregate warning
+r5-device,docs,device lifecycle,,docs/deep-audit-round5.md,verified,no,Android regression,fifth-round results

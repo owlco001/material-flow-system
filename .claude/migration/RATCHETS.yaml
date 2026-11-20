@@ -56,3 +56,19 @@ ratchets:
     maximum: 0
     target: 0
     rationale: 归属集合去重及VM预算另由行为回归验证
+  - id: device-tasks-first-page-only
+    scope: logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt
+    query: 'val tasks = repo.assemblyTaskPage(1, 20, deviceNo, deviceId)'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 机台页任务人员必须读取完整分页
+  - id: device-labor-first-page-only
+    scope: logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt
+    query: 'repo.workshopLaborSummary(deviceId = deviceId).getOrNull()'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 不把机台工时第一页作为完整总量

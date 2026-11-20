@@ -27,6 +27,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -98,6 +99,7 @@ fun DeviceDetailScreen(
     role: UserRole = UserRole.OPERATOR,
     readOnly: Boolean = false,
     batchSubmitting: Boolean = false,
+    aggregateError: String? = null,
     drawings: @Composable (deviceId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -136,6 +138,10 @@ fun DeviceDetailScreen(
                 description = "请返回后重新选择机台",
             )
             else -> {
+                aggregateError?.let { warning ->
+                    Text(warning, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                    VSpace(Spacing.sm)
+                }
                 // ---- 渐变横幅头图 + 3D 入口 ----
                 // 优先使用后端绑定的 3D 模型，未绑定时按 App 内置映射表兜底
                 val modelCode = remember(detail.deviceNo, detail.model3dCode) {
