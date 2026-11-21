@@ -388,6 +388,9 @@ class LogisticsViewModel(
     // Generation guards prevent a late response from an older refresh replacing newer data.
     private var transferRequestLoadGeneration = 0L
     private var transferRequestDetailGeneration = 0L
+    private var myTransferLoadJob: Job? = null
+    @Volatile
+    private var myTransferLoadGeneration = 0L
     private var auditLoadGeneration = 0L
     private var stocktakeLoadGeneration = 0L
     private var workspaceLoadGeneration = 0L
@@ -465,6 +468,7 @@ class LogisticsViewModel(
             return
         }
         val loginGeneration = ++sessionGeneration
+        cancelMyTransferLoad()
         cancelDeviceLoad(clearContent = true)
         multiOrderDetails.clear()
         _state.update { it.copy(orderDetail = null, orderStatus = null, multiOrderSnapshot = multiOrderDetails.snapshot(), materialLoadingMore = false) }
@@ -583,6 +587,7 @@ class LogisticsViewModel(
 
     fun logout() {
         sessionGeneration++
+        cancelMyTransferLoad()
         cancelDeviceLoad(clearContent = true)
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
@@ -599,6 +604,7 @@ class LogisticsViewModel(
     private fun expireSession() {
         if (!_state.value.loggedIn) return
         sessionGeneration++
+        cancelMyTransferLoad()
         cancelDeviceLoad(clearContent = true)
         cancelWorkspaceLoad()
         assemblyLaborDetailJob?.cancel()
@@ -741,6 +747,7 @@ class LogisticsViewModel(
         }
         val result = controller.enterPreview(role)
         result.onSuccess {
+            cancelMyTransferLoad()
             cancelDeviceLoad(clearContent = true)
             cancelWorkspaceLoad()
             multiOrderDetails.clear()
@@ -812,6 +819,7 @@ class LogisticsViewModel(
                 )
             )
         result.onSuccess {
+            cancelMyTransferLoad()
             cancelDeviceLoad(clearContent = true)
             cancelWorkspaceLoad()
             multiOrderDetails.clear()
@@ -3060,33 +3068,67 @@ class LogisticsViewModel(
         return LaborSummaryPage(items.values.toList(), total = items.size)
     }
 
+    private fun cancelMyTransferLoad() {
+        val generation = ++myTransferLoadGeneration
+        val session = sessionGeneration
+        myTransferLoadJob?.cancel()
+        myTransferLoadJob = null
+        _state.update { state ->
+            if (generation != myTransferLoadGeneration || session != sessionGeneration) state
+            else state.copy(myTransferRequests = emptyList(), myTransferRequestsLoading = false, myTransferRequestsError = null)
+        }
+    }
+
+    private fun ownsMyTransferLoad(
+        state: LogisticsUiState, session: Long, generation: Long, userId: String,
+        previewRole: WorkspaceViewRole?,
+    ): Boolean = state.loggedIn && session == sessionGeneration && generation == myTransferLoadGeneration &&
+        state.currentUserId == userId && state.previewRole == previewRole
+
     /**
-     * 「我的」页流转申请记录：拉全量后按创建人过滤（服务端无按创建人过滤参数），
-     * createdAt 倒序。失败不阻塞页面（显示错误 + 可重试）。
+     * 「我的」页流转申请记录：拉全量后仅按本人过滤、createdAt 倒序。
+     * 同一身份与预览上下文允许离开 PROFILE 后完成缓存；失败可重试。
      */
     fun loadMyTransferRequests() {
-        if (_state.value.myTransferRequestsLoading) return
-        operationScope.launch {
-            _state.update { it.copy(myTransferRequestsLoading = true, myTransferRequestsError = null) }
-            val myId = _state.value.currentUserId
-            repo.transferRequests().fold(
-                onSuccess = { page ->
-                    val mine = page.items
-                        .filter { it.createdBy != null && it.createdBy == myId }
-                        .sortedByDescending { it.createdAt.orEmpty() }
-                    _state.update {
-                        it.copy(myTransferRequestsLoading = false, myTransferRequests = mine)
-                    }
-                },
-                onFailure = { e ->
-                    _state.update {
-                        it.copy(
-                            myTransferRequestsLoading = false,
-                            myTransferRequestsError = if (e is ApiException) e.safeMessage("流转申请读取失败") else "网络不可用",
-                        )
-                    }
-                },
-            )
+        val current = _state.value
+        val myId = current.currentUserId ?: return
+        if (!current.loggedIn || current.myTransferRequestsLoading || myTransferLoadJob?.isActive == true) return
+        val session = sessionGeneration
+        val generation = ++myTransferLoadGeneration
+        val previewRole = current.previewRole
+        fun owns(state: LogisticsUiState) = ownsMyTransferLoad(state, session, generation, myId, previewRole)
+        // Publish before launch so a second entry cannot queue a duplicate before this job starts.
+        _state.update { if (owns(it)) it.copy(myTransferRequestsLoading = true, myTransferRequestsError = null) else it }
+        myTransferLoadJob = operationScope.launch {
+            try {
+                currentCoroutineContext().ensureActive()
+                if (!owns(_state.value)) return@launch
+                val response = resultOf { repo.transferRequests().getOrThrow() }
+                currentCoroutineContext().ensureActive()
+                if (!owns(_state.value)) return@launch
+                response.fold(
+                    onSuccess = { page ->
+                        val mine = page.items
+                            .filter { it.createdBy != null && it.createdBy == myId }
+                            .sortedByDescending { it.createdAt.orEmpty() }
+                        _state.update { state ->
+                            if (!owns(state)) state else state.copy(
+                                myTransferRequestsLoading = false, myTransferRequests = mine, myTransferRequestsError = null,
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        _state.update { state ->
+                            if (!owns(state)) state else state.copy(
+                                myTransferRequestsLoading = false,
+                                myTransferRequestsError = if (error is ApiException) error.safeMessage("流转申请读取失败") else "网络不可用",
+                            )
+                        }
+                    },
+                )
+            } finally {
+                _state.update { state -> if (owns(state)) state.copy(myTransferRequestsLoading = false) else state }
+            }
         }
     }
 

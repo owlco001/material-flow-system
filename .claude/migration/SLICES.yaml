@@ -314,6 +314,59 @@ slices:
     docs_to_update: [.claude/migration/HANDOFF.md, .claude/migration/SHIP_CHECKLIST.md]
     verification_commands: ["python -m pytest tests/ -q", "./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
 
+  - id: r7-transfer-pager
+    type: implementation
+    name: 全局与范围流转统一完整分页
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt, logistics-android/app/src/main/java/com/company/logistics/data/LogisticsRepository.kt, logistics-android/app/src/test/java/com/company/logistics/data/TransferGlobalPagingTest.kt]
+    external_surfaces: [全局流转读取保持public签名和statusFilter]
+    contracts: [单一canonical分页实现, 全操作固定身份, 5101条必须完整]
+    deletion_targets: [旧50页静默结束循环, 重复的流转分页判断]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round7.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests '*TransferGlobalPagingTest' --tests '*DeviceTransferScopeTest'"]
+    residue_queries: [TRANSFER_REQUEST_MAX_PAGES常量不得保留]
+    risks: [全局status兼容, scope15项不回归, 旧服务端元数据证明]
+  - id: r7-transfer-index
+    type: implementation
+    name: 订单流转索引实测与最小采纳
+    status: done
+    dependencies: []
+    touched_paths: [material-flow-backend/app/main.py, material-flow-backend/tests/test_transfer_document_index_budget.py]
+    external_surfaces: [SQLite幂等索引初始化]
+    contracts: [业务结果排序权限不变, 仅有证据时采纳一条索引]
+    deletion_targets: [单订单流转无索引全表扫描热点]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round7.md]
+    verification_commands: ["python -m pytest tests/test_transfer_document_index_budget.py -q"]
+    residue_queries: [多余候选索引不得留在产品声明]
+    risks: [写放大与存储, IN多订单排序, status叠加]
+  - id: r7-my-transfers
+    type: implementation
+    name: 个人流转列表会话与加载状态隔离
+    status: done
+    dependencies: []
+    touched_paths: [logistics-android/app/src/main/java/com/company/logistics/ui/LogisticsViewModel.kt, logistics-android/app/src/test/java/com/company/logistics/ui/MyTransferLifecycleTest.kt]
+    external_surfaces: [myTransferRequests状态]
+    contracts: [只过滤当前创建人且倒序, 旧session和preview响应不回填, 在途去重与失败重试]
+    deletion_targets: [个人记录无所属job的迟到写回]
+    temp_artifacts: []
+    dependency_changes: []
+    docs_to_update: [docs/deep-audit-round7.md]
+    verification_commands: ["./gradlew :app:testDebugUnitTest --tests '*MyTransferLifecycleTest'"]
+    residue_queries: [个人列表提交必须检查request/session/user快照]
+    risks: [不能影响机台分区并发, 全局error与个人error隔离]
+  - id: r7-convergence
+    type: convergence
+    name: 第七轮并发集成回归与本地补丁
+    status: done
+    dependencies: [r7-transfer-pager, r7-transfer-index, r7-my-transfers]
+    touched_paths: [.claude/migration, docs/deep-audit-round7.md, NEXT.md, material-flow-backend/VERSION, logistics-android/app/build.gradle.kts, logistics-android/app/src/test/java/com/company/logistics/VersionConfigTest.kt]
+    verification_commands: ["python -m pytest tests/ -q", "./gradlew :app:testDebugUnitTest :app:assembleDebug", "python3 scripts/check_offline_room_queries.py", "python3 scripts/check_emoji_icons.py", "bash .claude/migration/guard.sh", "git diff --check"]
+
 round3_verification_summary: "订单缓存正确不变量7项通过；Android258项/50 suites零失败且Debug构建成功；后端593项沿用无源码改动基线；Room生成CAS、图标、guard、diff均通过。"
 
 round2_verification_summary: "后端593 passed；Android251 passed及Debug构建成功；Room原生取消CAS、图标和guard通过。旧独立验收基线失败与真机/owner限制见报告。"
@@ -323,3 +376,5 @@ round4_verification_summary: "Backend598 passed; Android265 passed/51 suites, De
 round5_verification_summary: "Android285 passed/52 suites, 20 device regressions, Debug SUCCESS55s; backend focused11 passed; backend full598 from unchanged round4 baseline; no deployment."
 
 round6_verification_summary: "Backend602 passed; Android307 passed/54 suites, scope15/concurrency7/legacyDevice20 green; Debug SUCCESS1m3s; no push/deploy/APK publication."
+
+round7_verification_summary: "Backend603 passed; Android329 passed/56 suites, global13/personal9/scoped15 green; Debug SUCCESS49s; no push/deploy/APK publication."

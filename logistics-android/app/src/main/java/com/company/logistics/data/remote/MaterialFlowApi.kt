@@ -1016,37 +1016,29 @@ open class MaterialFlowApi(
         )
     }
 
-    /** 查询流转申请列表；列表接口由服务端按当前用户权限裁剪，客户端不本地过滤。
-     *  服务端分页（每页 100 条）：循环拉取直到取完，保证超过 100 条的申请全部可见。
-     *  终止条件取「本页不满一页」与「服务端 total」双保险，兼容未升级分页的老后端。 */
-    suspend fun listTransferRequests(status: String? = null): TransferRequestPage = withContext(Dispatchers.IO) {
-        val all = mutableListOf<TransferRequest>()
-        var serverTime: String? = null
-        var page = 1
-        while (page <= TRANSFER_REQUEST_MAX_PAGES) {
-            val path = buildString {
-                append("/api/v1/transfer-requests?page=$page&pageSize=$TRANSFER_REQUEST_PAGE_SIZE")
-                if (!status.isNullOrBlank()) append("&status=${encodeQuery(status)}")
-            }
-            val json = request("GET", path, null)
-            val pageResult = ApiParser.parseTransferRequestList(json, status)
-            all += pageResult.items
-            if (pageResult.serverTime != null) serverTime = pageResult.serverTime
-            if (pageResult.items.size < TRANSFER_REQUEST_PAGE_SIZE) break
-            val total = JSONObject(json).optInt("total", -1)
-            if (total >= 0 && all.size >= total) break
-            page++
-        }
-        TransferRequestPage(items = all, statusFilter = status, serverTime = serverTime)
-    }
+    /** Read all authorized rows through the same identity-bound pager used by scoped reads. */
+    suspend fun listTransferRequests(status: String? = null): TransferRequestPage =
+        listTransferRequests(status, currentIdentityEpoch())
+
+    internal suspend fun listTransferRequests(status: String?, identity: Long): TransferRequestPage =
+        readTransferRequestPages(listOf(emptyList()), status, identity)
 
     /** Scoped reads keep one identity across every chunk and page, including legacy servers. */
     suspend fun listTransferRequestsForOrders(documentNos: Set<String>): TransferRequestPage =
         listTransferRequestsForOrders(documentNos, currentIdentityEpoch())
 
-    internal suspend fun listTransferRequestsForOrders(documentNos: Set<String>, identity: Long): TransferRequestPage = withContext(Dispatchers.IO) {
+    internal suspend fun listTransferRequestsForOrders(documentNos: Set<String>, identity: Long): TransferRequestPage {
         require(documentNos.none { it.isBlank() }) { "订单号不能为空" }
         val orders = documentNos.map { it.trim() }.distinct().sorted()
+        return readTransferRequestPages(orders.chunked(20), null, identity)
+    }
+
+    /** One pagination/validation path: empty document scope means the authorized global list. */
+    private suspend fun readTransferRequestPages(
+        documentScopes: List<List<String>>,
+        status: String?,
+        identity: Long,
+    ): TransferRequestPage = withContext(Dispatchers.IO) {
         val all = linkedMapOf<String, TransferRequest>()
         var serverTime: String? = null
         suspend fun checkSession() {
@@ -1054,7 +1046,7 @@ open class MaterialFlowApi(
             if (!isCurrentIdentityEpoch(identity)) throw CancellationException("Transfer scope belongs to an older session")
         }
         checkSession()
-        for (chunk in orders.chunked(20)) {
+        for (chunk in documentScopes) {
             val scope = chunk.toSet()
             val seen = mutableSetOf<String>()
             var expectedTotal: Long? = null
@@ -1064,7 +1056,8 @@ open class MaterialFlowApi(
             while (true) {
                 checkSession()
                 val path = buildString {
-                    append("/api/v1/transfer-requests?page=$requestedPage&pageSize=100")
+                    append("/api/v1/transfer-requests?page=$requestedPage&pageSize=$TRANSFER_REQUEST_PAGE_SIZE")
+                    if (!status.isNullOrBlank()) append("&status=${encodeQuery(status)}")
                     chunk.forEach { append("&documentNo=${encodeQuery(it)}") }
                 }
                 val json = request("GET", path, null, expectedIdentity = identity)
@@ -1105,7 +1098,7 @@ open class MaterialFlowApi(
                 rows.items.forEach { item ->
                     check(item.id.isNotBlank() && seen.add(item.id)) { "流转分页包含空标识或重复记录" }
                     // Older servers may ignore documentNo. Drain their visible list, then filter.
-                    if (item.documentNo in scope) all.putIfAbsent(item.id, item)
+                    if (scope.isEmpty() || item.documentNo in scope) all.putIfAbsent(item.id, item)
                 }
                 if (rows.serverTime != null) serverTime = rows.serverTime
                 if (total != null) {
@@ -1127,12 +1120,12 @@ open class MaterialFlowApi(
                     if (rows.items.size < 100) break
                     check(responsePage != null) { "旧服务端未提供分页元数据，无法确认列表完整" }
                 }
-                check(requestedPage < 1_000) { "流转列表超过分页安全上限，未返回部分列表" }
+                check(requestedPage < TRANSFER_REQUEST_MAX_PAGES_PER_BATCH) { "流转列表超过分页安全上限，未返回部分列表" }
                 requestedPage++
             }
         }
         checkSession()
-        TransferRequestPage(items = all.values.toList(), statusFilter = null, serverTime = serverTime)
+        TransferRequestPage(items = all.values.toList(), statusFilter = status, serverTime = serverTime)
     }
 
     /** 查询流转申请详情；详情响应中的 payload 由 parser 投影为明细条目。 */
@@ -1273,8 +1266,8 @@ open class MaterialFlowApi(
 
         /** 流转申请分页拉取：每页大小与服务端上限对齐。 */
         private const val TRANSFER_REQUEST_PAGE_SIZE = 100
-        /** 翻页保护：服务端异常时避免无限循环。 */
-        private const val TRANSFER_REQUEST_MAX_PAGES = 50
+        /** Exceeding this batch limit fails explicitly; never return a truncated success. */
+        private const val TRANSFER_REQUEST_MAX_PAGES_PER_BATCH = 1_000
     }
 
     // ==================== 图纸（机台/物料绑定，按页下载） ====================

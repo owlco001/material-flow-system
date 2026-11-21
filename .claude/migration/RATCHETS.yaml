@@ -80,3 +80,11 @@ ratchets:
     maximum: 0
     target: 0
     rationale: 机台页必须使用订单范围专用读取而非全站下载后过滤
+  - id: legacy-transfer-fifty-page-loop
+    scope: logistics-android/app/src/main/java/com/company/logistics/data/remote/MaterialFlowApi.kt
+    query: 'while (page <= TRANSFER_REQUEST_MAX_PAGES)'
+    count_mode: literal occurrences
+    baseline: 1
+    maximum: 0
+    target: 0
+    rationale: 全局流转不能在50页上限静默返回部分结果

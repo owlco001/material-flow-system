@@ -66,3 +66,12 @@ GET /api/v1/transfer-requests使用重复documentNo query参数精确过滤，�
 
 ## 第六轮 D22：规范编号、分页证明和返回未完成页面
 服务端与客户端对订单编号统一trim后去重，query和响应过滤使用同集合。专用流转每批冻结分页元数据（含有无），尊重totalPages，短页与后续页矛盾时显式失败，不能假成功。返回被取消但仍有LOADING分区的缓存机台时，通过原openDeviceDetail重新启动完整受控加载，不将取消改成伪空态。
+
+## 第七轮 D23：全局流转迁入同一安全分页器
+第六轮明确保留的全局50页路径本轮独立迁移。public全局status和scope签名不变，以同一helper实现分页完整性、元数据冻结和身份检查；删除旧循环与50页静默结束分支，达到有界保护必须失败。个人列表仅写自身状态，同身份可后台完成缓存，身份/预览边界不得保留旧请求。
+
+## 第七轮 D24：索引以真实初始化与合成VM预算决定
+只在临时库量化document_no、status及多订单IN的EXPLAIN/SQLite步数，验证结果/排序不变和init_db幂等。比较候选后最多添加一条有明确收益的索引，时间只记录不用易抖阈值。不在测试服务器或生产库试验。
+
+## 第七轮 D25：采纳document/status/time/id单索引
+20k合成四组count+首页精确VM合计31131步优于doc/time候选60833步，最终只创建idx_transfer_requests_document_status_created(document_no,status,created_at DESC,id DESC)。单/多/空匹配均降为小范围，status场景count覆盖而rows仍可能走旧status索引；不强制INDEXED BY或自动ANALYZE，不宣称完全消除排序/扫描。真实init_db幂等及结果/数据不变受测试约束。

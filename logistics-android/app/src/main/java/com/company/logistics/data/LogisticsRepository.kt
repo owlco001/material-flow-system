@@ -514,19 +514,23 @@ open class LogisticsRepository(
     }
 
     /** 读取服务端流转申请列表；status 过滤交给服务端，避免客户端状态漂移。 */
-    open suspend fun transferRequests(status: String? = null): Result<TransferRequestPage> = resultOf {
-        api.listTransferRequests(status)
+    open suspend fun transferRequests(status: String? = null): Result<TransferRequestPage> = readTransferRequestsInSession { identity ->
+        api.listTransferRequests(status, identity)
     }
 
-    open suspend fun transferRequestsForOrders(orderNos: Set<String>): Result<TransferRequestPage> = resultOf {
+    open suspend fun transferRequestsForOrders(orderNos: Set<String>): Result<TransferRequestPage> = readTransferRequestsInSession { identity ->
+        api.listTransferRequestsForOrders(orderNos, identity)
+    }
+
+    private suspend fun readTransferRequestsInSession(read: suspend (Long) -> TransferRequestPage): Result<TransferRequestPage> = resultOf {
         val (generation, identity) = synchronized(sessionStateLock) {
             sessionGeneration.get() to api.currentIdentityEpoch()
         }
         currentCoroutineContext().ensureActive()
-        val response = api.listTransferRequestsForOrders(orderNos, identity)
+        val response = read(identity)
         synchronized(sessionStateLock) {
             if (sessionGeneration.get() != generation || !api.isCurrentIdentityEpoch(identity)) {
-                throw CancellationException("Transfer scope belongs to an older session")
+                throw CancellationException("Transfer list belongs to an older session")
             }
         }
         currentCoroutineContext().ensureActive()

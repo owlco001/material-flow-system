@@ -1,3 +1,22 @@
+# Handoff — 第七轮集成验收完成
+
+## What changed
+基线e8cd07a，本地分支fix-deep-audit-138ff95。全局与订单范围流转统一canonical分页，删除旧50页静默结束；个人列表新增job/session/generation/user/preview守卫；仅新增一条document_no/status/created_at/id索引。版本后端0.22.5、Android0.5.58/65。
+
+## What is now true
+Android完整329项/56类零失败/错误/跳过，Debug构建成功49s；新global13、个人9及原scope15均绿，集中新旧64项通过。初始21项行为14红后修复；双向只读审查未发现新增阻塞。后端索引局部7项通过，后端完整603 passed（424.65s）。20k合成count+首页VM单订单120298→341、多订单160434→555、状态多订单60177→30206、空120024→29。真实Room、75文件图标、guard与文件映射通过。
+
+## What remains
+状态过滤下rows仍可能选择旧status索引扫描，count已用新覆盖索引；保留真实计划限制。全局仍下载全部可见列表，未实现UI懒加载；HTTP多页无事务快照，等量替换不保证检出。离线owner政策、旧独立脚本基线失败及真机/磁盘/摄像头/厂商后台/U9/远端CI限制保留。
+
+## What blocks shipping right now
+本地自动化与代码复核通过，可供审查。未push、未部署、未发布APK，未连接测试服务器；生产/现场验收未完成。不能把当前本地版本说成已上线。
+
+## Exact next steps
+审查docs/deep-audit-round7.md及基于e8cd07a增量补丁；需要复验时运行后端pytest与Android完整单测/构建、Room/图标/guard。无授权不部署推送或发布APK。
+
+---
+
 # Handoff — 第六轮三Agent并发集成完成
 
 ## What changed

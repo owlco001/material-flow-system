@@ -751,6 +751,12 @@ def _ensure_performance_indexes(c: sqlite3.Connection) -> None:
         if not existing or not set(columns) <= existing:
             continue
         c.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({', '.join(columns)})")
+    transfer_columns = {r["name"] for r in c.execute("PRAGMA table_info(transfer_requests)").fetchall()}
+    if {"document_no", "status", "created_at", "id"} <= transfer_columns:
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transfer_requests_document_status_created "
+            "ON transfer_requests(document_no, status, created_at DESC, id DESC)"
+        )
 
 
 def _init_db(c: sqlite3.Connection) -> None:

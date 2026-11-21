@@ -59,3 +59,7 @@ r6-convergence,test,device scoped concurrency,,material-flow-backend/tests/test_
 r6-convergence,test,device scoped concurrency,,logistics-android/app/src/test/java/com/company/logistics/data/DeviceTransferScopeTest.kt,verified,no,full regression,loopback scoped paging
 r6-convergence,test,device scoped concurrency,,logistics-android/app/src/test/java/com/company/logistics/ui/DeviceAggregateConcurrencyTest.kt,verified,no,full regression,bounded progressive sections
 r6-convergence,docs,device scoped concurrency,,docs/deep-audit-round6.md,verified,no,full regression,sixth round results
+r7-convergence,test,transfer integrity,,logistics-android/app/src/test/java/com/company/logistics/data/TransferGlobalPagingTest.kt,verified,no,full regression,global canonical pager regression
+r7-convergence,test,transfer integrity,,material-flow-backend/tests/test_transfer_document_index_budget.py,verified,no,full regression,real index plan and VM budget
+r7-convergence,test,transfer integrity,,logistics-android/app/src/test/java/com/company/logistics/ui/MyTransferLifecycleTest.kt,verified,no,full regression,personal list ownership
+r7-convergence,docs,transfer integrity,,docs/deep-audit-round7.md,verified,no,full regression,seventh round results
