@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import io
 import os
+import zipfile
+from xml.etree import ElementTree
 
 import pytest
 from fastapi.testclient import TestClient
@@ -255,6 +258,61 @@ def test_tree_uses_level_stack_when_parent_code_is_device_root(seeded):
     assert body["summary"]["levelCount"] == 4
 
 
+def test_tree_attaches_level_jump_to_nearest_open_parent(seeded):
+    """跳级（缺一整层）时不能挂到兄弟子树的深层节点上。
+
+    R(1) → A(2) → a1(3) → a1x(4); B(2); b1(4)。B 出现即闭合 A 子树，
+    所以 b1 必须挂 B，而不是最后一个 3 层节点 a1。
+    """
+    add_project("JSBY-26B-016", "26B-016 跳级项目", ["P9-01"])
+    add_batch("batch-jump", "26B-016 跳级项目", "2026-10-25T00:00:00+00:00", [
+        {"device_code": "P9-01", "level_no": 1, "parent_code": "", "material_code": "R"},
+        {"device_code": "P9-01", "level_no": 2, "parent_code": "", "material_code": "A", "qty": 2},
+        {"device_code": "P9-01", "level_no": 3, "parent_code": "", "material_code": "a1", "qty": 2},
+        {"device_code": "P9-01", "level_no": 4, "parent_code": "", "material_code": "a1x", "qty": 2},
+        {"device_code": "P9-01", "level_no": 2, "parent_code": "", "material_code": "B", "qty": 3},
+        {"device_code": "P9-01", "level_no": 4, "parent_code": "", "material_code": "b1", "qty": 3},
+    ])
+    with TestClient(backend.app) as client:
+        token = login(client, "pmr-admin")
+        body = get_requirements(client, token, "JSBY-26B-016", expand="all").json()
+    root = body["devices"][0]["tree"]
+    assert [n["materialCode"] for n in root] == ["R"]
+    assert [n["materialCode"] for n in root[0]["children"]] == ["A", "B"]
+    a, b = root[0]["children"]
+    assert [n["materialCode"] for n in a["children"]] == ["a1"]
+    assert [n["materialCode"] for n in a["children"][0]["children"]] == ["a1x"]
+    assert [n["materialCode"] for n in b["children"]] == ["b1"], "b1 必须挂 B 而不是 a1"
+    assert b["children"][0]["levelNo"] == 4
+
+
+def test_tracked_counts_requirement_rows_not_bom_nodes(seeded):
+    """同料号在树里出现两次，需求覆盖数只能是需求行数（2），不能按节点数（3）。"""
+    devices = add_project("JSBY-26B-015", "26B-015 重复料号", ["P8-02"])
+    add_batch("batch-dup", "26B-015 重复料号", "2026-10-24T00:00:00+00:00", [
+        {"device_code": "P8-02", "level_no": 1, "parent_code": "", "material_code": "DUP-R"},
+        {"device_code": "P8-02", "level_no": 2, "parent_code": "", "material_code": "DUP-A", "qty": 2},
+        {"device_code": "P8-02", "level_no": 2, "parent_code": "", "material_code": "DUP-B", "qty": 1},
+        {"device_code": "P8-02", "level_no": 3, "parent_code": "", "material_code": "DUP-A", "qty": 4},
+    ])
+    add_requirement("JSBY-26B-015", devices["P8-02"], "DUP-A",
+                    required=9, arrived=9, in_stock=9, status="IN_STOCK")
+    add_requirement("JSBY-26B-015", devices["P8-02"], "DUP-B",
+                    required=1, arrived=0, in_stock=0, status="OUT_OF_STOCK")
+    with TestClient(backend.app) as client:
+        token = login(client, "pmr-admin")
+        body = get_requirements(client, token, "JSBY-26B-015", expand="all").json()
+
+    device = body["devices"][0]
+    # 同料号 DUP-A 出现两次：命中需求的节点是 3 个，需求行只有 2 行
+    assert device["itemCount"] == 4
+    summary = device["requirementSummary"]
+    assert summary["tracked"] == 2, "覆盖数必须按需求行去重，不能按 BOM 节点数"
+    assert summary["outOfStock"] + summary["arrived"] + summary["inStock"] == 2
+    assert summary["inStock"] == 1 and summary["outOfStock"] == 1
+    assert body["summary"]["trackedItemCount"] == 2
+
+
 def test_expand_top_only_returns_first_level(seeded):
     with TestClient(backend.app) as client:
         token = login(client, "pmr-admin")
@@ -359,6 +417,46 @@ def test_assembler_only_sees_own_devices(seeded):
         assert [p["projectNo"] for p in search.json()["projects"]] == ["JSBY-26B-012"]
 
 
+def test_assembler_foreign_project_is_403_not_empty_200(seeded):
+    """装配工用别人的项目号/项目名不能拿到 200 + 项目元数据，也不能得到“暂无设备”假文案。"""
+    add_project("JSBY-26B-050", "26B-050 他人项目", ["26B-050-X1"])
+    add_batch("batch-other", "26B-050 他人项目", "2026-10-26T00:00:00+00:00", [
+        {"device_code": "26B-050-X1", "level_no": 1, "parent_code": "",
+         "material_code": "26B-050-X1"},
+        {"device_code": "26B-050-X1", "level_no": 2, "parent_code": "26B-050-X1",
+         "material_code": "SECRET-1", "qty": 1},
+    ])
+    with TestClient(backend.app) as client:
+        token = login(client, "pmr-asm-1")
+        foreign = get_requirements(client, token, "JSBY-26B-050")
+        assert foreign.status_code == 403, foreign.text
+        error = foreign.json()["error"]
+        assert error["code"] == "PROJECT_FORBIDDEN"
+        assert "无权查看该项目" in error["message"]
+        assert "SECRET-1" not in foreign.text
+        assert "26B-050 他人项目" not in foreign.text
+        assert "暂无设备" not in error["message"]
+
+        # 项目名模糊同样被挡（不能靠 200/404 枚举项目）
+        by_name = get_requirements(client, token, "他人项目")
+        assert by_name.status_code == 403
+        assert by_name.json()["error"]["code"] == "PROJECT_FORBIDDEN"
+
+        # 导出接口同一口径
+        export = client.get(
+            "/api/v1/projects/JSBY-26B-050/material-requirements/export",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert export.status_code == 403
+        assert export.json()["error"]["code"] == "PROJECT_FORBIDDEN"
+
+        # 本人参与的项目仍然 200
+        own = get_requirements(client, token, "JSBY-26B-012", expand="all")
+        assert own.status_code == 200, own.text
+        assert own.json()["projectName"] == "26B-012 顶升移栽机项目"
+        assert [d["deviceNo"] for d in own.json()["devices"]] == ["26B-012-P5-12"]
+
+
 def test_roles_admin_supervisor_planner_allowed_warehouse_denied(seeded):
     with TestClient(backend.app) as client:
         for username in ("pmr-sup", "pmr-planner"):
@@ -440,11 +538,21 @@ def test_export_xlsx_columns_hierarchy_and_totals(seeded):
     assert leaf_rows[0][5] == "C1"
 
     # 合计行：每台机台一行小计 + 一行项目合计
-    subtotal = [r for r in texts if r[4] == "小计"]
+    subtotal = [r for r in texts if r[4].startswith("小计")]
     assert len(subtotal) == 2
     total = [r for r in texts if r[2] == "项目合计"]
     assert len(total) == 1
-    assert "6 项 / 3 层" in total[0][7]
+    # 数量必须落在 index 11「机台合计需求」，不能落回 index 10「单机用量」
+    assert total[0][11] == "17"
+    assert total[0][10] == ""
+    # 文案（N 项 / M 层）不得占用品名(7)/规格(8) 列
+    assert total[0][7] == "" and total[0][8] == ""
+    for row in [*subtotal, *total]:
+        assert row[11] != "", "小计/合计的数量必须在「机台合计需求」列"
+        assert row[10] == "", "小计/合计行不得占用「单机用量」列"
+        assert "项" not in row[7] and "层" not in row[7], "品名列不能放条款文案"
+        assert "项" not in row[8] and "层" not in row[8], "规格列不能放条款文案"
+    assert subtotal[0][11] == "12" and subtotal[1][11] == "5"
 
     # 需求状态列：C1 有记录，L1 留空（不得用 0 冒充）
     c1 = [r for r in texts if r[6].strip() == "C1"][0]
@@ -462,6 +570,39 @@ def test_export_xlsx_columns_hierarchy_and_totals(seeded):
         )
     one_rows = [r.values for r in XlsxSheetReader.read_rows(one.content)[1:]]
     assert {r[2] for r in one_rows if r[2] != "项目合计"} == {"26B-012-P5-13"}
+
+
+def test_export_keeps_xml_well_formed_with_illegal_control_chars(seeded):
+    """品名/规格里的 \x0b 等 XML 1.0 非法字符不能带进 sheet1.xml（否则 Excel 报文件损坏）。"""
+    add_project("JSBY-26B-017", "26B-017 控制字符", ["P9-02"])
+    add_batch("batch-ctrl", "26B-017 控制字符", "2026-10-27T00:00:00+00:00", [
+        {"device_code": "P9-02", "level_no": 1, "parent_code": "", "material_code": "P9-02"},
+        {"device_code": "P9-02", "level_no": 2, "parent_code": "P9-02",
+         "material_code": "CTRL-1", "name": "液压站\x0b总成", "spec": "规格\x01\x08\x0cA&B<C>"},
+    ])
+    with TestClient(backend.app) as client:
+        token = login(client, "pmr-admin")
+        response = client.get(
+            "/api/v1/projects/JSBY-26B-017/material-requirements/export",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200, response.text
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        for name in archive.namelist():
+            if name.endswith((".xml", ".rels")):
+                ElementTree.fromstring(archive.read(name))  # 非良构 XML 会在这里抛错
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        workbook = archive.read("xl/workbook.xml").decode("utf-8")
+    for bad in ("\x0b", "\x01", "\x08", "\x0c"):
+        assert bad not in sheet
+    # 合法字符要保留，转义仍在（不是整段丢弃）
+    assert "液压站总成" in sheet
+    assert "A&amp;B&lt;C&gt;" in sheet
+    assert "\x0b" not in workbook
+    rows = [r.values for r in XlsxSheetReader.read_rows(response.content)[1:]]
+    ctrl = [r for r in rows if r[6].strip() == "CTRL-1"][0]
+    assert ctrl[7] == "液压站总成"
+    assert ctrl[8] == "规格A&B<C>"
 
 
 def test_orders_detail_unchanged(seeded):

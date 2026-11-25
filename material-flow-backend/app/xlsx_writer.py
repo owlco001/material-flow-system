@@ -10,10 +10,25 @@ xlsx 导出。这里生成最小可用的 SpreadsheetML 包：单 sheet、内联
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 from xml.sax.saxutils import escape
+
+# XML 1.0 不允许的字符（除 \t \n \r 外的 C0 控制符）：留在文本里会让 sheet1.xml
+# 非良构，Excel 打开报“文件已损坏”。Excel 复制粘贴的品名/规格里常见 \x0b。
+_ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean(value: str) -> str:
+    return _ILLEGAL_XML_CHARS.sub("", value)
+
+
+def _text(value: str) -> str:
+    """转义并剔除 XML 1.0 非法字符，供所有 <t> 文本节点使用。"""
+    return escape(_clean(value))
+
 
 _CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -60,7 +75,7 @@ def column_letter(index: int) -> str:
 
 def _sheet_name(name: str) -> str:
     # Excel 限制：31 字符、不含 : \ / ? * [ ]
-    cleaned = "".join(ch for ch in str(name or "Sheet1") if ch not in ':\\/?*[]').strip()
+    cleaned = "".join(ch for ch in _clean(str(name or "Sheet1")) if ch not in ':\\/?*[]').strip()
     return (cleaned or "Sheet1")[:31]
 
 
@@ -69,14 +84,14 @@ def _cell(ref: str, value: Any, style: int) -> str:
     if value is None or value == "":
         return f'<c r="{ref}"{style_attr}/>'
     if isinstance(value, bool):
-        return f'<c r="{ref}"{style_attr} t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+        return f'<c r="{ref}"{style_attr} t="inlineStr"><is><t>{_text(str(value))}</t></is></c>'
     if isinstance(value, (int, float)):
         number = repr(value) if isinstance(value, float) else str(value)
         return f'<c r="{ref}"{style_attr}><v>{number}</v></c>'
     text = value.isoformat(sep=" ") if isinstance(value, datetime) else str(value)
     # 保留换行；xml:space 防止 Excel 吃掉首尾空格
     return (f'<c r="{ref}"{style_attr} t="inlineStr"><is>'
-            f'<t xml:space="preserve">{escape(text)}</t></is></c>')
+            f'<t xml:space="preserve">{_text(text)}</t></is></c>')
 
 
 def _row_xml(

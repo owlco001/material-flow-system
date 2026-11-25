@@ -4812,7 +4812,13 @@ def _pmr_project_devices(
     devices = [dict(r) for r in rows]
     if user["role"] == "ASSEMBLER":
         allowed = _pmr_assembler_device_nos(c, user, project["order_no"])
-        devices = [d for d in devices if d["device_no"] in allowed]
+        visible = [d for d in devices if d["device_no"] in allowed]
+        if devices and not visible:
+            # 项目确有设备，但本人一台都没参与：必须 403，不能返回 200 让装配工
+            # 靠 200/404/409 枚举项目、拿到 projectName/projectStatus。
+            # 文案也不能说“项目下暂无设备”（那是假话）。
+            raise ApiError(403, "PROJECT_FORBIDDEN", "无权查看该项目")
+        devices = visible
     if device_no:
         wanted = device_no.strip()
         matched = [d for d in devices if d["device_no"] == wanted]
@@ -4887,7 +4893,10 @@ def _pmr_build_tree(rows: list[sqlite3.Row]) -> tuple[list[dict[str, Any]], list
     nodes: list[dict[str, Any]] = []
     totals: dict[str, float] = {}
     by_level_code: dict[tuple[int, str], dict[str, Any]] = {}
-    last_at_level: dict[int, dict[str, Any]] = {}
+    # 未闭合节点栈：读入 level=L 的行之前，弹掉所有 level >= L 的节点（它们属于
+    # 已结束的兄弟子树），栈顶就是当前行的父件。只看 last_at_level[L-1] 会把
+    # 跳级行（缺一整层）挂到兄弟子树的深层节点上。
+    open_stack: list[dict[str, Any]] = []
     for row in rows:
         level = int(row["level_no"] or 0)
         code = str(row["material_code"] or "")
@@ -4909,24 +4918,25 @@ def _pmr_build_tree(rows: list[sqlite3.Row]) -> tuple[list[dict[str, Any]], list
             "children": [],
         }
         parent: dict[str, Any] | None = None
+        while open_stack and int(open_stack[-1]["levelNo"]) >= level:
+            open_stack.pop()
         parent_code = str(row["parent_code"] or "")
         if parent_code:
-            parent = by_level_code.get((level - 1, parent_code))
-        if parent is None:
-            parent = last_at_level.get(level - 1)
-        if parent is None and level > 1:
-            # 上一级整段缺行（例如只有 1、3 层）：退到最近的更浅层节点。
-            for shallower in range(level - 2, -1, -1):
-                if shallower in last_at_level:
-                    parent = last_at_level[shallower]
-                    break
+            candidate = by_level_code.get((level - 1, parent_code))
+            # parent_code 优先，但命中的节点必须仍未被更浅的行闭合（仍在栈中），
+            # 否则就是兄弟子树的同名料号，不能当父件。
+            if candidate is not None and any(n is candidate for n in open_stack):
+                parent = candidate
+        if parent is None and open_stack:
+            # 上一级整段缺行（例如只有 1、3 层）时挂到最近的未闭合节点上。
+            parent = open_stack[-1]
         if parent is None:
             roots.append(node)
         else:
             parent["children"].append(node)
         nodes.append(node)
         by_level_code[(level, code)] = node
-        last_at_level[level] = node
+        open_stack.append(node)
     for node in nodes:
         node["deviceTotalQuantity"] = totals.get(node["materialCode"], node["quantity"])
         node["childCount"] = len(node["children"])
@@ -5082,15 +5092,21 @@ def _pmr_payload(
             roots, nodes, totals = _pmr_build_tree(rows)
             levels = sorted({int(n["levelNo"]) for n in nodes})
             device_id = str(device["id"]) if device else ""
-            tracked = 0
-            status_counts = {"OUT_OF_STOCK": 0, "ARRIVED": 0, "IN_STOCK": 0}
             for node in nodes:
-                requirement = requirements.get((device_id, node["materialCode"].upper())) if device else None
-                node["requirement"] = requirement
-                if requirement:
-                    tracked += 1
-                    if requirement["statusCode"] in status_counts:
-                        status_counts[requirement["statusCode"]] += 1
+                node["requirement"] = (
+                    requirements.get((device_id, node["materialCode"].upper())) if device else None
+                )
+            # 统计口径 = 该机台在 order_material_requirements 里的需求行数，而不是
+            # 「命中需求的 BOM 节点数」：同一料号在树里出现 N 次只有 1 行需求，
+            # 按节点数会把 20,552 行报成 24,231 行（虚增 18%+）。
+            device_requirements = (
+                [req for key, req in requirements.items() if key[0] == device_id] if device else []
+            )
+            tracked = len(device_requirements)
+            status_counts = {"OUT_OF_STOCK": 0, "ARRIVED": 0, "IN_STOCK": 0}
+            for requirement in device_requirements:
+                if requirement["statusCode"] in status_counts:
+                    status_counts[requirement["statusCode"]] += 1
             if expand != "all":
                 _pmr_limit_depth(roots, 1)
             device_name = (
@@ -5285,17 +5301,22 @@ def _pmr_export_rows(payload: dict[str, Any]) -> tuple[list[list[Any]], list[int
     for device in payload["devices"]:
         walk(device["tree"], device, 0)
         bold.append(len(rows))
+        # 小计行：只填前四列 + 层级列的标识文案 + index 11「机台合计需求」。
+        # 数量必须落在 11，不能落在 10（单机用量）；文案不能占用 7/8（品名/规格），
+        # 否则计划员按品名或单机用量筛选会读到假数据。
         rows.append([
             project_no, project_name, device["deviceNo"], device["deviceName"],
-            "小计", "", "", f"{device['itemCount']} 项 / {device['levelCount']} 层",
-            "", "", _pmr_number(device["totalQuantity"]), "", "", "", "", "",
+            f"小计 · {device['itemCount']} 项 / {device['levelCount']} 层",
+            "", "", "", "", "",
+            "", _pmr_number(device["totalQuantity"]), "", "", "", "",
         ])
     summary = payload["summary"]
     bold.append(len(rows))
     rows.append([
-        project_no, project_name, "项目合计", "", "", "", "",
-        f"{summary['itemCount']} 项 / {summary['levelCount']} 层", "", "",
-        _pmr_number(summary["totalQuantity"]), "", "", "", "", "",
+        project_no, project_name, "项目合计", "",
+        f"合计 · {summary['itemCount']} 项 / {summary['levelCount']} 层",
+        "", "", "", "", "",
+        "", _pmr_number(summary["totalQuantity"]), "", "", "", "",
     ])
     return rows, bold
 
