@@ -652,8 +652,9 @@ class U9CClient(U9Client):
 
         since_days 按 BusinessDate 过滤；only_open=True 时剔除已结案（关闭/作废/取消）的订单。
         **默认 False**：关闭单必须同步回来，读取侧（缺料清单）再按状态过滤；否则 U9 上一关单，
-        本地永远把它计在途（需求 3 P0-1）。请求带 OrderBy 稳定排序，分页按
-        (DocNo, DocLineNo) 去重（扁平「一条记录一行」形态下行号才唯一）。
+        本地永远把它计在途（需求 3 P0-1）。请求用 Orders="DocNo asc" 稳定排序（U9 网关只认
+        Orders 字段，旧字段名会被 500 拒绝，方向必须小写；单按单号排序，分页稳定性优先于业务日期），
+        分页按 (DocNo, DocLineNo) 去重（扁平「一条记录一行」形态下行号才唯一）。
         """
         try:
             days = max(1, min(int(since_days or 180), 3650))
@@ -673,8 +674,9 @@ class U9CClient(U9Client):
                 "ReturnFields": ",".join(PO_RETURN_FIELDS),
                 "PageSize": size,
                 "PageIndex": page,
-                # SQL Server 的分页没有稳定排序会重/漏；固定按单号排序保证翻页可对账
-                "OrderBy": "DocNo",
+                # SQL Server 的分页没有稳定排序会重/漏；固定按单号排序保证翻页可对账。
+                # U9 只认 Orders（旧字段名会 500），方向必须小写。
+                "Orders": "DocNo asc",
             }
             batch = self._po_rows(self._post(PATH_QUERY, payload))
             if not batch:

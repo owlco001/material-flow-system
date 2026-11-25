@@ -107,7 +107,10 @@ POLines.PurQtyTU, POLines.TotalRecievedQtyTU
     `po_raw_lines` 会把该记录当一行还原；
   - 若响应里出现 `POLines.*` 点号键却一行都解析不出来，`validate_po_rows` **直接抛错**中止同步，
     绝不当「本次没有行」放过（那会把全部在途/到货变成 0，采购会重复下单）。
-- 分页：请求带 `PageSize` / `PageIndex` / `OrderBy=DocNo`（SQL Server 无稳定排序会重/漏）；
+- 分页：请求带 `PageSize` / `PageIndex` / `Orders="DocNo asc"`（SQL Server 无稳定排序会重/漏）。
+  **U9 网关不认 `OrderBy`**（`OrderBy`/`OrderBy asc`/`OrderBy asc,...` 均 500，报错在编译 OQL
+  `order by`；`Orders="DocNo ASC"` 也因大写被拒），只认 `Orders` 且方向必须小写。
+  单按单号排序（不带 BusinessDate）以保证翻页稳定，分页稳定性优先于业务日期排序；
   按 `(DocNo, DocLineNo)` 去重，只有整页返回且本页有新行才继续，某页没有新行就停止
   （兼容不支持分页的网关）。
 
@@ -199,7 +202,7 @@ POLines.PurQtyTU, POLines.TotalRecievedQtyTU
   （不再因超过 2000 个整段跳过）；`check_items=false` 时 `poData.itemsChecked=false` + 页面
   「料号核对未执行」。
 - 扁平「一条记录一行」形态能还原成多单多行；`POLines.*` 点号键但 0 行 → 抛错；分页按
-  `(DocNo, DocLineNo)` 去重且请求带 `OrderBy`。
+  `(DocNo, DocLineNo)` 去重且请求带 `Orders="DocNo asc"`（不带 `OrderBy`）。
 - 快照按本页料号收窄但未结案单数仍是全表口径；展示数量只截断不进位（9.6 不显示 10）。
 - 同步幂等：连续同步两次行数不变、第二次 `inserted=0`；改到货量只更新不新增。
 - U9 缺 `TotalRecievedQtyTU` 时，客户端与 sync 两层都报错且不写库（不是当 0）。

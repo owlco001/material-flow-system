@@ -487,8 +487,9 @@ def test_validate_po_rows_rejects_zero_lines_with_flat_point_keys():
     assert "行" in str(excinfo.value)
 
 
-def test_client_paging_dedupes_by_doc_and_line_and_sends_order_by():
-    """P1-2：扁平形态下行号才唯一；分页去重键必须是 (DocNo, DocLineNo)，且请求带 OrderBy。"""
+def test_client_paging_dedupes_by_doc_and_line_and_sends_orders():
+    """P1-2：扁平形态下行号才唯一；分页去重键必须是 (DocNo, DocLineNo)，
+    且排序走 U9 支持的 Orders="DocNo asc"（OrderBy 会被网关 500 拒绝）。"""
     pages = {
         1: [flat_po_record("PO-A", 1, "M1", 10, 0), flat_po_record("PO-A", 2, "M2", 10, 0)],
         # 第 2 页重复第 1 页的 PO-A#1（网关排序不稳时会这样），同时带来 PO-B#1
@@ -511,7 +512,8 @@ def test_client_paging_dedupes_by_doc_and_line_and_sends_order_by():
     got = [(u9_mappers.po_doc_no(r), u9_mappers.po_line_key(r)) for r in rows]
     # 改前按 DocNo 去重：第 1 页只剩 PO-A#1，第 2 页全是已见单号 → novel=0 提前停 → 只 1 行
     assert got == [("PO-A", "1"), ("PO-A", "2"), ("PO-B", "1")]
-    assert all(p.get("OrderBy") == "DocNo" for p in seen)
+    assert all(p.get("Orders") == "DocNo asc" for p in seen)
+    assert all("OrderBy" not in p for p in seen)
 
 
 def test_po_sync_missing_field_raises_instead_of_zero(seeded):
