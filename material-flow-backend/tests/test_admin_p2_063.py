@@ -576,7 +576,8 @@ def test_users_modal_post_flow_still_works():
 SKIP_GET = {"/admin/logout"}
 # 需要查询参数的 JSON / 资源接口：不带参数时应返回 4xx
 NEEDS_PARAMS = {"/admin/agent/aggbom/aggregate", "/admin/agent/bom/aggregate", "/admin/barcodes/image",
-                "/admin/barcodes/print", "/admin/models/content", "/admin/models/view"}
+                "/admin/barcodes/print", "/admin/models/content", "/admin/models/view",
+                "/admin/projects/material-requirements/export"}
 
 
 def _admin_get_paths():

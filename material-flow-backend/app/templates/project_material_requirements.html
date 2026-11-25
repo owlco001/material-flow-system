@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block page_title %}项目物料需求{% endblock %}
+{% block content %}
+{% from "_notice.html" import flash %}
+
+{% macro pmr_rows(nodes, prefix, depth, device, expand, project_no) %}
+  {% for node in nodes %}
+    {% set nid = prefix ~ '-' ~ loop.index %}
+    <tr class="pmr-row{% if depth > 0 and expand != 'all' %} pmr-hidden{% endif %}"
+        data-id="{{ nid }}" data-parent="{{ prefix }}" data-depth="{{ depth }}">
+      <td class="pmr-code">
+        {% if node.childCount and expand == 'all' %}
+        <button type="button" class="pmr-toggle" data-target="{{ nid }}" title="展开/收起">−</button>
+        {% elif node.childCount %}
+        <a class="pmr-toggle" title="展开该机台到叶子（按机台加载，避免整项目一次拉全量）"
+           href="/admin/projects/material-requirements?project_no={{ project_no|urlencode }}{% if device.deviceNo %}&device_no={{ device.deviceNo|urlencode }}{% endif %}&expand=all">+</a>
+        {% else %}<span class="pmr-space"></span>{% endif %}
+        <span style="padding-left:{{ depth * 14 }}px">{{ node.materialCode }}</span>
+      </td>
+      <td>{{ node.materialName }}</td>
+      <td class="pmr-spec">{{ node.specification }}</td>
+      <td>{{ node.unit }}</td>
+      <td class="num">{{ node.quantity }}</td>
+      <td class="num">{{ node.deviceTotalQuantity }}</td>
+      {% if node.requirement %}
+      <td class="num">{{ node.requirement.requiredQuantity }}</td>
+      <td class="num">{{ node.requirement.arrivedQuantity }}</td>
+      <td class="num">{{ node.requirement.inStockQuantity }}</td>
+      <td><span class="badge {{ {'OUT_OF_STOCK':'b-err','ARRIVED':'b-warn','IN_STOCK':'b-ok'}.get(node.requirement.statusCode, 'b-mute') }}">{{ node.requirement.statusLabel }}</span></td>
+      {% else %}
+      <td class="num"></td>
+      <td class="num"></td>
+      <td class="num"></td>
+      <td><span class="muted" title="order_material_requirements 中没有该机台 × 料号的记录">无需求记录</span></td>
+      {% endif %}
+      <td>{{ node.levelNo }}</td>
+    </tr>
+    {{ pmr_rows(node.children, nid, depth + 1, device, expand, project_no) }}
+  {% endfor %}
+{% endmacro %}
+
+<div class="compact">
+  <h2>项目物料需求</h2>
+  <p class="page-desc">输入项目号（支持项目号 / 项目名模糊搜索），按机台展开 ERP 聚合备料表到叶子件，并联动订单物料需求状态。匹配方式与批次时间在结果顶部标注。</p>
+
+  <form method="get" action="/admin/projects/material-requirements" class="pmr-search">
+    <input name="project_no" value="{{ project_no }}" placeholder="项目号，如 JSBY-26B-012" style="max-width:260px">
+    <input name="q" value="{{ keyword }}" placeholder="或按项目名关键字搜索" style="max-width:220px">
+    <button type="submit" class="btn btn-sm">查询</button>
+    {% if payload %}
+    <a class="btn btn-sm btn-secondary" href="/admin/projects/material-requirements?project_no={{ payload.projectNo|urlencode }}">重置</a>
+    {% endif %}
+  </form>
+
+  {{ flash(error=error) }}
+
+  {% if candidates %}
+  <div class="card">
+    <h4>匹配到的项目（{{ candidates|length }}）</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>项目号</th><th>项目名称</th><th>状态</th><th>机台数</th><th></th></tr></thead>
+        <tbody>
+        {% for p in candidates %}
+          <tr>
+            <td><a href="/admin/projects/material-requirements?project_no={{ p.projectNo|urlencode }}">{{ p.projectNo }}</a></td>
+            <td>{{ p.projectName or "—" }}</td>
+            <td>{{ p.status or "—" }}</td>
+            <td class="num">{{ p.deviceCount }}</td>
+            <td><a class="btn btn-sm" href="/admin/projects/material-requirements?project_no={{ p.projectNo|urlencode }}">展开</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if payload %}
+  <div class="card">
+    <div class="page-head-row">
+      <h3 style="margin:0">{{ payload.projectNo }} · {{ payload.projectName or "（未命名项目）" }}</h3>
+      <div class="btn-row">
+        <a class="btn btn-sm" title="整项目一次性展开到叶子，数据量大时较慢；单台机台可点行首 + 只展开该机台" href="/admin/projects/material-requirements?project_no={{ payload.projectNo|urlencode }}&expand=all{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}">全部展开</a>
+        <a class="btn btn-sm btn-secondary" href="/admin/projects/material-requirements?project_no={{ payload.projectNo|urlencode }}&expand=top{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}">全部收起</a>
+        {% if payload.reason not in ("NO_DEVICES", "NO_BATCH") %}
+        <a class="btn btn-sm" href="/admin/projects/material-requirements/export?project_no={{ payload.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}">导出 xlsx</a>
+        {% endif %}
+      </div>
+    </div>
+    <p class="muted" style="margin:6px 0">
+      项目状态：{{ payload.projectStatus or "—" }}
+      · 匹配方式：<b>{{ payload.matchedByLabel }}</b>{% if payload.matchedValue %}（{{ payload.matchedValue }}）{% endif %}
+      {% if payload.batch %}
+      · 批次：{{ payload.batch.batchId[:8] }}… / {{ payload.batch.fileName or "—" }}
+      · 批次时间：{{ payload.batch.createdAt }}
+      {% endif %}
+    </p>
+    {% if payload.reason %}
+    <div class="card" style="margin-top:12px;border-left:4px solid #d97706">
+      <b>无法展开：</b>{{ payload.message }}
+    </div>
+    {% else %}
+    <p class="muted" style="margin:6px 0">
+      共 <b>{{ payload.summary.itemCount }}</b> 项、<b>{{ payload.summary.levelCount }}</b> 层
+      · {{ payload.summary.deviceCount }} 台机台（项目共 {{ payload.summary.projectDeviceCount }} 台）
+      · {{ payload.summary.materialCount }} 个料号
+      · 合计用量 {{ payload.summary.totalQuantity }}
+      · 已建需求行 {{ payload.summary.trackedItemCount }}
+    </p>
+    {% if payload.devices|length > 1 %}
+    <form method="get" action="/admin/projects/material-requirements" style="display:flex;gap:8px;align-items:center;margin:8px 0">
+      <input type="hidden" name="project_no" value="{{ payload.projectNo }}">
+      <input type="hidden" name="expand" value="{{ expand }}">
+      <label for="pmrDevice">只看机台</label>
+      <select id="pmrDevice" name="device_no" onchange="this.form.submit()">
+        <option value="">全部机台</option>
+        {% for d in payload.devices if d.linked %}
+        <option value="{{ d.deviceNo }}" {% if device_no == d.deviceNo %}selected{% endif %}>{{ d.deviceNo }}{% if d.deviceName %} · {{ d.deviceName }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit" class="btn btn-sm">筛选</button></noscript>
+    </form>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  {% for device in payload.devices %}
+  <div class="card pmr-device">
+    <div class="page-head-row">
+      <h4 style="margin:0">
+        {{ device.deviceNo or "（项目公共）" }}
+        {% if device.deviceName %}<span class="muted">· {{ device.deviceName }}</span>{% endif %}
+        {% if not device.linked %}<span class="badge b-warn" title="批次里的设备编码认不到订单机台，仅按项目名称关联">未匹配机台档案</span>{% endif %}
+      </h4>
+      <span class="muted">{{ device.itemCount }} 项 / {{ device.levelCount }} 层 · 合计 {{ device.totalQuantity }}
+        {% if device.requirementSummary.tracked %}· 需求已建 {{ device.requirementSummary.tracked }} 行（缺料 {{ device.requirementSummary.outOfStock }} / 到货 {{ device.requirementSummary.arrived }} / 在库 {{ device.requirementSummary.inStock }}）{% endif %}
+      </span>
+    </div>
+    {% if device.tree %}
+    <div class="table-wrap">
+      <table class="pmr-table" data-expand="{{ expand }}">
+        <thead>
+          <tr>
+            <th>料号</th><th>品名</th><th>规格</th><th>单位</th>
+            <th class="num">单机用量</th><th class="num">机台合计用量</th>
+            <th class="num">需求</th><th class="num">到货</th><th class="num">在库</th>
+            <th>状态</th><th class="num">层级</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ pmr_rows(device.tree, 'd' ~ loop.index, 0, device, expand, payload.projectNo) }}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">该机台在本批次中没有备料明细。</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% elif not candidates and not error %}
+  <div class="card"><p class="muted">请输入项目号查询，或先按项目名搜索。</p></div>
+  {% endif %}
+</div>
+
+<style>
+.pmr-table td, .pmr-table th { white-space: nowrap; }
+.pmr-table td.num, .pmr-table th.num { text-align: right; }
+.pmr-table .pmr-spec { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.pmr-toggle { width: 20px; height: 20px; line-height: 18px; padding: 0; margin-right: 4px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--surface); cursor: pointer; }
+.pmr-space { display: inline-block; width: 20px; margin-right: 4px; }
+tr.pmr-hidden { display: none; }
+</style>
+
+<script>
+(function(){
+  Array.prototype.forEach.call(document.querySelectorAll('table.pmr-table'), function(tbl){
+    var rows = Array.prototype.slice.call(tbl.querySelectorAll('tr.pmr-row'));
+    var byId = {};
+    rows.forEach(function(r){ byId[r.dataset.id] = r; });
+    var open = {};
+    function chainOpen(id){
+      var row = byId[id];
+      if (!row) return true;
+      var p = row.dataset.parent;
+      while (p && byId[p]) {
+        if (!open[p]) return false;
+        p = byId[p].dataset.parent;
+      }
+      return true;
+    }
+    function render(){
+      rows.forEach(function(r){
+        var depth = parseInt(r.dataset.depth, 10) || 0;
+        var show = depth === 0 || chainOpen(r.dataset.id);
+        r.classList.toggle('pmr-hidden', !show);
+        var btn = r.querySelector('.pmr-toggle');
+        if (btn) btn.textContent = open[r.dataset.id] ? '−' : '+';
+      });
+    }
+    tbl.addEventListener('click', function(ev){
+      var btn = ev.target.closest ? ev.target.closest('.pmr-toggle') : null;
+      if (!btn) return;
+      var id = btn.dataset.target;
+      open[id] = !open[id];
+      render();
+    });
+    if (tbl.dataset.expand === 'all') {
+      rows.forEach(function(r){
+        if (r.querySelector('.pmr-toggle')) open[r.dataset.id] = true;
+      });
+    }
+    render();
+  });
+})();
+</script>
+{% endblock %}

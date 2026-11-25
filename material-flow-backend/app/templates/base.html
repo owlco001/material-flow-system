@@ -64,7 +64,7 @@
   } %}
   {% set _sec_active = {
     "work": _p == '/admin/workspace' or _p.startswith('/admin/exceptions'),
-    "prod": _p.startswith('/admin/orders') or _p.startswith('/admin/tasks') or _p.startswith('/admin/reports'),
+    "prod": _p.startswith('/admin/orders') or _p.startswith('/admin/tasks') or _p.startswith('/admin/reports') or _p.startswith('/admin/projects/material-requirements'),
     "wh": _p.startswith('/admin/flows') or _p.startswith('/admin/handovers') or _p == '/admin/warehouse' or _p.startswith('/admin/barcodes'),
     "master": _p.startswith('/admin/material-master') or _p.startswith('/admin/boms') or _p.startswith('/admin/models') or _p.startswith('/admin/drawings') or _p.startswith('/admin/design-packages'),
     "sys": _p.startswith('/admin/users') or _p.startswith('/admin/audit') or _p.startswith('/admin/u9') or _p.startswith('/admin/releases') or _p.startswith('/admin/system') or _p.startswith('/admin/agent'),
@@ -84,6 +84,7 @@
       <button type="button" class="side-group" aria-expanded="{{ 'true' if _sec_active.prod else 'false' }}"><span>生产</span></button>
       <div class="side-items">
       {% if _v.orders %}{{ side_link("/admin/orders", "生产订单", "i-orders", _p.startswith('/admin/orders')) }}{% endif %}
+      {% if _v.orders %}{{ side_link("/admin/projects/material-requirements", "项目物料需求", "i-layers", _p.startswith('/admin/projects/material-requirements')) }}{% endif %}
       {% if _v.reports %}
       {{ side_link("/admin/tasks", "机台任务", "i-tasks", _p.startswith('/admin/tasks')) }}
       {{ side_link("/admin/reports/labor", "工时汇总", "i-clock", _p.startswith('/admin/reports/labor')) }}

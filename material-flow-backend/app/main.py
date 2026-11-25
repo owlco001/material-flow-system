@@ -4714,6 +4714,642 @@ def order_detail(
     }
 
 
+# ==================== 项目物料需求（需求 1：项目 → 机台 → BOM 层级树）====================
+#
+# 口径：
+#   - 项目 = production_orders（U9 项目号 = order_no）
+#   - 机台 = order_devices.device_no，U9 口径为「项目短号-机台编号」（如 26B-012-P5-12）
+#   - 备料表 = agg_bom_items（按 batch_id 分组）；agg_bom_batches 只有 project_name，没有项目号，
+#     所以项目 → 批次必须两级匹配：先机台号精确、再项目短号前缀、最后项目名称模糊。
+#   - 层级 = level_no + parent_code，parent_code 为空即顶层。不改表结构。
+
+PROJECT_MATERIAL_ROLES = {"ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER"}
+
+PMR_MATCH_LABELS = {
+    "device_no": "机台号精确匹配",
+    "device_prefix": "项目短号前缀匹配",
+    "project_name": "项目名称匹配",
+    "none": "未匹配",
+}
+
+
+def _pmr_like(value: str) -> str:
+    """LIKE 转义：项目名里可能出现 _ / %，不能当通配符。"""
+    return (value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _pmr_short_code(order_no: str) -> str:
+    """项目短号（JSBY-26B-012 → 26B-012）。与 app/u9/sync.py:project_short 同一口径。"""
+    from app.u9.sync import project_short
+
+    return project_short(order_no)
+
+
+def _pmr_authorize(user: sqlite3.Row) -> None:
+    """沿用订单查询权限：管理员/车间主管/计划员全量；装配工按本人机台；其余拒绝。"""
+    role = user["role"]
+    if role in PROJECT_MATERIAL_ROLES or role == "ASSEMBLER":
+        return
+    raise ApiError(403, CODE_FORBIDDEN, "无权查看项目物料需求")
+
+
+def _pmr_resolve_project(c: sqlite3.Connection, project_no: str) -> tuple[sqlite3.Row, str]:
+    """按项目号取项目；精确优先，其次唯一模糊（项目号或项目名）。"""
+    key = (project_no or "").strip()
+    if not key:
+        raise ApiError(400, CODE_VALIDATION_ERROR, "项目号不能为空")
+    row = c.execute(
+        "SELECT id, order_no, product_name, status, created_at FROM production_orders"
+        " WHERE order_no = ? COLLATE NOCASE",
+        (key,),
+    ).fetchone()
+    if row is not None:
+        return row, "order_no"
+    like = f"%{_pmr_like(key)}%"
+    rows = c.execute(
+        "SELECT id, order_no, product_name, status, created_at FROM production_orders"
+        " WHERE order_no LIKE ? ESCAPE '\\' OR product_name LIKE ? ESCAPE '\\'"
+        " ORDER BY created_at DESC, id DESC LIMIT 11",
+        (like, like),
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0], "fuzzy"
+    if rows:
+        raise ApiError(
+            409,
+            "PROJECT_AMBIGUOUS",
+            f"项目号「{key}」匹配到多个项目，请从项目搜索中选择具体项目号",
+            details={"candidates": [
+                {"projectNo": r["order_no"], "projectName": r["product_name"]}
+                for r in rows[:10]
+            ]},
+        )
+    raise ApiError(404, "PROJECT_NOT_FOUND", f"项目不存在：{key}")
+
+
+def _pmr_assembler_device_nos(c: sqlite3.Connection, user: sqlite3.Row, order_no: str) -> set[str]:
+    """装配工可见机台：本人主责或未移除的协作成员（与订单详情同一口径，按机台号关联）。"""
+    rows = c.execute(
+        """SELECT DISTINCT t.device_no FROM assembly_tasks t
+            WHERE t.order_no = ? AND (
+                  t.assigned_assembler_id = ?
+                  OR EXISTS (SELECT 1 FROM assembly_task_members m
+                              WHERE m.task_id = t.id AND m.assembler_id = ? AND m.removed_at IS NULL))""",
+        (order_no, user["id"], user["id"]),
+    ).fetchall()
+    return {str(r["device_no"]) for r in rows if r["device_no"]}
+
+
+def _pmr_project_devices(
+    c: sqlite3.Connection, user: sqlite3.Row, project: sqlite3.Row, device_no: str | None,
+) -> list[dict[str, Any]]:
+    """项目下（当前用户可见的）机台；机台名取 devices.device_name，缺失时留空。"""
+    rows = c.execute(
+        "SELECT id, device_type, device_no, sequence_no FROM order_devices"
+        " WHERE order_id = ? ORDER BY sequence_no, device_no",
+        (project["id"],),
+    ).fetchall()
+    devices = [dict(r) for r in rows]
+    if user["role"] == "ASSEMBLER":
+        allowed = _pmr_assembler_device_nos(c, user, project["order_no"])
+        devices = [d for d in devices if d["device_no"] in allowed]
+    if device_no:
+        wanted = device_no.strip()
+        matched = [d for d in devices if d["device_no"] == wanted]
+        if not matched:
+            # 装配工探测他人机台时不能靠 404/403 的差异判断机台是否存在。
+            if user["role"] == "ASSEMBLER":
+                raise ApiError(403, CODE_FORBIDDEN, "无权查看该机台")
+            raise ApiError(404, "DEVICE_NOT_FOUND", f"机台不存在或不属于该项目：{wanted}")
+        devices = matched
+    return devices
+
+
+def _pmr_pick_batch(
+    c: sqlite3.Connection, project: sqlite3.Row, devices: list[dict[str, Any]],
+) -> tuple[sqlite3.Row | None, str, str]:
+    """选该项目最新备料表批次：机台号精确 → 项目短号前缀 → 项目名称。
+
+    返回 (batch, matched_by, matched_value)。多批次一律 created_at 倒序取最新。
+    """
+    order_no = str(project["order_no"])
+    short = _pmr_short_code(order_no)
+    device_nos = [str(d["device_no"]) for d in devices]
+    if device_nos:
+        marks = ",".join("?" for _ in device_nos)
+        batch = c.execute(
+            f"""SELECT b.* FROM agg_bom_batches b
+                 WHERE EXISTS (SELECT 1 FROM agg_bom_items i
+                                WHERE i.batch_id = b.id AND i.device_code IN ({marks}))
+                 ORDER BY b.created_at DESC, b.id DESC LIMIT 1""",
+            device_nos,
+        ).fetchone()
+        if batch is not None:
+            hit = c.execute(
+                f"""SELECT device_code FROM agg_bom_items
+                     WHERE batch_id = ? AND device_code IN ({marks})
+                     GROUP BY device_code ORDER BY COUNT(*) DESC, device_code LIMIT 1""",
+                [batch["id"], *device_nos],
+            ).fetchone()
+            return batch, "device_no", str(hit["device_code"]) if hit else ""
+    if short:
+        batch = c.execute(
+            """SELECT b.* FROM agg_bom_batches b
+                WHERE EXISTS (SELECT 1 FROM agg_bom_items i
+                               WHERE i.batch_id = b.id AND i.device_code LIKE ? ESCAPE '\\')
+                ORDER BY b.created_at DESC, b.id DESC LIMIT 1""",
+            (f"{_pmr_like(short)}-%",),
+        ).fetchone()
+        if batch is not None:
+            return batch, "device_prefix", f"{short}-"
+    patterns = [p for p in (order_no, short, str(project["product_name"] or "")) if len(p) >= 2]
+    patterns = list(dict.fromkeys(patterns))
+    if patterns:
+        where = " OR ".join("project_name LIKE ? ESCAPE '\\'" for _ in patterns)
+        batch = c.execute(
+            f"SELECT * FROM agg_bom_batches WHERE {where} ORDER BY created_at DESC, id DESC LIMIT 1",
+            [f"%{_pmr_like(p)}%" for p in patterns],
+        ).fetchone()
+        if batch is not None:
+            return batch, "project_name", str(batch["project_name"] or "")
+    return None, "none", ""
+
+
+def _pmr_build_tree(rows: list[sqlite3.Row]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, float]]:
+    """由 level_no + parent_code 还原树，返回 (roots, all_nodes, 同料号汇总用量)。
+
+    现场数据（U9 聚合 BOM）里 parent_code 常常整段都填成设备根（母件料号列不是逐行的
+    直接父件），只看 parent_code 会把 3/4 层全挂到根上。因此：
+      1) parent_code 能命中「上一级」同料号节点 → 用它（Excel 导入格式，最精确）；
+      2) 否则按 line_no 顺序用层级栈取最近的上一级节点（ERP 深度优先导出）。
+    """
+    roots: list[dict[str, Any]] = []
+    nodes: list[dict[str, Any]] = []
+    totals: dict[str, float] = {}
+    by_level_code: dict[tuple[int, str], dict[str, Any]] = {}
+    last_at_level: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        level = int(row["level_no"] or 0)
+        code = str(row["material_code"] or "")
+        quantity = float(row["quantity"] or 0)
+        totals[code] = round(totals.get(code, 0.0) + quantity, 6)
+        node: dict[str, Any] = {
+            "materialCode": code,
+            "materialName": row["material_name"] or "",
+            "specification": row["specification"] or "",
+            "unit": row["unit"] or "",
+            "quantity": quantity,
+            "levelNo": level,
+            "parentCode": row["parent_code"] or "",
+            "materialForm": row["material_form"] or "",
+            "lineNo": int(row["line_no"] or 0),
+            "deviceTotalQuantity": quantity,
+            "childCount": 0,
+            "requirement": None,
+            "children": [],
+        }
+        parent: dict[str, Any] | None = None
+        parent_code = str(row["parent_code"] or "")
+        if parent_code:
+            parent = by_level_code.get((level - 1, parent_code))
+        if parent is None:
+            parent = last_at_level.get(level - 1)
+        if parent is None and level > 1:
+            # 上一级整段缺行（例如只有 1、3 层）：退到最近的更浅层节点。
+            for shallower in range(level - 2, -1, -1):
+                if shallower in last_at_level:
+                    parent = last_at_level[shallower]
+                    break
+        if parent is None:
+            roots.append(node)
+        else:
+            parent["children"].append(node)
+        nodes.append(node)
+        by_level_code[(level, code)] = node
+        last_at_level[level] = node
+    for node in nodes:
+        node["deviceTotalQuantity"] = totals.get(node["materialCode"], node["quantity"])
+        node["childCount"] = len(node["children"])
+    return roots, nodes, totals
+
+
+def _pmr_limit_depth(nodes: list[dict[str, Any]], keep: int) -> None:
+    for node in nodes:
+        if keep <= 1:
+            node["children"] = []
+        else:
+            _pmr_limit_depth(node["children"], keep - 1)
+
+
+def _pmr_requirement_rows(
+    c: sqlite3.Connection, order_id: str, device_ids: list[str],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """(device_id, 料号大写) → 需求状态；没有记录的料号不生成条目（前端不得以 0 冒充）。"""
+    if not device_ids:
+        return {}
+    marks = ",".join("?" for _ in device_ids)
+    rows = c.execute(
+        f"""SELECT r.device_id, m.code, r.required_quantity, r.arrived_quantity,
+                   r.in_stock_quantity, r.status_code
+              FROM order_material_requirements r
+              JOIN materials m ON m.id = r.material_id
+             WHERE r.order_id = ? AND r.device_id IN ({marks})""",
+        [order_id, *device_ids],
+    ).fetchall()
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        status = str(row["status_code"] or "")
+        result[(str(row["device_id"]), str(row["code"]).upper())] = {
+            "requiredQuantity": int(row["required_quantity"] or 0),
+            "arrivedQuantity": int(row["arrived_quantity"] or 0),
+            "inStockQuantity": int(row["in_stock_quantity"] or 0),
+            "statusCode": status,
+            "statusLabel": WORKSPACE_STATUS_LABELS.get(status, status),
+        }
+    return result
+
+
+def _pmr_device_names(c: sqlite3.Connection, device_nos: list[str]) -> dict[str, str]:
+    if not device_nos:
+        return {}
+    marks = ",".join("?" for _ in device_nos)
+    rows = c.execute(
+        f"SELECT device_no, device_name FROM devices WHERE device_no IN ({marks})",
+        device_nos,
+    ).fetchall()
+    return {str(r["device_no"]): str(r["device_name"] or "") for r in rows}
+
+
+def _pmr_resolve_group_device(
+    device_code: str, devices: list[dict[str, Any]], short: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """备料表里的 device_code → 项目机台。返回 (device, matched_by)。"""
+    exact = {str(d["device_no"]).upper(): d for d in devices}
+    hit = exact.get(device_code.upper())
+    if hit is not None:
+        return hit, "device_no"
+    prefix = f"{short}-".upper() if short else ""
+    code = device_code.upper()
+    if prefix and code.startswith(prefix):
+        rest = code[len(prefix):]
+        candidates = [
+            d for d in devices
+            if str(d["device_no"]).upper() == rest
+            or str(d["device_no"]).upper().endswith("-" + rest)
+        ]
+        if len(candidates) == 1:
+            return candidates[0], "device_prefix"
+    return None, "project_name"
+
+
+def _pmr_payload(
+    c: sqlite3.Connection,
+    user: sqlite3.Row,
+    project: sqlite3.Row,
+    *,
+    expand: str,
+    device_no: str | None,
+    resolved_from: str,
+) -> dict[str, Any]:
+    """组装项目物料需求：项目 → 机台 → 层级树，并挂上物料需求状态。"""
+    devices = _pmr_project_devices(c, user, project, device_no)
+    order_no = str(project["order_no"])
+    short = _pmr_short_code(order_no)
+    batch, matched_by, matched_value = (
+        (None, "none", "") if not devices else _pmr_pick_batch(c, project, devices)
+    )
+
+    names = _pmr_device_names(c, [str(d["device_no"]) for d in devices])
+    groups: list[dict[str, Any]] = []
+    stats = {"deviceCount": 0, "itemCount": 0, "materialCount": 0, "levelCount": 0,
+             "totalQuantity": 0.0, "trackedItemCount": 0}
+    reason: str | None = None
+    message: str | None = None
+
+    if not devices:
+        reason = "NO_DEVICES"
+        message = f"项目 {order_no} 下暂无设备（order_devices 无记录），无法按机台展开物料需求"
+    elif batch is None:
+        reason = "NO_BATCH"
+        message = (f"项目 {order_no} 未匹配到备料表批次（已按机台号、项目短号「{short}」前缀、"
+                   f"项目名称依次匹配 agg_bom_batches 均为空），请先导入 ERP 聚合 BOM")
+        # 机台照常列出（空树），让用户看到“设备在、备料表缺”，而不是空白页。
+        groups = [{
+            "deviceNo": str(d["device_no"]),
+            "deviceName": names.get(str(d["device_no"])) or str(d["device_type"] or ""),
+            "deviceType": str(d["device_type"] or ""),
+            "sequenceNo": int(d["sequence_no"] or 0),
+            "linked": True,
+            "matchedBy": "none",
+            "itemCount": 0,
+            "materialCount": 0,
+            "levelCount": 0,
+            "totalQuantity": 0,
+            "requirementSummary": {"tracked": 0, "outOfStock": 0, "arrived": 0, "inStock": 0},
+            "tree": [],
+        } for d in devices]
+        stats["deviceCount"] = len(groups)
+    else:
+        requirements = _pmr_requirement_rows(c, str(project["id"]), [str(d["id"]) for d in devices])
+        items = c.execute(
+            "SELECT * FROM agg_bom_items WHERE batch_id = ? ORDER BY device_code, line_no, id",
+            (batch["id"],),
+        ).fetchall()
+        by_code: dict[str, list[sqlite3.Row]] = {}
+        for item in items:
+            by_code.setdefault(str(item["device_code"] or ""), []).append(item)
+
+        entries: list[dict[str, Any]] = []
+        unlinked: list[dict[str, Any]] = []
+        for code, group_rows in by_code.items():
+            device, group_match = _pmr_resolve_group_device(code, devices, short)
+            if device is None:
+                # 认不到机台的备料行：只有能全量看项目的人才展示，避免装配工越权。
+                if user["role"] == "ASSEMBLER" or device_no:
+                    continue
+                unlinked.append({"code": code, "rows": group_rows, "match": "project_name"})
+                continue
+            entries.append({"device": device, "rows": group_rows, "match": group_match})
+        entries.sort(key=lambda e: (int(e["device"]["sequence_no"] or 0), str(e["device"]["device_no"])))
+        unlinked.sort(key=lambda e: e["code"])
+        entries.extend({"device": None, "rows": u["rows"], "match": u["match"], "code": u["code"]}
+                       for u in unlinked)
+
+        device_stats: list[dict[str, Any]] = []
+        for entry in entries:
+            device = entry["device"]
+            rows = entry["rows"]
+            roots, nodes, totals = _pmr_build_tree(rows)
+            levels = sorted({int(n["levelNo"]) for n in nodes})
+            device_id = str(device["id"]) if device else ""
+            tracked = 0
+            status_counts = {"OUT_OF_STOCK": 0, "ARRIVED": 0, "IN_STOCK": 0}
+            for node in nodes:
+                requirement = requirements.get((device_id, node["materialCode"].upper())) if device else None
+                node["requirement"] = requirement
+                if requirement:
+                    tracked += 1
+                    if requirement["statusCode"] in status_counts:
+                        status_counts[requirement["statusCode"]] += 1
+            if expand != "all":
+                _pmr_limit_depth(roots, 1)
+            device_name = (
+                (names.get(str(device["device_no"])) if device else "")
+                or (str(rows[0]["device_name"] or "") if rows else "")
+                or (str(device["device_type"] or "") if device else "")
+            )
+            if device is None and not entry.get("code"):
+                # 备料表里设备编码为空的行 = 项目公共层级（多台设备共用），
+                # 保留但要标清楚，不能显示成一个没有编号的机台。
+                device_name = "项目公共（备料表该段无设备编码）"
+            total_quantity = round(sum(totals.values()), 6)
+            device_stats.append({
+                "deviceNo": str(device["device_no"]) if device else entry.get("code", ""),
+                "deviceName": device_name,
+                "deviceType": str(device["device_type"] or "") if device else "",
+                "sequenceNo": int(device["sequence_no"] or 0) if device else None,
+                "linked": device is not None,
+                "matchedBy": entry["match"] if device is not None else "project_name",
+                "itemCount": len(nodes),
+                "materialCount": len(totals),
+                "levelCount": len(levels),
+                "totalQuantity": total_quantity,
+                "requirementSummary": {
+                    "tracked": tracked,
+                    "outOfStock": status_counts["OUT_OF_STOCK"],
+                    "arrived": status_counts["ARRIVED"],
+                    "inStock": status_counts["IN_STOCK"],
+                },
+                "tree": roots,
+            })
+            stats["deviceCount"] += 1
+            stats["itemCount"] += len(nodes)
+            stats["materialCount"] += len(totals)
+            stats["levelCount"] = max(stats["levelCount"], len(levels))
+            stats["totalQuantity"] = round(stats["totalQuantity"] + total_quantity, 6)
+            stats["trackedItemCount"] += tracked
+
+        groups = device_stats
+        if not groups:
+            reason = "NO_ITEMS"
+            message = (f"备料表批次（{batch['created_at']}）中没有属于项目 {order_no} 的机台行，"
+                       f"请核对批次里的设备编码与订单机台号是否一致")
+
+    if reason is None and stats["itemCount"] == 0 and groups:
+        reason = "NO_ITEMS"
+        message = "备料表批次存在但展开后没有明细行"
+
+    return {
+        "projectNo": order_no,
+        "projectName": project["product_name"] or "",
+        "projectStatus": project["status"] or "",
+        "resolvedFrom": resolved_from,
+        "expand": expand,
+        "deviceFilter": device_no or None,
+        "matchedBy": matched_by,
+        "matchedByLabel": PMR_MATCH_LABELS.get(matched_by, matched_by),
+        "matchedValue": matched_value,
+        "batch": ({
+            "batchId": batch["id"],
+            "createdAt": batch["created_at"],
+            "fileName": batch["file_name"],
+            "projectName": batch["project_name"],
+            "rowCount": int(batch["row_count"] or 0),
+            "deviceCount": int(batch["device_count"] or 0),
+            "materialCount": int(batch["material_count"] or 0),
+        } if batch is not None else None),
+        "summary": {**stats, "projectDeviceCount": len(devices)},
+        "devices": groups,
+        "reason": reason,
+        "message": message,
+        "serverTime": now(),
+    }
+
+
+@app.get("/api/v1/projects")
+def list_projects(
+    q: str = "",
+    limit: int = Query(20, ge=1, le=100),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """项目搜索（项目号/项目名模糊），供管理台选择项目后展开物料需求。"""
+    _pmr_authorize(user)
+    c = db()
+    try:
+        where: list[str] = []
+        args: list[Any] = []
+        keyword = (q or "").strip()
+        if keyword:
+            like = f"%{_pmr_like(keyword)}%"
+            where.append("(o.order_no LIKE ? ESCAPE '\\' OR o.product_name LIKE ? ESCAPE '\\')")
+            args.extend([like, like])
+        if user["role"] == "ASSEMBLER":
+            where.append(
+                "EXISTS (SELECT 1 FROM assembly_tasks t WHERE t.order_no = o.order_no AND ("
+                "t.assigned_assembler_id = ? OR EXISTS (SELECT 1 FROM assembly_task_members m"
+                " WHERE m.task_id = t.id AND m.assembler_id = ? AND m.removed_at IS NULL)))"
+            )
+            args.extend([user["id"], user["id"]])
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        rows = c.execute(
+            "SELECT o.order_no, o.product_name, o.status, o.created_at,"
+            " (SELECT COUNT(*) FROM order_devices d WHERE d.order_id = o.id) AS device_count"
+            f" FROM production_orders o{clause}"
+            " ORDER BY o.created_at DESC, o.order_no DESC LIMIT ?",
+            [*args, limit],
+        ).fetchall()
+        return {
+            "projects": [{
+                "projectNo": r["order_no"],
+                "projectName": r["product_name"] or "",
+                "status": r["status"] or "",
+                "deviceCount": int(r["device_count"] or 0),
+                "createdAt": r["created_at"],
+            } for r in rows],
+            "count": len(rows),
+            "serverTime": now(),
+        }
+    finally:
+        c.close()
+
+
+@app.get("/api/v1/projects/{project_no}/material-requirements")
+def project_material_requirements(
+    project_no: str,
+    expand: str = Query("top", pattern="^(all|top)$"),
+    device_no: str | None = None,
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """项目物料需求：项目 → 机台 → BOM 层级树，附带物料需求状态。
+
+    ``expand=top`` 只返回第一层（子节点带 childCount），``expand=all`` 展开到叶子。
+    ``device_no`` 只看单台机台。不改变既有 /api/v1/orders/* 行为。
+    """
+    _pmr_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        project, resolved_from = _pmr_resolve_project(c, project_no)
+        return _pmr_payload(c, user, project, expand=expand, device_no=device_no,
+                            resolved_from=resolved_from)
+    except ApiError as exc:
+        if not exc.trace_id:
+            exc.trace_id = trace_id
+        raise
+    finally:
+        c.close()
+
+
+PMR_EXPORT_HEADER = (
+    "项目号", "项目名称", "机台号", "机台名称", "层级", "父件料号", "料号", "品名",
+    "规格", "单位", "单机用量", "机台合计需求", "已到货", "在库", "状态", "匹配来源",
+)
+
+
+def _pmr_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else round(float(value), 4)
+
+
+def _pmr_export_rows(payload: dict[str, Any]) -> tuple[list[list[Any]], list[int]]:
+    """把树摊平成表格行：缩进保留层级，机台小计 + 项目合计各一行（加粗）。"""
+    rows: list[list[Any]] = []
+    bold: list[int] = []
+    project_no = payload["projectNo"]
+    project_name = payload["projectName"]
+
+    def walk(nodes: list[dict[str, Any]], device: dict[str, Any], depth: int) -> None:
+        for node in nodes:
+            requirement = node.get("requirement") or {}
+            rows.append([
+                project_no,
+                project_name,
+                device["deviceNo"],
+                device["deviceName"],
+                node["levelNo"],
+                node["parentCode"],
+                ("　" * depth) + str(node["materialCode"]),
+                node["materialName"],
+                node["specification"],
+                node["unit"],
+                _pmr_number(node["quantity"]),
+                (_pmr_number(requirement["requiredQuantity"])
+                 if requirement.get("requiredQuantity") is not None
+                 else _pmr_number(node["deviceTotalQuantity"])),
+                requirement.get("arrivedQuantity", "") if requirement else "",
+                requirement.get("inStockQuantity", "") if requirement else "",
+                requirement.get("statusLabel", "") if requirement else "",
+                PMR_MATCH_LABELS.get(device.get("matchedBy") or "none", ""),
+            ])
+            walk(node.get("children") or [], device, depth + 1)
+
+    for device in payload["devices"]:
+        walk(device["tree"], device, 0)
+        bold.append(len(rows))
+        rows.append([
+            project_no, project_name, device["deviceNo"], device["deviceName"],
+            "小计", "", "", f"{device['itemCount']} 项 / {device['levelCount']} 层",
+            "", "", _pmr_number(device["totalQuantity"]), "", "", "", "", "",
+        ])
+    summary = payload["summary"]
+    bold.append(len(rows))
+    rows.append([
+        project_no, project_name, "项目合计", "", "", "", "",
+        f"{summary['itemCount']} 项 / {summary['levelCount']} 层", "", "",
+        _pmr_number(summary["totalQuantity"]), "", "", "", "", "",
+    ])
+    return rows, bold
+
+
+def _pmr_export_bytes(payload: dict[str, Any]) -> bytes:
+    from app.xlsx_writer import build_xlsx
+
+    rows, bold = _pmr_export_rows(payload)
+    title = f"项目物料需求 {payload['projectNo']}"
+    return build_xlsx(
+        title,
+        PMR_EXPORT_HEADER,
+        rows,
+        column_widths=[16, 26, 18, 18, 6, 16, 18, 22, 20, 6, 10, 12, 10, 10, 10, 18],
+        bold_rows=bold,
+        sheet_name="项目物料需求",
+    )
+
+
+@app.get("/api/v1/projects/{project_no}/material-requirements/export")
+def export_project_material_requirements(
+    project_no: str,
+    device_no: str | None = None,
+    user: sqlite3.Row = Depends(current_user),
+) -> Response:
+    """导出当前项目物料需求明细 xlsx（保留层级与合计行）。"""
+    _pmr_authorize(user)
+    c = db()
+    try:
+        project, resolved_from = _pmr_resolve_project(c, project_no)
+        payload = _pmr_payload(c, user, project, expand="all", device_no=device_no,
+                               resolved_from=resolved_from)
+    finally:
+        c.close()
+    if payload["reason"] == "NO_DEVICES":
+        raise ApiError(409, "NO_DEVICES", payload["message"])
+    if payload["reason"] == "NO_BATCH":
+        raise ApiError(409, "NO_BATCH", payload["message"])
+    body = _pmr_export_bytes(payload)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    ascii_name = f"project-material-requirements-{re.sub(r'[^0-9A-Za-z._-]', '_', payload['projectNo'])}-{stamp}.xlsx"
+    utf8_name = quote(f"项目物料需求-{payload['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/api/v1/orders/{order_no}/tasks/{task_id}")
 def order_task_detail(
     order_no: str,

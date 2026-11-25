@@ -104,6 +104,11 @@ from app.main import (
     _workspace_summary_payload,
     audit_logs_export_items,
     machine_progress_export_items,
+    PMR_MATCH_LABELS,
+    _pmr_export_bytes,
+    _pmr_payload,
+    _pmr_resolve_project,
+    list_projects as api_list_projects,
     UPLOAD_DIR,
     MODEL_CODE_RE,
     WORKSPACE_STATUS_LABELS,
@@ -1792,6 +1797,98 @@ def admin_orders(request: Request):
         request,
         "orders.html",
         ctx,
+    )
+
+
+# ==================== 项目物料需求（需求 1：项目 → 机台 → 层级树）====================
+
+
+@router.get("/admin/projects/material-requirements", response_class=HTMLResponse)
+def admin_project_material_requirements(request: Request):
+    """项目物料需求页：输入项目号 → 机台 → BOM 层级树，可一键展开/导出 xlsx。"""
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    assert user is not None
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    keyword = str(request.query_params.get("q", "")).strip()
+    expand = "all" if request.query_params.get("expand") == "all" else "top"
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    payload = None
+    candidates: list[dict[str, Any]] = []
+    error = None
+    c = db()
+    try:
+        if project_no:
+            try:
+                project, resolved_from = _pmr_resolve_project(c, project_no)
+                payload = _pmr_payload(c, user, project, expand=expand, device_no=device_no,
+                                       resolved_from=resolved_from)
+                project_no = payload["projectNo"]
+            except ApiError as exc:
+                error = _api_error_message(exc)
+                keyword = keyword or project_no
+                project_no = ""
+        if not project_no:
+            # 没指定项目（或项目号没查到）时给候选列表，避免空白页。
+            query = keyword or str(request.query_params.get("q", "")).strip()
+            if query:
+                candidates = api_list_projects(q=query, limit=20, user=user)["projects"]
+    finally:
+        c.close()
+    ctx = {
+        "user": user,
+        "csrf_token": user["csrf_token"],
+        "project_no": project_no,
+        "keyword": keyword,
+        "expand": expand,
+        "device_no": device_no or "",
+        "payload": payload,
+        "candidates": candidates,
+        "match_labels": PMR_MATCH_LABELS,
+        "error": error,
+        "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+    }
+    return templates.TemplateResponse(request, "project_material_requirements.html", ctx)
+
+
+@router.get("/admin/projects/material-requirements/export")
+def admin_project_material_requirements_export(request: Request):
+    """当前项目物料需求明细导出 xlsx（保留层级与合计行）。"""
+    user, denied = _report_or_403(request)
+    if denied:
+        return denied
+    assert user is not None
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    if not project_no:
+        return _error_page(request, 400, "请先选择要导出的项目")
+    c = db()
+    try:
+        try:
+            project, resolved_from = _pmr_resolve_project(c, project_no)
+            payload = _pmr_payload(c, user, project, expand="all", device_no=device_no,
+                                   resolved_from=resolved_from)
+        except ApiError as exc:
+            return _error_page(request, exc.status_code, _api_error_message(exc))
+    finally:
+        c.close()
+    if payload["reason"] in {"NO_DEVICES", "NO_BATCH"}:
+        return _error_page(request, 409, payload["message"] or "没有可导出的备料数据")
+    body = _pmr_export_bytes(payload)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    ascii_name = (f"project-material-requirements-"
+                  f"{re.sub(r'[^0-9A-Za-z._-]', '_', payload['projectNo'])}-{stamp}.xlsx")
+    utf8_name = quote(f"项目物料需求-{payload['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
