@@ -561,6 +561,8 @@ def test_client_query_payload_and_field_validation():
     assert [r["DocNo"] for r in rows] == ["PO-OK"]
     assert seen and seen[0]["EntityFullName"] == "UFIDA.U9.PM.PO.PurchaseOrder"
     fields = seen[0]["ReturnFields"]
+    assert isinstance(fields, list), "U9 要求 ReturnFields 是字符串数组，逗号串会被 502 拒绝"
+    assert seen[0].get("Filters") == []
     for required in ("DocNo", "BusinessDate", "Status.Value", "Status.Name",
                      "Supplier_Code", "DeliveryDate", "POLines.DocLineNo",
                      "POLines.ItemInfo.ItemCode", "POLines.PurQtyTU",

@@ -671,7 +671,9 @@ class U9CClient(U9Client):
         for page in range(1, pages + 1):
             payload = {
                 "EntityFullName": PO_ENTITY,
-                "ReturnFields": ",".join(PO_RETURN_FIELDS),
+                # ReturnFields 必须是字符串数组；传逗号拼接的字符串会被网关判参数错误（实测 502）。
+                "ReturnFields": list(PO_RETURN_FIELDS),
+                "Filters": [],
                 "PageSize": size,
                 "PageIndex": page,
                 # SQL Server 的分页没有稳定排序会重/漏；固定按单号排序保证翻页可对账。
