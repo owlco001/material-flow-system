@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
 from . import mappers
@@ -40,6 +41,16 @@ PATH_BOM = "/webapi/BOM/Query"
 PATH_INVENTORY = "/webapi/Invtrans/QueryQohAndAvailable"
 PATH_MO = "/webapi/MODoc/Query"
 PATH_SQL = "/webapi/QueryCommon/QueryInfoBySql"
+# 通用实体查询（需求 3：采购订单）。返回字段由 ReturnFields 指定；U9 对不存在的字段静默忽略。
+PATH_QUERY = "/webapi/CommonEntity/Query"
+PO_ENTITY = "UFIDA.U9.PM.PO.PurchaseOrder"
+# 必须真正回来的字段（取回后逐项校验，缺一个就报错，绝不把缺失的到货量当 0）
+PO_RETURN_FIELDS = (
+    "DocNo", "BusinessDate", "Status.Value", "Status.Name",
+    "Supplier_Code", "Supplier_ShortName", "DeliveryDate",
+    "POLines.DocLineNo", "POLines.ItemInfo.ItemCode", "POLines.ItemInfo.ItemName",
+    "POLines.PurQtyTU", "POLines.TotalRecievedQtyTU",
+)
 # 拼进 SQL 的单号/组织编码只允许这些字符，杜绝注入
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_\-.]{1,60}$")
 # 料号/单号拼进固定 SELECT 的字符串字面量：现场料号含 +（如 30201001-00001+A）和中文，
@@ -152,6 +163,10 @@ class U9Client:
     def fetch_production_orders(self, doc_nos: list[str]) -> list[dict]:
         raise U9NotImplemented("fetch_production_orders 未实现")
 
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True,
+                              errors: list[dict] | None = None) -> list[dict]:
+        raise U9NotImplemented("fetch_purchase_orders 未实现")
+
     # Phase 2：回写（本地 → U9），一期不调用
     def post_completion(self, order_no: str, device_code: str, qty: float) -> dict:
         raise U9NotImplemented("post_completion 为 Phase 2，待确认业务校验规则后实现")
@@ -182,6 +197,9 @@ class ClassicU9Client(U9Client):
 
     def fetch_production_orders(self, doc_nos=None, **_):
         raise self._todo("fetch_production_orders")
+
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True, errors=None, **_):
+        raise self._todo("fetch_purchase_orders")
 
 
 class U9CClient(U9Client):
@@ -609,6 +627,77 @@ class U9CClient(U9Client):
         if not doc_nos:
             return []
         return self._post_batched(PATH_MO, doc_nos, lambda d: {"DocNo": d}, errors)
+
+    # ------------------------------------------------------------ 采购订单（需求 3）
+    @staticmethod
+    def _po_rows(items: list) -> list[dict]:
+        """个别网关把行集合包在 {"Rows": [...]} / {"Data": [...]} 里，这里展开一层。"""
+        rows = [r for r in items if isinstance(r, dict)]
+        if len(rows) == 1:
+            for key, value in rows[0].items():
+                if str(key).lower() in ("rows", "items", "records", "data") and isinstance(value, list):
+                    return [r for r in value if isinstance(r, dict)]
+        return rows
+
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True,
+                              errors: list[dict] | None = None,
+                              page_size: int = 500, max_pages: int = 40) -> list[dict]:
+        """采购订单（含行）只读查询：POST /webapi/CommonEntity/Query。
+
+        字段口径见 PO_RETURN_FIELDS（到货量是 **TotalRecievedQtyTU**，U9 自己把 Received 拼成
+        Recieved；状态取 Status.Value / Status.Name，直接取 Status 只有枚举类型名）。
+
+        取回后先做字段存在性校验：U9 对不存在的字段静默忽略，缺关键字段时直接抛 U9Error，
+        绝不把缺失的到货量当成 0（否则「已到货待入库」会被误判成「无采购计划」）。
+
+        since_days 按 BusinessDate 过滤；only_open=True 时剔除已结案（关闭/作废/取消）的订单。
+        翻页只在「整页返回」时继续，且某页没有新单号就停（避免不支持分页的网关被重复拉取）。
+        """
+        try:
+            days = max(1, min(int(since_days or 180), 3650))
+        except (TypeError, ValueError):
+            days = 180
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            size = max(1, min(int(page_size or 500), 2000))
+            pages = max(1, min(int(max_pages or 1), 200))
+        except (TypeError, ValueError):
+            size, pages = 500, 40
+        out: list[dict] = []
+        seen: set[str] = set()
+        for page in range(1, pages + 1):
+            payload = {
+                "EntityFullName": PO_ENTITY,
+                "ReturnFields": ",".join(PO_RETURN_FIELDS),
+                "PageSize": size,
+                "PageIndex": page,
+            }
+            batch = self._po_rows(self._post(PATH_QUERY, payload))
+            if not batch:
+                break
+            novel = 0
+            for raw in batch:
+                no = mappers.po_doc_no(raw)
+                if no and no not in seen:
+                    seen.add(no)
+                    out.append(raw)
+                    novel += 1
+            if len(batch) < size or novel == 0:
+                break
+        try:
+            mappers.validate_po_rows(out)
+        except ValueError as e:
+            raise U9Error(str(e)) from e
+        kept: list[dict] = []
+        for raw in out:
+            business_date = mappers.s(mappers.first(raw, "BusinessDate", default=""))[:10]
+            if business_date and business_date < cutoff:
+                continue
+            status_value, status_name = mappers.po_status_pair(raw)
+            if only_open and mappers.po_status_closed(status_value, status_name):
+                continue
+            kept.append(raw)
+        return kept
 
     def fetch_mo_states(self, doc_nos: list[str], errors: list[dict] | None = None) -> dict[str, dict]:
         """读 MO_MO 的单据状态与完工数量：{单号: {doc_state, product_qty, complete_qty}}。

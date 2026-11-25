@@ -716,6 +716,9 @@ def init_db() -> None:
         _ensure_operation_table(c)
         from app.material_master import ensure_tables as _ensure_material_master_tables
         _ensure_material_master_tables(c)
+        # 需求 3：采购订单快照表（u9_po_headers / u9_po_lines，只新增，不改既有表）
+        from app.u9.sync import ensure_po_tables as _ensure_po_tables
+        _ensure_po_tables(c)
         _ensure_performance_indexes(c)
         c.commit()
     except Exception:
@@ -5532,6 +5535,165 @@ def _kitting_device_text(device_nos: list[str]) -> str:
     return ",".join(device_nos[:KITTING_DEVICE_FOLD]) + f" 等 {len(device_nos)} 台"
 
 
+# ==================== 需求 3：缺料物料状态（四档）====================
+# 四档判定叠在需求 2 的缺口口径之上，**不改 procureGapQuantity / prepareGapQuantity 的算法**：
+#   1 IN_STOCK_READY     库存可用量 ≥ 采购缺口            → 直接领料即可（采购/到货记录未回写）
+#   2 ARRIVED_NOT_STOCKED 未结案 PO 已到货量 ≥ 采购缺口    → 货已到厂，等入库
+#   3 IN_TRANSIT         未结案 PO 未到货量 > 0            → 有在途（可覆盖量可小于缺口）
+#   4 NO_PLAN            以上都不满足                      → 真缺，需要下采购
+# 另有 UNKNOWN_MATERIAL：PO 数据已同步、但该料号在 U9 料品档案里查不到（料号体系不一致），
+# 不塞进 NO_PLAN（否则会重复下单）。
+# 判定顺序严格 1→2→3→4：先看库里能不能直接满足，再看已到货，再看在途，最后才是无计划。
+SHORTAGE_STATUS_LABELS = {
+    "IN_STOCK_READY": "在库可满足",
+    "ARRIVED_NOT_STOCKED": "已到货待入库",
+    "IN_TRANSIT": "在途采购",
+    "NO_PLAN": "无采购计划",
+    "UNKNOWN_MATERIAL": "料号未识别",
+}
+SHORTAGE_STATUS_ORDER = ("IN_STOCK_READY", "ARRIVED_NOT_STOCKED", "IN_TRANSIT", "NO_PLAN",
+                         "UNKNOWN_MATERIAL")
+SHORTAGE_STATUS_PATTERN = "^(IN_STOCK_READY|ARRIVED_NOT_STOCKED|IN_TRANSIT|NO_PLAN|UNKNOWN_MATERIAL)$"
+PO_STALE_HOURS = 24
+
+
+def _po_is_stale(synced_at: str) -> bool:
+    """采购数据是否超过 24 小时未同步（只影响页面标黄，不影响状态判定）。"""
+    try:
+        ts = datetime.fromisoformat(str(synced_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - ts > timedelta(hours=PO_STALE_HOURS)
+
+
+def _po_unknown_codes(c: sqlite3.Connection) -> set[str]:
+    """最近一次成功执行的采购订单同步里，U9 料品档案查不到的料号。
+
+    料号体系核对发生在同步时（请求路径不直连 U9），结果记在 u9_sync_logs.detail_json 的
+    unknownMaterials 字段；没有该字段/没有日志时返回空集合（不做 UNKNOWN_MATERIAL 判定）。
+    """
+    if not c.execute("SELECT name FROM sqlite_master WHERE name='u9_sync_logs'").fetchone():
+        return set()
+    row = c.execute(
+        "SELECT detail_json FROM u9_sync_logs WHERE entity='po' AND status='OK' AND dry_run=0"
+        " ORDER BY started_at DESC LIMIT 1").fetchone()
+    if not row:
+        return set()
+    try:
+        detail = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        return set()
+    codes = detail.get("unknownMaterials") or []
+    return {str(code).strip() for code in codes if str(code).strip()}
+
+
+def _po_status_snapshot(c: sqlite3.Connection) -> dict[str, Any]:
+    """一次读齐采购订单快照：数据新鲜度 + 按料号汇总的到货/在途 + 未识别料号。
+
+    只统计**未结案**采购订单（关闭/作废/取消的不算在途）；已到货未入库量只算
+    TotalRecievedQtyTU，未到货量 = max(PurQtyTU − TotalRecievedQtyTU, 0)。
+    """
+    snapshot: dict[str, Any] = {
+        "fresh": False, "syncedAt": None, "stale": False, "openOrderCount": 0,
+        "byMaterial": {}, "unknownCodes": set(), "unknownMaterialCount": 0,
+    }
+    tables = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name IN ('u9_po_headers', 'u9_po_lines')")}
+    if len(tables) < 2:
+        return snapshot
+    head = c.execute("SELECT COUNT(*), MAX(synced_at) FROM u9_po_headers").fetchone()
+    if not head or not head[0]:
+        return snapshot  # 从未同步：fresh=False，状态一律 NO_PLAN，页面提示不可信
+    synced_at = str(head[1] or "")
+    # 以最近一次成功执行的 po 同步时间为准（哪怕本次 U9 返回 0 张，也说明「刚同步过」；
+    # 只有表里的行时间更可靠时才回退到 MAX(synced_at)）。
+    if c.execute("SELECT name FROM sqlite_master WHERE name='u9_sync_logs'").fetchone():
+        last = c.execute(
+            "SELECT started_at FROM u9_sync_logs WHERE entity='po' AND status='OK'"
+            " AND dry_run=0 ORDER BY started_at DESC LIMIT 1").fetchone()
+        if last and last[0]:
+            synced_at = str(last[0])
+    from app.u9.mappers import po_status_closed
+
+    by_material: dict[str, dict[str, Any]] = {}
+    open_docs: set[str] = set()
+    for row in c.execute(
+        "SELECT l.item_code AS item_code, l.doc_no AS doc_no, l.pur_qty_tu AS pur_qty_tu,"
+        "       l.recieved_qty_tu AS recieved_qty_tu, h.status_value AS status_value,"
+        "       h.status_name AS status_name, h.supplier_code AS supplier_code,"
+        "       h.supplier_name AS supplier_name"
+        "  FROM u9_po_lines l JOIN u9_po_headers h ON h.doc_no = l.doc_no").fetchall():
+        if po_status_closed(row["status_value"], row["status_name"]):
+            continue
+        open_docs.add(str(row["doc_no"]))
+        bucket = by_material.setdefault(str(row["item_code"]), {
+            "arrived": 0.0, "inTransit": 0.0, "poNos": [], "suppliers": []})
+        pur = float(row["pur_qty_tu"] or 0)
+        recv = float(row["recieved_qty_tu"] or 0)
+        bucket["arrived"] += max(recv, 0.0)
+        bucket["inTransit"] += max(pur - recv, 0.0)
+        if str(row["doc_no"]) not in bucket["poNos"]:
+            bucket["poNos"].append(str(row["doc_no"]))
+        supplier = str(row["supplier_name"] or row["supplier_code"] or "").strip()
+        if supplier and supplier not in bucket["suppliers"]:
+            bucket["suppliers"].append(supplier)
+    unknown = _po_unknown_codes(c)
+    snapshot.update({
+        "fresh": True,
+        "syncedAt": synced_at or None,
+        "stale": _po_is_stale(synced_at),
+        "openOrderCount": len(open_docs),
+        "byMaterial": by_material,
+        "unknownCodes": unknown,
+        "unknownMaterialCount": len(unknown),
+    })
+    return snapshot
+
+
+def _shortage_status_code(*, gap: int, available: float, arrived: float,
+                          in_transit: float) -> str:
+    """四档判定（严格 1→2→3→4）。gap 为需求 2 的采购缺口，不参与重新计算。"""
+    if available >= gap:
+        return "IN_STOCK_READY"
+    if arrived >= gap:
+        return "ARRIVED_NOT_STOCKED"
+    if in_transit > 0:
+        return "IN_TRANSIT"
+    return "NO_PLAN"
+
+
+def _shortage_status_fields(item: dict[str, Any], *, available_stock: float,
+                            bucket: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """给缺料清单行补状态字段（不改需求 2 的缺口/数量字段）。"""
+    gap = int(item["procureGapQuantity"] or 0)
+    arrived = float(bucket.get("arrived", 0.0) or 0.0)
+    in_transit = float(bucket.get("inTransit", 0.0) or 0.0)
+    if not snapshot["fresh"]:
+        # 从未同步采购数据：不得假装有数据，一律 NO_PLAN 并由响应里的 poDataFresh=false 提示
+        code = "NO_PLAN"
+    elif item["materialCode"] in snapshot["unknownCodes"]:
+        code = "UNKNOWN_MATERIAL"
+    else:
+        code = _shortage_status_code(gap=gap, available=available_stock,
+                                     arrived=arrived, in_transit=in_transit)
+    coverable = int(round(min(available_stock + arrived + in_transit, gap)))
+    return {
+        "stockStatus": code,
+        "stockStatusLabel": SHORTAGE_STATUS_LABELS.get(code, code),
+        "availableStockQty": int(round(available_stock)),
+        "arrivedNotStockedQty": int(round(arrived)),
+        "inTransitQty": int(round(in_transit)),
+        "coverableQuantity": max(0, coverable),
+        "partialCoverage": bool(code == "IN_TRANSIT" and coverable < gap),
+        "openPoNos": list(bucket.get("poNos", []))[:20],
+        "suppliers": list(bucket.get("suppliers", []))[:20],
+    }
+
+
+
 def _kitting_merge_shortages(
     short_rows: list[dict[str, Any]], order_no: str, material_code: str,
     sort_key: str = "procure",
@@ -5621,6 +5783,7 @@ def _kitting_dataset(
     material_code: str | None = None,
     sort_key: str = "procure",
     resolved_from: str = "order_no",
+    status_filter: str | None = None,
 ) -> dict[str, Any]:
     """齐套概览 + 缺料清单（全量，未分页）：概览、明细、导出共用同一份口径。
 
@@ -5719,6 +5882,36 @@ def _kitting_dataset(
 
     items = _kitting_merge_shortages(short_rows, order_no, material_code or "", sort_key,
                                      prepare_by_material=prepare_by_material)
+
+    # ---- 需求 3：给每个缺料料号补四档状态（在需求 2 的合并结果之上叠加，不改缺口数字）
+    snapshot = _po_status_snapshot(c)
+    available_by_code: dict[str, float] = {}
+    codes = [str(i["materialCode"]) for i in items]
+    for start in range(0, len(codes), 400):
+        part = codes[start:start + 400]
+        if not part:
+            continue
+        marks = ",".join("?" for _ in part)
+        for row in c.execute(
+                f"SELECT code AS code, available_quantity AS available_quantity"
+                f"  FROM materials WHERE code IN ({marks})", part).fetchall():
+            available_by_code[str(row["code"])] = float(row["available_quantity"] or 0)
+    for item in items:
+        item.update(_shortage_status_fields(
+            item,
+            available_stock=available_by_code.get(str(item["materialCode"]), 0.0),
+            bucket=snapshot["byMaterial"].get(str(item["materialCode"])) or {},
+            snapshot=snapshot,
+        ))
+    # 状态分布描述「当前范围（机台/料号过滤后）的全部缺料料号」，不受 status 过滤影响，
+    # 这样页面上的各状态计数才能当作过滤入口使用。
+    status_breakdown = {code: 0 for code in SHORTAGE_STATUS_ORDER}
+    for item in items:
+        status_breakdown[item["stockStatus"]] = status_breakdown.get(item["stockStatus"], 0) + 1
+    if status_filter:
+        items = [i for i in items if i["stockStatus"] == status_filter]
+    project_summary["statusBreakdown"] = dict(status_breakdown)
+
     return {
         "projectNo": order_no,
         "projectName": project["product_name"] or "",
@@ -5727,6 +5920,17 @@ def _kitting_dataset(
         "deviceFilter": device_no or None,
         "materialFilter": (material_code or "").strip() or None,
         "sort": "prepare" if sort_key == "prepare" else "procure",
+        "statusFilter": status_filter or None,
+        "statusBreakdown": dict(status_breakdown),
+        # 采购数据新鲜度：fresh=false（从未同步）时四档判断不可信，页面必须提示
+        "poDataFresh": bool(snapshot["fresh"]),
+        "poData": {
+            "fresh": bool(snapshot["fresh"]),
+            "syncedAt": snapshot["syncedAt"],
+            "stale": bool(snapshot["stale"]),
+            "openOrderCount": int(snapshot["openOrderCount"]),
+            "unknownMaterialCount": int(snapshot["unknownMaterialCount"]),
+        },
         "summary": project_summary,
         "devices": device_items,
         "items": items,
@@ -5742,11 +5946,14 @@ def project_kitting_summary(
     project_no: str,
     device_no: str | None = None,
     material_code: str | None = None,
+    status: str | None = Query(None, pattern=SHORTAGE_STATUS_PATTERN,
+                               description="按物料状态过滤（四档 + UNKNOWN_MATERIAL）"),
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
-    """工单齐套概览：需求行 / 齐套行 / 缺料行 / 齐套率 / 缺料料号数，并按机台分组。
+    """工单齐套概览：需求行 / 齐套行 / 缺料行 / 齐套率 / 缺料料号数 + 四档状态分布。
 
-    可选 `device_no` / `material_code` 过滤，作用域与缺料清单一致（概览同口径）。
+    可选 `device_no` / `material_code` / `status` 过滤，作用域与缺料清单一致（概览同口径）。
+    `statusBreakdown` 统计当前范围（设备/料号过滤后）的全部缺料料号，不受 `status` 过滤影响。
     数据口径与需求 1 的项目→机台展开完全一致（同一套 ``_pmr_*`` 函数）；
     ASSEMBLER 只能看到本人参与的机台，项目有设备但一台都不属于本人时 403。
     """
@@ -5757,7 +5964,8 @@ def project_kitting_summary(
         project, resolved_from = _pmr_resolve_project(c, project_no)
         dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                    material_code=material_code,
-                                   resolved_from=resolved_from)
+                                   resolved_from=resolved_from,
+                                   status_filter=status)
     except ApiError as exc:
         if not exc.trace_id:
             exc.trace_id = trace_id
@@ -5778,11 +5986,16 @@ def project_shortage_list(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
     sort: str = Query("procure", pattern="^(procure|prepare)$"),
+    status: str | None = Query(None, pattern=SHORTAGE_STATUS_PATTERN,
+                               description="按物料状态过滤（四档 + UNKNOWN_MATERIAL）"),
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     """缺料清单：同料号跨机台合并成一行，按「缺口降序 + 影响机台数降序」分页。
 
     ``sort=procure``（默认）按采购缺口降序，``sort=prepare`` 按备料缺口降序。
+    每行带四档物料状态（``stockStatus`` / ``stockStatusLabel``）与在库、已到货未入库、
+    在途、未结案 PO 号/供应商；``status`` 只过滤清单行，``statusBreakdown`` 仍是当前
+    范围（设备/料号过滤后）的全部缺料料号分布。
     """
     _kitting_authorize(user)
     trace_id = str(uuid.uuid4())
@@ -5791,7 +6004,7 @@ def project_shortage_list(
         project, resolved_from = _pmr_resolve_project(c, project_no)
         dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                    material_code=material_code, sort_key=sort,
-                                   resolved_from=resolved_from)
+                                   resolved_from=resolved_from, status_filter=status)
     except ApiError as exc:
         if not exc.trace_id:
             exc.trace_id = trace_id
@@ -5824,6 +6037,7 @@ def project_shortage_list(
             "listPrepareGapQuantity": prepare_list_total,
             "deviceCount": summary["deviceCount"],
             "shortageLineCount": summary["shortageLineCount"],
+            "statusBreakdown": dict(summary.get("statusBreakdown") or {}),
         },
     }
 
@@ -5835,6 +6049,8 @@ KITTING_OVERVIEW_HEADER = (
 KITTING_SHORTAGE_HEADER = (
     "料号", "品名", "规格", "单位", "采购缺口", "备料缺口", "在库量", "影响机台数",
     "影响机台", "最不利状态", "关联订单号",
+    # 需求 3：追加在末尾（既有列顺序不变，历史报表对账不受影响）
+    "物料状态", "在库可用量", "已到货未入库", "在途量", "可覆盖量", "未结案PO", "供应商",
 )
 
 
@@ -5862,6 +6078,10 @@ def _kitting_export_sheets(dataset: dict[str, Any]) -> list[dict[str, Any]]:
         item["procureGapQuantity"], item["prepareGapQuantity"], item["inStockQuantity"],
         item["affectedDeviceCount"], item["deviceNoText"], item["statusLabel"],
         item["orderNo"],
+        item.get("stockStatusLabel", ""), item.get("availableStockQty", 0),
+        item.get("arrivedNotStockedQty", 0), item.get("inTransitQty", 0),
+        item.get("coverableQuantity", 0),
+        ",".join(item.get("openPoNos") or []), ",".join(item.get("suppliers") or []),
     ] for item in dataset["items"]]
     return [
         {
@@ -5875,7 +6095,8 @@ def _kitting_export_sheets(dataset: dict[str, Any]) -> list[dict[str, Any]]:
             "name": "缺料清单",
             "header": KITTING_SHORTAGE_HEADER,
             "rows": shortages,
-            "column_widths": [18, 24, 22, 6, 12, 12, 10, 12, 40, 12, 18],
+            "column_widths": [18, 24, 22, 6, 12, 12, 10, 12, 40, 12, 18,
+                              14, 12, 14, 10, 10, 28, 24],
         },
     ]
 
@@ -5892,9 +6113,11 @@ def export_project_shortage_list(
     device_no: str | None = None,
     material_code: str | None = None,
     sort: str = Query("procure", pattern="^(procure|prepare)$"),
+    status: str | None = Query(None, pattern=SHORTAGE_STATUS_PATTERN,
+                               description="按物料状态过滤（四档 + UNKNOWN_MATERIAL）"),
     user: sqlite3.Row = Depends(current_user),
 ) -> Response:
-    """导出齐套概览 + 缺料清单两个 sheet 的 xlsx（不受分页限制，`sort` 同列表）。"""
+    """导出齐套概览 + 缺料清单两个 sheet 的 xlsx（不受分页限制，`sort`/`status` 同列表）。"""
     _kitting_authorize(user)
     trace_id = str(uuid.uuid4())
     c = db()
@@ -5903,7 +6126,7 @@ def export_project_shortage_list(
             project, resolved_from = _pmr_resolve_project(c, project_no)
             dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                        material_code=material_code, sort_key=sort,
-                                       resolved_from=resolved_from)
+                                       resolved_from=resolved_from, status_filter=status)
         except ApiError as exc:
             if not exc.trace_id:
                 exc.trace_id = trace_id

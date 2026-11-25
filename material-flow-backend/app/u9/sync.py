@@ -6,6 +6,8 @@
   inventory  库存：默认按本地 materials 全部料号逐个查（scope=local）；codes 参数指定料号；
              scope=all 才按组织 + 存储地点整体查询（现场 U9 整体查询会报 SQL CLR 错误）
   orders     生产订单：doc_nos 参数 + 本地已有 production_orders.order_no
+  po         采购订单：U9 PM_PurchaseOrder（默认最近 180 天、只取未结案）→
+             u9_po_headers / u9_po_lines；顺带用料品档案核对本地需求料号（UNKNOWN_MATERIAL）
 
 行为：
   - dry_run=True（默认）：只拉取 + 映射 + 统计 + 样例行，不写任何业务表；记一条日志
@@ -28,7 +30,7 @@ from . import mappers
 from .client import U9Error, U9NotImplemented, get_client
 from .config import U9Config
 
-ENTITIES = ("items", "categories", "boms", "inventory", "orders", "projects")
+ENTITIES = ("items", "categories", "boms", "inventory", "orders", "projects", "po")
 
 # 同一进程内同一时间只跑一个同步：U9 同步是长耗时阻塞调用，重复点击只会排队拖垮服务
 _SYNC_LOCK = threading.Lock()
@@ -49,6 +51,41 @@ def _check_keys(cfg: U9Config, keys: list, label: str) -> None:
     if limit and len(keys) > limit:
         raise U9Error(f"{label}数量 {len(keys)} 超过单次上限 {limit}（U9_SYNC_MAX_KEYS），请分批指定后重试")
 SAMPLE_SIZE = 20
+
+# 需求 3：采购订单快照（只新增表，不改既有表结构）。幂等：doc_no 唯一，(doc_no, line_no) 唯一。
+CREATE_U9_PO_TABLES = """
+CREATE TABLE IF NOT EXISTS u9_po_headers(
+    id TEXT PRIMARY KEY,
+    doc_no TEXT NOT NULL UNIQUE,
+    status_value TEXT,
+    status_name TEXT,
+    supplier_code TEXT,
+    supplier_name TEXT,
+    business_date TEXT,
+    org_code TEXT,
+    synced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_u9_po_headers_status ON u9_po_headers(status_name);
+CREATE TABLE IF NOT EXISTS u9_po_lines(
+    id TEXT PRIMARY KEY,
+    doc_no TEXT NOT NULL,
+    line_no INTEGER NOT NULL,
+    item_code TEXT NOT NULL,
+    item_name TEXT,
+    pur_qty_tu REAL NOT NULL DEFAULT 0,
+    recieved_qty_tu REAL NOT NULL DEFAULT 0,
+    delivery_date TEXT,
+    synced_at TEXT NOT NULL,
+    UNIQUE(doc_no, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_u9_po_lines_item ON u9_po_lines(item_code);
+"""
+
+
+def ensure_po_tables(conn: sqlite3.Connection) -> None:
+    """建采购订单两张表（CREATE TABLE IF NOT EXISTS，可重复调用）。"""
+    conn.executescript(CREATE_U9_PO_TABLES)
+
 
 CREATE_U9_SYNC_LOGS = """
 CREATE TABLE IF NOT EXISTS u9_sync_logs(
@@ -830,6 +867,161 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
             "errors": errors[:50], "sample": sample}
 
 
+# ---------------------------------------------------------------- 采购订单（需求 3）
+def _po_unknown_materials(conn, client, codes, errors: list[dict]) -> list[str]:
+    """用 U9 料品档案核对本地需求料号，返回 U9 查不到的料号（料号体系不一致）。
+
+    结果写进本次同步日志（detail.unknownMaterials），缺料清单一侧据此标 UNKNOWN_MATERIAL，
+    不再把它塞进「无采购计划」。核对失败只记错误、不影响采购订单本身入库。
+    """
+    if not codes:
+        return []
+    if len(codes) > 2000:
+        errors.append({"key": "（料号核对）",
+                       "error": f"需求料号 {len(codes)} 个超过 2000，本次跳过料号体系核对"})
+        return []
+    if not hasattr(client, "fetch_items"):
+        return []
+    try:
+        found: set[str] = set()
+        for raw in client.fetch_items(codes):
+            try:
+                found.add(mappers.map_item(raw)["code"])
+            except (ValueError, KeyError, TypeError):
+                continue
+    except U9Error as e:
+        errors.append({"key": "（料号核对）",
+                       "error": f"料号体系核对失败，本次不做 UNKNOWN_MATERIAL 判定：{e}"})
+        return []
+    return [c for c in codes if c not in found]
+
+
+def _sync_po(conn, cfg, dry_run, *, since_days: int = 180, only_open: bool = True,
+             codes=None, check_items: bool = True, client=None, **_):
+    """U9 采购订单 → u9_po_headers / u9_po_lines（只读同步，幂等 upsert）。
+
+    幂等口径：头按 doc_no、行按 (doc_no, line_no) upsert；同一单重复同步不会产生重复行，
+    只更新状态/数量/到货量。本次同步单据里 U9 已删掉的行会被删除，历史未出现在本次
+    窗口里的单据保留（不删除窗口外数据）。
+    """
+    client = client or get_client(cfg)
+    ensure_po_tables(conn)
+    errors: list[dict] = []
+    try:
+        days = max(1, min(int(since_days or 180), 3650))
+    except (TypeError, ValueError):
+        days = 180
+    raw = client.fetch_purchase_orders(days, bool(only_open), errors=errors)
+    try:
+        mappers.validate_po_rows(raw)
+    except ValueError as e:  # 字段缺失（U9 静默忽略）→ 明确报错，绝不写成 0
+        raise U9Error(str(e)) from e
+
+    now = _now()
+    headers: dict[str, dict] = {}
+    line_rows: list[dict] = []
+    skipped = 0
+    for r in raw:
+        try:
+            m = mappers.map_purchase_order(r)
+        except ValueError:
+            skipped += 1
+            continue
+        headers[m["doc_no"]] = m
+        for ln in m["lines"]:
+            line_rows.append({**ln, "doc_no": m["doc_no"]})
+
+    existing_h = {r[0]: (r[1], r[2], r[3], r[4], r[5]) for r in conn.execute(
+        "SELECT doc_no, status_value, status_name, supplier_code, supplier_name, business_date"
+        " FROM u9_po_headers")}
+    existing_l = {(r[0], int(r[1])): (r[2], r[3], float(r[4] or 0), float(r[5] or 0), r[6])
+                  for r in conn.execute(
+                      "SELECT doc_no, line_no, item_code, item_name, pur_qty_tu, recieved_qty_tu,"
+                      " delivery_date FROM u9_po_lines")}
+    ins_h = upd_h = same_h = 0
+    for no, m in headers.items():
+        new = (m["status_value"], m["status_name"], m["supplier_code"], m["supplier_name"],
+               m["business_date"])
+        cur = existing_h.get(no)
+        if cur is None:
+            ins_h += 1
+        elif cur == new:
+            same_h += 1
+        else:
+            upd_h += 1
+    ins_l = upd_l = same_l = 0
+    for ln in line_rows:
+        key = (ln["doc_no"], int(ln["line_no"]))
+        new = (ln["item_code"], ln["item_name"], float(ln["pur_qty_tu"] or 0),
+               float(ln["recieved_qty_tu"] or 0), ln["delivery_date"])
+        cur = existing_l.get(key)
+        if cur is None:
+            ins_l += 1
+        elif cur == new:
+            same_l += 1
+        else:
+            upd_l += 1
+
+    if not dry_run:
+        for no, m in headers.items():
+            conn.execute(
+                "INSERT INTO u9_po_headers(id, doc_no, status_value, status_name, supplier_code,"
+                " supplier_name, business_date, org_code, synced_at) VALUES(?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(doc_no) DO UPDATE SET status_value=excluded.status_value,"
+                " status_name=excluded.status_name, supplier_code=excluded.supplier_code,"
+                " supplier_name=excluded.supplier_name, business_date=excluded.business_date,"
+                " org_code=excluded.org_code, synced_at=excluded.synced_at",
+                (f"poh-{no}", no, m["status_value"], m["status_name"], m["supplier_code"],
+                 m["supplier_name"], m["business_date"], m["org_code"] or cfg.org_code, now))
+        # 本次同步到的单据里，U9 已不存在的行删掉（行号变更/删行）
+        wanted: dict[str, set[int]] = {}
+        for ln in line_rows:
+            wanted.setdefault(ln["doc_no"], set()).add(int(ln["line_no"]))
+        existing_by_doc: dict[str, set[int]] = {}
+        for (doc_no, line_no) in existing_l:
+            existing_by_doc.setdefault(doc_no, set()).add(line_no)
+        for no in headers:
+            for line_no in existing_by_doc.get(no, set()) - wanted.get(no, set()):
+                conn.execute("DELETE FROM u9_po_lines WHERE doc_no=? AND line_no=?",
+                             (no, line_no))
+        for ln in line_rows:
+            conn.execute(
+                "INSERT INTO u9_po_lines(id, doc_no, line_no, item_code, item_name, pur_qty_tu,"
+                " recieved_qty_tu, delivery_date, synced_at) VALUES(?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(doc_no, line_no) DO UPDATE SET item_code=excluded.item_code,"
+                " item_name=excluded.item_name, pur_qty_tu=excluded.pur_qty_tu,"
+                " recieved_qty_tu=excluded.recieved_qty_tu,"
+                " delivery_date=excluded.delivery_date, synced_at=excluded.synced_at",
+                (f"pol-{ln['doc_no']}-{int(ln['line_no'])}", ln["doc_no"], int(ln["line_no"]),
+                 ln["item_code"], ln["item_name"], float(ln["pur_qty_tu"] or 0),
+                 float(ln["recieved_qty_tu"] or 0), ln["delivery_date"], now))
+
+    demand = _codes(codes)
+    if not demand:
+        demand = [r[0] for r in conn.execute(
+            "SELECT DISTINCT m.code FROM order_material_requirements r"
+            " JOIN materials m ON m.id = r.material_id ORDER BY m.code")]
+    unknown = _po_unknown_materials(conn, client, demand, errors) if check_items else []
+
+    sample = [{
+        "单号": m["doc_no"],
+        "供应商": m["supplier_name"] or m["supplier_code"],
+        "状态": f"{m['status_name']}({m['status_value']})" if m["status_name"] else m["status_value"],
+        "下单日": m["business_date"],
+        "行数": len(m["lines"]),
+        "订购量": mappers.num(sum(ln["pur_qty_tu"] for ln in m["lines"])),
+        "已到货": mappers.num(sum(ln["recieved_qty_tu"] for ln in m["lines"])),
+    } for m in list(headers.values())[:SAMPLE_SIZE]]
+    return {"requested": len(raw), "total": len(headers), "lines": len(line_rows),
+            "inserted": ins_h + ins_l, "updated": upd_h + upd_l, "unchanged": same_h + same_l,
+            "skipped": skipped, "headers_inserted": ins_h, "headers_updated": upd_h,
+            "headers_unchanged": same_h, "lines_inserted": ins_l, "lines_updated": upd_l,
+            "lines_unchanged": same_l, "since_days": days, "only_open": bool(only_open),
+            "unknown_materials": unknown[:200], "unknown_count": len(unknown),
+            "unknownMaterials": unknown,
+            "errors": errors[:50], "sample": sample}
+
+
 _SYNC_FNS = {
     "items": _sync_items,
     "categories": _sync_categories,
@@ -837,6 +1029,7 @@ _SYNC_FNS = {
     "inventory": _sync_inventory,
     "orders": _sync_orders,
     "projects": _sync_projects,
+    "po": _sync_po,
 }
 
 

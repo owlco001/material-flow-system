@@ -31,6 +31,8 @@ OVERVIEW_HEADER = (
 SHORTAGE_HEADER = (
     "料号", "品名", "规格", "单位", "采购缺口", "备料缺口", "在库量", "影响机台数",
     "影响机台", "最不利状态", "关联订单号",
+    # 需求 3 追加列（既有列顺序不变）
+    "物料状态", "在库可用量", "已到货未入库", "在途量", "可覆盖量", "未结案PO", "供应商",
 )
 
 
@@ -312,6 +314,9 @@ def test_shortage_list_merges_across_devices_and_sorts(seeded):
         "listPrepareGapQuantity": 98,
         "deviceCount": 7,
         "shortageLineCount": 13,
+        # 需求 3：五档分布（未同步采购数据时全部 NO_PLAN）
+        "statusBreakdown": {"IN_STOCK_READY": 0, "ARRIVED_NOT_STOCKED": 0, "IN_TRANSIT": 0,
+                            "NO_PLAN": 5, "UNKNOWN_MATERIAL": 0},
     }
 
     big = body["items"][0]

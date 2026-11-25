@@ -110,6 +110,8 @@ from app.main import (
     _pmr_resolve_project,
     _kitting_dataset,
     _kitting_export_bytes,
+    SHORTAGE_STATUS_LABELS,
+    SHORTAGE_STATUS_ORDER,
     _pmr_search_projects,
     list_projects as api_list_projects,
     UPLOAD_DIR,
@@ -1918,6 +1920,9 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
     device_no = str(request.query_params.get("device_no", "")).strip() or None
     material_code = str(request.query_params.get("material_code", "")).strip() or None
     sort_key = "prepare" if request.query_params.get("sort") == "prepare" else "procure"
+    status_filter = str(request.query_params.get("status", "")).strip().upper() or None
+    if status_filter not in SHORTAGE_STATUS_LABELS:
+        status_filter = None
     try:
         page = max(1, int(request.query_params.get("page") or 1))
     except (TypeError, ValueError):
@@ -1935,7 +1940,8 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
                 dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                            material_code=material_code,
                                            sort_key=sort_key,
-                                           resolved_from=resolved_from)
+                                           resolved_from=resolved_from,
+                                           status_filter=status_filter)
                 project_no = dataset["projectNo"]
             except ApiError as exc:
                 error = _api_error_message(exc)
@@ -1961,6 +1967,8 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
         "device_no": device_no or "",
         "material_code": material_code or "",
         "sort": sort_key,
+        "status": status_filter or "",
+        "status_options": [(code, SHORTAGE_STATUS_LABELS[code]) for code in SHORTAGE_STATUS_ORDER],
         "page": page,
         "page_size": KITTING_PAGE_SIZE,
         "dataset": dataset,
@@ -1997,6 +2005,9 @@ def admin_project_kitting_export(request: Request):
     device_no = str(request.query_params.get("device_no", "")).strip() or None
     material_code = str(request.query_params.get("material_code", "")).strip() or None
     sort_key = "prepare" if request.query_params.get("sort") == "prepare" else "procure"
+    status_filter = str(request.query_params.get("status", "")).strip().upper() or None
+    if status_filter not in SHORTAGE_STATUS_LABELS:
+        status_filter = None
     if not project_no:
         return _error_page(request, 400, "请先选择要导出的项目")
     c = db()
@@ -2006,7 +2017,8 @@ def admin_project_kitting_export(request: Request):
             dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                        material_code=material_code,
                                        sort_key=sort_key,
-                                       resolved_from=resolved_from)
+                                       resolved_from=resolved_from,
+                                       status_filter=status_filter)
         except ApiError as exc:
             return _error_page(request, exc.status_code, _api_error_message(exc))
     finally:
@@ -2774,7 +2786,7 @@ async def admin_exceptions_review(request: Request, eid: str):
 
 
 # ---------------------------------------------------------------- U9 集成页面
-U9_ENTITY_LABELS = {"items": "料品档案", "categories": "物料分类", "boms": "BOM", "inventory": "库存", "orders": "生产订单", "projects": "订单/机台（按项目）"}
+U9_ENTITY_LABELS = {"items": "料品档案", "categories": "物料分类", "boms": "BOM", "inventory": "库存", "orders": "生产订单", "projects": "订单/机台（按项目）", "po": "采购订单"}
 U9_STATUS_LABELS = {"OK": "成功", "PENDING_DOC": "待实施商文档", "FAILED": "失败", "RUNNING": "运行中"}
 
 
@@ -2831,6 +2843,11 @@ def admin_u9(request: Request):
          "desc": "U9 项目号（如 JSBY-26B-001）→ 本地订单；项目下每张 MO → 一台机台，"
                  "机台物料需求取 MO 备料表（BOM 清单）。没挂项目号的 MO 不导入。",
          "table": "production_orders / order_devices / devices / order_material_requirements"},
+        {"id": "po", "label": "采购订单（在途/到货）",
+         "desc": "读 U9 采购订单（PM_PurchaseOrder，默认最近 180 天、只取未结案）→ 本地 "
+                 "u9_po_headers / u9_po_lines，供缺料清单判断「已到货待入库 / 在途采购」。"
+                 "同时用 U9 料品档案核对本地需求料号，查不到的记入本次日志（料号体系不一致）。",
+         "table": "u9_po_headers / u9_po_lines"},
     ]
     return templates.TemplateResponse(
         request,
@@ -2971,6 +2988,10 @@ async def admin_u9_sync(request: Request, entity: str):
         return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，同步未执行") + "&ok=0")
     dry_run = str(form.get("dry_run", "1")) != "0"
     try:
+        since_days = int(str(form.get("since_days", "") or 180))
+    except (TypeError, ValueError):
+        since_days = 180
+    try:
         kwargs = build_sync_kwargs(
             entity, codes=str(form.get("codes", "")), product_codes=str(form.get("product_codes", "")),
             doc_nos=str(form.get("doc_nos", "")), projects=str(form.get("projects", "")),
@@ -2978,7 +2999,10 @@ async def admin_u9_sync(request: Request, entity: str):
             include_local=str(form.get("include_local", "")) in ("1", "on", "true"),
             update_totals=str(form.get("update_totals", "1")) in ("1", "on", "true"),
             user_id=user["id"], scope=str(form.get("scope", "local")),
-            zero_missing=str(form.get("zero_missing", "1")) in ("1", "on", "true"))
+            zero_missing=str(form.get("zero_missing", "1")) in ("1", "on", "true"),
+            since_days=since_days,
+            only_open=str(form.get("only_open", "")) in ("1", "on", "true"),
+            check_items=str(form.get("check_items", "1")) in ("1", "on", "true"))
     except _HTTPException as e:
         return _see_other("/admin/u9?msg=" + quote(str(getattr(e, "detail", "") or "参数错误")) + "&ok=0")
     from starlette.concurrency import run_in_threadpool
@@ -3010,6 +3034,13 @@ async def admin_u9_sync(request: Request, entity: str):
                + ("" if dry_run else f"，新增物料需求 {s.get('requirements_inserted', 0)}、"
                   f"更新 {s.get('requirements_updated', 0)}")
                + (f"；U9 查不到的项目 {s.get('not_found_count')} 个" if s.get("not_found_count") else ""))
+        return _see_other(f"/admin/u9?msg={quote(msg)}&ok=1&run={run}#run-detail")
+    if entity == "po":
+        msg = (f"{U9_ENTITY_LABELS[entity]}{mode}完成：采购订单 {s.get('total', 0)} 张、"
+               f"订单行 {s.get('lines', 0)} 行（新增 {s.get('inserted', 0)}、更新 {s.get('updated', 0)}、"
+               f"不变 {s.get('unchanged', 0)}）"
+               + (f"；U9 料品档案查不到的需求料号 {s.get('unknown_count')} 个"
+                  if s.get("unknown_count") else ""))
         return _see_other(f"/admin/u9?msg={quote(msg)}&ok=1&run={run}#run-detail")
     msg = (f"{U9_ENTITY_LABELS.get(entity, entity)}{mode}完成：U9 返回 {s.get('total', 0)} 条，"
            f"新增 {s.get('inserted', 0)}，更新 {s.get('updated', 0)}，"

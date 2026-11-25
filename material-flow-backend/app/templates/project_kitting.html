@@ -47,11 +47,25 @@
 
   {% if dataset %}
   {% set s = dataset.summary %}
+  {% set po = dataset.poData %}
+  {% if not po.fresh %}
+  <div class="card" style="border-left:4px solid #dc3545;margin-bottom:12px">
+    <b>采购数据未同步，状态判断不可信</b>
+    <p class="muted" style="margin:4px 0 0">还没有从 U9 同步过采购订单，缺料清单的「物料状态」一律显示「无采购计划」。请先到
+      <a href="/admin/u9">U9 集成 → 采购订单（在途/到货）</a> 执行同步，再看状态。</p>
+  </div>
+  {% else %}
+  <p class="muted" style="margin:0 0 8px{% if po.stale %};color:#b9770e{% endif %}">
+    采购数据同步于 {{ po.syncedAt|local_dt if po.syncedAt else "—" }}，共 {{ po.openOrderCount }} 张未结案订单
+    {% if po.stale %}<b>（超过 24 小时未同步，建议重新同步）</b>{% endif %}
+    {% if po.unknownMaterialCount %}· U9 料品档案查不到 {{ po.unknownMaterialCount }} 个需求料号（已标「料号未识别」）{% endif %}
+  </p>
+  {% endif %}
   <div class="card">
     <div class="page-head-row">
       <h3 style="margin:0">{{ dataset.projectNo }} · {{ dataset.projectName or "（未命名项目）" }}</h3>
       <div class="btn-row">
-        <a class="btn btn-sm" href="/admin/projects/kitting/export?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}{% if material_code %}&material_code={{ material_code|urlencode }}{% endif %}{% if sort == 'prepare' %}&sort=prepare{% endif %}">导出 xlsx</a>
+        <a class="btn btn-sm" href="/admin/projects/kitting/export?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}{% if material_code %}&material_code={{ material_code|urlencode }}{% endif %}{% if sort == 'prepare' %}&sort=prepare{% endif %}{% if status %}&status={{ status|urlencode }}{% endif %}">导出 xlsx</a>
       </div>
     </div>
     <p class="muted" style="margin:6px 0">
@@ -74,6 +88,16 @@
       <div class="card" style="flex:1 1 140px"><div class="muted">备料缺口</div>
         <div style="font-size:22px;font-weight:600;color:#b9770e">{{ s.totalPrepareGapQuantity }}</div></div>
     </div>
+
+    <p class="muted" style="margin:10px 0 0">
+      物料状态分布（按缺料料号）：
+      {% for item in dataset.statusBreakdown.items() %}
+        <a class="badge {{ {'IN_STOCK_READY':'b-ok','ARRIVED_NOT_STOCKED':'b-warn','IN_TRANSIT':'b-info','NO_PLAN':'b-err','UNKNOWN_MATERIAL':'b-mute'}.get(item[0], 'b-mute') }}"
+           href="/admin/projects/kitting?project_no={{ dataset.projectNo|urlencode }}&status={{ item[0] }}"
+           {% if status == item[0] %}style="outline:2px solid currentColor"{% endif %}>{{ {'IN_STOCK_READY':'在库可满足','ARRIVED_NOT_STOCKED':'已到货待入库','IN_TRANSIT':'在途采购','NO_PLAN':'无采购计划','UNKNOWN_MATERIAL':'料号未识别'}.get(item[0], item[0]) }} {{ item[1] }}</a>
+      {% endfor %}
+      {% if status %}<a class="btn btn-sm btn-secondary" href="/admin/projects/kitting?project_no={{ dataset.projectNo|urlencode }}">清除状态过滤</a>{% endif %}
+    </p>
 
     <p class="muted" style="margin:8px 0 0">
       图例：<b>采购缺口</b> = 需求 − 已到货（还要催采购多少，决定缺料清单与齐套率）；
@@ -127,6 +151,12 @@
           {% endfor %}
         </select>
         <input name="material_code" value="{{ material_code }}" placeholder="料号" style="max-width:160px">
+        <select name="status" onchange="this.form.submit()" title="物料状态">
+          <option value="">全部状态</option>
+          {% for code, label in status_options %}
+          <option value="{{ code }}" {% if status == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
         <select name="sort" onchange="this.form.submit()" title="排序口径">
           <option value="procure" {% if sort != 'prepare' %}selected{% endif %}>按采购缺口排序</option>
           <option value="prepare" {% if sort == 'prepare' %}selected{% endif %}>按备料缺口排序</option>
@@ -148,6 +178,7 @@
         <thead><tr>
           <th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>采购缺口</th><th>备料缺口</th>
           <th>在库量</th><th>影响机台数</th><th>影响机台</th><th>最不利状态</th><th>关联订单号</th>
+          <th>物料状态</th><th>在库可用量</th><th>已到货未入库</th><th>在途量</th><th>未结案采购单</th>
         </tr></thead>
         <tbody>
         {% for item in items %}
@@ -163,14 +194,23 @@
             <td class="pmr-spec">{{ item.deviceNoText }}</td>
             <td><span class="badge {{ {'OUT_OF_STOCK':'b-err','ARRIVED':'b-warn','IN_STOCK':'b-ok'}.get(item.statusCode, 'b-mute') }}">{{ item.statusLabel }}</span></td>
             <td>{{ item.orderNo }}</td>
+            <td><span class="badge {{ {'IN_STOCK_READY':'b-ok','ARRIVED_NOT_STOCKED':'b-warn','IN_TRANSIT':'b-info','NO_PLAN':'b-err','UNKNOWN_MATERIAL':'b-mute'}.get(item.stockStatus, 'b-mute') }}"
+                      title="{{ item.stockStatus }}">{{ item.stockStatusLabel }}</span></td>
+            <td class="num">{{ item.availableStockQty }}</td>
+            <td class="num">{{ item.arrivedNotStockedQty }}</td>
+            <td class="num">{{ item.inTransitQty }}</td>
+            <td class="pmr-spec">
+              {% if item.openPoNos %}{{ item.openPoNos|join(", ") }}{% if item.suppliers %}<br><span class="muted">{{ item.suppliers|join("、") }}</span>{% endif %}
+              {% else %}<span class="muted">—</span>{% endif %}
+            </td>
           </tr>
         {% else %}
-          <tr><td colspan="11" class="muted">没有采购缺口 &gt; 0 的料号：该项目到货已齐套（备料缺口见上方概览）。</td></tr>
+          <tr><td colspan="16" class="muted">{% if status %}当前状态（{{ status }}）下没有缺料料号。{% else %}没有采购缺口 &gt; 0 的料号：该项目到货已齐套（备料缺口见上方概览）。{% endif %}</td></tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
-    {{ simple_pager(page, has_more, "/admin/projects/kitting", {"project_no": dataset.projectNo, "device_no": device_no, "material_code": material_code, "sort": sort}) }}
+    {{ simple_pager(page, has_more, "/admin/projects/kitting", {"project_no": dataset.projectNo, "device_no": device_no, "material_code": material_code, "sort": sort, "status": status}) }}
   </div>
   {% endif %}
 </div>

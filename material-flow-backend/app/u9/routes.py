@@ -3,13 +3,15 @@
   GET  /api/v1/u9/status            配置状态（脱敏）+ 最近同步记录
   POST /api/v1/u9/health            测试连接（U9C 授权登录 + 耗时）
   GET  /api/v1/u9/orders/lookup     按年份查生产订单号（只读，供 sync/orders 用）
-  POST /api/v1/u9/sync/{entity}    触发同步，entity ∈ items/boms/inventory/orders
+  POST /api/v1/u9/sync/{entity}    触发同步，entity ∈ items/categories/boms/inventory/orders/projects/po
                                    dry_run=true（默认，仅预览不写库）
                                    items:     codes（可选，逗号分隔）+ include_local（默认 true=本地全部物料编码）
                                    boms:      product_codes（必填）
                                    inventory: codes（可选）/ wh（可选，默认 U9_DEFAULT_WH）/ update_totals
                                               / scope=local（默认，本地全部料号逐个查）|all（组织整体查）
                                    orders:    doc_nos（可选）+ include_local（默认 true=本地已有订单号）
+                                   po:        since_days（默认 180）/ only_open（默认 true）/
+                                              check_items（默认 true=核对本地需求料号）
   GET  /api/v1/u9/logs             同步日志（分页）
   GET  /api/v1/u9/logs/{log_id}    单次同步详情（含预览样例）
 
@@ -57,7 +59,9 @@ def _require_ready() -> dict:
 def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", doc_nos: str = "",
                       projects: str = "",
                       wh: str = "", include_local: bool = True, update_totals: bool = True,
-                      user_id: str = "", scope: str = "local", zero_missing: bool = True) -> dict:
+                      user_id: str = "", scope: str = "local", zero_missing: bool = True,
+                      since_days: int = 180, only_open: bool = True,
+                      check_items: bool = True) -> dict:
     """把接口/表单参数整理成 run_sync 的 kwargs；BOM 缺编码时抛 ApiError(400)。"""
     split = lambda v: [p.strip() for p in (v or "").replace("\n", ",").replace("，", ",").split(",") if p.strip()]
     if entity == "items":
@@ -75,6 +79,9 @@ def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", 
         return {"doc_nos": split(doc_nos), "include_local": include_local}
     if entity == "projects":
         return {"projects": split(projects), "include_local": include_local, "user_id": user_id}
+    if entity == "po":
+        return {"since_days": int(since_days or 180), "only_open": bool(only_open),
+                "codes": split(codes), "check_items": bool(check_items)}
     return {}
 
 
@@ -122,6 +129,9 @@ def u9_sync(entity: str,
             update_totals: bool = Query(default=True, description="inventory：是否回写物料总量/可用量"),
             scope: str = Query(default="local", description="inventory：local=按本地全部料号逐个查（默认）；all=按组织整体查"),
             zero_missing: bool = Query(default=True, description="inventory：U9 已清零/不再返回的库位是否在本地归零（默认开）"),
+            since_days: int = Query(default=180, ge=1, le=3650, description="po：按 BusinessDate 取最近 N 天的采购订单"),
+            only_open: bool = Query(default=True, description="po：只取未结案（未关闭/未作废）的采购订单"),
+            check_items: bool = Query(default=True, description="po：顺带用 U9 料品档案核对本地需求料号（UNKNOWN_MATERIAL 判定）"),
             user: sqlite3.Row = Depends(current_user)):
     _admin(user)
     cfg = _require_ready()
@@ -130,7 +140,9 @@ def u9_sync(entity: str,
     kwargs = build_sync_kwargs(entity, codes=codes, product_codes=product_codes, doc_nos=doc_nos,
                                projects=projects,
                                wh=wh, include_local=include_local, update_totals=update_totals,
-                               user_id=user["id"], scope=scope, zero_missing=zero_missing)
+                               user_id=user["id"], scope=scope, zero_missing=zero_missing,
+                               since_days=since_days, only_open=only_open,
+                               check_items=check_items)
     c = db()
     try:
         return run_sync(entity, c, cfg, dry_run=dry_run, **kwargs)

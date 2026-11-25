@@ -302,3 +302,160 @@ def build_category_tree(rows: list[dict]) -> list[dict]:
         level = 1 if parent is None else next(o["level"] for o in out if o["code"] == parent) + 1
         out.append({"code": code, "name": cats[code], "parent_code": parent, "level": level})
     return out
+
+
+# ---------------------------------------------------------------- 采购订单 /webapi/CommonEntity/Query
+# 需求 3：采购订单只读同步。U9 侧字段名已实测：
+#   PM_PurchaseOrder：DocNo / BusinessDate / Status / Supplier_Code / Supplier_ShortName / DeliveryDate
+#   PM_POLine      ：DocLineNo / ItemInfo_ItemCode / ItemInfo_ItemName / PurQtyTU /
+#                    **TotalRecievedQtyTU**（U9 自己把 Received 拼成 Recieved，照抄）
+# 状态必须取 Status.Value / Status.Name：直接取 Status 只得到枚举类型名。
+PO_REQUIRED_HEADER_FIELDS = ("DocNo", "BusinessDate", "Status.Value", "Status.Name",
+                             "Supplier_Code", "DeliveryDate")
+PO_REQUIRED_LINE_FIELDS = ("DocLineNo", "ItemInfo.ItemCode", "PurQtyTU", "TotalRecievedQtyTU")
+
+# 已结案的采购订单不算在途。U9 现场取值以 Status.Name 为准（如 Approved / Closed / Cancel），
+# 中文库可能是中文名，两套都认；Status.Value 只作为兜底（本版 U9 的 0..4 语义未全部实测，
+# 因此不硬编码数字，仅按名称判定，避免把「已审核」误判成「已关闭」）。
+PO_CLOSED_NAME_MARKERS = ("clos", "cancel", "void", "reject", "abandon",
+                          "关闭", "结案", "作废", "取消", "终止", "驳回")
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
+def _ci_get(obj: Any, key: str) -> Any:
+    """大小写不敏感取键（U9 不同接口/版本的大小写不统一）。"""
+    if not isinstance(obj, dict):
+        return _MISSING
+    if key in obj:
+        return obj[key]
+    low = key.lower()
+    for k, v in obj.items():
+        if str(k).lower() == low:
+            return v
+    return _MISSING
+
+
+def field_present(obj: Any, path: str) -> bool:
+    """字段是否真的在响应里（支持嵌套 Status.Value 与扁平 "Status.Value" 两种形态）。
+
+    用于 U9「不存在的字段静默忽略」的兜底校验：请求了却没回来，说明字段名不对或
+    该版本没有这个字段，必须报错而不是当成 0。
+    """
+    if not isinstance(obj, dict):
+        return False
+    literal = _ci_get(obj, path)
+    if literal is not _MISSING:
+        return True
+    cur: Any = obj
+    for part in path.split("."):
+        cur = _ci_get(cur, part)
+        if cur is _MISSING:
+            return False
+    return True
+
+
+def po_raw_lines(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """采购订单行：POLines 可能是列表、单个对象或扁平点号键，统一成列表。"""
+    lines = _ci_get(raw, "POLines")
+    if lines is _MISSING or lines is None:
+        return []
+    if isinstance(lines, dict):
+        return [lines]
+    if isinstance(lines, list):
+        return [ln for ln in lines if isinstance(ln, dict)]
+    return []
+
+
+def validate_po_rows(rows: list[dict[str, Any]]) -> None:
+    """校验采购订单响应里关键字段是否真的回来了；缺字段抛 ValueError（上层转 U9Error）。
+
+    只看「所有记录都没这个字段」的情况：个别单据缺值（null）是正常业务数据。
+    行字段只在确实返回了订单行时校验，避免「180 天内所有 PO 都没行」被误报成字段缺失。
+    """
+    rows = [r for r in rows if isinstance(r, dict)]
+    if not rows:
+        return
+    missing = [f for f in PO_REQUIRED_HEADER_FIELDS
+               if not any(field_present(r, f) for r in rows)]
+    line_rows = [ln for r in rows for ln in po_raw_lines(r)]
+    if line_rows:
+        missing += [f"POLines.{f}" for f in PO_REQUIRED_LINE_FIELDS
+                    if not any(field_present(ln, f) for ln in line_rows)]
+    if missing:
+        raise ValueError(
+            "U9 采购订单查询未返回关键字段：" + "、".join(missing)
+            + "。U9 对不存在的字段会静默忽略，为避免把缺失的到货量当成 0（会把"
+              "「已到货待入库」误判成「无采购计划」），本次同步已中止；请核对 "
+              "UFIDA.U9.PM.PO.PurchaseOrder 的字段名（到货量是 TotalRecievedQtyTU，"
+              "U9 自己拼错 Recieved）后重试")
+
+
+def po_doc_no(raw: dict[str, Any]) -> str:
+    return s(first(raw, "DocNo", "docNo", "m_docNo"))
+
+
+def po_status_pair(raw: dict[str, Any]) -> tuple[str, str]:
+    """(Status.Value, Status.Name)；缺失时返回空串（不猜状态）。"""
+    status = _ci_get(raw, "Status")
+    if isinstance(status, dict):
+        return s(first(status, "Value", "value")), s(first(status, "Name", "name"))
+    return s(first(raw, "Status.Value", default="")), s(first(raw, "Status.Name", default=""))
+
+
+def po_status_closed(status_value: Any, status_name: Any) -> bool:
+    """采购订单是否已结案（关闭/作废/取消…）。只按状态名判断，数字语义未实测不硬编码。"""
+    name = s(status_name).lower()
+    if name and any(marker in name for marker in PO_CLOSED_NAME_MARKERS):
+        return True
+    val = s(status_value).lower()
+    return bool(val) and any(marker in val for marker in PO_CLOSED_NAME_MARKERS)
+
+
+def map_purchase_order_line(raw: dict[str, Any], fallback_no: int = 0) -> dict[str, Any] | None:
+    """一条采购订单行 → 本地 u9_po_lines 字段；没有行号/料号时返回 None（无法归集）。"""
+    code = s(first(raw, "ItemInfo.ItemCode", "ItemCode", "m_itemMaster.m_code"))
+    if not code:
+        return None
+    try:
+        line_no = int(round(num(first(raw, "DocLineNo", "LineNo"), fallback_no)))
+    except (TypeError, ValueError):
+        line_no = fallback_no
+    return {
+        "line_no": line_no,
+        "item_code": code,
+        "item_name": s(first(raw, "ItemInfo.ItemName", "ItemName", "m_itemMaster.m_name")),
+        "pur_qty_tu": num(first(raw, "PurQtyTU", "PurQty", default=0)),
+        "recieved_qty_tu": num(first(raw, "TotalRecievedQtyTU", "TotalReceivedQtyTU", default=0)),
+        "delivery_date": s(first(raw, "DeliveryDate", default=""))[:10],
+    }
+
+
+def map_purchase_order(raw: dict[str, Any]) -> dict[str, Any]:
+    """一张采购订单（含行）→ 本地表字段。缺单号抛 ValueError（上层计为跳过）。"""
+    no = po_doc_no(raw)
+    if not no:
+        raise ValueError("U9 采购订单缺少单号 DocNo")
+    status_value, status_name = po_status_pair(raw)
+    lines = []
+    for index, ln in enumerate(po_raw_lines(raw), start=1):
+        mapped = map_purchase_order_line(ln, index)
+        if mapped is not None:
+            lines.append(mapped)
+    return {
+        "doc_no": no,
+        "status_value": status_value,
+        "status_name": status_name,
+        "supplier_code": s(first(raw, "Supplier_Code", "Supplier.Code")),
+        "supplier_name": s(first(raw, "Supplier_ShortName", "Supplier_Name",
+                                 "Supplier.Name", "Supplier.Name2")),
+        "business_date": s(first(raw, "BusinessDate", default=""))[:10],
+        "org_code": s(first(raw, "Org.Code", "Org", default="")),
+        "delivery_date": s(first(raw, "DeliveryDate", default=""))[:10],
+        "lines": lines,
+    }

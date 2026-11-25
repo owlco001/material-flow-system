@@ -98,6 +98,13 @@
         <label>项目号（逗号或换行分隔）</label>
         <textarea name="projects" placeholder="如 JSBY-26B-001,JSBY-26B-002"></textarea>
         <label class="u9-check"><input type="checkbox" name="include_local" value="1" checked>包含本地已导入的项目订单</label>
+      {% elif e.id == "po" %}
+        <label>取最近多少天的采购订单（按下单日 BusinessDate）</label>
+        <input type="text" name="since_days" value="180">
+        <label class="u9-check"><input type="checkbox" name="only_open" value="1" checked>只取未结案（关闭/作废/取消不计在途）</label>
+        <label class="u9-check"><input type="checkbox" name="check_items" value="1" checked>用 U9 料品档案核对本地需求料号（料号体系不一致 → 料号未识别）</label>
+        <label>额外核对料号（可选，逗号分隔；留空=本地全部需求料号）</label>
+        <textarea name="codes" placeholder="留空则按本地需求料号核对"></textarea>
       {% endif %}
       <div class="btn-row">
         <button type="submit" name="dry_run" value="1" class="btn btn-sm" {% if not ready %}disabled title="U9 未启用或连接信息不完整"{% endif %}>预览同步</button>
