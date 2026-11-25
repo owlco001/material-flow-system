@@ -5392,7 +5392,8 @@ def export_project_material_requirements(
 #     状态是 ARRIVED/IN_STOCK 之外时额外计入 statusAnomalyLineCount（齐套行的子集），
 #     因此 `需求行 = 齐套行 + 缺料行` 恒成立，不需要 zeroGapLineCount 兜底；
 #   - 齐套率 = 齐套行 / 需求行，保留 1 位小数（无需求行时返回 null，不冒充 0%）；
-#   - 缺料清单同料号跨机台合并成一行，只列采购缺口 > 0 的料号；
+#   - 缺料清单同料号跨机台合并成一行，只列采购缺口 > 0 的料号；合并行的
+#     备料缺口按该料号**全部需求行**累加（含已到货未入库的行），采购缺口只算缺料行；
 #   - 排序默认采购缺口降序（sort=prepare 切成备料缺口降序）。
 
 KITTING_KITTED_STATUSES = frozenset({"ARRIVED", "IN_STOCK"})
@@ -5534,10 +5535,13 @@ def _kitting_device_text(device_nos: list[str]) -> str:
 def _kitting_merge_shortages(
     short_rows: list[dict[str, Any]], order_no: str, material_code: str,
     sort_key: str = "procure",
+    prepare_by_material: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """同料号跨机台合并成一行；机台按项目机台顺序排列。
 
     `sort_key`：``procure``（默认，采购缺口降序）或 ``prepare``（备料缺口降序）。
+    `prepare_by_material`：该料号**全部需求行**（含采购缺口为 0 的已到货未入库行）的
+    备料缺口合计，用来覆盖只由缺料行累加出来的低估值；缺省时退回缺料行累加。
     """
     wanted = (material_code or "").strip().upper()
     groups: dict[str, dict[str, Any]] = {}
@@ -5586,6 +5590,13 @@ def _kitting_merge_shortages(
             worst = "ARRIVED"
         else:
             worst = "IN_STOCK"
+        # 备料缺口覆盖为「该料号全部需求行」之和：上面只累加了缺料行，同料号里
+        # 「已全量到货但未入库」的行备料上仍然差料，漏掉会少备（26B-013 实测
+        # 30403004-00137 显示 180、真实 500）。采购缺口仍只算缺料行，语义不变。
+        if prepare_by_material is not None:
+            full_prepare = prepare_by_material.get(group["materialCode"])
+            if full_prepare is not None:
+                group["prepareGapQuantity"] = full_prepare
         items.append({
             **group,
             "affectedDeviceCount": len(device_nos),
@@ -5631,9 +5642,14 @@ def _kitting_dataset(
     # 料号过滤同时作用于概览与清单：否则概览「缺口总量」是全项目、清单「缺口合计」是
     # 过滤后的，同一屏出现两个口径（如 96 vs 18）。
     wanted = (material_code or "").strip().upper()
+    # 备料缺口按料号汇总**全部需求行**（不限采购缺口 > 0）：同料号里「已到货未入库」
+    # 的行不进缺料清单，但仓库仍要备料，合并行必须把它们算进去。
+    prepare_by_material: dict[str, int] = {}
     for row in rows:
-        if wanted and wanted not in str(row["material_code"] or "").upper():
+        code = str(row["material_code"] or "")
+        if wanted and wanted not in code.upper():
             continue
+        prepare_by_material[code] = prepare_by_material.get(code, 0) + _kitting_prepare_gap(row)
         summary = _kitting_accumulate(project_stats, row)
         device_stats = per_device.get(str(row["device_id"]))
         if device_stats is not None:
@@ -5668,7 +5684,9 @@ def _kitting_dataset(
     project_summary = _kitting_finish_stats(project_stats)
     # 料号/机台过滤已作用于上面全部统计（概览与清单同作用域）。
     # 采购缺口合计 = 缺料行之和（齐套行采购缺口必为 0），与清单列求和一致；
-    # 备料缺口合计按全部需求行算（含已到货未入库），可能大于清单列求和——见 docs。
+    # 备料缺口合计按全部需求行算（含已到货未入库），与清单列求和一致——清单每行
+    # 的备料缺口也按该料号全部需求行累加（prepare_by_material）。仅当某料号一行
+    # 缺料都没有（整料号已到货未入库）时它不进清单，那一部分只计入合计。
     project_summary.update({
         "deviceCount": len(devices),
         # 装配工只看得见本人参与的机台，项目总机台数属于项目规模，与
@@ -5678,17 +5696,29 @@ def _kitting_dataset(
         "totalProcureGapQuantity": project_summary.pop("procureGapQuantity"),
         "totalPrepareGapQuantity": project_summary.pop("prepareGapQuantity"),
     })
-    if user["role"] != "ASSEMBLER":
-        project_summary["unmappedRequirementCount"] = int(c.execute(
-            """SELECT COUNT(*) FROM order_material_requirements r
-                WHERE r.order_id = ? AND (r.device_id IS NULL OR r.device_id NOT IN (
-                      SELECT id FROM order_devices WHERE order_id = ?))""",
-            (project["id"], project["id"]),
-        ).fetchone()[0])
-    else:
+    if user["role"] == "ASSEMBLER" or device_no:
+        # 装配工：项目规模不披露。单机台视图：未挂机台的行不属于当前视图，
+        # 返回 null（不返回 0，避免被当成「该项目没有未挂机台的行」）。
         project_summary["unmappedRequirementCount"] = None
+    else:
+        # 料号过滤同样作用于这个计数，否则「过滤同时作用于上方概览」对它是假的；
+        # 它统计的是需求行、没有机台，故不受 device_no 过滤影响（上面已单独处理）。
+        unmapped_sql = (
+            "SELECT COUNT(*) FROM order_material_requirements r"
+            " JOIN materials m ON m.id = r.material_id"
+            " WHERE r.order_id = ? AND (r.device_id IS NULL OR r.device_id NOT IN ("
+            "       SELECT id FROM order_devices WHERE order_id = ?))"
+        )
+        unmapped_args: list[Any] = [project["id"], project["id"]]
+        if wanted:
+            unmapped_sql += " AND m.code LIKE ? ESCAPE '\\'"
+            unmapped_args.append(f"%{_pmr_like(str(material_code or '').strip())}%")
+        project_summary["unmappedRequirementCount"] = int(
+            c.execute(unmapped_sql, unmapped_args).fetchone()[0]
+        )
 
-    items = _kitting_merge_shortages(short_rows, order_no, material_code or "", sort_key)
+    items = _kitting_merge_shortages(short_rows, order_no, material_code or "", sort_key,
+                                     prepare_by_material=prepare_by_material)
     return {
         "projectNo": order_no,
         "projectName": project["product_name"] or "",
@@ -5711,10 +5741,12 @@ def _kitting_dataset(
 def project_kitting_summary(
     project_no: str,
     device_no: str | None = None,
+    material_code: str | None = None,
     user: sqlite3.Row = Depends(current_user),
 ) -> dict[str, Any]:
     """工单齐套概览：需求行 / 齐套行 / 缺料行 / 齐套率 / 缺料料号数，并按机台分组。
 
+    可选 `device_no` / `material_code` 过滤，作用域与缺料清单一致（概览同口径）。
     数据口径与需求 1 的项目→机台展开完全一致（同一套 ``_pmr_*`` 函数）；
     ASSEMBLER 只能看到本人参与的机台，项目有设备但一台都不属于本人时 403。
     """
@@ -5724,6 +5756,7 @@ def project_kitting_summary(
     try:
         project, resolved_from = _pmr_resolve_project(c, project_no)
         dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                   material_code=material_code,
                                    resolved_from=resolved_from)
     except ApiError as exc:
         if not exc.trace_id:
@@ -5784,7 +5817,9 @@ def project_shortage_list(
             "mergedMaterialCount": total,
             # 清单内合计（= items 列求和），与概览的 totalProcureGapQuantity 必然相等
             "totalProcureGapQuantity": procure_total,
-            # 备料缺口：total* 与概览同定义（全部需求行），list* 只算清单里的缺料行
+            # 备料缺口：total* 与概览同定义（当前视图全部需求行）；list* 是清单内
+            # 料号的备料缺口合计（每行已含该料号「已到货未入库」的行）。只有整料号
+            # 一行缺料都没有时它才不进清单，那部分只计入 total*。
             "totalPrepareGapQuantity": summary["totalPrepareGapQuantity"],
             "listPrepareGapQuantity": prepare_list_total,
             "deviceCount": summary["deviceCount"],

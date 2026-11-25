@@ -30,7 +30,9 @@
    现在不需要了）。
 3. **需求行必须挂在机台上。** `order_material_requirements.device_id` 为空或指向别的项目
    机台的行，无法归属机台，不计入齐套口径；概览用 `unmappedRequirementCount` 提示
-   （仅非 ASSEMBLER 返回，避免向装配工泄露项目级统计）。
+   （仅非 ASSEMBLER 返回，避免向装配工泄露项目级统计）。该计数按 `material_code`
+   过滤（与概览其它数同作用域）；按 `device_no` 过滤时这些行本就不属于该视图，返回
+   `null` 而不是 `0`。
 
 > **0.24.0 口径变更（2026-11-25，审查 P1-2）**：单一口径 `required − in_stock` 会把
 > 「已全量到货、尚未入库」（`arrived == required`、`in_stock == 0`）的行算成缺料——
@@ -59,9 +61,11 @@
 - **缺料清单按采购缺口筛行**：`arrived == required && in_stock == 0` 的行采购上不缺，
   不出现在清单里；但它的备料缺口仍计入概览的 `totalPrepareGapQuantity`。
 - **两个合计的差异是正常的**：`totalProcureGapQuantity` 只由缺料行累加（齐套行必为 0），
-  所以等于清单列求和；`totalPrepareGapQuantity` 按**当前视图的全部需求行**累加，可能大于
-  清单列的备料缺口之和，差额就是「已到货未入库」。接口另给
-  `listPrepareGapQuantity` 表示清单内的备料缺口合计。
+  所以等于清单列求和；`totalPrepareGapQuantity` 按**当前视图的全部需求行**累加，清单每行
+  的备料缺口也按该料号**全部需求行**累加（含同料号里「已到货未入库」的行），因此清单列
+  求和与合计相等。唯一的例外是**整个料号一行缺料都没有**（全部行都已到货、只是没入库）：
+  它不进缺料清单，它的备料缺口只计入 `totalPrepareGapQuantity`；接口另给
+  `listPrepareGapQuantity` 表示清单内的备料缺口合计，两者之差就是这部分。
 - **排序**：`sort=procure`（默认）按采购缺口降序，`sort=prepare` 按备料缺口降序；
   第二键都是影响机台数降序、第三键料号升序，保证翻页不重不漏。
 
@@ -83,7 +87,7 @@
 
 ### `GET /api/v1/projects/{project_no}/kitting-summary`
 
-可选 `device_no`（只看单台机台）。
+可选 `device_no`（只看单台机台）与 `material_code`（料号包含匹配，与缺料清单同作用域）。
 
 ```json
 {
@@ -200,16 +204,18 @@
 }
 ```
 
-- 同料号跨机台合并成一行：`procureGapQuantity` / `prepareGapQuantity` 分别是各机台
-  对应缺口之和；`requiredQuantity` / `arrivedQuantity` / `inStockQuantity` 是该料号
-  **缺料行**的合计；`affectedDeviceCount` 是去重机台数，`affectedDeviceNos` 是完整机台列表。
+- 同料号跨机台合并成一行：`procureGapQuantity` 是各机台缺料行的采购缺口之和；
+  `prepareGapQuantity` 是该料号**全部需求行**的备料缺口之和（同料号里
+  「已到货未入库」的行也要备料，不能漏）；`requiredQuantity` / `arrivedQuantity` /
+  `inStockQuantity` / `lineCount` 只统计**缺料行**，`affectedDeviceCount` 是这些行的
+  去重机台数，`affectedDeviceNos` 是完整机台列表。
 - **过滤作用域统一**：`device_no` 与 `material_code` 同时作用于 `summary`
-  （含 `requirementLineCount` / `kittingRate` / 两个缺口合计）与 `items`。
-  因此 `summary.totalProcureGapQuantity` 与清单列求和恒等，页面不会出现
+  （含 `requirementLineCount` / `kittingRate` / 两个缺口合计 / `unmappedRequirementCount`）
+  与 `items`。因此 `summary.totalProcureGapQuantity` 与清单列求和恒等，页面不会出现
   「概览 96 / 清单 18」这类同屏两套数。
 - `summary.totalPrepareGapQuantity` 是**当前视图全部需求行**的备料缺口
-  （与 `kitting-summary` 同定义），`summary.listPrepareGapQuantity` 只算清单里的
-  缺料行；差值即「已到货未入库」。
+  （与 `kitting-summary` 同定义），清单列求和与它相等；`summary.listPrepareGapQuantity`
+  是清单内料号的备料缺口合计，只有「整个料号都没有缺料行」的备料缺口不在其中。
 - `projectDeviceCount` 对 `ASSEMBLER` 返回 `null`（只给 `deviceCount` = 本人可见机台数），
   与 `unmappedRequirementCount` 一致，避免泄露项目规模。
 - `deviceNoText` 供页面/导出直接展示：≤ 5 台用逗号连接，> 5 台折叠为

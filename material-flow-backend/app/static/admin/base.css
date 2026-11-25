@@ -233,6 +233,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .error { color: var(--err); background: var(--err-soft); border: 1px solid #fecaca; border-radius: 9px; padding: 10px 14px; margin: 12px 0; font-size: 14px; }
 .notice { color: var(--ok); background: var(--ok-soft); border: 1px solid #bbf7d0; border-radius: 9px; padding: 10px 14px; margin: 12px 0; font-size: 14px; }
 .muted { color: var(--muted); font-size: 13px; }
+/* 缺料清单页脚：两个缺口合计都显示，按当前排序高亮对应那一个 */
+.gap-total-active { color: #0f172a; font-weight: 600; }
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 0 0 16px; }
 /* ---- 登录 ---- */
 .auth-wrap { min-height: calc(100vh - 220px); display: flex; align-items: center; justify-content: center; padding: 24px 12px; }

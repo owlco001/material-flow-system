@@ -57,7 +57,7 @@
     <p class="muted" style="margin:6px 0">
       项目状态：{{ dataset.projectStatus or "—" }}
       · 可见机台 {{ s.deviceCount }} 台{% if dataset.deviceFilter %}（已按机台 {{ dataset.deviceFilter }} 过滤）{% elif user.role == "ASSEMBLER" %}（仅显示你参与的机台，项目其余机台不在你的权限内）{% elif s.projectDeviceCount and s.projectDeviceCount != s.deviceCount %}（项目共 {{ s.projectDeviceCount }} 台）{% endif %}
-      {% if s.unmappedRequirementCount %}· 未挂机台的需求行 {{ s.unmappedRequirementCount }} 行（不计入齐套）{% endif %}
+      {% if s.unmappedRequirementCount %}· 未挂机台的需求行 {{ s.unmappedRequirementCount }} 行（不计入齐套，按料号过滤）{% endif %}
     </p>
 
     <div class="cards" style="display:flex;gap:10px;flex-wrap:wrap">
@@ -135,7 +135,10 @@
       </form>
     </div>
     <p class="muted" style="margin:6px 0">
-      共 <b>{{ total }}</b> 个缺料料号、采购缺口合计 <b>{{ dataset.procureGapTotal }}</b>
+      共 <b>{{ total }}</b> 个缺料料号、
+      <span class="gap-total{% if sort != 'prepare' %} gap-total-active{% endif %}">采购缺口合计 <b>{{ dataset.procureGapTotal }}</b></span>
+      ·
+      <span class="gap-total{% if sort == 'prepare' %} gap-total-active{% endif %}">备料缺口合计 <b>{{ dataset.prepareGapListTotal }}</b></span>
       {% if device_no %}· 只看机台 {{ device_no }}{% endif %}
       {% if material_code %}· 料号含「{{ material_code }}」{% endif %}
       {% if sort == 'prepare' %}· 已按备料缺口降序{% endif %}

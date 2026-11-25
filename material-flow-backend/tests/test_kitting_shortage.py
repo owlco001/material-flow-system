@@ -81,7 +81,7 @@ def add_material(code: str, name: str | None = None) -> None:
     c.close()
 
 
-def add_requirement(order_no: str, device_id: str, material_code: str, *,
+def add_requirement(order_no: str, device_id: str | None, material_code: str, *,
                     required: int, arrived: int = 0, in_stock: int = 0,
                     status: str = "OUT_OF_STOCK") -> None:
     add_material(material_code)
@@ -185,6 +185,20 @@ def seeded():
                     required=5, arrived=5, in_stock=0, status="ARRIVED")
     add_requirement("JSBY-26B-206", arrived_project["V1"], "A-PARTIAL",
                     required=5, arrived=2, in_stock=0, status="ARRIVED")
+
+    # P1-新（复审）：同一料号既有「已全量到货未入库」的行、又有「真缺料」的行。
+    # 清单行备料缺口必须是全部行之和（20+20=40，改前只算缺料行 = 20）；
+    # 采购缺口只含真缺料那行（10）。另有一整个料号齐套但未入库，只计入合计。
+    mixed = add_project("JSBY-26B-207", "26B-207 同料号混合行", ["W1", "W2"])
+    add_requirement("JSBY-26B-207", mixed["W1"], "X-MIX",
+                    required=20, arrived=20, in_stock=0, status="ARRIVED")
+    add_requirement("JSBY-26B-207", mixed["W2"], "X-MIX",
+                    required=20, arrived=10, in_stock=0, status="ARRIVED")
+    add_requirement("JSBY-26B-207", mixed["W1"], "X-KITTED-NOSTOCK",
+                    required=7, arrived=7, in_stock=0, status="ARRIVED")
+    # 未挂机台的需求行（P2-a：unmapped 计数必须受料号过滤影响）
+    add_requirement("JSBY-26B-207", None, "X-MIX", required=4)
+    add_requirement("JSBY-26B-207", None, "Y-UNMAP", required=6)
 
     # 他人项目：装配工越权用
     other = add_project("JSBY-26B-205", "26B-205 他人项目", ["X1"])
@@ -754,3 +768,103 @@ def test_admin_device_filter_hint_is_not_permission_limit(seeded):
     assert "其余不在你的权限内" not in filtered.text
     assert "可见机台 7 台" in unfiltered.text
     assert "其余不在你的权限内" not in unfiltered.text
+
+
+MIXED_PROJECT = "JSBY-26B-207"
+
+
+def test_merged_row_prepare_gap_includes_arrived_not_stocked_lines(seeded):
+    """P1-新（复审）：同料号既有「已全量到货未入库」的行、又有「真缺料」的行。
+
+    清单行的备料缺口必须是该料号**全部需求行**之和（20+20=40），采购缺口只含
+    真缺料那行（20−10=10）。改前备料缺口只累加采购缺口>0 的行 → 只显示 20，
+    仓库照单备料会少备一半。
+    """
+    with TestClient(backend.app) as client:
+        token = login(client, "kt-admin")
+        summary = get_summary(client, token, MIXED_PROJECT).json()["summary"]
+        listing = get_shortages(client, token, MIXED_PROJECT).json()
+        prepared = get_shortages(client, token, MIXED_PROJECT, sort="prepare").json()
+        export = client.get(f"/api/v1/projects/{MIXED_PROJECT}/shortage-list/export",
+                            headers=auth(token))
+
+    # 3 行：2 行已到货（采购缺口 0，1 行整料号齐套）、1 行部分到货（采购缺口 10）
+    assert (summary["requirementLineCount"], summary["kittedLineCount"],
+            summary["shortageLineCount"]) == (3, 2, 1)
+    # 采购缺口只算缺料行 20−10=10；备料缺口按全部 3 行 20+20+7=47
+    assert summary["totalProcureGapQuantity"] == 10
+    assert summary["totalPrepareGapQuantity"] == 47
+
+    assert [i["materialCode"] for i in listing["items"]] == ["X-MIX"]
+    item = listing["items"][0]
+    assert (item["procureGapQuantity"], item["prepareGapQuantity"]) == (10, 40), \
+        "备料缺口必须含该料号「已到货未入库」那 20 件（改前只给 20）"
+    # 采购口径不变：缺口/需求/行数/影响机台仍只描述缺料行
+    assert item["requiredQuantity"] == 20 and item["lineCount"] == 1
+    assert item["affectedDeviceNos"] == ["W2"]
+    assert item["inStockQuantity"] == 0
+
+    # 清单列求和 = 该料号全量备料缺口 40；项目合计 47 里的 7 属于整料号齐套的
+    # X-KITTED-NOSTOCK（一行缺料都没有，按设计不进清单）
+    assert sum(i["procureGapQuantity"] for i in listing["items"]) == 10
+    assert sum(i["prepareGapQuantity"] for i in listing["items"]) == 40
+    assert listing["summary"]["totalProcureGapQuantity"] == 10
+    assert listing["summary"]["totalPrepareGapQuantity"] == 47
+    assert listing["summary"]["listPrepareGapQuantity"] == 40
+    # 排序也吃修正后的值
+    assert (prepared["items"][0]["prepareGapQuantity"], prepared["sort"]) == (40, "prepare")
+
+    shortage_rows = [r.values for r in XlsxSheetReader.read_rows(export.content, "缺料清单")[1:]]
+    assert [r[0] for r in shortage_rows] == ["X-MIX"]
+    assert (shortage_rows[0][4], shortage_rows[0][5], shortage_rows[0][6]) == ("10", "40", "0")
+    overview = [r.values for r in XlsxSheetReader.read_rows(export.content, "齐套概览")[1:]]
+    assert (overview[0][11], overview[0][12]) == ("10", "47")
+
+
+def test_unmapped_count_follows_material_filter(seeded):
+    """P2-a：unmappedRequirementCount 与「过滤同时作用于概览」的文案一致——
+    料号过滤后只数命中料号的未挂机台行；单机台视图下它是 null（不属于该视图）。"""
+    with TestClient(backend.app) as client:
+        token = login(client, "kt-admin")
+        base = get_summary(client, token, MIXED_PROJECT).json()["summary"]
+        by_mix = get_summary(client, token, MIXED_PROJECT, material_code="x-mix").json()["summary"]
+        by_other = get_summary(client, token, MIXED_PROJECT, material_code="y-unmap").json()["summary"]
+        by_device = get_summary(client, token, MIXED_PROJECT, device_no="W1").json()["summary"]
+
+    assert base["unmappedRequirementCount"] == 2, "X-MIX 与 Y-UNMAP 各一行未挂机台"
+    assert by_mix["unmappedRequirementCount"] == 1
+    assert by_other["unmappedRequirementCount"] == 1
+    # 未挂机台的行本来就不进齐套口径
+    assert by_other["requirementLineCount"] == 0
+    assert by_device["unmappedRequirementCount"] is None, "单机台视图不能报项目级未挂机台行"
+
+
+def test_admin_page_footer_shows_both_gap_totals(seeded):
+    """P2-b：页脚两个合计都显示，并按当前排序高亮对应的那一个。"""
+    with TestClient(backend.app) as client:
+        assert web_login(client, "kt-sup").status_code == 303
+        procure = client.get("/admin/projects/kitting", params={"project_no": PROJECT})
+        prepare = client.get("/admin/projects/kitting",
+                             params={"project_no": PROJECT, "sort": "prepare"})
+
+    assert procure.status_code == 200 and prepare.status_code == 200
+    for page in (procure, prepare):
+        assert "采购缺口合计 <b>96</b>" in page.text
+        assert "备料缺口合计 <b>98</b>" in page.text
+    # 高亮跟着排序走：默认采购，sort=prepare 时切到备料
+    assert '<span class="gap-total gap-total-active">采购缺口合计 <b>96</b></span>' in procure.text
+    assert '<span class="gap-total">备料缺口合计 <b>98</b></span>' in procure.text
+    assert '<span class="gap-total">采购缺口合计 <b>96</b></span>' in prepare.text
+    assert '<span class="gap-total gap-total-active">备料缺口合计 <b>98</b></span>' in prepare.text
+
+
+def test_admin_page_unmapped_count_follows_material_filter(seeded):
+    """P2-a（页面）：过滤后「未挂机台的需求行」也要跟着降，不能仍显示项目级数字。"""
+    with TestClient(backend.app) as client:
+        assert web_login(client, "kt-admin").status_code == 303
+        base = client.get("/admin/projects/kitting", params={"project_no": MIXED_PROJECT})
+        filtered = client.get("/admin/projects/kitting",
+                              params={"project_no": MIXED_PROJECT, "material_code": "y-unmap"})
+
+    assert "未挂机台的需求行 2 行" in base.text
+    assert "未挂机台的需求行 1 行" in filtered.text
