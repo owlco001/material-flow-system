@@ -108,6 +108,8 @@ from app.main import (
     _pmr_export_bytes,
     _pmr_payload,
     _pmr_resolve_project,
+    _kitting_dataset,
+    _kitting_export_bytes,
     list_projects as api_list_projects,
     UPLOAD_DIR,
     MODEL_CODE_RE,
@@ -1882,6 +1884,128 @@ def admin_project_material_requirements_export(request: Request):
     ascii_name = (f"project-material-requirements-"
                   f"{re.sub(r'[^0-9A-Za-z._-]', '_', payload['projectNo'])}-{stamp}.xlsx")
     utf8_name = quote(f"项目物料需求-{payload['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# ==================== 工单齐套与缺料清单（需求 2）====================
+
+KITTING_WEB_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER", "WAREHOUSE_ADMIN")
+KITTING_PAGE_SIZE = 50
+
+
+def _kitting_web_user(request: Request):
+    """齐套页的网页端会话守卫：仓库也要催料清单，装配工不上管理台。"""
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in KITTING_WEB_ROLES:
+        return None, _error_page(request, 403, "403 禁止访问：齐套与缺料清单仅对管理员/车间主管/计划员/仓库管理员开放")
+    return user, None
+
+
+def _kitting_page_state(request: Request, user) -> dict[str, Any]:
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    keyword = str(request.query_params.get("q", "")).strip()
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    material_code = str(request.query_params.get("material_code", "")).strip() or None
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+    except (TypeError, ValueError):
+        page = 1
+    dataset = None
+    candidates: list[dict[str, Any]] = []
+    error = None
+    items: list[dict[str, Any]] = []
+    total = 0
+    c = db()
+    try:
+        if project_no:
+            try:
+                project, resolved_from = _pmr_resolve_project(c, project_no)
+                dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                           material_code=material_code,
+                                           resolved_from=resolved_from)
+                project_no = dataset["projectNo"]
+            except ApiError as exc:
+                error = _api_error_message(exc)
+                keyword = keyword or project_no
+                project_no = ""
+        if not project_no and (keyword or request.query_params.get("q")):
+            candidates = api_list_projects(q=keyword, limit=20, user=user)["projects"]
+    finally:
+        c.close()
+    if dataset is not None:
+        items = dataset["items"]
+        total = len(items)
+        start = (page - 1) * KITTING_PAGE_SIZE
+        items = items[start:start + KITTING_PAGE_SIZE]
+    return {
+        "project_no": project_no,
+        "keyword": keyword,
+        "device_no": device_no or "",
+        "material_code": material_code or "",
+        "page": page,
+        "page_size": KITTING_PAGE_SIZE,
+        "dataset": dataset,
+        "items": items,
+        "total": total,
+        "has_more": page * KITTING_PAGE_SIZE < total,
+        "prev_page": page - 1 if page > 1 else None,
+        "next_page": page + 1 if page * KITTING_PAGE_SIZE < total else None,
+        "candidates": candidates,
+        "error": error,
+        "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+    }
+
+
+@router.get("/admin/projects/kitting", response_class=HTMLResponse)
+def admin_project_kitting(request: Request):
+    """齐套与缺料页：项目搜索 + 齐套概览卡片 + 跨机台合并的缺料清单 + 导出。"""
+    user, denied = _kitting_web_user(request)
+    if denied:
+        return denied
+    assert user is not None
+    ctx = {"user": user, "csrf_token": user["csrf_token"], **_kitting_page_state(request, user)}
+    return templates.TemplateResponse(request, "project_kitting.html", ctx)
+
+
+@router.get("/admin/projects/kitting/export")
+def admin_project_kitting_export(request: Request):
+    """导出齐套概览 + 缺料清单两个 sheet（与 API 同一份口径）。"""
+    user, denied = _kitting_web_user(request)
+    if denied:
+        return denied
+    assert user is not None
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    material_code = str(request.query_params.get("material_code", "")).strip() or None
+    if not project_no:
+        return _error_page(request, 400, "请先选择要导出的项目")
+    c = db()
+    try:
+        try:
+            project, resolved_from = _pmr_resolve_project(c, project_no)
+            dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                       material_code=material_code,
+                                       resolved_from=resolved_from)
+        except ApiError as exc:
+            return _error_page(request, exc.status_code, _api_error_message(exc))
+    finally:
+        c.close()
+    body = _kitting_export_bytes(dataset)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    safe_no = re.sub(r"[^0-9A-Za-z._-]", "_", dataset["projectNo"])
+    ascii_name = f"project-kitting-shortage-{safe_no}-{stamp}.xlsx"
+    utf8_name = quote(f"齐套与缺料清单-{dataset['projectNo']}-{stamp}.xlsx")
     return Response(
         content=body,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

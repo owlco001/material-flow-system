@@ -1,10 +1,10 @@
 """极小 XLSX 写出器（仅用标准库 zipfile + XML）。
 
 仓库运行时不带 openpyxl / xlsxwriter（requirements.txt 只读解析），但管理台需要
-xlsx 导出。这里生成最小可用的 SpreadsheetML 包：单 sheet、内联字符串
+xlsx 导出。这里生成最小可用的 SpreadsheetML 包：单 sheet 或多 sheet、内联字符串
 （inlineStr，不需要 sharedStrings）、数字单元格保留数值类型、表头加粗。
 
-只支持本仓库导出场景需要的特性，不做公式、合并单元格、多 sheet。
+只支持本仓库导出场景需要的特性，不做公式、合并单元格。
 读回验证见 tests/test_project_material_requirements.py（用 app.xlsx_parser 反向解析）。
 """
 from __future__ import annotations
@@ -30,25 +30,49 @@ def _text(value: str) -> str:
     return escape(_clean(value))
 
 
-_CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>"""
-
 _ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"""
 
-_WORKBOOK_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>"""
+
+def _content_types(sheet_count: int) -> str:
+    overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for i in range(1, sheet_count + 1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+        '<Default Extension="xml" ContentType="application/xml"/>\n'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\n'
+        f"{overrides}\n"
+        '<Override PartName="/xl/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>\n'
+        "</Types>"
+    )
+
+
+def _workbook_rels(sheet_count: int) -> str:
+    """worksheet 用 rId1..rIdN，样式放最后一个 rId（单 sheet 时仍是 rId2，与 0.23.0 一致）。"""
+    rels = "".join(
+        f'<Relationship Id="rId{i}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{i}.xml"/>'
+        for i in range(1, sheet_count + 1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        f"{rels}\n"
+        f'<Relationship Id="rId{sheet_count + 1}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+        'Target="styles.xml"/>\n'
+        "</Relationships>"
+    )
 
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -109,20 +133,14 @@ def _row_xml(
     return f'<row r="{row_index}"{height_attr}>{cells}</row>'
 
 
-def build_xlsx(
-    sheet_title: str,
+def _sheet_xml(
     header: Sequence[str],
     rows: Iterable[Sequence[Any]],
     *,
     column_widths: Sequence[float] | None = None,
     bold_rows: Iterable[int] | None = None,
-    sheet_name: str | None = None,
-) -> bytes:
-    """生成单 sheet 的 .xlsx 字节串。
-
-    ``rows`` 为数据行（不含表头）。``bold_rows`` 是数据行下标（0 开始），用于
-    合计行加粗。``column_widths`` 为 Excel 列宽（字符数）。
-    """
+) -> tuple[str, int]:
+    """生成一张工作表的 XML，返回 (xml, 最后一行行号)。"""
     bold = set(bold_rows or ())
     parts: list[str] = []
     row_no = 1
@@ -146,19 +164,84 @@ def build_xlsx(
         'activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
         f"{cols}<sheetData>{''.join(parts)}</sheetData></worksheet>"
     )
+    return sheet, max(1, row_no - 1)
+
+
+def _unique_sheet_names(names: Sequence[str]) -> list[str]:
+    """Excel 要求 sheet 名在当前工作簿内唯一（大小写不敏感）。"""
+    used: set[str] = set()
+    result: list[str] = []
+    for index, raw in enumerate(names, 1):
+        base = _sheet_name(raw or f"Sheet{index}")
+        candidate = base
+        suffix = 2
+        while candidate.lower() in used:
+            tail = f"({suffix})"
+            candidate = (base[: 31 - len(tail)] + tail) if len(base) + len(tail) > 31 else base + tail
+            suffix += 1
+        used.add(candidate.lower())
+        result.append(candidate)
+    return result
+
+
+def build_xlsx_workbook(sheets: Sequence[dict[str, Any]]) -> bytes:
+    """生成多 sheet 的 .xlsx 字节串（仅标准库）。
+
+    每个 sheet 是 dict：``header`` / ``rows`` / 可选 ``name`` / ``column_widths`` /
+    ``bold_rows``（数据行下标，0 开始，用于合计行加粗）。
+    """
+    if not sheets:
+        raise ValueError("at least one sheet is required")
+    names = _unique_sheet_names([str(s.get("name") or s.get("title") or "") for s in sheets])
+    sheet_parts: list[str] = []
+    sheet_entries: list[str] = []
+    for index, (sheet, name) in enumerate(zip(sheets, names), 1):
+        xml, _last_row = _sheet_xml(
+            sheet["header"],
+            sheet.get("rows") or [],
+            column_widths=sheet.get("column_widths"),
+            bold_rows=sheet.get("bold_rows"),
+        )
+        sheet_parts.append(xml)
+        sheet_entries.append(
+            f'<sheet name="{escape(name, {chr(34): "&quot;"})}" sheetId="{index}" r:id="rId{index}"/>'
+        )
     workbook = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets><sheet name="{escape(_sheet_name(sheet_name or sheet_title), {chr(34): "&quot;"})}" '
-        'sheetId="1" r:id="rId1"/></sheets></workbook>'
+        f'<sheets>{"".join(sheet_entries)}</sheets></workbook>'
     )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        archive.writestr("[Content_Types].xml", _content_types(len(sheets)))
         archive.writestr("_rels/.rels", _ROOT_RELS)
         archive.writestr("xl/workbook.xml", workbook)
-        archive.writestr("xl/_rels/workbook.xml.rels", _WORKBOOK_RELS)
+        archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels(len(sheets)))
         archive.writestr("xl/styles.xml", _STYLES)
-        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+        for index, xml in enumerate(sheet_parts, 1):
+            archive.writestr(f"xl/worksheets/sheet{index}.xml", xml)
     return buffer.getvalue()
+
+
+def build_xlsx(
+    sheet_title: str,
+    header: Sequence[str],
+    rows: Iterable[Sequence[Any]],
+    *,
+    column_widths: Sequence[float] | None = None,
+    bold_rows: Iterable[int] | None = None,
+    sheet_name: str | None = None,
+) -> bytes:
+    """生成单 sheet 的 .xlsx 字节串（多 sheet 见 :func:`build_xlsx_workbook`）。
+
+    ``rows`` 为数据行（不含表头）。``bold_rows`` 是数据行下标（0 开始），用于
+    合计行加粗。``column_widths`` 为 Excel 列宽（字符数）。
+    """
+    return build_xlsx_workbook([{
+        "name": sheet_name or sheet_title,
+        "header": header,
+        "rows": rows,
+        "column_widths": column_widths,
+        "bold_rows": bold_rows,
+    }])

@@ -5371,6 +5371,448 @@ def export_project_material_requirements(
     )
 
 
+# ==================== 工单齐套情况 + 缺料清单（需求 2）====================
+#
+# 口径（与需求 1 共用同一套项目解析 / 机台可见性 / 权限函数）：
+#   - 项目 = production_orders；机台 = order_devices.device_no；
+#   - 需求行 = order_material_requirements，且必须挂在 order_devices 上（device_id
+#     为空的行归属不到机台，不进齐套口径，仅在概览里以 unmappedRequirementCount 提示）；
+#   - 缺口 = max(required_quantity - in_stock_quantity, 0)；
+#   - 齐套行 = 缺口为 0 且 status_code ∈ (ARRIVED, IN_STOCK)。状态写着「到货」但
+#     缺口仍 > 0（部分到货）的行必须按缺料计，否则催料中的项目会被报成 100% 齐套；
+#   - 缺料行 = 缺口 > 0；状态非齐套但缺口为 0 的行单列 zeroGapLineCount，不混进两边；
+#   - 齐套率 = 齐套行 / 需求行，保留 1 位小数（无需求行时返回 null，不冒充 0%）；
+#   - 缺料清单同料号跨机台合并成一行，只列缺口 > 0 的料号。
+
+KITTING_KITTED_STATUSES = frozenset({"ARRIVED", "IN_STOCK"})
+KITTING_DEVICE_FOLD = 5
+
+
+def _kitting_authorize(user: sqlite3.Row) -> None:
+    """齐套查询的可见性：仓库也要催料清单，其余角色沿用需求 1 的判断（不另写一套）。"""
+    if user["role"] == "WAREHOUSE_ADMIN":
+        return
+    _pmr_authorize(user)
+
+
+def _kitting_gap(row: sqlite3.Row) -> int:
+    """缺口量：需求 - 在库，负数按 0 计（不把多备的料算成负缺口）。"""
+    return max(int(row["required_quantity"] or 0) - int(row["in_stock_quantity"] or 0), 0)
+
+
+def _kitting_rate(kitted: int, total: int) -> float | None:
+    if not total:
+        return None
+    return round(kitted * 100.0 / total, 1)
+
+
+def _kitting_requirement_rows(
+    c: sqlite3.Connection, order_id: str, device_ids: list[str],
+) -> list[sqlite3.Row]:
+    """项目下（可见机台的）全部需求行，带料号与机台号。"""
+    if not device_ids:
+        return []
+    marks = ",".join("?" for _ in device_ids)
+    return c.execute(
+        f"""SELECT r.id AS requirement_id, r.device_id AS device_id,
+                   d.device_no AS device_no, d.sequence_no AS sequence_no,
+                   r.material_id AS material_id, m.code AS material_code,
+                   m.name AS material_name, m.specification AS specification,
+                   m.unit AS unit, r.required_quantity AS required_quantity,
+                   r.arrived_quantity AS arrived_quantity,
+                   r.in_stock_quantity AS in_stock_quantity,
+                   r.status_code AS status_code
+              FROM order_material_requirements r
+              JOIN materials m ON m.id = r.material_id
+              LEFT JOIN order_devices d ON d.id = r.device_id
+             WHERE r.order_id = ? AND r.device_id IN ({marks})
+             ORDER BY d.sequence_no, m.code""",
+        [order_id, *device_ids],
+    ).fetchall()
+
+
+def _kitting_blank_stats() -> dict[str, Any]:
+    return {
+        "requirementLineCount": 0,
+        "kittedLineCount": 0,
+        "shortageLineCount": 0,
+        "zeroGapLineCount": 0,
+        "shortageMaterialCount": 0,
+        "shortageQuantity": 0,
+        "statusCounts": {"outOfStock": 0, "arrived": 0, "inStock": 0, "other": 0},
+        "_materials": set(),
+    }
+
+
+def _kitting_accumulate(stats: dict[str, Any], row: sqlite3.Row) -> dict[str, Any] | None:
+    """把一行需求累加进 stats；返回该行的缺料摘要（缺口为 0 时返回 None）。"""
+    stats["requirementLineCount"] += 1
+    status = str(row["status_code"] or "")
+    counts = stats["statusCounts"]
+    key = {"OUT_OF_STOCK": "outOfStock", "ARRIVED": "arrived", "IN_STOCK": "inStock"}.get(status)
+    if key:
+        counts[key] += 1
+    else:
+        counts["other"] += 1
+    gap = _kitting_gap(row)
+    if gap > 0:
+        stats["shortageLineCount"] += 1
+        stats["shortageQuantity"] += gap
+        stats["_materials"].add(str(row["material_code"]))
+        return {
+            "materialCode": str(row["material_code"] or ""),
+            "materialName": str(row["material_name"] or ""),
+            "specification": str(row["specification"] or ""),
+            "unit": str(row["unit"] or ""),
+            "deviceNo": str(row["device_no"] or ""),
+            "sequenceNo": int(row["sequence_no"] or 0),
+            "shortageQuantity": gap,
+            "requiredQuantity": int(row["required_quantity"] or 0),
+            "arrivedQuantity": int(row["arrived_quantity"] or 0),
+            "inStockQuantity": int(row["in_stock_quantity"] or 0),
+            "statusCode": status,
+        }
+    if status in KITTING_KITTED_STATUSES:
+        stats["kittedLineCount"] += 1
+    else:
+        stats["zeroGapLineCount"] += 1
+    return None
+
+
+def _kitting_finish_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    materials = stats.pop("_materials", set())
+    total = stats["requirementLineCount"]
+    return {
+        **stats,
+        "shortageMaterialCount": len(materials),
+        "kittingRate": _kitting_rate(stats["kittedLineCount"], total),
+    }
+
+
+def _kitting_device_text(device_nos: list[str]) -> str:
+    """影响机台号：超过 5 台折叠成「前5台 等 N 台」，避免一行刷满屏。"""
+    if len(device_nos) <= KITTING_DEVICE_FOLD:
+        return ",".join(device_nos)
+    return ",".join(device_nos[:KITTING_DEVICE_FOLD]) + f" 等 {len(device_nos)} 台"
+
+
+def _kitting_merge_shortages(
+    short_rows: list[dict[str, Any]], order_no: str, material_code: str,
+) -> list[dict[str, Any]]:
+    """同料号跨机台合并成一行；机台按项目机台顺序排列。"""
+    wanted = (material_code or "").strip().upper()
+    groups: dict[str, dict[str, Any]] = {}
+    for row in short_rows:
+        code = row["materialCode"]
+        if wanted and wanted not in code.upper():
+            continue
+        group = groups.get(code)
+        if group is None:
+            group = groups[code] = {
+                "materialCode": code,
+                "materialName": row["materialName"],
+                "specification": row["specification"],
+                "unit": row["unit"],
+                "requiredQuantity": 0,
+                "arrivedQuantity": 0,
+                "inStockQuantity": 0,
+                "shortageQuantity": 0,
+                "lineCount": 0,
+                "outOfStockLineCount": 0,
+                "arrivedLineCount": 0,
+                "orderNo": order_no,
+                "_devices": {},
+            }
+        group["requiredQuantity"] += row["requiredQuantity"]
+        group["arrivedQuantity"] += row["arrivedQuantity"]
+        group["inStockQuantity"] += row["inStockQuantity"]
+        group["shortageQuantity"] += row["shortageQuantity"]
+        group["lineCount"] += 1
+        if row["statusCode"] == "OUT_OF_STOCK":
+            group["outOfStockLineCount"] += 1
+        elif row["statusCode"] == "ARRIVED":
+            group["arrivedLineCount"] += 1
+        if row["deviceNo"]:
+            group["_devices"][row["deviceNo"]] = row["sequenceNo"]
+
+    items: list[dict[str, Any]] = []
+    for group in groups.values():
+        devices = sorted(group.pop("_devices").items(), key=lambda kv: (kv[1], kv[0]))
+        device_nos = [no for no, _seq in devices]
+        if group["outOfStockLineCount"]:
+            worst = "OUT_OF_STOCK"
+        elif group["arrivedLineCount"]:
+            worst = "ARRIVED"
+        else:
+            worst = "IN_STOCK"
+        items.append({
+            **group,
+            "affectedDeviceCount": len(device_nos),
+            "affectedDeviceNos": device_nos,
+            "deviceNoText": _kitting_device_text(device_nos),
+            "statusCode": worst,
+            "statusLabel": WORKSPACE_STATUS_LABELS.get(worst, worst),
+        })
+    # 缺口降序 → 影响机台数降序 → 料号升序（保证分页顺序稳定，翻页不重不漏）
+    items.sort(key=lambda i: (-i["shortageQuantity"], -i["affectedDeviceCount"],
+                              i["materialCode"]))
+    return items
+
+
+def _kitting_dataset(
+    c: sqlite3.Connection,
+    user: sqlite3.Row,
+    project: sqlite3.Row,
+    *,
+    device_no: str | None = None,
+    material_code: str | None = None,
+    resolved_from: str = "order_no",
+) -> dict[str, Any]:
+    """齐套概览 + 缺料清单（全量，未分页）：概览、明细、导出共用同一份口径。"""
+    devices = _pmr_project_devices(c, user, project, device_no)
+    project_device_count = int(c.execute(
+        "SELECT COUNT(*) FROM order_devices WHERE order_id=?", (project["id"],)
+    ).fetchone()[0])
+    names = _pmr_device_names(c, [str(d["device_no"]) for d in devices])
+    rows = _kitting_requirement_rows(c, str(project["id"]), [str(d["id"]) for d in devices])
+
+    project_stats = _kitting_blank_stats()
+    per_device: dict[str, dict[str, Any]] = {str(d["id"]): _kitting_blank_stats() for d in devices}
+    short_rows: list[dict[str, Any]] = []
+    for row in rows:
+        summary = _kitting_accumulate(project_stats, row)
+        device_stats = per_device.get(str(row["device_id"]))
+        if device_stats is not None:
+            _kitting_accumulate(device_stats, row)
+        if summary is not None:
+            short_rows.append(summary)
+
+    order_no = str(project["order_no"])
+    device_items: list[dict[str, Any]] = []
+    for device in devices:
+        stats = _kitting_finish_stats(per_device[str(device["id"])])
+        top_down = sorted(
+            (r for r in short_rows if r["deviceNo"] == str(device["device_no"])),
+            key=lambda r: (-r["shortageQuantity"], r["materialCode"]),
+        )
+        device_items.append({
+            "deviceNo": str(device["device_no"]),
+            "deviceName": (names.get(str(device["device_no"]))
+                           or str(device["device_type"] or "")),
+            "deviceType": str(device["device_type"] or ""),
+            "sequenceNo": int(device["sequence_no"] or 0),
+            **stats,
+            "topShortages": [{
+                "materialCode": r["materialCode"],
+                "materialName": r["materialName"],
+                "shortageQuantity": r["shortageQuantity"],
+            } for r in top_down[:3]],
+        })
+
+    project_summary = _kitting_finish_stats(project_stats)
+    project_summary.update({
+        "deviceCount": len(devices),
+        "projectDeviceCount": project_device_count,
+        "totalShortageQuantity": project_summary["shortageQuantity"],
+    })
+    project_summary.pop("shortageQuantity", None)
+    if user["role"] != "ASSEMBLER":
+        project_summary["unmappedRequirementCount"] = int(c.execute(
+            """SELECT COUNT(*) FROM order_material_requirements r
+                WHERE r.order_id = ? AND (r.device_id IS NULL OR r.device_id NOT IN (
+                      SELECT id FROM order_devices WHERE order_id = ?))""",
+            (project["id"], project["id"]),
+        ).fetchone()[0])
+    else:
+        project_summary["unmappedRequirementCount"] = None
+
+    items = _kitting_merge_shortages(short_rows, order_no, material_code or "")
+    return {
+        "projectNo": order_no,
+        "projectName": project["product_name"] or "",
+        "projectStatus": project["status"] or "",
+        "resolvedFrom": resolved_from,
+        "deviceFilter": device_no or None,
+        "materialFilter": (material_code or "").strip() or None,
+        "summary": project_summary,
+        "devices": device_items,
+        "items": items,
+        "shortageTotal": sum(i["shortageQuantity"] for i in items),
+        "serverTime": now(),
+    }
+
+
+@app.get("/api/v1/projects/{project_no}/kitting-summary")
+def project_kitting_summary(
+    project_no: str,
+    device_no: str | None = None,
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """工单齐套概览：需求行 / 齐套行 / 缺料行 / 齐套率 / 缺料料号数，并按机台分组。
+
+    数据口径与需求 1 的项目→机台展开完全一致（同一套 ``_pmr_*`` 函数）；
+    ASSEMBLER 只能看到本人参与的机台，项目有设备但一台都不属于本人时 403。
+    """
+    _kitting_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        project, resolved_from = _pmr_resolve_project(c, project_no)
+        dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                   resolved_from=resolved_from)
+    except ApiError as exc:
+        if not exc.trace_id:
+            exc.trace_id = trace_id
+        raise
+    finally:
+        c.close()
+    dataset.pop("items", None)
+    dataset.pop("shortageTotal", None)
+    return dataset
+
+
+@app.get("/api/v1/projects/{project_no}/shortage-list")
+def project_shortage_list(
+    project_no: str,
+    device_no: str | None = None,
+    material_code: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """缺料清单：同料号跨机台合并成一行，按「缺口量降序 + 影响机台数降序」分页。"""
+    _kitting_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        project, resolved_from = _pmr_resolve_project(c, project_no)
+        dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                   material_code=material_code,
+                                   resolved_from=resolved_from)
+    except ApiError as exc:
+        if not exc.trace_id:
+            exc.trace_id = trace_id
+        raise
+    finally:
+        c.close()
+    items = dataset.pop("items")
+    total = len(items)
+    shortage_total = dataset.pop("shortageTotal", 0)
+    dataset.pop("devices", None)
+    summary = dataset.pop("summary")
+    start = (page - 1) * page_size
+    page_items = items[start:start + page_size]
+    return {
+        **dataset,
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "hasMore": start + len(page_items) < total,
+        "summary": {
+            "mergedMaterialCount": total,
+            "totalShortageQuantity": shortage_total,
+            "deviceCount": summary["deviceCount"],
+            "shortageLineCount": summary["shortageLineCount"],
+        },
+    }
+
+
+KITTING_OVERVIEW_HEADER = (
+    "项目号", "项目名称", "范围", "机台号", "机台名称", "需求行数", "齐套行数",
+    "缺料行数", "齐套率(%)", "缺料料号数", "缺口总量",
+)
+KITTING_SHORTAGE_HEADER = (
+    "料号", "品名", "规格", "单位", "总缺口量", "影响机台数", "影响机台",
+    "最不利状态", "关联订单号",
+)
+
+
+def _kitting_export_sheets(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = dataset["summary"]
+    overview: list[list[Any]] = [[
+        dataset["projectNo"], dataset["projectName"], "项目合计", "", "",
+        summary["requirementLineCount"], summary["kittedLineCount"],
+        summary["shortageLineCount"],
+        "" if summary["kittingRate"] is None else summary["kittingRate"],
+        summary["shortageMaterialCount"], summary["totalShortageQuantity"],
+    ]]
+    for device in dataset["devices"]:
+        overview.append([
+            dataset["projectNo"], dataset["projectName"], "机台", device["deviceNo"],
+            device["deviceName"], device["requirementLineCount"], device["kittedLineCount"],
+            device["shortageLineCount"],
+            "" if device["kittingRate"] is None else device["kittingRate"],
+            device["shortageMaterialCount"], device["shortageQuantity"],
+        ])
+    shortages = [[
+        item["materialCode"], item["materialName"], item["specification"], item["unit"],
+        item["shortageQuantity"], item["affectedDeviceCount"], item["deviceNoText"],
+        item["statusLabel"], item["orderNo"],
+    ] for item in dataset["items"]]
+    return [
+        {
+            "name": "齐套概览",
+            "header": KITTING_OVERVIEW_HEADER,
+            "rows": overview,
+            "bold_rows": [0],
+            "column_widths": [18, 26, 10, 18, 18, 10, 10, 10, 12, 12, 12],
+        },
+        {
+            "name": "缺料清单",
+            "header": KITTING_SHORTAGE_HEADER,
+            "rows": shortages,
+            "column_widths": [18, 24, 22, 6, 12, 12, 40, 12, 18],
+        },
+    ]
+
+
+def _kitting_export_bytes(dataset: dict[str, Any]) -> bytes:
+    from app.xlsx_writer import build_xlsx_workbook
+
+    return build_xlsx_workbook(_kitting_export_sheets(dataset))
+
+
+@app.get("/api/v1/projects/{project_no}/shortage-list/export")
+def export_project_shortage_list(
+    project_no: str,
+    device_no: str | None = None,
+    material_code: str | None = None,
+    user: sqlite3.Row = Depends(current_user),
+) -> Response:
+    """导出齐套概览 + 缺料清单两个 sheet 的 xlsx（不受分页限制）。"""
+    _kitting_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        try:
+            project, resolved_from = _pmr_resolve_project(c, project_no)
+            dataset = _kitting_dataset(c, user, project, device_no=device_no,
+                                       material_code=material_code,
+                                       resolved_from=resolved_from)
+        except ApiError as exc:
+            if not exc.trace_id:
+                exc.trace_id = trace_id
+            raise
+    finally:
+        c.close()
+    body = _kitting_export_bytes(dataset)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    safe_no = re.sub(r"[^0-9A-Za-z._-]", "_", dataset["projectNo"])
+    ascii_name = f"project-kitting-shortage-{safe_no}-{stamp}.xlsx"
+    utf8_name = quote(f"齐套与缺料清单-{dataset['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/api/v1/orders/{order_no}/tasks/{task_id}")
 def order_task_detail(
     order_no: str,
