@@ -110,6 +110,10 @@ from app.main import (
     _pmr_resolve_project,
     _kitting_dataset,
     _kitting_export_bytes,
+    _bom_variance_dataset,
+    _bom_variance_export_bytes,
+    BOM_VARIANCE_KINDS,
+    BOM_VARIANCE_KIND_LABELS,
     SHORTAGE_STATUS_LABELS,
     SHORTAGE_STATUS_ORDER,
     _pmr_search_projects,
@@ -2030,6 +2034,140 @@ def admin_project_kitting_export(request: Request):
     safe_no = re.sub(r"[^0-9A-Za-z._-]", "_", dataset["projectNo"])
     ascii_name = f"project-kitting-shortage-{safe_no}-{stamp}.xlsx"
     utf8_name = quote(f"齐套与缺料清单-{dataset['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# ==================== 项目结案 BOM 差异报表（需求 4）====================
+
+BOM_VARIANCE_WEB_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER", "WAREHOUSE_ADMIN")
+BOM_VARIANCE_PAGE_SIZE = 100
+BOM_VARIANCE_SEARCH_LIMIT = 20
+
+
+def _bom_variance_web_user(request: Request):
+    """BOM 差异页守卫：仓库只读全量，装配工不上管理台（与齐套页同口径）。"""
+    user = _session_user(request)
+    if user is None:
+        return None, _see_other("/admin/login")
+    if user["role"] not in BOM_VARIANCE_WEB_ROLES:
+        return None, _error_page(
+            request, 403,
+            "403 禁止访问：BOM 差异报表仅对管理员/车间主管/计划员/仓库管理员开放")
+    return user, None
+
+
+def _bom_variance_page_state(request: Request, user) -> dict[str, Any]:
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    keyword = str(request.query_params.get("q", "")).strip()
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    kind = str(request.query_params.get("kind", "")).strip().upper() or None
+    if kind not in BOM_VARIANCE_KIND_LABELS:
+        kind = None
+    only_diff = request.query_params.get("only_diff", "1") != "0"
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+    except (TypeError, ValueError):
+        page = 1
+    dataset = None
+    candidates: list[dict[str, Any]] = []
+    error = None
+    items: list[dict[str, Any]] = []
+    total = 0
+    c = db()
+    try:
+        if project_no:
+            try:
+                project, resolved_from = _pmr_resolve_project(c, project_no)
+                dataset = _bom_variance_dataset(
+                    c, user, project, device_no=device_no, kind=kind, only_diff=only_diff)
+                project_no = dataset["projectNo"]
+            except ApiError as exc:
+                error = _api_error_message(exc)
+                keyword = keyword or project_no
+                project_no = ""
+        if not project_no and (keyword or request.query_params.get("q")):
+            # 本页已按 BOM_VARIANCE_WEB_ROLES 放行（含 WAREHOUSE_ADMIN），
+            # 不能走会调 _pmr_authorize 的 api_list_projects，否则仓库搜索吃 403 JSON。
+            candidates = _pmr_search_projects(c, user, keyword, BOM_VARIANCE_SEARCH_LIMIT)
+    finally:
+        c.close()
+    if dataset is not None:
+        items = dataset["items"]
+        total = len(items)
+        start = (page - 1) * BOM_VARIANCE_PAGE_SIZE
+        items = items[start:start + BOM_VARIANCE_PAGE_SIZE]
+    return {
+        "project_no": project_no,
+        "keyword": keyword,
+        "device_no": device_no or "",
+        "kind": kind or "",
+        "only_diff": only_diff,
+        "kind_options": [(code, BOM_VARIANCE_KIND_LABELS[code]) for code in BOM_VARIANCE_KINDS],
+        "page": page,
+        "page_size": BOM_VARIANCE_PAGE_SIZE,
+        "dataset": dataset,
+        "items": items,
+        "total": total,
+        "has_more": page * BOM_VARIANCE_PAGE_SIZE < total,
+        "candidates": candidates,
+        "error": error,
+        "notice_text": NOTICE_TEXTS.get(request.query_params.get("notice", "")),
+    }
+
+
+@router.get("/admin/projects/bom-variance", response_class=HTMLResponse)
+def admin_project_bom_variance(request: Request):
+    """项目结案 BOM 差异报表页：覆盖率提示 + 机台汇总 + 料号差异明细 + 导出。"""
+    user, denied = _bom_variance_web_user(request)
+    if denied:
+        return denied
+    assert user is not None
+    ctx = {"user": user, "csrf_token": user["csrf_token"],
+           **_bom_variance_page_state(request, user)}
+    return templates.TemplateResponse(request, "project_bom_variance.html", ctx)
+
+
+@router.get("/admin/projects/bom-variance/export")
+def admin_project_bom_variance_export(request: Request):
+    """导出「机台汇总 + 料号差异」两个 sheet（与 API 同一份内存结果）。"""
+    user, denied = _bom_variance_web_user(request)
+    if denied:
+        return denied
+    assert user is not None
+    project_no = str(request.query_params.get("project_no", "")).strip()
+    device_no = str(request.query_params.get("device_no", "")).strip() or None
+    kind = str(request.query_params.get("kind", "")).strip().upper() or None
+    if kind not in BOM_VARIANCE_KIND_LABELS:
+        kind = None
+    only_diff = request.query_params.get("only_diff", "1") != "0"
+    if not project_no:
+        return _error_page(request, 400, "请先选择要导出的项目")
+    c = db()
+    try:
+        try:
+            project, resolved_from = _pmr_resolve_project(c, project_no)
+            dataset = _bom_variance_dataset(
+                c, user, project, device_no=device_no, kind=kind, only_diff=only_diff)
+        except ApiError as exc:
+            return _error_page(request, exc.status_code, _api_error_message(exc))
+    finally:
+        c.close()
+    if not dataset["summary"]["devices"]:
+        return _error_page(request, 409, "项目下没有可导出的机台")
+    body = _bom_variance_export_bytes(dataset)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    safe_no = re.sub(r"[^0-9A-Za-z._-]", "_", dataset["projectNo"])
+    ascii_name = f"project-bom-variance-{safe_no}-{stamp}.xlsx"
+    utf8_name = quote(f"BOM差异报表-{dataset['projectNo']}-{stamp}.xlsx")
     return Response(
         content=body,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

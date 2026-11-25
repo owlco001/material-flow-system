@@ -5384,6 +5384,417 @@ def export_project_material_requirements(
     )
 
 
+# ==================== 项目结案 BOM 差异报表（需求 4）====================
+#
+# 口径（项目解析 / 机台可见性 / 权限沿用需求 1、2 的同一套函数）：
+#   - 实际需求侧 = order_material_requirements.required_quantity，按 order_id + device_id + material_id；
+#   - 工程 BOM 侧 = bom_versions（model_code **就是机台号**，只取 status='PUBLISHED' 的最新
+#     version_no）+ bom_items.quantity（该机台单件用量；单层平铺，同一 version 下料号唯一，不递归）；
+#   - 每个 机台×料号 一格，分类 ADDED / INCREASED / DECREASED / SAME / MISSING_IN_REQUIREMENT；
+#   - 数量一律 2 位小数（BOM 侧本来就有小数，绝不能 int() 截断）；delta = required - bom，带符号；
+#   - **无工程 BOM 的机台不许当成「差异为 0」**：hasBom=false，bomQty/deltaQty 与各 kind 计数
+#     全部为 null（requiredQty 仍给出，那是需求事实），不进项目合计；summary.coverage 暴露覆盖率；
+#   - summary 与 items 同源：先构建明细格，再由同一份明细聚合汇总，不另写 SQL 算总量。
+
+BOM_VARIANCE_KINDS = ("ADDED", "INCREASED", "DECREASED", "SAME", "MISSING_IN_REQUIREMENT")
+BOM_VARIANCE_KIND_LABELS = {
+    "ADDED": "新增",
+    "INCREASED": "增加",
+    "DECREASED": "减少",
+    "SAME": "一致",
+    "MISSING_IN_REQUIREMENT": "漏备料",
+}
+# 本系统没有 PROJECT_MANAGER 角色：项目级全量口径由 ADMIN / 计划员 / 车间主管承担，
+# 仓库管理员只读全量（与齐套口径一致），装配工按本人参与机台（见 _pmr_project_devices）。
+BOM_VARIANCE_ROLES = {"ADMIN", "PLANNER", "WORKSHOP_SUPERVISOR", "WAREHOUSE_ADMIN"}
+
+
+def _bom_variance_authorize(user: sqlite3.Row) -> None:
+    """ADMIN / 计划员 / 车间主管 / 仓库管理员全量；装配工进函数后再按机台收窄。"""
+    if user["role"] in BOM_VARIANCE_ROLES or user["role"] == "ASSEMBLER":
+        return
+    raise ApiError(403, CODE_FORBIDDEN, "无权查看 BOM 差异报表")
+
+
+def _bv_qty(value: Any) -> float:
+    """数量口径：统一保留 2 位小数（BOM 有小数，禁止 int() 截断）。"""
+    return round(float(value), 2)
+
+
+def _bv_latest_published_boms(
+    c: sqlite3.Connection, device_nos: list[str],
+) -> dict[str, sqlite3.Row]:
+    """每台机台取 status='PUBLISHED' 的**最新** version_no（model_code = 机台号）。"""
+    if not device_nos:
+        return {}
+    marks = ",".join("?" for _ in device_nos)
+    rows = c.execute(
+        "SELECT id, model_code, version_no FROM bom_versions"
+        f" WHERE status = 'PUBLISHED' AND model_code IN ({marks})"
+        " ORDER BY model_code, version_no DESC",
+        device_nos,
+    ).fetchall()
+    latest: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        latest.setdefault(str(row["model_code"]), row)
+    return latest
+
+
+def _bv_bom_items(
+    c: sqlite3.Connection, versions: dict[str, sqlite3.Row],
+) -> dict[str, dict[str, sqlite3.Row]]:
+    """{机台号: {料号: bom_items 行}}；同一版本下料号唯一（UNIQUE(bom_version_id, material_code)）。"""
+    if not versions:
+        return {}
+    by_version = {str(v["id"]): device_no for device_no, v in versions.items()}
+    marks = ",".join("?" for _ in by_version)
+    rows = c.execute(
+        "SELECT bom_version_id, material_code, material_name, specification, unit, quantity"
+        f" FROM bom_items WHERE bom_version_id IN ({marks})",
+        list(by_version),
+    ).fetchall()
+    result: dict[str, dict[str, sqlite3.Row]] = {}
+    for row in rows:
+        device_no = by_version[str(row["bom_version_id"])]
+        result.setdefault(device_no, {})[str(row["material_code"])] = row
+    return result
+
+
+def _bv_requirements(
+    c: sqlite3.Connection, order_id: str, device_nos: list[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """{机台号: {料号: {required, name, specification, unit}}}——只统计挂在机台上的需求行。"""
+    if not device_nos:
+        return {}
+    marks = ",".join("?" for _ in device_nos)
+    rows = c.execute(
+        "SELECT d.device_no AS device_no, m.code AS material_code, m.name AS material_name,"
+        " m.specification AS specification, m.unit AS unit,"
+        " SUM(r.required_quantity) AS required_quantity"
+        " FROM order_material_requirements r"
+        " JOIN order_devices d ON d.id = r.device_id AND d.order_id = r.order_id"
+        " JOIN materials m ON m.id = r.material_id"
+        f" WHERE r.order_id = ? AND d.device_no IN ({marks})"
+        " GROUP BY d.device_no, m.code",
+        [order_id, *device_nos],
+    ).fetchall()
+    result: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        result.setdefault(str(row["device_no"]), {})[str(row["material_code"])] = {
+            "required": float(row["required_quantity"] or 0),
+            "materialName": str(row["material_name"] or ""),
+            "specification": str(row["specification"] or ""),
+            "unit": str(row["unit"] or ""),
+        }
+    return result
+
+
+def _bv_kind(bom_qty: float | None, required_qty: float | None) -> str:
+    """按 2 位小数后的数量比较——差 0.01 也算差异，浮点尾数不算差异。"""
+    if bom_qty is None:
+        return "ADDED"
+    if required_qty is None:
+        return "MISSING_IN_REQUIREMENT"
+    bom_rounded, required_rounded = _bv_qty(bom_qty), _bv_qty(required_qty)
+    if required_rounded > bom_rounded:
+        return "INCREASED"
+    if required_rounded < bom_rounded:
+        return "DECREASED"
+    return "SAME"
+
+
+def _bom_variance_dataset(
+    c: sqlite3.Connection,
+    user: sqlite3.Row,
+    project: sqlite3.Row,
+    *,
+    device_no: str | None = None,
+    kind: str | None = None,
+    only_diff: bool = True,
+) -> dict[str, Any]:
+    """构建整份比对结果（明细 + 汇总同一份内存数据）。
+
+    ``summary`` 是**当前机台范围**的全量口径（不受 ``kind`` / ``only_diff`` 影响），
+    ``items`` 才是过滤后的明细；因此 ``only_diff=0`` 时可直接用明细求和复核汇总。
+    无工程 BOM 的机台只出现在 ``devices`` 里（hasBom=false），不产生明细行。
+    """
+    devices = _pmr_project_devices(c, user, project, device_no)
+    device_nos = [str(d["device_no"]) for d in devices]
+    versions = _bv_latest_published_boms(c, device_nos)
+    bom_by_device = _bv_bom_items(c, versions)
+    requirements = _bv_requirements(c, str(project["id"]), device_nos)
+
+    items: list[dict[str, Any]] = []
+    device_rows: list[dict[str, Any]] = []
+    for device in devices:
+        dno = str(device["device_no"])
+        requirement_map = requirements.get(dno) or {}
+        # 有 PUBLISHED 版本但一条 BOM 明细都没有 → 等同于没有基线，不能把需求全判成「新增」。
+        bom_map = bom_by_device.get(dno) or {}
+        has_bom = bool(bom_map)
+        required_total = _bv_qty(sum(v["required"] for v in requirement_map.values()))
+        row: dict[str, Any] = {
+            "deviceNo": dno,
+            "deviceName": "",
+            "hasBom": has_bom,
+            "bomVersion": (int(versions[dno]["version_no"])
+                           if has_bom and dno in versions else None),
+            "bomQty": None,
+            "requiredQty": required_total,
+            "deltaQty": None,
+            "materialCount": 0,
+            "added": None,
+            "increased": None,
+            "decreased": None,
+            "same": None,
+            "missingInRequirement": None,
+        }
+        if not has_bom:
+            device_rows.append(row)
+            continue
+        counts = {name: 0 for name in BOM_VARIANCE_KINDS}
+        device_items: list[dict[str, Any]] = []
+        for code in sorted(set(bom_map) | set(requirement_map)):
+            bom_row = bom_map.get(code)
+            req_row = requirement_map.get(code)
+            bom_qty = _bv_qty(bom_row["quantity"]) if bom_row is not None else None
+            required_qty = _bv_qty(req_row["required"]) if req_row is not None else None
+            kind_value = _bv_kind(bom_qty, required_qty)
+            counts[kind_value] += 1
+            # 品名/规格/单位优先取物料主档（需求侧），缺失时退回 BOM 行。
+            meta = req_row or {}
+            device_items.append({
+                "deviceNo": dno,
+                "materialCode": code,
+                "materialName": str(meta.get("materialName")
+                                    or (bom_row["material_name"] if bom_row is not None else "") or ""),
+                "specification": str(meta.get("specification")
+                                     or (bom_row["specification"] if bom_row is not None else "") or ""),
+                "unit": str(meta.get("unit")
+                            or (bom_row["unit"] if bom_row is not None else "") or ""),
+                "bomQty": bom_qty if bom_qty is not None else 0.0,
+                "requiredQty": required_qty if required_qty is not None else 0.0,
+                "deltaQty": _bv_qty((required_qty or 0.0) - (bom_qty or 0.0)),
+                "kind": kind_value,
+            })
+        row.update({
+            "bomQty": _bv_qty(sum(i["bomQty"] for i in device_items)),
+            "requiredQty": _bv_qty(sum(i["requiredQty"] for i in device_items)),
+            "deltaQty": _bv_qty(sum(i["deltaQty"] for i in device_items)),
+            "materialCount": len(device_items),
+            "added": counts["ADDED"],
+            "increased": counts["INCREASED"],
+            "decreased": counts["DECREASED"],
+            "same": counts["SAME"],
+            "missingInRequirement": counts["MISSING_IN_REQUIREMENT"],
+        })
+        items.extend(device_items)
+        device_rows.append(row)
+
+    compared = [row for row in device_rows if row["hasBom"]]
+    # 汇总直接对明细求和（同一份 items），不走第二条 SQL。
+    compared_devices = {row["deviceNo"] for row in compared}
+    compared_items = [i for i in items if i["deviceNo"] in compared_devices]
+    summary: dict[str, Any] = {
+        "devices": len(device_rows),
+        "devicesWithBom": len(compared),
+        "devicesWithoutBom": len(device_rows) - len(compared),
+        "materials": len(compared_items),
+        "materialCodes": len({i["materialCode"] for i in compared_items}),
+        # 一台可比机台都没有时，数量合计返回 null：0 会被读成「比对过、没差异」。
+        "bomQty": _bv_qty(sum(i["bomQty"] for i in compared_items)) if compared else None,
+        "requiredQty": (_bv_qty(sum(i["requiredQty"] for i in compared_items))
+                        if compared else None),
+        "deltaQty": _bv_qty(sum(i["deltaQty"] for i in compared_items)) if compared else None,
+        "added": sum(1 for i in compared_items if i["kind"] == "ADDED"),
+        "increased": sum(1 for i in compared_items if i["kind"] == "INCREASED"),
+        "decreased": sum(1 for i in compared_items if i["kind"] == "DECREASED"),
+        "same": sum(1 for i in compared_items if i["kind"] == "SAME"),
+        "missingInRequirement": sum(
+            1 for i in compared_items if i["kind"] == "MISSING_IN_REQUIREMENT"),
+        "diffMaterials": sum(1 for i in compared_items if i["kind"] != "SAME"),
+    }
+    summary["coverage"] = (_bv_ratio(summary["devicesWithBom"], summary["devices"])
+                           if summary["devices"] else None)
+
+    filtered = items
+    if kind:
+        filtered = [i for i in items if i["kind"] == kind]
+    elif only_diff:
+        filtered = [i for i in items if i["kind"] != "SAME"]
+    return {
+        "projectNo": str(project["order_no"]),
+        "projectName": str(project["product_name"] or ""),
+        "projectStatus": str(project["status"] or ""),
+        "deviceFilter": device_no or None,
+        "kindFilter": kind or None,
+        "onlyDiff": bool(only_diff),
+        "summary": summary,
+        "devices": device_rows,
+        "items": filtered,
+        # 全量明细（导出与复核用，不受 kind/only_diff 过滤）
+        "allItems": items,
+    }
+
+
+def _bv_ratio(part: int, total: int) -> float:
+    return round(part / total, 4) if total else 0.0
+
+
+@app.get("/api/v1/projects/{project_no}/bom-variance")
+def project_bom_variance(
+    project_no: str,
+    device_no: str | None = None,
+    kind: str | None = Query(None, pattern="^(ADDED|INCREASED|DECREASED|SAME|MISSING_IN_REQUIREMENT)$",
+                             description="按差异类型过滤"),
+    only_diff: int = Query(1, ge=0, le=1, description="默认 1：排除 SAME"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    user: sqlite3.Row = Depends(current_user),
+) -> dict[str, Any]:
+    """项目结案：实际需求 vs 工程 BOM 差异（机台汇总 + 料号明细，分页）。
+
+    无工程 BOM 的机台只出现在 ``devices``（``bomQty``/``deltaQty`` 为 null，不是 0），
+    ``summary.coverage = devicesWithBom / devices`` 说明比对覆盖率。
+    """
+    _bom_variance_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        project, resolved_from = _pmr_resolve_project(c, project_no)
+        dataset = _bom_variance_dataset(c, user, project, device_no=device_no,
+                                        kind=kind, only_diff=bool(only_diff))
+    except ApiError as exc:
+        if not exc.trace_id:
+            exc.trace_id = trace_id
+        raise
+    finally:
+        c.close()
+    items = dataset.pop("items")
+    dataset.pop("allItems", None)
+    total = len(items)
+    start = (page - 1) * page_size
+    return {
+        **dataset,
+        "resolvedFrom": resolved_from,
+        "items": items[start:start + page_size],
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+        "hasMore": start + page_size < total,
+        "serverTime": now(),
+    }
+
+
+BOM_VARIANCE_DEVICE_HEADER = (
+    "机台号", "是否有工程BOM", "BOM版本", "BOM件数", "需求件数", "差异件数",
+    "新增料号数", "增加数", "减少数", "一致数", "漏备料数",
+)
+BOM_VARIANCE_ITEM_HEADER = (
+    "机台号", "料号", "品名", "规格", "单位", "BOM量", "需求量", "差异量", "类型",
+)
+
+
+def _bv_device_sheet_rows(dataset: dict[str, Any]) -> list[list[Any]]:
+    """机台汇总 sheet：第 0 行是项目合计（加粗），其后每台一行。
+
+    列位固定：3=BOM件数、4=需求件数、5=差异件数、6..10=五类计数。无 BOM 的机台
+    数量列留空（不是 0），避免把「没比对」读成「没差异」。
+    """
+    summary = dataset["summary"]
+    no_bom = summary["devicesWithoutBom"]
+    total_label = "项目合计" if not no_bom else f"项目合计（{no_bom} 台无工程BOM未纳入）"
+    rows: list[list[Any]] = [[
+        total_label, "是" if summary["devicesWithBom"] else "否", "",
+        summary["bomQty"], summary["requiredQty"], summary["deltaQty"],
+        summary["added"], summary["increased"], summary["decreased"],
+        summary["same"], summary["missingInRequirement"],
+    ]]
+    for device in dataset["devices"]:
+        if not device["hasBom"]:
+            rows.append([device["deviceNo"], "否", "", None, device["requiredQty"],
+                         None, None, None, None, None, None])
+            continue
+        rows.append([
+            device["deviceNo"], "是", device["bomVersion"], device["bomQty"],
+            device["requiredQty"], device["deltaQty"], device["added"],
+            device["increased"], device["decreased"], device["same"],
+            device["missingInRequirement"],
+        ])
+    return rows
+
+
+def _bv_item_sheet_rows(dataset: dict[str, Any]) -> list[list[Any]]:
+    """料号差异 sheet：与接口 items 同一过滤条件（device_no / kind / only_diff）。"""
+    return [[
+        item["deviceNo"], item["materialCode"], item["materialName"],
+        item["specification"], item["unit"], item["bomQty"], item["requiredQty"],
+        item["deltaQty"], BOM_VARIANCE_KIND_LABELS.get(item["kind"], item["kind"]),
+    ] for item in dataset["items"]]
+
+
+def _bom_variance_export_bytes(dataset: dict[str, Any]) -> bytes:
+    from app.xlsx_writer import build_xlsx_workbook
+
+    return build_xlsx_workbook([
+        {
+            "name": "机台汇总",
+            "header": BOM_VARIANCE_DEVICE_HEADER,
+            "rows": _bv_device_sheet_rows(dataset),
+            "bold_rows": [0],
+            "column_widths": [30, 14, 10, 12, 12, 12, 12, 10, 10, 10, 10],
+        },
+        {
+            "name": "料号差异",
+            "header": BOM_VARIANCE_ITEM_HEADER,
+            "rows": _bv_item_sheet_rows(dataset),
+            "column_widths": [18, 20, 24, 22, 6, 10, 10, 10, 10],
+        },
+    ])
+
+
+@app.get("/api/v1/projects/{project_no}/bom-variance/export")
+def export_project_bom_variance(
+    project_no: str,
+    device_no: str | None = None,
+    kind: str | None = Query(None, pattern="^(ADDED|INCREASED|DECREASED|SAME|MISSING_IN_REQUIREMENT)$"),
+    only_diff: int = Query(1, ge=0, le=1),
+    user: sqlite3.Row = Depends(current_user),
+) -> Response:
+    """导出「机台汇总 + 料号差异」两个 sheet（不受分页限制，过滤条件同列表）。"""
+    _bom_variance_authorize(user)
+    trace_id = str(uuid.uuid4())
+    c = db()
+    try:
+        try:
+            project, resolved_from = _pmr_resolve_project(c, project_no)
+            dataset = _bom_variance_dataset(c, user, project, device_no=device_no,
+                                            kind=kind, only_diff=bool(only_diff))
+        except ApiError as exc:
+            if not exc.trace_id:
+                exc.trace_id = trace_id
+            raise
+    finally:
+        c.close()
+    if not dataset["summary"]["devices"]:
+        raise ApiError(409, "NO_DEVICES", "项目下没有可导出的机台")
+    body = _bom_variance_export_bytes(dataset)
+    from urllib.parse import quote
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
+    safe_no = re.sub(r"[^0-9A-Za-z._-]", "_", dataset["projectNo"])
+    ascii_name = f"project-bom-variance-{safe_no}-{stamp}.xlsx"
+    utf8_name = quote(f"BOM差异报表-{dataset['projectNo']}-{stamp}.xlsx")
+    return Response(
+        content=body,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 # ==================== 工单齐套情况 + 缺料清单（需求 2）====================
 #
 # 口径（与需求 1 共用同一套项目解析 / 机台可见性 / 权限函数）——**双口径并列**：

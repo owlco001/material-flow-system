@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block page_title %}BOM 差异{% endblock %}
+{% block content %}
+{% from "_notice.html" import flash %}
+{% from "_pagination.html" import simple_pager %}
+
+<div class="compact">
+  <h2>项目结案 BOM 差异</h2>
+  <p class="page-desc">项目结束后按机台汇总「实际需求量 vs 工程 BOM 量」：工程 BOM 取该机台 PUBLISHED 的最新版本（U9 同步的 bom_versions / bom_items），实际需求取备料表落地的 order_material_requirements。无工程 BOM 的机台单列，不参与比对，也不会被当成「差异为 0」。</p>
+
+  <form method="get" action="/admin/projects/bom-variance" class="pmr-search">
+    <input name="project_no" value="{{ project_no }}" placeholder="项目号，如 JSBY-26B-017" style="max-width:260px">
+    <input name="q" value="{{ keyword }}" placeholder="或按项目名关键字搜索" style="max-width:220px">
+    <button type="submit" class="btn btn-sm">查询</button>
+    {% if dataset %}
+    <a class="btn btn-sm btn-secondary" href="/admin/projects/bom-variance?project_no={{ dataset.projectNo|urlencode }}">重置</a>
+    {% endif %}
+  </form>
+
+  {{ flash(error=error) }}
+
+  {% if candidates %}
+  <div class="card">
+    <h4>匹配到的项目（{{ candidates|length }}）</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>项目号</th><th>项目名称</th><th>状态</th><th>机台数</th><th></th></tr></thead>
+        <tbody>
+        {% for p in candidates %}
+          <tr>
+            <td><a href="/admin/projects/bom-variance?project_no={{ p.projectNo|urlencode }}">{{ p.projectNo }}</a></td>
+            <td>{{ p.projectName or "—" }}</td>
+            <td>{{ p.status or "—" }}</td>
+            <td class="num">{{ p.deviceCount }}</td>
+            <td><a class="btn btn-sm" href="/admin/projects/bom-variance?project_no={{ p.projectNo|urlencode }}">查看差异</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if not dataset and not candidates and not error %}
+  <div class="card"><span class="muted">请输入项目号查询 BOM 差异（支持项目号 / 项目名模糊搜索）。</span></div>
+  {% endif %}
+
+  {% if dataset %}
+  {% set s = dataset.summary %}
+  <div class="card">
+    <div class="page-head-row">
+      <h3 style="margin:0">{{ dataset.projectNo }} · {{ dataset.projectName or "（未命名项目）" }}</h3>
+      <div class="btn-row">
+        <a class="btn btn-sm" href="/admin/projects/bom-variance/export?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}{% if kind %}&kind={{ kind|urlencode }}{% endif %}{% if not only_diff %}&only_diff=0{% endif %}">导出 xlsx</a>
+      </div>
+    </div>
+
+    {% if s.devicesWithoutBom %}
+    <div class="card" style="border-left:4px solid #f0ad4e;margin:10px 0;background:#fff8e5">
+      <b>{{ s.devicesWithoutBom }} 台机台无工程 BOM，未纳入比对（先在 U9 同步 BOM）</b>
+      <p class="muted" style="margin:4px 0 0">这些机台只有备料需求、没有可比的工程基线，报表不对其给出差异量，也不计入项目合计。</p>
+    </div>
+    {% endif %}
+
+    <div class="cards" style="display:flex;gap:10px;flex-wrap:wrap">
+      <div class="card" style="flex:1 1 140px"><div class="muted">机台数</div>
+        <div style="font-size:22px;font-weight:600">{{ s.devices }}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">有工程 BOM 机台</div>
+        <div style="font-size:22px;font-weight:600">{{ s.devicesWithBom }}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">覆盖率</div>
+        <div style="font-size:22px;font-weight:600{% if s.coverage is not none and s.coverage < 1 %};color:#b9770e{% endif %}">{% if s.coverage is none %}—{% else %}{{ "%.1f"|format(s.coverage * 100) }}%{% endif %}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">差异料号数</div>
+        <div style="font-size:22px;font-weight:600;color:#c0392b">{{ s.diffMaterials }}</div></div>
+      <div class="card" style="flex:1 1 160px"><div class="muted">BOM 件数 / 需求件数</div>
+        <div style="font-size:18px;font-weight:600">{% if s.bomQty is none %}—{% else %}{{ "%.2f"|format(s.bomQty) }}{% endif %} / {% if s.requiredQty is none %}—{% else %}{{ "%.2f"|format(s.requiredQty) }}{% endif %}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">差异件数</div>
+        <div style="font-size:22px;font-weight:600">{% if s.deltaQty is none %}—{% else %}{{ "%.2f"|format(s.deltaQty) }}{% endif %}</div></div>
+    </div>
+
+    <p class="muted" style="margin:10px 0 0">
+      差异类型分布：
+      {% for code, label in kind_options %}
+      <a class="badge {{ {'ADDED':'b-info','INCREASED':'b-err','DECREASED':'b-warn','SAME':'b-ok','MISSING_IN_REQUIREMENT':'b-err'}.get(code, 'b-mute') }}"
+         href="/admin/projects/bom-variance?project_no={{ dataset.projectNo|urlencode }}&kind={{ code }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}">{{ label }}
+        {{ {"ADDED": s.added, "INCREASED": s.increased, "DECREASED": s.decreased, "SAME": s.same, "MISSING_IN_REQUIREMENT": s.missingInRequirement}[code] }}</a>
+      {% endfor %}
+      {% if kind %}<a class="btn btn-sm btn-secondary" href="/admin/projects/bom-variance?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}">清除类型过滤</a>{% endif %}
+    </p>
+    <p class="muted" style="margin:6px 0 0">
+      合计只覆盖有工程 BOM 的 {{ s.devicesWithBom }} 台机台，共 {{ s.materials }} 个「机台×料号」比对格；
+      差异量 = 需求量 − BOM 量（正数说明实际多用了）。数量保留 2 位小数。
+    </p>
+
+    <h4 style="margin:14px 0 6px">按机台</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>机台号</th><th>工程BOM</th><th>BOM版本</th><th>BOM件数</th><th>需求件数</th><th>差异件数</th>
+          <th>新增</th><th>增加</th><th>减少</th><th>一致</th><th>漏备料</th>
+        </tr></thead>
+        <tbody>
+        {% for d in dataset.devices %}
+          <tr{% if not d.hasBom %} style="background:#fff8e5"{% endif %}>
+            <td><a href="/admin/projects/bom-variance?project_no={{ dataset.projectNo|urlencode }}&device_no={{ d.deviceNo|urlencode }}{% if kind %}&kind={{ kind|urlencode }}{% endif %}">{{ d.deviceNo }}</a></td>
+            <td>{% if d.hasBom %}<span class="badge b-ok">有</span>{% else %}<span class="badge b-warn" title="无工程 BOM，无法比对">无</span>{% endif %}</td>
+            <td class="num">{{ d.bomVersion if d.bomVersion is not none else "—" }}</td>
+            <td class="num">{% if d.bomQty is none %}—{% else %}{{ "%.2f"|format(d.bomQty) }}{% endif %}</td>
+            <td class="num">{{ "%.2f"|format(d.requiredQty) }}</td>
+            <td class="num">{% if d.deltaQty is none %}<span class="muted" title="无工程 BOM，无法比对">—</span>{% else %}{{ "%.2f"|format(d.deltaQty) }}{% endif %}</td>
+            <td class="num">{{ d.added if d.added is not none else "—" }}</td>
+            <td class="num">{{ d.increased if d.increased is not none else "—" }}</td>
+            <td class="num">{{ d.decreased if d.decreased is not none else "—" }}</td>
+            <td class="num">{{ d.same if d.same is not none else "—" }}</td>
+            <td class="num">{{ d.missingInRequirement if d.missingInRequirement is not none else "—" }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="11" class="muted">项目下没有你可见的机台。</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="page-head-row">
+      <h3 style="margin:0">料号差异</h3>
+      <form method="get" action="/admin/projects/bom-variance" style="display:flex;gap:8px;align-items:center;margin:0">
+        <input type="hidden" name="project_no" value="{{ dataset.projectNo }}">
+        <select name="device_no" onchange="this.form.submit()">
+          <option value="">全部机台</option>
+          {% for d in dataset.devices %}
+          <option value="{{ d.deviceNo }}" {% if device_no == d.deviceNo %}selected{% endif %}>{{ d.deviceNo }}</option>
+          {% endfor %}
+        </select>
+        <select name="kind" onchange="this.form.submit()" title="差异类型">
+          <option value="">全部类型</option>
+          {% for code, label in kind_options %}
+          <option value="{{ code }}" {% if kind == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <select name="only_diff" onchange="this.form.submit()" title="是否只看差异">
+          <option value="1" {% if only_diff %}selected{% endif %}>只看差异</option>
+          <option value="0" {% if not only_diff %}selected{% endif %}>含一致行</option>
+        </select>
+        <button type="submit" class="btn btn-sm">过滤</button>
+      </form>
+    </div>
+    <p class="muted" style="margin:6px 0">
+      共 <b>{{ total }}</b> 行{% if kind %}（类型 {{ {"ADDED": "新增", "INCREASED": "增加", "DECREASED": "减少", "SAME": "一致", "MISSING_IN_REQUIREMENT": "漏备料"}[kind] }}）{% elif only_diff %}（已排除「一致」）{% else %}（含「一致」）{% endif %}
+      {% if device_no %} · 只看机台 {{ device_no }}{% endif %}
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>机台号</th><th>料号</th><th>品名</th><th>规格</th><th>单位</th>
+          <th>BOM量</th><th>需求量</th><th>差异量</th><th>类型</th>
+        </tr></thead>
+        <tbody>
+        {% for item in items %}
+          <tr>
+            <td>{{ item.deviceNo }}</td>
+            <td>{{ item.materialCode }}</td>
+            <td>{{ item.materialName }}</td>
+            <td class="pmr-spec">{{ item.specification }}</td>
+            <td>{{ item.unit }}</td>
+            <td class="num">{{ "%.2f"|format(item.bomQty) }}</td>
+            <td class="num">{{ "%.2f"|format(item.requiredQty) }}</td>
+            <td class="num">{{ "%.2f"|format(item.deltaQty) }}</td>
+            <td><span class="badge {{ {'ADDED':'b-info','INCREASED':'b-err','DECREASED':'b-warn','SAME':'b-ok','MISSING_IN_REQUIREMENT':'b-err'}.get(item.kind, 'b-mute') }}"
+                      title="{{ item.kind }}">{{ {"ADDED": "新增", "INCREASED": "增加", "DECREASED": "减少", "SAME": "一致", "MISSING_IN_REQUIREMENT": "漏备料"}.get(item.kind, item.kind) }}</span></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="9" class="muted">{% if dataset.devices and not (dataset.devices|selectattr("hasBom")|list) %}该项目没有可参与比对的机台（无工程 BOM）。{% else %}当前筛选条件下没有差异行。{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {{ simple_pager(page, has_more, "/admin/projects/bom-variance", {"project_no": dataset.projectNo, "device_no": device_no, "kind": kind, "only_diff": "1" if only_diff else "0"}) }}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
