@@ -110,6 +110,7 @@ from app.main import (
     _pmr_resolve_project,
     _kitting_dataset,
     _kitting_export_bytes,
+    _pmr_search_projects,
     list_projects as api_list_projects,
     UPLOAD_DIR,
     MODEL_CODE_RE,
@@ -1898,6 +1899,7 @@ def admin_project_material_requirements_export(request: Request):
 
 KITTING_WEB_ROLES = ("ADMIN", "WORKSHOP_SUPERVISOR", "PLANNER", "WAREHOUSE_ADMIN")
 KITTING_PAGE_SIZE = 50
+KITTING_SEARCH_LIMIT = 20
 
 
 def _kitting_web_user(request: Request):
@@ -1915,6 +1917,7 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
     keyword = str(request.query_params.get("q", "")).strip()
     device_no = str(request.query_params.get("device_no", "")).strip() or None
     material_code = str(request.query_params.get("material_code", "")).strip() or None
+    sort_key = "prepare" if request.query_params.get("sort") == "prepare" else "procure"
     try:
         page = max(1, int(request.query_params.get("page") or 1))
     except (TypeError, ValueError):
@@ -1931,6 +1934,7 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
                 project, resolved_from = _pmr_resolve_project(c, project_no)
                 dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                            material_code=material_code,
+                                           sort_key=sort_key,
                                            resolved_from=resolved_from)
                 project_no = dataset["projectNo"]
             except ApiError as exc:
@@ -1938,7 +1942,12 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
                 keyword = keyword or project_no
                 project_no = ""
         if not project_no and (keyword or request.query_params.get("q")):
-            candidates = api_list_projects(q=keyword, limit=20, user=user)["projects"]
+            # 走不鉴权的搜索辅助函数：本页已按 KITTING_WEB_ROLES 放行（含 WAREHOUSE_ADMIN），
+            # 再用 api_list_projects 会被 _pmr_authorize 招 403。
+            try:
+                candidates = _pmr_search_projects(c, user, keyword, KITTING_SEARCH_LIMIT)
+            except ApiError as exc:
+                error = _api_error_message(exc)
     finally:
         c.close()
     if dataset is not None:
@@ -1951,6 +1960,7 @@ def _kitting_page_state(request: Request, user) -> dict[str, Any]:
         "keyword": keyword,
         "device_no": device_no or "",
         "material_code": material_code or "",
+        "sort": sort_key,
         "page": page,
         "page_size": KITTING_PAGE_SIZE,
         "dataset": dataset,
@@ -1986,6 +1996,7 @@ def admin_project_kitting_export(request: Request):
     project_no = str(request.query_params.get("project_no", "")).strip()
     device_no = str(request.query_params.get("device_no", "")).strip() or None
     material_code = str(request.query_params.get("material_code", "")).strip() or None
+    sort_key = "prepare" if request.query_params.get("sort") == "prepare" else "procure"
     if not project_no:
         return _error_page(request, 400, "请先选择要导出的项目")
     c = db()
@@ -1994,6 +2005,7 @@ def admin_project_kitting_export(request: Request):
             project, resolved_from = _pmr_resolve_project(c, project_no)
             dataset = _kitting_dataset(c, user, project, device_no=device_no,
                                        material_code=material_code,
+                                       sort_key=sort_key,
                                        resolved_from=resolved_from)
         except ApiError as exc:
             return _error_page(request, exc.status_code, _api_error_message(exc))

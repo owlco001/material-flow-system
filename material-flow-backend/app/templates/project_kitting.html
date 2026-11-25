@@ -6,7 +6,7 @@
 
 <div class="compact">
   <h2>齐套与缺料</h2>
-  <p class="page-desc">按项目查看机台齐套率，并输出可执行的缺料清单：同料号跨机台合并成一行，按缺口量降序；缺口为 0 的料号不出现。口径与「项目物料需求」一致（需求行必须挂在机台上）。</p>
+  <p class="page-desc">按项目查看机台齐套率，并输出可执行的缺料清单：同料号跨机台合并成一行，按采购缺口降序；采购缺口为 0 的料号不出现。齐套率按到货口径（需求行必须挂在机台上）。</p>
 
   <form method="get" action="/admin/projects/kitting" class="pmr-search">
     <input name="project_no" value="{{ project_no }}" placeholder="项目号，如 JSBY-26B-012" style="max-width:260px">
@@ -51,17 +51,17 @@
     <div class="page-head-row">
       <h3 style="margin:0">{{ dataset.projectNo }} · {{ dataset.projectName or "（未命名项目）" }}</h3>
       <div class="btn-row">
-        <a class="btn btn-sm" href="/admin/projects/kitting/export?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}{% if material_code %}&material_code={{ material_code|urlencode }}{% endif %}">导出 xlsx</a>
+        <a class="btn btn-sm" href="/admin/projects/kitting/export?project_no={{ dataset.projectNo|urlencode }}{% if device_no %}&device_no={{ device_no|urlencode }}{% endif %}{% if material_code %}&material_code={{ material_code|urlencode }}{% endif %}{% if sort == 'prepare' %}&sort=prepare{% endif %}">导出 xlsx</a>
       </div>
     </div>
     <p class="muted" style="margin:6px 0">
       项目状态：{{ dataset.projectStatus or "—" }}
-      · 可见机台 {{ s.deviceCount }} 台{% if s.projectDeviceCount != s.deviceCount %}（项目共 {{ s.projectDeviceCount }} 台，其余不在你的权限内）{% endif %}
+      · 可见机台 {{ s.deviceCount }} 台{% if dataset.deviceFilter %}（已按机台 {{ dataset.deviceFilter }} 过滤）{% elif user.role == "ASSEMBLER" %}（仅显示你参与的机台，项目其余机台不在你的权限内）{% elif s.projectDeviceCount and s.projectDeviceCount != s.deviceCount %}（项目共 {{ s.projectDeviceCount }} 台）{% endif %}
       {% if s.unmappedRequirementCount %}· 未挂机台的需求行 {{ s.unmappedRequirementCount }} 行（不计入齐套）{% endif %}
     </p>
 
     <div class="cards" style="display:flex;gap:10px;flex-wrap:wrap">
-      <div class="card" style="flex:1 1 140px"><div class="muted">齐套率</div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">齐套率（按到货）</div>
         <div style="font-size:22px;font-weight:600">{% if s.kittingRate is none %}—{% else %}{{ s.kittingRate }}%{% endif %}</div></div>
       <div class="card" style="flex:1 1 140px"><div class="muted">需求行 / 齐套行</div>
         <div style="font-size:22px;font-weight:600">{{ s.requirementLineCount }} / {{ s.kittedLineCount }}</div></div>
@@ -69,16 +69,26 @@
         <div style="font-size:22px;font-weight:600;color:#c0392b">{{ s.shortageLineCount }}</div></div>
       <div class="card" style="flex:1 1 140px"><div class="muted">缺料料号</div>
         <div style="font-size:22px;font-weight:600;color:#c0392b">{{ s.shortageMaterialCount }}</div></div>
-      <div class="card" style="flex:1 1 140px"><div class="muted">缺口总量</div>
-        <div style="font-size:22px;font-weight:600;color:#c0392b">{{ s.totalShortageQuantity }}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">采购缺口</div>
+        <div style="font-size:22px;font-weight:600;color:#c0392b">{{ s.totalProcureGapQuantity }}</div></div>
+      <div class="card" style="flex:1 1 140px"><div class="muted">备料缺口</div>
+        <div style="font-size:22px;font-weight:600;color:#b9770e">{{ s.totalPrepareGapQuantity }}</div></div>
     </div>
+
+    <p class="muted" style="margin:8px 0 0">
+      图例：<b>采购缺口</b> = 需求 − 已到货（还要催采购多少，决定缺料清单与齐套率）；
+      <b>备料缺口</b> = 需求 − 在库（库里还差多少才能上线，含已到货未入库的行，供仓库备料参考）。
+      两个数不同是正常的：货在途、未入库时采购缺口小、备料缺口大。
+    </p>
+
+    {% if device_no or material_code %}<p class="muted" style="margin:6px 0">当前过滤（{% if device_no %}机台 {{ device_no }}{% endif %}{% if device_no and material_code %}、{% endif %}{% if material_code %}料号含「{{ material_code }}」{% endif %}）同时作用于上方概览与下方清单，两处缺口合计同口径。</p>{% endif %}
 
     <h4 style="margin:14px 0 6px">按机台</h4>
     <div class="table-wrap">
       <table>
         <thead><tr>
           <th>机台号</th><th>机台名称</th><th>需求行</th><th>齐套行</th><th>缺料行</th>
-          <th>齐套率</th><th>缺口总量</th><th>卡点料号 Top3</th>
+          <th>齐套率</th><th>采购缺口</th><th>备料缺口</th><th>卡点料号 Top3</th>
         </tr></thead>
         <tbody>
         {% for d in dataset.devices %}
@@ -89,15 +99,16 @@
             <td class="num">{{ d.kittedLineCount }}</td>
             <td class="num">{{ d.shortageLineCount }}</td>
             <td class="num">{% if d.kittingRate is none %}—{% else %}{{ d.kittingRate }}%{% endif %}</td>
-            <td class="num">{{ d.shortageQuantity }}</td>
+            <td class="num">{{ d.procureGapQuantity }}</td>
+            <td class="num">{{ d.prepareGapQuantity }}</td>
             <td>
               {% if d.topShortages %}
-                {% for t in d.topShortages %}<span class="badge b-warn" title="{{ t.materialName }}">{{ t.materialCode }} × {{ t.shortageQuantity }}</span> {% endfor %}
+                {% for t in d.topShortages %}<span class="badge b-warn" title="{{ t.materialName }}">{{ t.materialCode }} × {{ t.procureGapQuantity }}</span> {% endfor %}
               {% else %}<span class="muted">—</span>{% endif %}
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="8" class="muted">项目下没有你可见的机台。</td></tr>
+          <tr><td colspan="9" class="muted">项目下没有你可见的机台。</td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -116,19 +127,24 @@
           {% endfor %}
         </select>
         <input name="material_code" value="{{ material_code }}" placeholder="料号" style="max-width:160px">
+        <select name="sort" onchange="this.form.submit()" title="排序口径">
+          <option value="procure" {% if sort != 'prepare' %}selected{% endif %}>按采购缺口排序</option>
+          <option value="prepare" {% if sort == 'prepare' %}selected{% endif %}>按备料缺口排序</option>
+        </select>
         <button type="submit" class="btn btn-sm">过滤</button>
       </form>
     </div>
     <p class="muted" style="margin:6px 0">
-      共 <b>{{ total }}</b> 个缺料料号、缺口合计 <b>{{ dataset.shortageTotal }}</b>
+      共 <b>{{ total }}</b> 个缺料料号、采购缺口合计 <b>{{ dataset.procureGapTotal }}</b>
       {% if device_no %}· 只看机台 {{ device_no }}{% endif %}
       {% if material_code %}· 料号含「{{ material_code }}」{% endif %}
+      {% if sort == 'prepare' %}· 已按备料缺口降序{% endif %}
     </p>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>总缺口量</th>
-          <th>影响机台数</th><th>影响机台</th><th>最不利状态</th><th>关联订单号</th>
+          <th>料号</th><th>品名</th><th>规格</th><th>单位</th><th>采购缺口</th><th>备料缺口</th>
+          <th>在库量</th><th>影响机台数</th><th>影响机台</th><th>最不利状态</th><th>关联订单号</th>
         </tr></thead>
         <tbody>
         {% for item in items %}
@@ -137,19 +153,21 @@
             <td>{{ item.materialName }}</td>
             <td class="pmr-spec">{{ item.specification }}</td>
             <td>{{ item.unit }}</td>
-            <td class="num">{{ item.shortageQuantity }}</td>
+            <td class="num">{{ item.procureGapQuantity }}</td>
+            <td class="num">{{ item.prepareGapQuantity }}</td>
+            <td class="num">{{ item.inStockQuantity }}</td>
             <td class="num">{{ item.affectedDeviceCount }}</td>
             <td class="pmr-spec">{{ item.deviceNoText }}</td>
             <td><span class="badge {{ {'OUT_OF_STOCK':'b-err','ARRIVED':'b-warn','IN_STOCK':'b-ok'}.get(item.statusCode, 'b-mute') }}">{{ item.statusLabel }}</span></td>
             <td>{{ item.orderNo }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="9" class="muted">没有缺口 &gt; 0 的料号：该项目当前齐套。</td></tr>
+          <tr><td colspan="11" class="muted">没有采购缺口 &gt; 0 的料号：该项目到货已齐套（备料缺口见上方概览）。</td></tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
-    {{ simple_pager(page, has_more, "/admin/projects/kitting", {"project_no": dataset.projectNo, "device_no": device_no, "material_code": material_code}) }}
+    {{ simple_pager(page, has_more, "/admin/projects/kitting", {"project_no": dataset.projectNo, "device_no": device_no, "material_code": material_code, "sort": sort}) }}
   </div>
   {% endif %}
 </div>
