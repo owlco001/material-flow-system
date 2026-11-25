@@ -2800,6 +2800,7 @@ def admin_u9(request: Request):
     from app.u9.sync import ENTITIES
     cfg = get_config()
     run_log = None
+    running = None
     c = db()
     try:
         logs = []
@@ -2808,6 +2809,7 @@ def admin_u9(request: Request):
                 "SELECT id, run_id, entity, started_at, status, dry_run, total, inserted, updated,"
                 " skipped, error FROM u9_sync_logs ORDER BY started_at DESC LIMIT 30").fetchall()]
             run = str(request.query_params.get("run", "")).strip()
+            running = None
             if run:
                 r = c.execute("SELECT * FROM u9_sync_logs WHERE id=?", (run,)).fetchone()
                 if r:
@@ -2816,6 +2818,22 @@ def admin_u9(request: Request):
                         run_log["detail"] = _json.loads(run_log.pop("detail_json") or "{}")
                     except ValueError:
                         run_log["detail"] = {}
+            if run_log is None:
+                # 没有指定 run 时，若当前没有同步在跑，就把最近一次结果直接铺出来——
+                # 后台同步执行完后的自动刷新靠这条落地，用户不用手点。
+                from app.u9.sync import running_sync
+                running = running_sync()
+                if running is None and logs:
+                    r = c.execute("SELECT * FROM u9_sync_logs WHERE id=?", (logs[0]["id"],)).fetchone()
+                    if r:
+                        run_log = dict(r)
+                        try:
+                            run_log["detail"] = _json.loads(run_log.pop("detail_json") or "{}")
+                        except ValueError:
+                            run_log["detail"] = {}
+            else:
+                from app.u9.sync import running_sync
+                running = running_sync()
         local_material_count = c.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
         local_order_count = c.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]
     finally:
@@ -2860,6 +2878,7 @@ def admin_u9(request: Request):
             "entities": [e for e in entities if e["id"] in ENTITIES],
             "logs": logs,
             "run_log": run_log,
+            "running": running,
             "entity_labels": U9_ENTITY_LABELS,
             "status_labels": U9_STATUS_LABELS,
             "message": request.query_params.get("msg", ""),
@@ -3023,6 +3042,26 @@ async def admin_u9_sync(request: Request, entity: str):
             c.close()
 
     try:
+        if str(form.get("background", "")) in ("1", "on", "true"):
+            # 采购订单全量 20+ 页约 3 分钟，挂在 HTTP 请求上会被 nginx 默认 60s 超时掐断，
+            # 浏览器表现为「点了没反应」，而服务端其实还在跑，再点就是「已有同步在运行」。
+            # 这里改成后台线程 + 立刻回跳；页面在 running_sync() 非空期间每 5 秒自动刷新。
+            import threading
+            import time as _time
+
+            def _bg_work() -> None:
+                try:
+                    _work()
+                except U9SyncBusy:
+                    pass
+                except Exception:  # noqa: BLE001 - 后台线程不能抛；失败原因 run_sync 已写日志表
+                    pass
+
+            threading.Thread(target=_bg_work, name=f"u9-sync-{entity}", daemon=True).start()
+            _time.sleep(0.4)  # 等 run_sync 标上 _RUNNING，避免回跳瞬间看不到进度提示
+            _msg = (f"{U9_ENTITY_LABELS.get(entity, entity)}{'预览' if dry_run else '同步'}"
+                    "已在后台启动，完成后本页自动刷新")
+            return _see_other("/admin/u9?msg=" + quote(_msg) + "&ok=1")
         result = await run_in_threadpool(_work)
     except U9SyncBusy as e:
         return _see_other("/admin/u9?msg=" + quote(str(e)) + "&ok=0")

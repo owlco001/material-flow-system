@@ -67,6 +67,16 @@
 {% endif %}
 
 <h3 style="margin-top:16px">同步</h3>
+{% if running %}
+<div class="card u9-hint" style="margin-top:12px">
+  <h3>同步进行中…</h3>
+  <p class="muted" style="margin:0;font-size:14px">
+    {{ entity_labels.get(running.entity, running.entity) }}{{ "（预览，不写库）" if running.dry_run else "（执行，会写库）" }}
+    · 开始于 {{ running.started_at }} · 本页每 5 秒自动刷新，结束后自动显示结果。
+  </p>
+</div>
+<meta http-equiv="refresh" content="5">
+{% endif %}
 <div class="u9-grid">
   {% for e in entities %}
   <div class="card">
@@ -76,6 +86,7 @@
     <form method="post" action="/admin/u9/sync/{{ e.id }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="clientOperationId" value="{{ e.id }}-{{ now_ts }}">
+      <input type="hidden" name="background" value="1">
       {% if e.id == "items" %}
         <label>额外料号（可选，逗号或换行分隔）</label>
         <textarea name="codes" placeholder="如 1001001,1001002"></textarea>
