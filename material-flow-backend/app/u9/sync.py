@@ -868,41 +868,54 @@ def _sync_projects(conn, cfg, dry_run, *, projects=None, include_local=True, cli
 
 
 # ---------------------------------------------------------------- 采购订单（需求 3）
-def _po_unknown_materials(conn, client, codes, errors: list[dict]) -> list[str]:
-    """用 U9 料品档案核对本地需求料号，返回 U9 查不到的料号（料号体系不一致）。
+def _po_unknown_materials(conn, client, codes, errors: list[dict],
+                          batch_size: int | None = None) -> tuple[list[str], str]:
+    """用 U9 料品档案核对本地需求料号，返回 (U9 查不到的料号, 核对状态)。
 
     结果写进本次同步日志（detail.unknownMaterials），缺料清单一侧据此标 UNKNOWN_MATERIAL，
     不再把它塞进「无采购计划」。核对失败只记错误、不影响采购订单本身入库。
+
+    核对**不设料号个数上限**：生产库需求料号去重 2,762 个（>2,000），旧版一旦超过就整段跳过，
+    而 `unknownMaterials=[]` 与「核对通过」同形，现场看起来「查不到 0 个」。这里按
+    `cfg.batch_size` 分块调用 `fetch_items`（它内部也按批查询）。
+
+    返回的第二个值是 ``itemsCheck``：``ok`` / ``disabled``（未开启核对）/ ``failed``（U9 报错）/
+    ``skipped``（客户端不支持）。除 ``ok`` 外都不得把空 unknownMaterials 解读为「全部识别」。
     """
     if not codes:
-        return []
-    if len(codes) > 2000:
-        errors.append({"key": "（料号核对）",
-                       "error": f"需求料号 {len(codes)} 个超过 2000，本次跳过料号体系核对"})
-        return []
+        return [], "ok"
     if not hasattr(client, "fetch_items"):
-        return []
+        return [], "skipped"
+    try:
+        batch = max(1, min(int(batch_size or 200), 2000))
+    except (TypeError, ValueError):
+        batch = 200
     try:
         found: set[str] = set()
-        for raw in client.fetch_items(codes):
-            try:
-                found.add(mappers.map_item(raw)["code"])
-            except (ValueError, KeyError, TypeError):
-                continue
+        for start in range(0, len(codes), batch):
+            for raw in client.fetch_items(list(codes[start:start + batch])):
+                try:
+                    found.add(mappers.map_item(raw)["code"])
+                except (ValueError, KeyError, TypeError):
+                    continue
     except U9Error as e:
         errors.append({"key": "（料号核对）",
                        "error": f"料号体系核对失败，本次不做 UNKNOWN_MATERIAL 判定：{e}"})
-        return []
-    return [c for c in codes if c not in found]
+        return [], "failed"
+    return [c for c in codes if c not in found], "ok"
 
 
-def _sync_po(conn, cfg, dry_run, *, since_days: int = 180, only_open: bool = True,
+def _sync_po(conn, cfg, dry_run, *, since_days: int = 180, only_open: bool = False,
              codes=None, check_items: bool = True, client=None, **_):
     """U9 采购订单 → u9_po_headers / u9_po_lines（只读同步，幂等 upsert）。
 
     幂等口径：头按 doc_no、行按 (doc_no, line_no) upsert；同一单重复同步不会产生重复行，
     只更新状态/数量/到货量。本次同步单据里 U9 已删掉的行会被删除，历史未出现在本次
     窗口里的单据保留（不删除窗口外数据）。
+
+    `only_open` 默认 **False**：必须把已结案订单也同步回来，否则 U9 上关单后本地仍停在
+    Approved/Open，该料号会永远算在途（P0-1）。关闭单在读取侧（缺料清单）按状态过滤，
+    存着没有副作用。
     """
     client = client or get_client(cfg)
     ensure_po_tables(conn)
@@ -1001,7 +1014,11 @@ def _sync_po(conn, cfg, dry_run, *, since_days: int = 180, only_open: bool = Tru
         demand = [r[0] for r in conn.execute(
             "SELECT DISTINCT m.code FROM order_material_requirements r"
             " JOIN materials m ON m.id = r.material_id ORDER BY m.code")]
-    unknown = _po_unknown_materials(conn, client, demand, errors) if check_items else []
+    if check_items:
+        unknown, items_check = _po_unknown_materials(
+            conn, client, demand, errors, batch_size=getattr(cfg, "batch_size", 200))
+    else:
+        unknown, items_check = [], "disabled"
 
     sample = [{
         "单号": m["doc_no"],
@@ -1019,6 +1036,7 @@ def _sync_po(conn, cfg, dry_run, *, since_days: int = 180, only_open: bool = Tru
             "lines_unchanged": same_l, "since_days": days, "only_open": bool(only_open),
             "unknown_materials": unknown[:200], "unknown_count": len(unknown),
             "unknownMaterials": unknown,
+            "itemsCheck": items_check, "itemsChecked": items_check == "ok",
             "errors": errors[:50], "sample": sample}
 
 

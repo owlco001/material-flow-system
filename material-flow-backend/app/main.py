@@ -6,6 +6,7 @@ import json
 import csv
 import io
 import logging
+import math
 import os
 import random
 import re
@@ -5568,36 +5569,59 @@ def _po_is_stale(synced_at: str) -> bool:
     return datetime.now(timezone.utc) - ts > timedelta(hours=PO_STALE_HOURS)
 
 
-def _po_unknown_codes(c: sqlite3.Connection) -> set[str]:
-    """最近一次成功执行的采购订单同步里，U9 料品档案查不到的料号。
-
-    料号体系核对发生在同步时（请求路径不直连 U9），结果记在 u9_sync_logs.detail_json 的
-    unknownMaterials 字段；没有该字段/没有日志时返回空集合（不做 UNKNOWN_MATERIAL 判定）。
-    """
+def _po_last_sync_detail(c: sqlite3.Connection) -> dict[str, Any]:
+    """最近一次成功执行的采购订单同步的 detail（没有则空字典）。料号核对结果与状态都在这里。"""
     if not c.execute("SELECT name FROM sqlite_master WHERE name='u9_sync_logs'").fetchone():
-        return set()
+        return {}
     row = c.execute(
         "SELECT detail_json FROM u9_sync_logs WHERE entity='po' AND status='OK' AND dry_run=0"
         " ORDER BY started_at DESC LIMIT 1").fetchone()
     if not row:
-        return set()
+        return {}
     try:
         detail = json.loads(row[0] or "{}")
     except (TypeError, ValueError):
-        return set()
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
+def _po_unknown_codes(c: sqlite3.Connection, detail: dict[str, Any] | None = None) -> set[str]:
+    """最近一次成功执行的采购订单同步里，U9 料品档案查不到的料号。
+
+    料号体系核对发生在同步时（请求路径不直连 U9），结果记在 u9_sync_logs.detail_json 的
+    unknownMaterials 字段；没有该字段/没有日志时返回空集合（不做 UNKNOWN_MATERIAL 判定）。
+    注意：空集合不等于「全部识别」——是否真的核对过要看 ``itemsCheck == "ok"``。
+    """
+    detail = _po_last_sync_detail(c) if detail is None else detail
     codes = detail.get("unknownMaterials") or []
     return {str(code).strip() for code in codes if str(code).strip()}
 
 
-def _po_status_snapshot(c: sqlite3.Connection) -> dict[str, Any]:
+def _qty_down(value: float, digits: int = 2) -> float | int:
+    """数量类展示值只截断、不进位（9.6 不能显示成 10，0.4 的在途不能显示成 0）。
+
+    整数值返回 int（导出/页面上不出现 "100.0"），非整数保留 ``digits`` 位小数并向下截断。
+    """
+    factor = 10 ** digits
+    scaled = math.floor(round(float(value or 0) * factor, 6)) / factor
+    if scaled == int(scaled):
+        return int(scaled)
+    return round(scaled, digits)
+
+
+def _po_status_snapshot(c: sqlite3.Connection, codes: list[str] | None = None) -> dict[str, Any]:
     """一次读齐采购订单快照：数据新鲜度 + 按料号汇总的到货/在途 + 未识别料号。
 
     只统计**未结案**采购订单（关闭/作废/取消的不算在途）；已到货未入库量只算
     TotalRecievedQtyTU，未到货量 = max(PurQtyTU − TotalRecievedQtyTU, 0)。
+
+    ``codes`` 给出时只聚合这些料号的采购行（缺料清单按本页料号收窄，避免每次翻页都整表
+    扫 3 万行采购行）；``openOrderCount`` 仍按全表统计，页面上的「共 N 张未结案订单」口径不变。
     """
     snapshot: dict[str, Any] = {
         "fresh": False, "syncedAt": None, "stale": False, "openOrderCount": 0,
         "byMaterial": {}, "unknownCodes": set(), "unknownMaterialCount": 0,
+        "itemsChecked": False,
     }
     tables = {r[0] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -5618,37 +5642,64 @@ def _po_status_snapshot(c: sqlite3.Connection) -> dict[str, Any]:
             synced_at = str(last[0])
     from app.u9.mappers import po_status_closed
 
+    # 未结案单据数：只看头表（每单一行），不把 3 万行采购行拉进 Python；口径与逐行统计一致
+    # （只算确实有行的单据，已结案的不算）。关闭判定按**状态组合**做一次即可：U9 的状态
+    # 就那几种，逐单逐行跑 15 个关键词匹配是这里最贵的一段。
+    status_rows = c.execute(
+        "SELECT h.status_value AS status_value, h.status_name AS status_name,"
+        "       COUNT(*) AS cnt FROM u9_po_headers h"
+        " WHERE EXISTS(SELECT 1 FROM u9_po_lines l WHERE l.doc_no = h.doc_no)"
+        " GROUP BY h.status_value, h.status_name").fetchall()
+    closed_pairs = {
+        (str(r["status_value"] or ""), str(r["status_name"] or ""))
+        for r in status_rows if po_status_closed(r["status_value"], r["status_name"])}
+    open_docs = sum(int(r["cnt"]) for r in status_rows
+                    if (str(r["status_value"] or ""), str(r["status_name"] or ""))
+                    not in closed_pairs)
+
     by_material: dict[str, dict[str, Any]] = {}
-    open_docs: set[str] = set()
-    for row in c.execute(
+    wanted = [str(code) for code in (codes or []) if str(code).strip()]
+    parts: list[list[str] | None] = ([wanted[i:i + 400] for i in range(0, len(wanted), 400)]
+                                     if wanted else [None])
+    line_sql = (
         "SELECT l.item_code AS item_code, l.doc_no AS doc_no, l.pur_qty_tu AS pur_qty_tu,"
         "       l.recieved_qty_tu AS recieved_qty_tu, h.status_value AS status_value,"
         "       h.status_name AS status_name, h.supplier_code AS supplier_code,"
         "       h.supplier_name AS supplier_name"
-        "  FROM u9_po_lines l JOIN u9_po_headers h ON h.doc_no = l.doc_no").fetchall():
-        if po_status_closed(row["status_value"], row["status_name"]):
-            continue
-        open_docs.add(str(row["doc_no"]))
-        bucket = by_material.setdefault(str(row["item_code"]), {
-            "arrived": 0.0, "inTransit": 0.0, "poNos": [], "suppliers": []})
-        pur = float(row["pur_qty_tu"] or 0)
-        recv = float(row["recieved_qty_tu"] or 0)
-        bucket["arrived"] += max(recv, 0.0)
-        bucket["inTransit"] += max(pur - recv, 0.0)
-        if str(row["doc_no"]) not in bucket["poNos"]:
-            bucket["poNos"].append(str(row["doc_no"]))
-        supplier = str(row["supplier_name"] or row["supplier_code"] or "").strip()
-        if supplier and supplier not in bucket["suppliers"]:
-            bucket["suppliers"].append(supplier)
-    unknown = _po_unknown_codes(c)
+        "  FROM u9_po_lines l JOIN u9_po_headers h ON h.doc_no = l.doc_no")
+    for part in parts:
+        args: list[Any] = []
+        sql = line_sql
+        if part is not None:
+            sql += " WHERE l.item_code IN (" + ",".join("?" for _ in part) + ")"
+            args = list(part)
+        for row in c.execute(sql, args).fetchall():
+            if (str(row["status_value"] or ""), str(row["status_name"] or "")) in closed_pairs:
+                continue
+            bucket = by_material.setdefault(str(row["item_code"]), {
+                "arrived": 0.0, "inTransit": 0.0, "poNos": [], "suppliers": []})
+            pur = float(row["pur_qty_tu"] or 0)
+            recv = float(row["recieved_qty_tu"] or 0)
+            bucket["arrived"] += max(recv, 0.0)
+            bucket["inTransit"] += max(pur - recv, 0.0)
+            if str(row["doc_no"]) not in bucket["poNos"]:
+                bucket["poNos"].append(str(row["doc_no"]))
+            supplier = str(row["supplier_name"] or row["supplier_code"] or "").strip()
+            if supplier and supplier not in bucket["suppliers"]:
+                bucket["suppliers"].append(supplier)
+    detail = _po_last_sync_detail(c)
+    unknown = _po_unknown_codes(c, detail)
+    # 只有明确核对成功（itemsCheck == "ok"）才算「核对过」；旧日志没有该字段按 ok 处理。
+    items_checked = str(detail.get("itemsCheck") or "ok") == "ok"
     snapshot.update({
         "fresh": True,
         "syncedAt": synced_at or None,
         "stale": _po_is_stale(synced_at),
-        "openOrderCount": len(open_docs),
+        "openOrderCount": open_docs,
         "byMaterial": by_material,
         "unknownCodes": unknown,
         "unknownMaterialCount": len(unknown),
+        "itemsChecked": items_checked,
     })
     return snapshot
 
@@ -5679,13 +5730,15 @@ def _shortage_status_fields(item: dict[str, Any], *, available_stock: float,
     else:
         code = _shortage_status_code(gap=gap, available=available_stock,
                                      arrived=arrived, in_transit=in_transit)
-    coverable = int(round(min(available_stock + arrived + in_transit, gap)))
+    coverable = _qty_down(min(available_stock + arrived + in_transit, gap))
     return {
         "stockStatus": code,
         "stockStatusLabel": SHORTAGE_STATUS_LABELS.get(code, code),
-        "availableStockQty": int(round(available_stock)),
-        "arrivedNotStockedQty": int(round(arrived)),
-        "inTransitQty": int(round(in_transit)),
+        # 展示值只截断不进位：available=9.6 不能显示成 10（否则和「无采购计划」自相矛盾），
+        # in_transit=0.4 也不能显示成 0（否则「在途采购」显示在途 0）。
+        "availableStockQty": _qty_down(available_stock),
+        "arrivedNotStockedQty": _qty_down(arrived),
+        "inTransitQty": _qty_down(in_transit),
         "coverableQuantity": max(0, coverable),
         "partialCoverage": bool(code == "IN_TRANSIT" and coverable < gap),
         "openPoNos": list(bucket.get("poNos", []))[:20],
@@ -5884,9 +5937,10 @@ def _kitting_dataset(
                                      prepare_by_material=prepare_by_material)
 
     # ---- 需求 3：给每个缺料料号补四档状态（在需求 2 的合并结果之上叠加，不改缺口数字）
-    snapshot = _po_status_snapshot(c)
-    available_by_code: dict[str, float] = {}
     codes = [str(i["materialCode"]) for i in items]
+    # 按本页料号收窄快照聚合（P2-1）：不再每次请求整表扫 u9_po_lines；未结案单数仍按全表。
+    snapshot = _po_status_snapshot(c, codes)
+    available_by_code: dict[str, float] = {}
     for start in range(0, len(codes), 400):
         part = codes[start:start + 400]
         if not part:
@@ -5930,6 +5984,7 @@ def _kitting_dataset(
             "stale": bool(snapshot["stale"]),
             "openOrderCount": int(snapshot["openOrderCount"]),
             "unknownMaterialCount": int(snapshot["unknownMaterialCount"]),
+            "itemsChecked": bool(snapshot["itemsChecked"]),
         },
         "summary": project_summary,
         "devices": device_items,

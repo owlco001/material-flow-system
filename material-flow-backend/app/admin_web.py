@@ -2987,6 +2987,12 @@ async def admin_u9_sync(request: Request, entity: str):
     if not cfg.ready:
         return _see_other("/admin/u9?msg=" + quote("U9 未启用或连接信息不完整，同步未执行") + "&ok=0")
     dry_run = str(form.get("dry_run", "1")) != "0"
+    # 「同时同步已结案订单」默认勾选（sync_closed=1 → only_open=false）。老页面仍可能提交
+    # only_open（勾上=只取未结案），两种字段都认，缺省一律按「含已结案」处理。
+    if "only_open" in form:
+        only_open = str(form.get("only_open", "")) in ("1", "on", "true")
+    else:
+        only_open = str(form.get("sync_closed", "1")) not in ("1", "on", "true")
     try:
         since_days = int(str(form.get("since_days", "") or 180))
     except (TypeError, ValueError):
@@ -3001,7 +3007,7 @@ async def admin_u9_sync(request: Request, entity: str):
             user_id=user["id"], scope=str(form.get("scope", "local")),
             zero_missing=str(form.get("zero_missing", "1")) in ("1", "on", "true"),
             since_days=since_days,
-            only_open=str(form.get("only_open", "")) in ("1", "on", "true"),
+            only_open=only_open,
             check_items=str(form.get("check_items", "1")) in ("1", "on", "true"))
     except _HTTPException as e:
         return _see_other("/admin/u9?msg=" + quote(str(getattr(e, "detail", "") or "参数错误")) + "&ok=0")
@@ -3040,7 +3046,10 @@ async def admin_u9_sync(request: Request, entity: str):
                f"订单行 {s.get('lines', 0)} 行（新增 {s.get('inserted', 0)}、更新 {s.get('updated', 0)}、"
                f"不变 {s.get('unchanged', 0)}）"
                + (f"；U9 料品档案查不到的需求料号 {s.get('unknown_count')} 个"
-                  if s.get("unknown_count") else ""))
+                  if s.get("unknown_count") else "")
+               + ("" if s.get("itemsChecked", True)
+                  else f"；料号核对未执行（{s.get('itemsCheck') or 'unknown'}），"
+                       "本次不做「料号未识别」判定"))
         return _see_other(f"/admin/u9?msg={quote(msg)}&ok=1&run={run}#run-detail")
     msg = (f"{U9_ENTITY_LABELS.get(entity, entity)}{mode}完成：U9 返回 {s.get('total', 0)} 条，"
            f"新增 {s.get('inserted', 0)}，更新 {s.get('updated', 0)}，"

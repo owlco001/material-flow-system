@@ -163,7 +163,7 @@ class U9Client:
     def fetch_production_orders(self, doc_nos: list[str]) -> list[dict]:
         raise U9NotImplemented("fetch_production_orders 未实现")
 
-    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True,
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = False,
                               errors: list[dict] | None = None) -> list[dict]:
         raise U9NotImplemented("fetch_purchase_orders 未实现")
 
@@ -198,7 +198,7 @@ class ClassicU9Client(U9Client):
     def fetch_production_orders(self, doc_nos=None, **_):
         raise self._todo("fetch_production_orders")
 
-    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True, errors=None, **_):
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = False, errors=None, **_):
         raise self._todo("fetch_purchase_orders")
 
 
@@ -639,7 +639,7 @@ class U9CClient(U9Client):
                     return [r for r in value if isinstance(r, dict)]
         return rows
 
-    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = True,
+    def fetch_purchase_orders(self, since_days: int = 180, only_open: bool = False,
                               errors: list[dict] | None = None,
                               page_size: int = 500, max_pages: int = 40) -> list[dict]:
         """采购订单（含行）只读查询：POST /webapi/CommonEntity/Query。
@@ -651,7 +651,9 @@ class U9CClient(U9Client):
         绝不把缺失的到货量当成 0（否则「已到货待入库」会被误判成「无采购计划」）。
 
         since_days 按 BusinessDate 过滤；only_open=True 时剔除已结案（关闭/作废/取消）的订单。
-        翻页只在「整页返回」时继续，且某页没有新单号就停（避免不支持分页的网关被重复拉取）。
+        **默认 False**：关闭单必须同步回来，读取侧（缺料清单）再按状态过滤；否则 U9 上一关单，
+        本地永远把它计在途（需求 3 P0-1）。请求带 OrderBy 稳定排序，分页按
+        (DocNo, DocLineNo) 去重（扁平「一条记录一行」形态下行号才唯一）。
         """
         try:
             days = max(1, min(int(since_days or 180), 3650))
@@ -664,13 +666,15 @@ class U9CClient(U9Client):
         except (TypeError, ValueError):
             size, pages = 500, 40
         out: list[dict] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for page in range(1, pages + 1):
             payload = {
                 "EntityFullName": PO_ENTITY,
                 "ReturnFields": ",".join(PO_RETURN_FIELDS),
                 "PageSize": size,
                 "PageIndex": page,
+                # SQL Server 的分页没有稳定排序会重/漏；固定按单号排序保证翻页可对账
+                "OrderBy": "DocNo",
             }
             batch = self._po_rows(self._post(PATH_QUERY, payload))
             if not batch:
@@ -678,10 +682,14 @@ class U9CClient(U9Client):
             novel = 0
             for raw in batch:
                 no = mappers.po_doc_no(raw)
-                if no and no not in seen:
-                    seen.add(no)
-                    out.append(raw)
-                    novel += 1
+                if not no:
+                    continue
+                key = (no, mappers.po_line_key(raw))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(raw)
+                novel += 1
             if len(batch) < size or novel == 0:
                 break
         try:

@@ -18,6 +18,7 @@ os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "Admin@2026")
 
 from app import main as backend  # noqa: E402
 from app.u9 import sync as u9_sync  # noqa: E402
+from app.u9 import mappers as u9_mappers  # noqa: E402
 from app.u9.client import U9CClient, U9Error  # noqa: E402
 from app.u9.config import U9Config  # noqa: E402
 from app.xlsx_parser import XlsxSheetReader  # noqa: E402
@@ -172,13 +173,18 @@ class FakePOClient:
                 for c in codes if str(c) not in self.unknown_codes]
 
 
-def sync_po(rows: list[dict] | None = None, *, only_open: bool = False,
-            unknown_codes=("S-UNKNOWN",), dry_run: bool = False) -> dict:
+def sync_po(rows: list[dict] | None = None, *, only_open: bool | None = False,
+            unknown_codes=("S-UNKNOWN",), dry_run: bool = False,
+            check_items: bool = True) -> dict:
+    """跑一次 po 同步。``only_open=None`` 表示不传该参数，走服务端默认口径（P0-1 回归用）。"""
     client = FakePOClient(rows if rows is not None else default_po_rows(), unknown_codes)
+    kwargs = {"dry_run": dry_run, "client": client, "since_days": 180,
+              "check_items": check_items}
+    if only_open is not None:
+        kwargs["only_open"] = only_open
     c = backend.db()
     try:
-        return u9_sync.run_sync("po", c, U9Config(), dry_run=dry_run, client=client,
-                                only_open=only_open, since_days=180, check_items=True)
+        return u9_sync.run_sync("po", c, U9Config(), **kwargs)
     finally:
         c.close()
 
@@ -237,6 +243,28 @@ def test_status_order_stock_before_arrived_before_transit():
     assert f(gap=5, available=4, arrived=5, in_transit=999) == "ARRIVED_NOT_STOCKED"
     # 在库/到货都不够、在途够：判「在途采购」
     assert f(gap=5, available=4, arrived=4, in_transit=5) == "IN_TRANSIT"
+
+
+def test_display_quantities_never_round_up():
+    """P2-5：展示圆整不得进位（9.6 显示 10 会与「无采购计划」自相矛盾）。"""
+    snapshot = {"fresh": True, "unknownCodes": set()}
+    item = {"procureGapQuantity": 10, "materialCode": "Q-1"}
+    fields = backend._shortage_status_fields(item, available_stock=9.6,
+                                             bucket={"arrived": 0.0, "inTransit": 0.0},
+                                             snapshot=snapshot)
+    assert fields["stockStatus"] == "NO_PLAN"
+    assert fields["availableStockQty"] == 9.6
+
+    fields = backend._shortage_status_fields(item, available_stock=0.0,
+                                             bucket={"arrived": 0.0, "inTransit": 0.4},
+                                             snapshot=snapshot)
+    assert fields["stockStatus"] == "IN_TRANSIT"
+    assert fields["inTransitQty"] == 0.4, "在途 0.4 不能显示成 0（否则「在途采购」显示在途 0）"
+    assert fields["coverableQuantity"] == 0.4
+
+    # 整数值仍是 int（导出/页面不出现 100.0）
+    whole = backend._qty_down(100.0)
+    assert whole == 100 and isinstance(whole, int)
 
 
 # ---------------------------------------------------------------- U9 同步
@@ -318,6 +346,174 @@ def test_po_sync_only_open_skips_closed(seeded):
     assert result["stats"]["total"] == 3
 
 
+def test_closed_po_learned_by_default_sync_lifecycle(seeded):
+    """P0-1 生命周期：开单(未到货) → U9 关单 → 默认参数再同步 → 不再计在途。
+
+    改前默认 ``only_open=true``：关闭单在 client 就被丢掉，本地头永远停在 Approved，
+    ``inTransitQty`` 永远是 100、料号永远不落 NO_PLAN（本用例会红）。
+    """
+    approved = [po_row("PO-CYCLE", [(1, "S-NOPLAN", 100, 0)])]
+    first = sync_po(rows=approved, only_open=None)
+    assert first["stats"]["total"] == 1
+    assert first["stats"]["only_open"] is False, "同步默认必须包含已结案订单（否则学不到关闭）"
+    with TestClient(backend.app) as client:
+        before = shortage(client, login(client, "ss-admin"))
+    assert by_code(before)["S-NOPLAN"]["stockStatus"] == "IN_TRANSIT"
+    assert by_code(before)["S-NOPLAN"]["inTransitQty"] == 100
+    open_before = before["poData"]["openOrderCount"]
+    assert open_before == 1
+
+    # U9 侧采购把单关了（到货仍为 0）
+    closed = [po_row("PO-CYCLE", [(1, "S-NOPLAN", 100, 0)],
+                     status_value="4", status_name="Closed")]
+    second = sync_po(rows=closed, only_open=None)
+    assert second["stats"]["total"] == 1, "关闭单必须同步回来（否则无法识别关闭）"
+
+    c = backend.db()
+    try:
+        status_name = c.execute("SELECT status_name FROM u9_po_headers WHERE doc_no='PO-CYCLE'"
+                                ).fetchone()[0]
+    finally:
+        c.close()
+    assert status_name == "Closed"
+
+    with TestClient(backend.app) as client:
+        after = shortage(client, login(client, "ss-admin"))
+    item = by_code(after)["S-NOPLAN"]
+    assert item["stockStatus"] == "NO_PLAN"
+    assert item["inTransitQty"] == 0
+    assert item["arrivedNotStockedQty"] == 0
+    assert item["openPoNos"] == []
+    assert after["poData"]["openOrderCount"] == open_before - 1
+
+
+def test_unknown_material_check_has_no_code_cap(seeded):
+    """P1-1：料号核对不得因为「超过 2000 个」整段跳过（生产库需求料号去重 2,762）。"""
+    class _CountingClient:
+        def __init__(self):
+            self.calls: list[int] = []
+
+        def fetch_items(self, codes, errors=None):
+            self.calls.append(len(codes))
+            return [{"m_code": c, "m_name": c} for c in codes if c != "M-MISSING"]
+
+    client = _CountingClient()
+    codes = [f"M-{i:05d}" for i in range(2742)] + ["M-MISSING"]
+    errors: list[dict] = []
+    unknown, status = u9_sync._po_unknown_materials(None, client, codes, errors, batch_size=500)
+    assert (unknown, status) == (["M-MISSING"], "ok")
+    assert errors == [], "不得再写「超过 2000 跳过核对」并返回空结果"
+    # 确实分块跑完了全部料号（500×5 + 243）
+    assert client.calls == [500, 500, 500, 500, 500, 243]
+    assert sum(client.calls) == len(codes)
+
+
+def test_items_check_disabled_is_visible_in_response_and_page(seeded):
+    """P1-1/P2-10：未核对与「核对通过（0 个未识别）」必须可区分。"""
+    result = sync_po(check_items=False)
+    assert result["stats"]["itemsCheck"] == "disabled"
+    assert result["stats"]["itemsChecked"] is False
+    assert result["stats"]["unknownMaterials"] == []
+
+    with TestClient(backend.app) as client:
+        token = login(client, "ss-admin")
+        body = shortage(client, token)
+        client.get("/admin/login")
+        match = re.search(r'name="csrf_token" value="([^"]+)"', client.get("/admin/login").text)
+        assert match
+        client.post("/admin/login", data={"username": "ss-admin", "password": WORKER_PASSWORD,
+                                         "csrf_token": match.group(1)})
+        page = client.get("/admin/projects/kitting", params={"project_no": PROJECT})
+
+    assert body["poData"]["itemsChecked"] is False
+    assert page.status_code == 200
+    assert "料号核对未执行" in page.text
+
+
+def flat_po_record(doc_no: str, line_no: int, code: str, pur: float, recv: float,
+                   *, status_value: str = "2", status_name: str = "Approved") -> dict:
+    """扁平形态：一条记录就是一行（行字段与单头同级，没有 POLines 列表）。"""
+    return {
+        "DocNo": doc_no,
+        "BusinessDate": "2026-11-01",
+        "Status": {"Value": status_value, "Name": status_name},
+        "Supplier_Code": f"SUP-{doc_no}",
+        "Supplier_ShortName": "扁平供应商",
+        "DeliveryDate": "2026-12-01",
+        "DocLineNo": line_no,
+        "ItemInfo": {"ItemCode": code, "ItemName": f"品名-{code}"},
+        "PurQtyTU": pur,
+        "TotalRecievedQtyTU": recv,
+    }
+
+
+def test_flat_po_line_shape_is_parsed(seeded):
+    """P1-2 防御：若查询按「一条记录一行」返回，必须能还原成 2 张单 3 行，而不是 0 行。"""
+    rows = [
+        flat_po_record("PO-F1", 1, "S-TRANSIT", 30, 0),
+        flat_po_record("PO-F1", 2, "S-PARTIAL", 5, 0),
+        flat_po_record("PO-F2", 1, "S-ARRIVED", 60, 60),
+    ]
+    result = sync_po(rows=rows)
+    stats = result["stats"]
+    assert stats["total"] == 2, f"扁平形态应还原出 2 张单，实际 {stats}"
+    assert stats["lines"] == 3, "扁平形态应还原出 3 行（按 DocNo+DocLineNo），不能是 0 行"
+    c = backend.db()
+    try:
+        lines = [(r[0], int(r[1]), r[2]) for r in c.execute(
+            "SELECT doc_no, line_no, item_code FROM u9_po_lines ORDER BY doc_no, line_no")]
+    finally:
+        c.close()
+    assert lines == [("PO-F1", 1, "S-TRANSIT"), ("PO-F1", 2, "S-PARTIAL"),
+                     ("PO-F2", 1, "S-ARRIVED")]
+    with TestClient(backend.app) as client:
+        items = by_code(shortage(client, login(client, "ss-admin")))
+    assert items["S-TRANSIT"]["inTransitQty"] == 30
+    assert items["S-PARTIAL"]["inTransitQty"] == 5
+    assert items["S-ARRIVED"]["arrivedNotStockedQty"] == 60
+
+
+def test_validate_po_rows_rejects_zero_lines_with_flat_point_keys():
+    """P1-2：有单、0 行、响应里又有 POLines.* 扁平键 → 必须报错（不能当没有行放过）。"""
+    rows = [{
+        "DocNo": "PO-X", "BusinessDate": "2026-11-01",
+        "Status.Value": "2", "Status.Name": "Approved",
+        "Supplier_Code": "S1", "DeliveryDate": "2026-12-01",
+        "POLines.DocLineNo": 1, "POLines.ItemInfo.ItemCode": "M1",
+        "POLines.PurQtyTU": 5, "POLines.TotalRecievedQtyTU": 0,
+    }]
+    with pytest.raises(ValueError) as excinfo:
+        u9_mappers.validate_po_rows(rows)
+    assert "行" in str(excinfo.value)
+
+
+def test_client_paging_dedupes_by_doc_and_line_and_sends_order_by():
+    """P1-2：扁平形态下行号才唯一；分页去重键必须是 (DocNo, DocLineNo)，且请求带 OrderBy。"""
+    pages = {
+        1: [flat_po_record("PO-A", 1, "M1", 10, 0), flat_po_record("PO-A", 2, "M2", 10, 0)],
+        # 第 2 页重复第 1 页的 PO-A#1（网关排序不稳时会这样），同时带来 PO-B#1
+        2: [flat_po_record("PO-A", 1, "M1", 10, 0), flat_po_record("PO-B", 1, "M3", 10, 0)],
+        3: [],
+    }
+    seen: list[dict] = []
+
+    def transport(method, url, headers, body, timeout, verify):
+        if "AuthLogin" in url:
+            return 200, json.dumps({"ResCode": 0, "Data": "tok"}).encode()
+        payload = json.loads(body.decode())
+        seen.append(payload)
+        return 200, json.dumps({"ResCode": 0,
+                                "Data": pages.get(payload.get("PageIndex", 1), [])}).encode()
+
+    cfg = U9Config(enabled=True, base_url="http://u9.test/u9c", client_id="cid",
+                   client_secret="sec", ent_code="001", org_code="001", user_code="demo")
+    rows = U9CClient(cfg, transport).fetch_purchase_orders(page_size=2, max_pages=5)
+    got = [(u9_mappers.po_doc_no(r), u9_mappers.po_line_key(r)) for r in rows]
+    # 改前按 DocNo 去重：第 1 页只剩 PO-A#1，第 2 页全是已见单号 → novel=0 提前停 → 只 1 行
+    assert got == [("PO-A", "1"), ("PO-A", "2"), ("PO-B", "1")]
+    assert all(p.get("OrderBy") == "DocNo" for p in seen)
+
+
 def test_po_sync_missing_field_raises_instead_of_zero(seeded):
     """U9 对不存在的字段静默忽略：缺 TotalRecievedQtyTU 必须报错，不得当 0。"""
     rows = default_po_rows()
@@ -395,6 +591,7 @@ def test_four_tiers_end_to_end(seeded):
     assert body["poData"]["fresh"] is True
     assert body["poData"]["openOrderCount"] == 3
     assert body["poData"]["stale"] is False
+    assert body["poData"]["itemsChecked"] is True
 
     items = by_code(body)
     assert items["S-STOCK"]["stockStatus"] == "IN_STOCK_READY"
@@ -475,6 +672,22 @@ def test_closed_po_not_counted_as_in_transit(seeded):
     assert body["poData"]["openOrderCount"] == 3
 
 
+def test_snapshot_narrows_by_page_codes_but_keeps_global_open_count(seeded):
+    """P2-1：快照按本页料号收窄（不整表扫 3 万行），但「共 N 张未结案订单」仍是全表口径。"""
+    sync_po()
+    c = backend.db()
+    try:
+        narrowed = backend._po_status_snapshot(c, ["S-TRANSIT"])
+        full = backend._po_status_snapshot(c)
+    finally:
+        c.close()
+    assert set(narrowed["byMaterial"]) == {"S-TRANSIT"}
+    assert narrowed["byMaterial"]["S-TRANSIT"]["inTransit"] == 50
+    assert narrowed["openOrderCount"] == 3 == full["openOrderCount"]
+    assert set(full["byMaterial"]) == {"S-ARRIVED", "S-TRANSIT", "S-PARTIAL"}
+    assert narrowed["fresh"] is True and narrowed["itemsChecked"] is True
+
+
 def test_arrived_quantity_not_double_counted_as_in_transit(seeded):
     """已到货未入库不计入在途：pur=100 recv=100 → 在途 0，已到货 100。"""
     sync_po()
@@ -504,7 +717,8 @@ def test_degraded_when_po_never_synced(seeded):
 
     assert body["poDataFresh"] is False
     assert body["poData"] == {"fresh": False, "syncedAt": None, "stale": False,
-                              "openOrderCount": 0, "unknownMaterialCount": 0}
+                              "openOrderCount": 0, "unknownMaterialCount": 0,
+                              "itemsChecked": False}
     assert {i["stockStatus"] for i in body["items"]} == {"NO_PLAN"}
     assert body["statusBreakdown"]["NO_PLAN"] == len(body["items"])
     assert overview["summary"]["statusBreakdown"]["NO_PLAN"] == len(body["items"])
@@ -618,6 +832,9 @@ def test_u9_admin_page_lists_po_entity(seeded):
     assert 'action="/admin/u9/sync/po"' in page.text
     assert 'name="since_days"' in page.text
     assert "u9_po_headers / u9_po_lines" in page.text
+    # P0-1：默认勾选「同时同步已结案订单」（否则学不到 U9 上的关单）
+    assert 'name="sync_closed" value="1" checked' in page.text
+    assert "同时同步已结案订单（用于识别关闭，推荐）" in page.text
 
 
 def test_overview_status_breakdown_matches_list(seeded):
@@ -643,6 +860,8 @@ def test_sync_entry_wiring_for_po(seeded):
                                only_open=False, check_items=False)
     assert kwargs == {"since_days": 90, "only_open": False, "codes": ["M1", "M2"],
                       "check_items": False}
+    # P0-1：不传时（API 默认）必须含已结案，否则关闭单永远同步不回来
+    assert build_sync_kwargs("po")["only_open"] is False
 
     with TestClient(backend.app) as client:
         client.get("/admin/login")

@@ -101,7 +101,7 @@
       {% elif e.id == "po" %}
         <label>取最近多少天的采购订单（按下单日 BusinessDate）</label>
         <input type="text" name="since_days" value="180">
-        <label class="u9-check"><input type="checkbox" name="only_open" value="1" checked>只取未结案（关闭/作废/取消不计在途）</label>
+        <label class="u9-check"><input type="checkbox" name="sync_closed" value="1" checked>同时同步已结案订单（用于识别关闭，推荐）</label>
         <label class="u9-check"><input type="checkbox" name="check_items" value="1" checked>用 U9 料品档案核对本地需求料号（料号体系不一致 → 料号未识别）</label>
         <label>额外核对料号（可选，逗号分隔；留空=本地全部需求料号）</label>
         <textarea name="codes" placeholder="留空则按本地需求料号核对"></textarea>

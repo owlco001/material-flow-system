@@ -10,8 +10,8 @@
                                    inventory: codes（可选）/ wh（可选，默认 U9_DEFAULT_WH）/ update_totals
                                               / scope=local（默认，本地全部料号逐个查）|all（组织整体查）
                                    orders:    doc_nos（可选）+ include_local（默认 true=本地已有订单号）
-                                   po:        since_days（默认 180）/ only_open（默认 true）/
-                                              check_items（默认 true=核对本地需求料号）
+                                   po:        since_days（默认 180）/ only_open（默认 false=含已结案，
+                                              用于识别关闭）/ check_items（默认 true=核对本地需求料号）
   GET  /api/v1/u9/logs             同步日志（分页）
   GET  /api/v1/u9/logs/{log_id}    单次同步详情（含预览样例）
 
@@ -60,7 +60,7 @@ def build_sync_kwargs(entity: str, *, codes: str = "", product_codes: str = "", 
                       projects: str = "",
                       wh: str = "", include_local: bool = True, update_totals: bool = True,
                       user_id: str = "", scope: str = "local", zero_missing: bool = True,
-                      since_days: int = 180, only_open: bool = True,
+                      since_days: int = 180, only_open: bool = False,
                       check_items: bool = True) -> dict:
     """把接口/表单参数整理成 run_sync 的 kwargs；BOM 缺编码时抛 ApiError(400)。"""
     split = lambda v: [p.strip() for p in (v or "").replace("\n", ",").replace("，", ",").split(",") if p.strip()]
@@ -130,7 +130,7 @@ def u9_sync(entity: str,
             scope: str = Query(default="local", description="inventory：local=按本地全部料号逐个查（默认）；all=按组织整体查"),
             zero_missing: bool = Query(default=True, description="inventory：U9 已清零/不再返回的库位是否在本地归零（默认开）"),
             since_days: int = Query(default=180, ge=1, le=3650, description="po：按 BusinessDate 取最近 N 天的采购订单"),
-            only_open: bool = Query(default=True, description="po：只取未结案（未关闭/未作废）的采购订单"),
+            only_open: bool = Query(default=False, description="po：true=只取未结案；默认 false=连已结案一起取（否则 U9 上关单后本地永远算在途）"),
             check_items: bool = Query(default=True, description="po：顺带用 U9 料品档案核对本地需求料号（UNKNOWN_MATERIAL 判定）"),
             user: sqlite3.Row = Depends(current_user)):
     _admin(user)

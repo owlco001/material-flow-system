@@ -360,16 +360,53 @@ def field_present(obj: Any, path: str) -> bool:
     return True
 
 
+def _flat_po_line(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """「一条记录就是一行」的扁平形态：行字段与单头字段同级。
+
+    有些网关会把 `POLines.DocLineNo` / `POLines.ItemInfo.ItemCode` 摊平成一条一行，
+    行号与料号直接挂在记录上。只有同时看到行号与料号才认定为行记录，避免把只有
+    DocLineNo 的脏数据当成行。
+    """
+    if not isinstance(raw, dict):
+        return None
+    if _ci_get(raw, "DocLineNo") is _MISSING:
+        return None
+    item = _ci_get(raw, "ItemInfo")
+    if isinstance(item, dict) and _ci_get(item, "ItemCode") is not _MISSING:
+        return raw
+    if _ci_get(raw, "ItemInfo.ItemCode") is not _MISSING:
+        return raw
+    if _ci_get(raw, "ItemCode") is not _MISSING:
+        return raw
+    return None
+
+
+def _flat_line_key_only(raw: dict[str, Any]) -> bool:
+    """响应里是否出现「点号行字段」但拿不到行（无法安全还原，必须报错而不是当 0 行）。"""
+    if not isinstance(raw, dict):
+        return False
+    return any(str(k).lower().startswith("polines.") for k in raw)
+
+
 def po_raw_lines(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    """采购订单行：POLines 可能是列表、单个对象或扁平点号键，统一成列表。"""
+    """采购订单行：POLines 可能是列表、单个对象，或整条记录就是一行（扁平形态）。"""
     lines = _ci_get(raw, "POLines")
-    if lines is _MISSING or lines is None:
-        return []
+    if lines is _MISSING or lines is None or (isinstance(lines, list) and not lines):
+        flat = _flat_po_line(raw)
+        return [flat] if flat is not None else []
     if isinstance(lines, dict):
         return [lines]
     if isinstance(lines, list):
         return [ln for ln in lines if isinstance(ln, dict)]
     return []
+
+
+def po_line_key(raw: dict[str, Any]) -> str:
+    """分页去重用的行键：扁平形态取 DocLineNo，嵌套形态为空串（单号已足够）。"""
+    value = _ci_get(raw, "DocLineNo")
+    if value is _MISSING or value is None:
+        return ""
+    return s(value)
 
 
 def validate_po_rows(rows: list[dict[str, Any]]) -> None:
@@ -387,6 +424,15 @@ def validate_po_rows(rows: list[dict[str, Any]]) -> None:
     if line_rows:
         missing += [f"POLines.{f}" for f in PO_REQUIRED_LINE_FIELDS
                     if not any(field_present(ln, f) for ln in line_rows)]
+    elif any(_flat_line_key_only(r) for r in rows):
+        # 有单、但一行都没解析出来，而响应里又带着 POLines.* 行字段：行集合形态不在本版
+        # 兼容范围内。必须报错，绝不能当「本次没有订单行」放过——那会把所有在途/到货
+        # 变成 0，料号全部落到「无采购计划」，采购会重复下单。
+        raise ValueError(
+            "U9 采购订单查询返回了 POLines.* 行字段，但没有解析出任何订单行"
+            "（行集合可能是未识别的扁平/点号形态）。为避免把在途与到货量当成 0"
+            "（会把「在途采购」误判成「无采购计划」并导致重复下单），本次同步已中止；"
+            "请核对 CommonEntity/Query 的返回形态后重试")
     if missing:
         raise ValueError(
             "U9 采购订单查询未返回关键字段：" + "、".join(missing)

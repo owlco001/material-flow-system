@@ -59,6 +59,7 @@
     采购数据同步于 {{ po.syncedAt|local_dt if po.syncedAt else "—" }}，共 {{ po.openOrderCount }} 张未结案订单
     {% if po.stale %}<b>（超过 24 小时未同步，建议重新同步）</b>{% endif %}
     {% if po.unknownMaterialCount %}· U9 料品档案查不到 {{ po.unknownMaterialCount }} 个需求料号（已标「料号未识别」）{% endif %}
+    {% if not po.itemsChecked %}· <b>料号核对未执行</b>（「料号未识别」判定不可用，请检查同步参数/同步日志）{% endif %}
   </p>
   {% endif %}
   <div class="card">
